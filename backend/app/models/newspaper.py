@@ -21,7 +21,9 @@ class Newspaper(Base):
         DateTime, server_default=func.now(), nullable=False
     )
 
-    issues: Mapped[list[Issue]] = relationship("Issue", back_populates="newspaper")
+    issues: Mapped[list[Issue]] = relationship(
+        "Issue", back_populates="newspaper", cascade="all, delete-orphan"
+    )
 
 
 class Issue(Base):
@@ -47,9 +49,11 @@ class Issue(Base):
     )
 
     newspaper: Mapped[Newspaper] = relationship("Newspaper", back_populates="issues")
-    pages: Mapped[list[Page]] = relationship("Page", back_populates="issue")
+    pages: Mapped[list[Page]] = relationship(
+        "Page", back_populates="issue", cascade="all, delete-orphan"
+    )
     articles: Mapped[list[Article]] = relationship(  # type: ignore[name-defined]
-        "Article", back_populates="issue"
+        "Article", back_populates="issue", cascade="all, delete-orphan"
     )
 
 

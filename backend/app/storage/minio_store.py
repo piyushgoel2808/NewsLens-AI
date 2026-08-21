@@ -83,6 +83,18 @@ class MinioStore:
         """Delete an object."""
         await self._run(lambda: self._client.remove_object(bucket, key))
 
+    async def delete_prefix(self, bucket: str, prefix: str) -> int:
+        """Delete all objects with given prefix (e.g. 'issues/42/')."""
+        def _delete_prefix() -> int:
+            objects = self._client.list_objects(bucket, prefix=prefix, recursive=True)
+            count = 0
+            for obj in objects:
+                self._client.remove_object(bucket, obj.object_name)
+                count += 1
+            return count
+
+        return await self._run(_delete_prefix)
+
     async def presign_url(
         self,
         bucket: str,

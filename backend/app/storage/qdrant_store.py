@@ -140,6 +140,17 @@ class QdrantStore:
             points_selector=qmodels.PointIdsList(points=list(ids)),
         )
 
+    async def delete_by_filter(self, filters: dict[str, Any]) -> None:
+        """Delete points matching payload filters (e.g. {'issue_id': 42})."""
+        qdrant_filter = self._build_filter(filters)
+        if not qdrant_filter:
+            return
+        await self._client.delete(
+            collection_name=self._collection,
+            points_selector=qmodels.FilterSelector(filter=qdrant_filter),
+        )
+        logger.info("Qdrant delete by filter", extra={"filters": filters})
+
     async def collection_info(self) -> dict[str, Any]:
         """Return collection metadata."""
         info = await self._client.get_collection(self._collection)

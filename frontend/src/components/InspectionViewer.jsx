@@ -53,6 +53,34 @@ export default function InspectionViewer() {
     }
   }, [selectedIssueId]);
 
+  const [deleteMessage, setDeleteMessage] = useState(null);
+
+  async function handleDeleteIssue() {
+    if (!selectedIssueId) return;
+    const confirmDelete = window.confirm(`Are you sure you want to permanently delete Issue #${selectedIssueId} and all its vectors, files, and chunks?`);
+    if (!confirmDelete) return;
+
+    setLoading(true);
+    setDeleteMessage({ status: 'deleting', text: `Purging Issue #${selectedIssueId} across Qdrant, MinIO, and MySQL...` });
+    try {
+      const res = await fetch(`/api/issues/${selectedIssueId}`, {
+        method: 'DELETE',
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        throw new Error(result.detail || 'Deletion failed');
+      }
+      setDeleteMessage({ status: 'success', text: `Issue #${selectedIssueId} successfully purged from Qdrant, MinIO, and MySQL!` });
+      setSelectedIssueId('');
+      setInspectionData(null);
+      await loadIssues();
+    } catch (err) {
+      setDeleteMessage({ status: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const issue = inspectionData?.issue;
   const pages = inspectionData?.pages || [];
   const articles = inspectionData?.articles || [];
@@ -81,7 +109,30 @@ export default function InspectionViewer() {
         <button onClick={() => fetchInspection(selectedIssueId, chunkOffset)} disabled={!selectedIssueId || loading}>
           {loading ? 'Refreshing...' : 'Refresh Inspection Data'}
         </button>
+
+        <button
+          onClick={handleDeleteIssue}
+          disabled={!selectedIssueId || loading}
+          style={{ background: '#ffebee', color: '#c62828', borderColor: '#ef9a9a', cursor: 'pointer' }}
+        >
+          🗑️ Delete Issue
+        </button>
       </div>
+
+      {deleteMessage && (
+        <div
+          style={{
+            marginBottom: '12px',
+            padding: '8px 12px',
+            fontSize: '13px',
+            background: deleteMessage.status === 'success' ? '#e8f5e9' : deleteMessage.status === 'error' ? '#ffebee' : '#fff3e0',
+            border: '1px solid #ccc',
+            borderRadius: '4px',
+          }}
+        >
+          {deleteMessage.text}
+        </div>
+      )}
 
       {issue && (
         <div style={{ background: '#f8f9fa', border: '1px solid #e9ecef', padding: '10px', marginBottom: '12px', fontSize: '13px' }}>

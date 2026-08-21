@@ -58,8 +58,12 @@ class Article(Base):
     chunks: Mapped[list[ArticleChunk]] = relationship(
         "ArticleChunk", back_populates="article", cascade="all, delete-orphan"
     )
-    photos: Mapped[list[Photo]] = relationship("Photo", back_populates="article")
-    tables: Mapped[list[ArticleTable]] = relationship("ArticleTable", back_populates="article")
+    photos: Mapped[list[Photo]] = relationship(
+        "Photo", back_populates="article", cascade="all, delete-orphan"
+    )
+    tables: Mapped[list[ArticleTable]] = relationship(
+        "ArticleTable", back_populates="article", cascade="all, delete-orphan"
+    )
     article_entities: Mapped[list[ArticleEntity]] = relationship(  # type: ignore[name-defined]
         "ArticleEntity", back_populates="article", cascade="all, delete-orphan"
     )

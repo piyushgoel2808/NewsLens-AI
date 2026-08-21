@@ -164,3 +164,19 @@ async def get_page_layout(
         "ocr_confidence": page.ocr_confidence,
         "ingestion_status": page.ingestion_status,
     }
+
+
+@router.delete("/ingest/jobs/{job_id}", summary="Delete an ingestion job and linked assets")
+async def delete_ingestion_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Purge an ingestion job and all associated issue artifacts."""
+    from app.ingestion.deletion_service import DeletionService
+
+    service = DeletionService(db=db)
+    result = await service.delete_job(job_id)
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return result
+

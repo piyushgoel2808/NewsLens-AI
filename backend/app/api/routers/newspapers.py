@@ -328,3 +328,19 @@ async def inspect_issue_ingestion(
         },
     }
 
+
+@router.delete("/api/issues/{issue_id}", summary="Permanently delete an issue, vectors, and files")
+async def delete_issue(
+    issue_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Execute 3-Tier Hard Deletion Blueprint across Qdrant, MinIO, and MySQL."""
+    from app.ingestion.deletion_service import DeletionService
+
+    service = DeletionService(db=db)
+    result = await service.delete_issue(issue_id)
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found")
+    return result
+
+
