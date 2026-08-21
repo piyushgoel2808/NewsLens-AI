@@ -370,7 +370,44 @@ Rationale: Validating end-to-end data flow (FastAPI $\rightarrow$ SSE $\rightarr
 
 ---
 
+## Phase 6.1.1 — Bug Fixes, Multi-File Intake & Ingestion Transparency Inspector
+
+**Date**: 2026-08-21  
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make test` (`pytest tests/ -v`): **98/98 unit/integration tests passing in 1.75s**.
+- `make lint` (`ruff check .` + `mypy app/`): **0 errors across 62 source files**.
+- `make verify-phase6-1` (`python scripts/verify_phase6_1.py`):
+  - **Streaming API**: Streamed 171 token events and 178 stage events (83ms).
+  - **Corpus & Transparency Inspector API**: Retrieved full inspection breakdowns for issues (3 pages, 112 articles, 96 chunks) and streamed 300 DPI page scan image (129ms).
+  - **Settings API**: Verified runtime model-binding update (16ms).
+  - **Frontend Scaffolding**: Vite React SPA production build succeeded in 212ms.
+
+### Key Architectural Fixes & Additions
+
+1. **Bulletproof Config Path Discovery (`backend/app/core/config.py`)**:
+   - Implemented `find_project_root()` that dynamically discovers the repository root by traversing upward for marker files (`model_config.yaml`, `docker-compose.local.yml`, `pyproject.toml`).
+   - Added built-in default task bindings and provider fallbacks in `ModelConfig` so that essential tasks (`embedding`, `query_planner`, `answerer`, `ocr`, `layout_analysis`) resolve reliably in all contexts.
+2. **Schema-Aligned Model Settings Swapper (`frontend/src/components/RawDataViewer.jsx`)**:
+   - Replaced freeform text input with dynamic **Task** and **Target Provider** dropdowns populated directly from `GET /api/settings/model-bindings`.
+   - Sends exact Pydantic payload `{ task_bindings: { [task]: provider_id } }` for `PUT /api/settings/model-bindings`.
+3. **Sequential Multi-PDF Upload Support (`frontend/src/components/UploadTrigger.jsx`)**:
+   - Enabled multi-file selection (`<input type="file" multiple ...>`).
+   - Implemented sequential `for...of` upload loop to prevent server/broker congestion.
+   - Built a real-time progress table displaying file names, sizes, status badges (`queued`, `uploading`, `completed`, `skipped (duplicate)`, `failed`), and returned `job_id` / SHA-256 hashes.
+4. **Complete Ingestion & Chunking Transparency Inspector (`frontend/src/components/InspectionViewer.jsx`)**:
+   - Added `GET /api/issues/{id}/inspection` and `GET /api/articles/{id}` in `backend/app/api/routers/newspapers.py` and `backend/app/api/routers/articles.py`.
+   - Implemented `InspectionViewer.jsx` with 3 tabbed inspection views:
+     - **Pages & OCR Fallback**: Visual verification of extraction mode (OCR vs Digital Native), OCR confidence score, and prominent `⚠️ Scanned (OCR Fallback Triggered: Corrupted Font Gibberish)` badge.
+     - **Segmented Articles**: Manifest of all articles with headline, section, prominence, word count, and text preview.
+     - **Hierarchical Chunks**: Paginated chunk inspector (50 chunks/page) with prepended context headers, token counts, and Qdrant vector point IDs.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 
