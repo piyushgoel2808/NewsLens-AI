@@ -21,7 +21,7 @@ from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.ocr_service import OCRService
 from app.ingestion.rasterizer import PDFRasterizer
 from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
-from app.models.article import Article, ArticlePage
+from app.models.article import Article, ArticlePage, ArticleTable, Photo
 from app.models.ingestion import IngestionJob
 from app.models.newspaper import Issue, Page
 from app.providers.base import OCRBlock
@@ -132,6 +132,29 @@ async def run_ingestion_pipeline(
                 page_number=page_num,
                 ordered_blocks=layout_res.reading_order,
             )
+            # Persist extracted tables
+            for tbl in layout_res.tables:
+                db_table = ArticleTable(
+                    page_id=page.id,
+                    bbox_json={"bbox": list(tbl.bbox)},
+                    extracted_json={
+                        "headers": tbl.headers,
+                        "rows": tbl.rows,
+                        "raw_markdown": tbl.raw_markdown,
+                        "raw_html": tbl.raw_html,
+                    },
+                )
+                db.add(db_table)
+
+            # Persist extracted photos
+            for pht in layout_res.photos:
+                db_photo = Photo(
+                    page_id=page.id,
+                    bbox_json={"bbox": list(pht.bbox)},
+                    caption=pht.caption,
+                )
+                db.add(db_photo)
+
             all_pages_articles[page_num] = page_articles
 
             page.ingestion_status = "segmented"
@@ -148,6 +171,8 @@ async def run_ingestion_pipeline(
                     "char_count": analysis.character_count,
                     "layout_elements": len(layout_res.elements),
                     "reading_blocks": len(layout_res.reading_order),
+                    "tables_count": len(layout_res.tables),
+                    "photos_count": len(layout_res.photos),
                     "layout_source": layout_res.source,
                     "articles_count": len(page_articles),
                 }

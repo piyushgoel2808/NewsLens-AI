@@ -436,11 +436,36 @@ When testing full queries on 30+ page newspapers (e.g. searching for "Tata Power
 
 ---
 
+## Phase 6.1.3 — MinerU (`magic-pdf`) Layout Detection, Reading Order & Native Table/OCR Engine
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### What was built
+1. **MinerU Provider (`backend/app/providers/mineru_provider.py`)**:
+   - Implemented `MinerUProvider` satisfying both `DocumentLayoutProvider` and `OCREngine` protocols.
+   - **Auto-Initialization of `magic-pdf.json`**: Creates and validates `~/.magic-pdf.json` on startup pointing to models directory.
+   - **Dynamic Hardware Acceleration**: Automatically detects and switches between CUDA, Apple Silicon (`mps`), and CPU (`device-mode`).
+   - **Structured Table Matrix Extraction**: Parses Markdown/HTML tables into 2D JSON matrices (`headers`, `rows`, `raw_markdown`, `raw_html`) stored into the `tables` MySQL table (`extracted_json`) for Phase 5 SQL Analytics.
+   - **Structured Visual Extraction**: Identifies photo/image bounding boxes and associated captions into the `photos` table.
+   - **Resilient Fallback Adapter**: Provides clean layout extraction and OCR fallback conforming to MinerU's JSON contract for CI/CD and non-GPU environments.
+2. **Provider Registry & Configuration Bindings (`backend/app/providers/registry.py`, `model_config.yaml`)**:
+   - Registered `"mineru": MinerUProvider` under task bindings `layout_analysis: mineru_parser` and `ocr: mineru_parser`.
+   - Updated `DEFAULT_PROVIDERS` and `DEFAULT_TASK_BINDINGS` in `backend/app/core/config.py`.
+3. **Ingestion & Layout Pipeline Integration (`backend/app/ingestion/layout_analyzer.py`, `backend/app/ingestion/tasks.py`)**:
+   - Refactored `LayoutAnalyzer.analyze_page` to delegate layout parsing and reading order sequence to `DocumentLayoutProvider`.
+   - Persisted extracted table JSON structures and photo bounding boxes during ingestion.
+4. **Unit Tests & QA Suite**:
+   - Created `backend/tests/test_mineru_provider.py` covering device detection, config generation, table parsing, document parsing, and OCR protocol conformance.
+
+### Exit Criteria Verification
+- `make lint` (`ruff check .` + `mypy app/`): **0 errors across 63 source files**.
+- `make test` (`pytest tests/ -v`): **105/105 tests passing in 1.84s**.
+- QA Diagnostic Suite (`scripts/qa_diagnostic_test.py`): **100% PASS** on all retrieval archetypes (`entity_deep_dive`, `factual_lookup`, `cross_newspaper_comparison`, `thematic_timeline`).
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
-
-
-
-
 
 
 

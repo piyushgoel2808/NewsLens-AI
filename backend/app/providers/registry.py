@@ -16,6 +16,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.providers.base import (
     ChatModelProvider,
+    DocumentLayoutProvider,
     EmbeddingProvider,
     OCREngine,
     ProviderCapability,
@@ -26,7 +27,11 @@ from app.providers.base import (
 logger = get_logger(__name__)
 
 AnyProvider = (
-    ChatModelProvider | EmbeddingProvider | VisionModelProvider | OCREngine
+    ChatModelProvider
+    | EmbeddingProvider
+    | VisionModelProvider
+    | OCREngine
+    | DocumentLayoutProvider
 )
 
 
@@ -85,11 +90,15 @@ class ModelRegistry:
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
         elif provider_type == "tesseract":
             return TesseractOCR(lang=cfg.lang or "eng")
+        elif provider_type in ("mineru", "magic_pdf"):
+            from app.providers.mineru_provider import MinerUProvider
+
+            return MinerUProvider(lang=cfg.lang or "en")
         else:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
                 "Supported: ollama, groq, anthropic, openai, "
-                "local_sentence_transformers, tesseract"
+                "local_sentence_transformers, tesseract, mineru"
             )
 
     def get_provider(self, task: str) -> AnyProvider:

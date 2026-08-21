@@ -19,7 +19,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from datetime import date
@@ -36,21 +35,19 @@ try:
 except ImportError:
     pass
 
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.agent.graph import AgentWorkflow
-from app.agent.planner import QueryPlanner
 from app.api.main import create_app
 from app.core.config import get_settings
 from app.ingestion.intake import IntakeService
 from app.ingestion.tasks import run_ingestion_pipeline
 from app.models.base import close_db, init_db
 from app.retrieval.entity_filter import EntitySearchEngine
-from app.retrieval.hybrid_search import HybridSearchEngine, SearchFilter
+from app.retrieval.hybrid_search import HybridSearchEngine
 from app.retrieval.sql_analytics import SQLAnalyticsEngine
 from app.retrieval.timeline_builder import TimelineBuilder
 from app.storage.minio_store import MinioStore
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "backend" / "tests" / "fixtures"
 

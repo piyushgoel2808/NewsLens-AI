@@ -12,12 +12,11 @@ Usage:
 from __future__ import annotations
 
 import io
-import os
 import zipfile
 from pathlib import Path
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 
 def create_digital_page(

@@ -40,6 +40,7 @@ class ProviderType(StrEnum):
     TESSERACT = "tesseract"
     PADDLE_OCR = "paddleocr"
     HOSTED_OCR = "hosted_ocr"
+    MINERU = "mineru"
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,7 @@ class ProviderCapability:
     supports_tool_use: bool = False
     supports_streaming: bool = False
     supports_structured_output: bool = False
+    supports_layout: bool = False
     context_window: int = 8192
     embedding_dim: int | None = None
 
@@ -285,3 +287,79 @@ class OCREngine(Protocol):
             ProviderError: On OCR engine errors.
         """
         ...
+
+
+@dataclass
+class ExtractedTableData:
+    """A structured table extracted from a page."""
+
+    bbox: tuple[float, float, float, float]
+    headers: list[str] = field(default_factory=list)
+    rows: list[list[str]] = field(default_factory=list)
+    raw_markdown: str = ""
+    raw_html: str | None = None
+
+
+@dataclass
+class ExtractedPhotoData:
+    """A photo or visual figure extracted from a page."""
+
+    bbox: tuple[float, float, float, float]
+    caption: str | None = None
+    image_bytes: bytes | None = None
+
+
+@dataclass
+class ExtractedDocumentNode:
+    """A structured layout node extracted by MinerU / document parser."""
+
+    node_type: str  # 'title', 'text', 'table', 'image', 'caption', 'header', 'footer'
+    text: str
+    bbox: tuple[float, float, float, float]
+    reading_order: int = 0
+    level: int | None = None  # Heading level (1 = banner, 2 = major, 3 = subhead)
+    table_data: ExtractedTableData | None = None
+    photo_data: ExtractedPhotoData | None = None
+
+
+@dataclass
+class MinerUParseResult:
+    """Consolidated document layout and reading order output from MinerU."""
+
+    page_number: int
+    nodes: list[ExtractedDocumentNode] = field(default_factory=list)
+    markdown_content: str = ""
+    is_ocr_fallback: bool = False
+    ocr_confidence: float = 1.0
+
+
+@runtime_checkable
+class DocumentLayoutProvider(Protocol):
+    """Interface for neural document layout analysis & reading order engines."""
+
+    @property
+    def capability(self) -> ProviderCapability:
+        ...
+
+    @property
+    def provider_name(self) -> str:
+        ...
+
+    async def parse_pdf_document(
+        self,
+        pdf_bytes: bytes,
+        lang: str = "en",
+        extract_tables: bool = True,
+    ) -> list[MinerUParseResult]:
+        """Parse complete PDF document using neural layout and reading order."""
+        ...
+
+    async def parse_page_image(
+        self,
+        image_bytes: bytes,
+        page_number: int = 1,
+        lang: str = "en",
+    ) -> MinerUParseResult:
+        """Parse a single page raster image using neural layout analysis."""
+        ...
+

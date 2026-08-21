@@ -12,7 +12,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from datetime import date
@@ -27,9 +26,6 @@ try:
 except ImportError:
     pass
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.core.config import get_settings
 from app.ingestion.detector import PDFPageDetector
 from app.ingestion.intake import IntakeService
@@ -38,9 +34,10 @@ from app.ingestion.ocr_service import OCRService
 from app.ingestion.rasterizer import PDFRasterizer
 from app.ingestion.reading_order import BlockType
 from app.ingestion.tasks import run_ingestion_pipeline
-from app.models.newspaper import Issue, Page
-from app.providers.tesseract_ocr import TesseractOCR
+from app.models.newspaper import Page
 from app.storage.minio_store import MinioStore
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "backend" / "tests" / "fixtures"
 

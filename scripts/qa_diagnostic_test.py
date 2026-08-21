@@ -5,6 +5,7 @@ hybrid search scoring, citations, and hallucination detection.
 import asyncio
 import json
 import time
+
 import httpx
 
 
@@ -100,7 +101,7 @@ async def run_diagnostics():
                                     cost = data.get("cost_usd")
                                     print(f"  → Completed in {latency}ms (Cost: ${cost})")
 
-                            except Exception as parse_err:
+                            except Exception:
                                 pass
 
                 answer_text = "".join(tokens)

@@ -44,8 +44,8 @@ def _result(name: str, passed: bool, message: str) -> None:
 async def test_ollama() -> None:
     """Test OllamaProvider with a real (tiny) completion call."""
     import httpx
-    from app.providers.ollama_provider import OllamaProvider
     from app.providers.base import Message, ProviderError
+    from app.providers.ollama_provider import OllamaProvider
 
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     model = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
@@ -131,8 +131,8 @@ async def test_groq() -> None:
         _result("GroqProvider", True, "SKIPPED — GROQ_API_KEY not set")
         return
 
-    from app.providers.groq_provider import GroqProvider
     from app.providers.base import Message, ProviderError
+    from app.providers.groq_provider import GroqProvider
 
     model = "qwen/qwen3.6-27b"
     provider = GroqProvider(model=model, api_key=api_key)
@@ -159,7 +159,10 @@ async def test_groq() -> None:
 
 async def test_local_embedding() -> None:
     """Test LocalEmbeddingProvider — downloads bge-m3 on first run (~2GB)."""
-    from app.providers.local_embedding_provider import LocalEmbeddingProvider, ProviderError
+    from app.providers.local_embedding_provider import (
+        LocalEmbeddingProvider,
+        ProviderError,
+    )
 
     model = "BAAI/bge-m3"
     provider = LocalEmbeddingProvider(model=model)
@@ -188,11 +191,11 @@ async def test_local_embedding() -> None:
 
 async def test_provider_swap_proof() -> None:
     """Structural test: both providers return identical ModelResponse shape."""
-    from app.providers.base import ModelResponse
     from unittest.mock import AsyncMock, MagicMock, patch
-    from app.providers.ollama_provider import OllamaProvider
+
     from app.providers.anthropic_provider import AnthropicProvider
-    from app.providers.base import Message
+    from app.providers.base import Message, ModelResponse
+    from app.providers.ollama_provider import OllamaProvider
 
     messages = [Message(role="user", content="test")]
 

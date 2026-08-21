@@ -153,17 +153,23 @@ DEFAULT_PROVIDERS = {
         provider="tesseract",
         lang="eng+hin",
     ),
+    "mineru_parser": ProviderConfig(
+        provider="mineru",
+        lang="en+hi",
+        supports_vision=True,
+    ),
 }
 
 DEFAULT_TASK_BINDINGS = {
     "query_planner": "ollama_chat",
     "answerer": "ollama_chat",
-    "layout_analysis": "ollama_vlm",
+    "layout_analysis": "mineru_parser",
+    "document_parser": "mineru_parser",
     "article_segmentation": "ollama_chat",
     "metadata_extraction": "ollama_chat",
     "classification": "ollama_chat",
     "embedding": "local_embed_bge",
-    "ocr": "tesseract_ocr",
+    "ocr": "mineru_parser",
 }
 
 

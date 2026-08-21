@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from datetime import date
@@ -30,21 +29,20 @@ try:
 except ImportError:
     pass
 
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.api.main import create_app
 from app.core.config import get_settings
 from app.ingestion.intake import IntakeService
 from app.ingestion.tasks import run_ingestion_pipeline
-from app.models.article import Article, ArticleChunk
+from app.models.article import ArticleChunk
 from app.models.base import close_db, init_db
-from app.models.entity import ArticleEntity, Entity, Topic
+from app.models.entity import Entity, Topic
 from app.models.newspaper import Issue, Page
 from app.storage.minio_store import MinioStore
 from app.storage.mysql_fulltext import MySQLFullTextSearch
 from app.storage.qdrant_store import QdrantStore
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "backend" / "tests" / "fixtures"
 DEMO_DIR = Path(__file__).resolve().parent.parent / "demo"

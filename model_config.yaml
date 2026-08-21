@@ -49,6 +49,11 @@ providers:
     provider: tesseract
     lang: "eng+hin"              # Add ISO 639-2 language codes separated by + as needed.
 
+  mineru_parser:
+    provider: mineru
+    lang: "en+hi"
+    method: "auto"               # 'auto', 'txt', or 'ocr'
+
   # ---------------------------------------------------------------------------
   # Hosted providers — uncomment and set API keys in .env to enable
   # ---------------------------------------------------------------------------
@@ -69,7 +74,7 @@ providers:
 
   # anthropic_sonnet:
   #   provider: anthropic
-  #   model: claude-sonnet-4-5
+  #   model: claude-3-5-sonnet-20241022
   #   context_window: 200000
   #   supports_vision: true
   #   supports_tool_use: true
@@ -105,7 +110,8 @@ task_bindings:
   answerer: ollama_chat           # Synthesizes final answer with citations
 
   # --- Ingestion pipeline ---
-  layout_analysis: ollama_vlm     # Per-page VLM layout analysis (requires supports_vision)
+  layout_analysis: mineru_parser  # MinerU neural layout and multi-column parsing
+  document_parser: mineru_parser
   article_segmentation: ollama_chat
   metadata_extraction: ollama_chat
   classification: ollama_chat
@@ -114,4 +120,4 @@ task_bindings:
   embedding: local_embed_bge      # Change to ollama_embed for lighter resource use
 
   # --- OCR ---
-  ocr: tesseract_ocr
+  ocr: mineru_parser

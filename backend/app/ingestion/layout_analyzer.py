@@ -22,7 +22,13 @@ from app.ingestion.reading_order import (
     OrderedReadingBlock,
     ReadingOrderResolver,
 )
-from app.providers.base import OCRBlock, VisionModelProvider
+from app.providers.base import (
+    DocumentLayoutProvider,
+    ExtractedPhotoData,
+    ExtractedTableData,
+    OCRBlock,
+    VisionModelProvider,
+)
 from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
@@ -117,28 +123,36 @@ class PageLayoutResult:
     height_px: int
     elements: list[LayoutElement] = field(default_factory=list)
     reading_order: list[OrderedReadingBlock] = field(default_factory=list)
-    source: str = "vlm"  # 'vlm' or 'spatial_rule_based'
+    tables: list[ExtractedTableData] = field(default_factory=list)
+    photos: list[ExtractedPhotoData] = field(default_factory=list)
+    markdown_content: str = ""
+    source: str = "mineru"  # 'mineru', 'vlm', or 'spatial_rule_based'
 
 
 class LayoutAnalyzer:
-    """Analyzes newspaper page visual layouts using VLM and rule-based fallbacks."""
+    """Analyzes newspaper page visual layouts using MinerU, VLM, and rule-based fallbacks."""
 
-    def __init__(self, vision_provider: VisionModelProvider | None = None) -> None:
+    def __init__(
+        self,
+        vision_provider: VisionModelProvider | DocumentLayoutProvider | None = None,
+    ) -> None:
         self._settings = get_settings()
-        self._vision = vision_provider
+        self._layout_provider = vision_provider
 
-    async def _get_vision_provider(self) -> VisionModelProvider | None:
+    async def _get_layout_provider(
+        self,
+    ) -> VisionModelProvider | DocumentLayoutProvider | None:
         """Resolve configured layout analysis provider if available."""
-        if self._vision:
-            return self._vision
+        if self._layout_provider:
+            return self._layout_provider
         try:
             registry = get_registry()
             provider = registry.get_provider("layout_analysis")
-            if isinstance(provider, VisionModelProvider):
+            if isinstance(provider, (DocumentLayoutProvider, VisionModelProvider)):
                 return provider
         except Exception as e:
             logger.debug(
-                "Could not load vision model for layout analysis (falling back to rule-based)",
+                "Could not load layout provider (falling back to rule-based)",
                 extra={"error": str(e)},
             )
         return None
@@ -220,8 +234,8 @@ class LayoutAnalyzer:
         ocr_blocks: list[OCRBlock] | None = None,
     ) -> PageLayoutResult:
         """Run full hybrid layout analysis on a newspaper page."""
-        vision = await self._get_vision_provider()
-        if not vision:
+        provider = await self._get_layout_provider()
+        if not provider:
             return self.analyze_from_text_blocks(
                 page_number=page_number,
                 width_px=width_px,
@@ -230,8 +244,82 @@ class LayoutAnalyzer:
                 ocr_blocks=ocr_blocks,
             )
 
+        # Path A: MinerU DocumentLayoutProvider
+        if isinstance(provider, DocumentLayoutProvider):
+            try:
+                parsed_res = await provider.parse_page_image(
+                    image_bytes=image_bytes,
+                    page_number=page_number,
+                )
+                elements: list[LayoutElement] = []
+                reading_order: list[OrderedReadingBlock] = []
+                tables: list[ExtractedTableData] = []
+                photos: list[ExtractedPhotoData] = []
+
+                for idx, node in enumerate(parsed_res.nodes):
+                    b_type = BlockType.BODY_TEXT
+                    if node.node_type == "title":
+                        b_type = (
+                            BlockType.BANNER_HEADLINE
+                            if node.level == 1
+                            else BlockType.HEADLINE
+                        )
+                    elif node.node_type == "table":
+                        b_type = BlockType.TABLE
+                        if node.table_data:
+                            tables.append(node.table_data)
+                    elif node.node_type in ("image", "photo"):
+                        b_type = BlockType.PHOTO
+                        if node.photo_data:
+                            photos.append(node.photo_data)
+                    elif node.node_type == "caption":
+                        b_type = BlockType.CAPTION
+
+                    elem = LayoutElement(
+                        element_id=idx + 1,
+                        bbox=node.bbox,
+                        text=node.text,
+                        block_type=b_type,
+                    )
+                    elements.append(elem)
+
+                    reading_order.append(
+                        OrderedReadingBlock(
+                            reading_order_index=idx,
+                            element_id=idx + 1,
+                            block_type=b_type,
+                            text=node.text,
+                            bbox=node.bbox,
+                        )
+                    )
+
+                return PageLayoutResult(
+                    page_number=page_number,
+                    width_px=width_px,
+                    height_px=height_px,
+                    elements=elements,
+                    reading_order=reading_order,
+                    tables=tables,
+                    photos=photos,
+                    markdown_content=parsed_res.markdown_content,
+                    source="mineru",
+                )
+            except Exception as e:
+                logger.warning(
+                    "MinerU layout analysis failed, falling back to spatial rules",
+                    extra={"page_number": page_number, "error": str(e)},
+                )
+                return self.analyze_from_text_blocks(
+                    page_number=page_number,
+                    width_px=width_px,
+                    height_px=height_px,
+                    digital_blocks=digital_blocks,
+                    ocr_blocks=ocr_blocks,
+                )
+
+        # Path B: VisionModelProvider (VLM prompt)
         try:
-            resp = await vision.analyze_image(
+            resp = await provider.analyze_image(
                 image_bytes=image_bytes,
                 prompt=LAYOUT_PROMPT,
                 response_schema=LAYOUT_EXTRACTION_SCHEMA,
@@ -243,7 +331,7 @@ class LayoutAnalyzer:
             if not isinstance(raw_data, dict):
                 raise ValueError("Vision model response did not return a valid layout dict.")
 
-            elements: list[LayoutElement] = []
+            vlm_elements: list[LayoutElement] = []
             el_id = 1
 
             for h in raw_data.get("headlines", []):
@@ -254,7 +342,7 @@ class LayoutAnalyzer:
                     if level == "banner"
                     else BlockType.HEADLINE
                 )
-                elements.append(
+                vlm_elements.append(
                     LayoutElement(
                         element_id=el_id,
                         bbox=bbox,  # type: ignore[arg-type]
@@ -266,7 +354,7 @@ class LayoutAnalyzer:
 
             for col in raw_data.get("columns", []):
                 bbox = tuple(float(x) for x in col.get("bbox", [0, 0, 0, 0]))
-                elements.append(
+                vlm_elements.append(
                     LayoutElement(
                         element_id=el_id,
                         bbox=bbox,  # type: ignore[arg-type]
@@ -278,7 +366,7 @@ class LayoutAnalyzer:
 
             for p in raw_data.get("photos", []):
                 bbox = tuple(float(x) for x in p.get("bbox", [0, 0, 0, 0]))
-                elements.append(
+                vlm_elements.append(
                     LayoutElement(
                         element_id=el_id,
                         bbox=bbox,  # type: ignore[arg-type]
@@ -291,14 +379,14 @@ class LayoutAnalyzer:
             resolver = ReadingOrderResolver(
                 page_width=float(width_px), page_height=float(height_px)
             )
-            reading_order = resolver.resolve_reading_order(elements)
+            reading_order_blocks = resolver.resolve_reading_order(vlm_elements)
 
             return PageLayoutResult(
                 page_number=page_number,
                 width_px=width_px,
                 height_px=height_px,
-                elements=elements,
-                reading_order=reading_order,
+                elements=vlm_elements,
+                reading_order=reading_order_blocks,
                 source="vlm",
             )
 

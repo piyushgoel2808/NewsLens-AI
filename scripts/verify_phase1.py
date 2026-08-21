@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from datetime import date
@@ -28,16 +27,14 @@ try:
 except ImportError:
     pass
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.core.config import get_settings
-from app.ingestion.detector import PDFPageDetector, PageType
+from app.ingestion.detector import PageType, PDFPageDetector
 from app.ingestion.intake import IntakeService
 from app.ingestion.tasks import run_ingestion_pipeline
-from app.models.ingestion import IngestionJob
-from app.models.newspaper import Issue, Newspaper, Page
+from app.models.newspaper import Newspaper, Page
 from app.storage.minio_store import MinioStore
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "backend" / "tests" / "fixtures"
 
