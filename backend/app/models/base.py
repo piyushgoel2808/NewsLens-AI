@@ -47,11 +47,21 @@ def init_db(database_url: str) -> None:
     )
 
 
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the global async session factory, initializing if needed."""
+    global _async_session_factory
+    if _async_session_factory is None:
+        from app.core.config import get_settings
+
+        init_db(get_settings().database.async_url)
+    assert _async_session_factory is not None
+    return _async_session_factory
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency: yield a managed async DB session."""
-    if _async_session_factory is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    async with _async_session_factory() as session:
+    factory = get_session_factory()
+    async with factory() as session:
         try:
             yield session
         except Exception:

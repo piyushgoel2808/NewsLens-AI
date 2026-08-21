@@ -58,6 +58,7 @@ out/
 *.crt
 secrets/
 model_config.local.yaml    # Local overrides to model_config.yaml
+.claude-flow/
 
 # --- Docker local data volumes ---
 mysql_data/

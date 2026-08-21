@@ -271,7 +271,57 @@ Rationale: Historical and broadsheet newspapers contain both thematic concepts (
 
 ---
 
-*Next phase: Phase 5 — Agentic Retrieval Engine: Toolbelt, Query Planner, Synthesizer (LangGraph)*
+## Phase 5 — Agentic Retrieval Engine: Toolbelt, Query Planner, Synthesizer (LangGraph)
+
+**Date**: 2026-08-21  
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make verify-phase5` (`python scripts/verify_phase5.py`):
+  - **Toolbelt Hybrid RRF Search**: Dense semantic vector similarity (Qdrant) fused with sparse keyword relevance (MySQL FULLTEXT) using Reciprocal Rank Fusion ($k=60$) in 43ms.
+  - **Toolbelt Entity Search & Salience**: Structured entity mentions, salience score filtering ($\ge 0.10$), and taxonomy matching in 7ms.
+  - **Toolbelt Chronological Timeline Builder**: Temporal news event trajectory aggregation grouped by date and publication in 5ms.
+  - **Toolbelt SQL Analytics Engine**: Computed mention frequency trends, topic volume distributions, and frontpage prominence ratios in 4ms.
+  - **LangGraph Agent Workflow (5 Archetypes)**: Executed multi-step state graph transitions and synthesized grounded answers with verified citations across all 5 archetypes (*Factual Lookup*, *Thematic Timeline*, *Quantitative Trend*, *Cross-Newspaper Comparison*, *Entity Deep Dive*) in 216ms.
+  - **FastAPI Query REST Endpoints**: Verified `POST /api/query`, `POST /api/query/plan`, and `GET /api/query/history` in 66ms.
+- `make test` (`pytest tests/ -v`) — **87/87 tests passing in 1.45s**.
+- `make lint` (`ruff check .` + `mypy app/`) — **0 errors across 60 source files**.
+
+### Files Created / Modified
+
+| File | Purpose |
+|------|---------|
+| `backend/app/retrieval/hybrid_search.py` | Hybrid Search Engine combining dense vectors and MySQL FULLTEXT using Reciprocal Rank Fusion (RRF $k=60$) |
+| `backend/app/retrieval/entity_filter.py` | Entity-grounded search engine retrieving articles by named entities, salience thresholds, and topic taxonomy |
+| `backend/app/retrieval/timeline_builder.py` | Chronological event trajectory builder aggregating milestones by calendar date and publication |
+| `backend/app/retrieval/sql_analytics.py` | SQL analytics engine executing safe, parameterized aggregation queries for trends and distributions |
+| `backend/app/agent/state.py` | TypedDict schema for LangGraph agent state, citations, and tool execution audit records |
+| `backend/app/agent/planner.py` | Multi-step query planner classifying user questions into 5 archetypes and generating structured tool calls |
+| `backend/app/agent/synthesizer.py` | Answer synthesizer formulating grounded responses with strict inline citations (`[Newspaper, Date, Page, Headline]`) and deterministic fallback |
+| `backend/app/agent/graph.py` | Compiled LangGraph StateGraph orchestrating classification, tool execution, answer synthesis, and MySQL audit logging |
+| `backend/app/api/routers/query.py` | FastAPI router for `POST /api/query`, `POST /api/query/plan`, and `GET /api/query/history` |
+| `backend/app/api/main.py` | Registered `query_router` in FastAPI application |
+| `scripts/verify_phase5.py` | End-to-end verification script testing all toolbelt components, 5 query archetypes, and REST API |
+| `backend/tests/test_hybrid_search.py` | Unit tests for RRF scoring and dual-source result fusion |
+| `backend/tests/test_planner.py` | Unit tests for 5-archetype query classification and tool argument generation |
+| `backend/tests/test_graph.py` | Unit tests for LangGraph state machine execution cycle and citation handling |
+
+### Key Decisions and Rationale
+
+#### Reciprocal Rank Fusion ($k=60$)
+Rationale: Dense vector search excel at broad thematic concepts, while sparse keyword search excels at exact names and numbers. Rather than attempting delicate normalization across arbitrary cosine distance and MySQL FULLTEXT scores, standard Reciprocal Rank Fusion ($1 / (60 + \text{rank})$) provides parameter-free, scale-invariant fusion that reliably elevates articles found in both indices.
+
+#### 5-Archetype Specialized Execution Paths
+Rationale: Generic single-prompt RAG fails on newspaper corpora when asked to produce chronological histories or statistical volume overviews. Classifying queries into 5 explicit archetypes (*Factual*, *Timeline*, *Trend*, *Comparison*, *Deep Dive*) allows the planner to invoke dedicated tools (e.g. `TimelineBuilder` or `SQLAnalyticsEngine`) before synthesizing the final response.
+
+#### Grounded Inline Attribution Standard
+Rationale: Newspaper intelligence requires strict provenance. Every claim must cite the specific scanned source (`[Newspaper Name, YYYY-MM-DD, Page X, "Headline"]`), allowing users to inspect the primary source page scan for every factual finding.
+
+---
+
+*Next phase: Phase 6 — API Hardening & Next.js Frontend*
+
 
 
 
