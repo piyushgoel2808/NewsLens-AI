@@ -194,13 +194,28 @@ class LayoutAnalyzer:
                 element_id += 1
 
         elif ocr_blocks:
-            # Group line blocks from OCR
+            # Dynamically compute line heights across OCR blocks to distinguish headings
+            line_heights: list[float] = []
             for o_blk in ocr_blocks:
-                # Classify large height boxes as headings
-                box_height = o_blk.bbox[3] - o_blk.bbox[1]
+                num_lines = len([line for line in o_blk.text.split("\n") if line.strip()]) or 1
+                lh = (o_blk.bbox[3] - o_blk.bbox[1]) / num_lines
+                line_heights.append(lh)
+
+            import statistics
+
+            median_lh = statistics.median(line_heights) if line_heights else 20.0
+
+            for o_blk, lh in zip(ocr_blocks, line_heights, strict=False):
                 box_width = o_blk.bbox[2] - o_blk.bbox[0]
-                is_large = box_height > 24.0 or box_width > width_px * 0.45
-                b_type = BlockType.HEADLINE if is_large else BlockType.BODY_TEXT
+                is_banner = box_width >= float(width_px) * 0.60 and lh >= median_lh * 1.30
+                is_headline = is_banner or (lh >= median_lh * 1.35) or (
+                    o_blk.text.isupper() and len(o_blk.text.split()) < 15 and lh >= median_lh * 1.10
+                )
+                b_type = (
+                    BlockType.BANNER_HEADLINE
+                    if is_banner
+                    else (BlockType.HEADLINE if is_headline else BlockType.BODY_TEXT)
+                )
                 elements.append(
                     LayoutElement(
                         element_id=element_id,
@@ -234,6 +249,15 @@ class LayoutAnalyzer:
         ocr_blocks: list[OCRBlock] | None = None,
     ) -> PageLayoutResult:
         """Run full hybrid layout analysis on a newspaper page."""
+        # If page is scanned and ocr_blocks are provided, prioritize them directly
+        if ocr_blocks and not digital_blocks:
+            return self.analyze_from_text_blocks(
+                page_number=page_number,
+                width_px=width_px,
+                height_px=height_px,
+                ocr_blocks=ocr_blocks,
+            )
+
         provider = await self._get_layout_provider()
         if not provider:
             return self.analyze_from_text_blocks(
@@ -251,6 +275,18 @@ class LayoutAnalyzer:
                     image_bytes=image_bytes,
                     page_number=page_number,
                 )
+
+                # Check if provider returned non-empty text nodes
+                text_nodes = [n for n in parsed_res.nodes if n.text and n.text.strip()]
+                if not text_nodes and (ocr_blocks or digital_blocks):
+                    return self.analyze_from_text_blocks(
+                        page_number=page_number,
+                        width_px=width_px,
+                        height_px=height_px,
+                        digital_blocks=digital_blocks,
+                        ocr_blocks=ocr_blocks,
+                    )
+
                 elements: list[LayoutElement] = []
                 reading_order: list[OrderedReadingBlock] = []
                 tables: list[ExtractedTableData] = []

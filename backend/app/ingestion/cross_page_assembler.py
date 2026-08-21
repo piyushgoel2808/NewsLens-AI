@@ -74,12 +74,22 @@ class CrossPageAssembler:
                 if art.article_temp_id in absorbed_ids:
                     continue
 
+                initial_full_text = art.body_text.strip() if art.body_text else ""
+                if art.headline and art.headline not in initial_full_text:
+                    initial_full_text = (
+                        f"{art.headline}\n\n{initial_full_text}".strip()
+                        if initial_full_text
+                        else art.headline
+                    )
+                if not initial_full_text:
+                    initial_full_text = art.headline or "Untitled Article"
+
                 # Initialize assembled article starting on this page
                 current = AssembledArticle(
-                    headline=art.headline,
+                    headline=art.headline or "Untitled Article",
                     subheadline=art.subheadline,
                     byline_author=art.byline_author,
-                    full_text=art.body_text,
+                    full_text=initial_full_text,
                     primary_page_number=page_num,
                     pages_mapping=[
                         PageBBoxMapping(

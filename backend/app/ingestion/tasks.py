@@ -20,6 +20,7 @@ from app.ingestion.layout_analyzer import LayoutAnalyzer
 from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.ocr_service import OCRService
 from app.ingestion.rasterizer import PDFRasterizer
+from app.ingestion.reading_order import BlockType, OrderedReadingBlock
 from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
 from app.models.article import Article, ArticlePage, ArticleTable, Photo
 from app.models.ingestion import IngestionJob
@@ -132,6 +133,37 @@ async def run_ingestion_pipeline(
                 page_number=page_num,
                 ordered_blocks=layout_res.reading_order,
             )
+
+            # Robust fallback: if 0 articles generated but OCR or layout text exists
+            if not page_articles:
+                text_blocks = [b for b in layout_res.reading_order if b.text and b.text.strip()]
+                if not text_blocks and extracted_ocr_blocks:
+                    text_blocks = [
+                        OrderedReadingBlock(
+                            reading_order_index=idx,
+                            element_id=idx + 1,
+                            block_type=BlockType.BODY_TEXT,
+                            text=b.text,
+                            bbox=b.bbox,
+                        )
+                        for idx, b in enumerate(extracted_ocr_blocks)
+                        if b.text and b.text.strip()
+                    ]
+                if text_blocks:
+                    combined_text = "\n\n".join(b.text.strip() for b in text_blocks)
+                    first_line = combined_text.split("\n")[0][:200].strip()
+                    fallback_hl = first_line if first_line else f"Page {page_num} Report"
+                    page_articles = [
+                        SegmentedArticle(
+                            article_temp_id=f"p{page_num}_art_fallback_1",
+                            headline=fallback_hl,
+                            body_text=combined_text,
+                            word_count=len(combined_text.split()),
+                            bbox_list=[b.bbox for b in text_blocks],
+                            raw_blocks=text_blocks,
+                        )
+                    ]
+
             # Persist extracted tables
             for tbl in layout_res.tables:
                 db_table = ArticleTable(
@@ -240,8 +272,11 @@ async def run_ingestion_pipeline(
                     db.add(art_page)
 
             # Metadata extraction (NER, topics, summary)
-            art_hl = article_record.headline or ""
-            art_text = article_record.full_text or ""
+            art_hl = article_record.headline or "Untitled Article"
+            art_text = article_record.full_text or art_hl
+            if not art_text:
+                continue
+
             meta_res = await meta_extractor.process_and_persist_metadata(
                 article_id=article_record.id,
                 headline=art_hl,
@@ -249,7 +284,7 @@ async def run_ingestion_pipeline(
             )
 
             # Hierarchical Chunking
-            pages_list = [pm.page_number for pm in assembled.pages_mapping]
+            pages_list = [pm.page_number for pm in assembled.pages_mapping] or [1]
             chunks = chunker.chunk_article(
                 full_text=art_text,
                 newspaper_name=newspaper_name,

@@ -99,3 +99,57 @@ class TestArticleSegmenter:
         art2 = articles[1]
         assert art2.headline == "NEW INFRASTRUCTURE BILL PASSED"
         assert art2.jump_to_page is None
+
+    def test_ocr_page_without_headlines_generates_fallback_article(self) -> None:
+        """Verify scanned/OCR page with no detected headlines creates fallback article."""
+        segmenter = ArticleSegmenter()
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "The economic survey reported steady industrial growth "
+                    "across manufacturing sectors."
+                ),
+                bbox=(50.0, 50.0, 400.0, 150.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "Exports rose by 8 percent year-on-year according to "
+                    "official ministry statistics."
+                ),
+                bbox=(50.0, 160.0, 400.0, 260.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=5, ordered_blocks=blocks)
+        assert len(articles) == 1
+        art = articles[0]
+        assert "economic survey" in art.headline.lower()
+        assert "industrial growth" in art.body_text
+        assert "Exports rose" in art.body_text
+        assert art.word_count > 15
+
+    def test_single_block_article_has_non_empty_body_and_word_count(self) -> None:
+        """Verify single block is never left with empty body_text or 0 word count."""
+        segmenter = ArticleSegmenter()
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.BODY_TEXT,
+                text="Tata Power posts record quarterly net profit.",
+                bbox=(50.0, 50.0, 400.0, 100.0),
+            )
+        ]
+
+        articles = segmenter.segment_page(page_number=2, ordered_blocks=blocks)
+        assert len(articles) == 1
+        assert articles[0].headline == "Tata Power posts record quarterly net profit."
+        assert articles[0].body_text == "Tata Power posts record quarterly net profit."
+        assert articles[0].word_count == 7
+

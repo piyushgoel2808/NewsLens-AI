@@ -25,7 +25,19 @@ class OCRService:
     ) -> None:
         self._db = db
         self._settings = get_settings()
-        self._ocr = ocr_engine or TesseractOCR()
+        if ocr_engine:
+            self._ocr = ocr_engine
+        else:
+            try:
+                from app.providers.registry import get_registry
+
+                provider = get_registry().get_provider("ocr")
+                if isinstance(provider, OCREngine):
+                    self._ocr = provider
+                else:
+                    self._ocr = TesseractOCR()
+            except Exception:
+                self._ocr = TesseractOCR()
         self._minio = minio or MinioStore(self._settings.minio)
 
     async def process_page_ocr(

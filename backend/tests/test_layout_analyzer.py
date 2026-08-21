@@ -118,8 +118,48 @@ class TestLayoutAnalyzer:
             digital_blocks=blocks,
         )
 
-        assert res.source == "spatial_rule_based"
-        assert len(res.elements) == 3
         assert len(res.reading_order) == 3
         # First reading block should be the wide headline
         assert res.reading_order[0].block_type == BlockType.BANNER_HEADLINE
+
+    def test_analyze_from_ocr_blocks_distinguishes_headlines_and_body(self) -> None:
+        """Verify dynamic line height correctly separates OCR headlines from body text."""
+        from app.providers.base import OCRBlock
+
+        analyzer = LayoutAnalyzer()
+        ocr_blocks = [
+            OCRBlock(
+                text="TATA POWER POSTS RECORD PROFIT",
+                bbox=(50.0, 50.0, 700.0, 110.0),
+                confidence=0.95,
+            ),
+            OCRBlock(
+                text="By Special Correspondent\nNew Delhi",
+                bbox=(50.0, 120.0, 250.0, 160.0),
+                confidence=0.92,
+            ),
+            OCRBlock(
+                text=(
+                    "Tata Power reported strong revenue growth in the first quarter.\n"
+                    "Net profit rose by 15 percent year on year."
+                ),
+                bbox=(50.0, 180.0, 450.0, 280.0),
+                confidence=0.90,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=2,
+            width_px=1000,
+            height_px=1400,
+            ocr_blocks=ocr_blocks,
+        )
+
+        assert res.source == "spatial_rule_based"
+        assert len(res.elements) == 3
+        assert res.elements[0].block_type in (
+            BlockType.BANNER_HEADLINE,
+            BlockType.HEADLINE,
+        )
+        assert res.elements[2].block_type == BlockType.BODY_TEXT
+

@@ -443,8 +443,9 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
             return MinerUParseResult(page_number=page_number, nodes=[])
 
         parsed = await loop.run_in_executor(None, _img_to_res)
-        if not parsed.nodes:
-            # Fallback to OCR for pure raster images
+        has_text = any(bool(n.text and n.text.strip()) for n in parsed.nodes)
+        if not parsed.nodes or not has_text:
+            # Fallback to OCR for pure raster / scanned images
             ocr_res = await self.ocr(image_bytes, lang_hint=lang)
             nodes: list[ExtractedDocumentNode] = []
             for idx, blk in enumerate(ocr_res.blocks):

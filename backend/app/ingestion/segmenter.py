@@ -82,7 +82,14 @@ class ArticleSegmenter:
             if is_headline or current_article is None:
                 # Close previous article if exists and has text
                 if current_article and (current_article.body_text or current_article.headline):
-                    current_article.word_count = len(current_article.body_text.split())
+                    if not current_article.body_text:
+                        current_article.body_text = current_article.headline
+                    full_content = (
+                        f"{current_article.headline}\n\n{current_article.body_text}".strip()
+                        if current_article.headline != current_article.body_text
+                        else current_article.body_text
+                    )
+                    current_article.word_count = len(full_content.split())
                     articles.append(current_article)
 
                 # Check if text contains jump-in reference
@@ -96,7 +103,7 @@ class ArticleSegmenter:
                 # Extract headline vs initial body if multi-line or very long
                 lines = [line.strip() for line in text.split("\n") if line.strip()]
                 headline_text = lines[0][:300] if lines else text[:300]
-                initial_body = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                initial_body = "\n".join(lines[1:]) if len(lines) > 1 else text
 
                 current_article = SegmentedArticle(
                     article_temp_id=f"p{page_number}_art_{article_counter}",
@@ -135,8 +142,32 @@ class ArticleSegmenter:
 
         # Finalize the last article
         if current_article and (current_article.body_text or current_article.headline):
-            current_article.word_count = len(current_article.body_text.split())
+            if not current_article.body_text:
+                current_article.body_text = current_article.headline
+            full_content = (
+                f"{current_article.headline}\n\n{current_article.body_text}".strip()
+                if current_article.headline != current_article.body_text
+                else current_article.body_text
+            )
+            current_article.word_count = len(full_content.split())
             articles.append(current_article)
+
+        # Fallback for OCR/scanned pages with blocks but 0 articles detected
+        if not articles:
+            text_blocks = [b for b in ordered_blocks if b.text and b.text.strip()]
+            if text_blocks:
+                combined_text = "\n\n".join(b.text.strip() for b in text_blocks)
+                first_line = combined_text.split("\n")[0][:200].strip()
+                fallback_hl = first_line if first_line else f"Page {page_number} News"
+                fallback_art = SegmentedArticle(
+                    article_temp_id=f"p{page_number}_art_fallback_1",
+                    headline=fallback_hl,
+                    body_text=combined_text,
+                    word_count=len(combined_text.split()),
+                    bbox_list=[b.bbox for b in text_blocks],
+                    raw_blocks=text_blocks,
+                )
+                articles.append(fallback_art)
 
         logger.info(
             "Page segmented into articles",
