@@ -4,20 +4,25 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ingestion.celery_app import celery_app
+from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
 from app.ingestion.cross_page_assembler import CrossPageAssembler
 from app.ingestion.detector import PDFPageDetector
+from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.layout_analyzer import LayoutAnalyzer
+from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.ocr_service import OCRService
 from app.ingestion.rasterizer import PDFRasterizer
 from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
 from app.models.article import Article, ArticlePage
+from app.models.ingestion import IngestionJob
 from app.models.newspaper import Issue, Page
 from app.providers.base import OCRBlock
 from app.storage.minio_store import MinioStore
@@ -70,7 +75,11 @@ async def run_ingestion_pipeline(
         all_pages_articles: dict[int, list[SegmentedArticle]] = {}
 
         # Fetch issue upfront
-        issue_stmt = select(Issue).where(Issue.id == issue_id)
+        issue_stmt = (
+            select(Issue)
+            .where(Issue.id == issue_id)
+            .options(selectinload(Issue.newspaper))
+        )
         issue_res = await db.execute(issue_stmt)
         issue = issue_res.scalar_one_or_none()
         issue_lang = issue.language if issue else "en"
@@ -148,14 +157,24 @@ async def run_ingestion_pipeline(
         assembler = CrossPageAssembler()
         assembled_articles = assembler.assemble_issue_articles(all_pages_articles)
 
-        # Step 6: Classification & MySQL Database Persistence
+        # Step 6: Classification, Metadata Extraction, Chunking, Embedding & Persistence
         classifier = ArticleClassifier()
+        meta_extractor = MetadataExtractor(db=db)
+        chunker = NewspaperChunker()
+        embedder = ArticleEmbedder(db=db)
+
+        # Get newspaper metadata
+        newspaper_name = issue.newspaper.name if issue and issue.newspaper else "Daily"
+        issue_date_str = str(issue.issue_date) if issue else ""
+
         page_id_map: dict[int, int] = {}
         pages_fetch = await db.execute(select(Page).where(Page.issue_id == issue_id))
-        for p in pages_fetch.scalars().all():
+        all_db_pages = pages_fetch.scalars().all()
+        for p in all_db_pages:
             page_id_map[p.page_number] = p.id
 
         created_articles: list[dict[str, Any]] = []
+        total_chunks_created = 0
 
         for assembled in assembled_articles:
             class_res = classifier.classify_and_score(
@@ -195,6 +214,43 @@ async def run_ingestion_pipeline(
                     )
                     db.add(art_page)
 
+            # Metadata extraction (NER, topics, summary)
+            art_hl = article_record.headline or ""
+            art_text = article_record.full_text or ""
+            meta_res = await meta_extractor.process_and_persist_metadata(
+                article_id=article_record.id,
+                headline=art_hl,
+                full_text=art_text,
+            )
+
+            # Hierarchical Chunking
+            pages_list = [pm.page_number for pm in assembled.pages_mapping]
+            chunks = chunker.chunk_article(
+                full_text=art_text,
+                newspaper_name=newspaper_name,
+                issue_date=issue_date_str,
+                headline=art_hl,
+                section=article_record.section,
+                pages=pages_list,
+            )
+
+            # Dense Vector Embedding & Qdrant Upsert
+            await embedder.embed_and_index_chunks(
+                article_id=article_record.id,
+                issue_id=issue_id,
+                newspaper_name=newspaper_name,
+                issue_date=issue_date_str,
+                headline=art_hl,
+                section=article_record.section,
+                article_type=article_record.article_type,
+                prominence_score=article_record.prominence_score,
+                page_numbers=pages_list,
+                entities=[e.name for e in meta_res.entities],
+                topics=[t.name for t in meta_res.topics],
+                chunks=chunks,
+            )
+            total_chunks_created += len(chunks)
+
             created_articles.append(
                 {
                     "id": article_record.id,
@@ -202,25 +258,36 @@ async def run_ingestion_pipeline(
                     "type": article_record.article_type,
                     "prominence_score": article_record.prominence_score,
                     "word_count": article_record.word_count,
-                    "pages_spanned": [pm.page_number for pm in assembled.pages_mapping],
+                    "chunks_count": len(chunks),
+                    "entities_count": len(meta_res.entities),
+                    "topics_count": len(meta_res.topics),
+                    "pages_spanned": pages_list,
                 }
             )
 
-        # Update Issue record
-        issue_stmt = select(Issue).where(Issue.id == issue_id)
-        issue_res = await db.execute(issue_stmt)
-        issue = issue_res.scalar_one_or_none()
+        # Update Pages & Issue status
+        for p in all_db_pages:
+            p.ingestion_status = "indexed"
+
         if issue:
-            issue.ingestion_status = "segmented"
+            issue.ingestion_status = "completed"
+            if issue.source_zip_id:
+                job_stmt = select(IngestionJob).where(IngestionJob.id == issue.source_zip_id)
+                job_res = await db.execute(job_stmt)
+                job = job_res.scalar_one_or_none()
+                if job:
+                    job.status = "completed"
+                    job.completed_at = func.now()
 
         await db.commit()
 
         logger.info(
-            "Phase 3 ingestion pipeline completed successfully",
+            "Phase 4 ingestion pipeline completed successfully",
             extra={
                 "issue_id": issue_id,
                 "rendered_pages": len(rendered_pages),
                 "articles_created": len(created_articles),
+                "chunks_created": total_chunks_created,
             },
         )
 
@@ -229,6 +296,7 @@ async def run_ingestion_pipeline(
             "total_pages": len(rendered_pages),
             "pages": pages_summary,
             "articles": created_articles,
+            "total_chunks": total_chunks_created,
         }
 
 

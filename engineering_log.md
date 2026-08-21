@@ -230,7 +230,49 @@ Rationale: In newspaper intelligence retrieval, frontpage articles, lead banner 
 
 ---
 
-*Next phase: Phase 4 — Ingestion: Metadata Extraction, Embedding, Vector & Full-Text Indexing*
+## Phase 4 — Ingestion: Metadata Extraction, Embedding, Vector & Full-Text Indexing
+
+**Date**: 2026-08-21  
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make verify-phase4` (`python scripts/verify_phase4.py`):
+  - Phase 4 full multi-page ingestion pipeline execution verified (14 articles, 12 contextual chunks created, all pages marked `indexed`, issue marked `completed`).
+  - Relational metadata persistence verified in MySQL: canonical `entities` (person, org, location) with salience scoring, hierarchical `topics` with taxonomy paths, and contextual `article_chunks` with UUID vector IDs.
+  - Qdrant dense vector index verified: live batch point upserts and semantic vector similarity search with cosine distance ranking (top match score `0.5317` in 29ms).
+  - MySQL `FULLTEXT` natural language search verified on `articles(headline, full_text)` (relevance score `2.9147` in 2ms).
+  - FastAPI metadata endpoints verified: `GET /api/entities`, `GET /api/topics`, and `GET /api/articles/{id}/entities` in 17ms.
+- `make test` (`pytest tests/ -v`) — **79/79 tests passing in 1.31s**.
+- `make lint` (`ruff check .` + `mypy app/`) — **0 errors across 51 source files**.
+
+### Files Created / Modified
+
+| File | Purpose |
+|------|---------|
+| `backend/app/ingestion/chunker.py` | Hierarchical chunker preserving paragraph boundaries and prepending standardized newspaper context headers (`[Newspaper: ... \| Date: ... \| Section: ... \| Headline: ... \| Page(s): ...]`) |
+| `backend/app/ingestion/metadata_extractor.py` | Metadata engine extracting Named Entities (`person`, `org`, `location`, `misc`) with mention frequencies, hierarchical topic classification, and summaries |
+| `backend/app/ingestion/embedder.py` | Dense vector embedding service generating embeddings via configured `EmbeddingProvider` (`BAAI/bge-m3` or `nomic-embed-text`), upserting to Qdrant, and storing `ArticleChunk` records |
+| `backend/app/api/routers/metadata.py` | FastAPI router exposing entity search (`GET /api/entities`), topic categories (`GET /api/topics`), and article entities (`GET /api/articles/{id}/entities`) |
+| `backend/app/ingestion/tasks.py` | Extended end-to-end ingestion pipeline coordinating intake, rasterization, OCR, layout analysis, segmentation, assembly, metadata extraction, chunking, and dual-index persistence |
+| `backend/app/api/main.py` | Registered `metadata_router` in FastAPI application |
+| `scripts/verify_phase4.py` | End-to-end verification script testing metadata extraction, Qdrant vector search, MySQL FULLTEXT search, and REST endpoints |
+| `backend/tests/test_chunker.py` | Unit tests for context header formatting, token counts, and paragraph boundary chunking |
+| `backend/tests/test_metadata_extractor.py` | Unit tests for NER entity classification, salience scoring, and topic taxonomy assignment |
+| `backend/tests/test_embedder.py` | Unit tests for batch embedding and Qdrant payload vector upserts |
+
+### Key Decisions and Rationale
+
+#### Newspaper-Aware Header Context Injection
+Rationale: Single newspaper paragraphs lack global context when searched in isolation by vector retrieval. Prepending `[Newspaper: ... | Date: ... | Section: ... | Headline: ... | Page(s): ...]` to every chunk ensures that embeddings and subsequent LLM reader models preserve document-level grounding without diluting paragraph-specific details.
+
+#### Dual-Index Architecture (Dense Semantic + Sparse Keyword)
+Rationale: Historical and broadsheet newspapers contain both thematic concepts (e.g. "economic hardship during the Great Depression") and exact keyword lookups (e.g. specific entity names, ship names, bill numbers). Pairing Qdrant dense vector cosine search with MySQL FULLTEXT natural language search provides the necessary foundation for Phase 5 hybrid reciprocal rank fusion (RRF) retrieval.
+
+---
+
+*Next phase: Phase 5 — Agentic Retrieval Engine: Toolbelt, Query Planner, Synthesizer (LangGraph)*
+
 
 
 
