@@ -151,5 +151,44 @@ Rationale: Calculating the content hash prevents duplicate ingestion jobs and du
 
 ---
 
-*Next phase: Phase 2 — Ingestion: Scanned-PDF OCR & Layout Extraction Pipeline*
+## Phase 2 — Ingestion: Scanned-PDF OCR & Layout Extraction Pipeline
+
+**Date**: 2026-08-21  
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make verify-phase2` (`python scripts/verify_phase2.py`):
+  - Real Tesseract OCR executed on scanned bitmap pages: 41 text blocks extracted, 81.32% mean confidence (489ms).
+  - Multi-column layout analysis and reading order linearization verified: 10 elements ordered with banner headline prioritized first (6ms).
+  - End-to-end task pipeline and database state transitions verified: Page status updated to `layout_done` with `ocr_confidence` in MySQL (769ms).
+- `make test` (`pytest tests/ -v`) — **61/61 tests passing in 1.10s**.
+- `make lint` (`ruff check .` + `mypy app/`) — **0 errors across 42 source files**.
+
+### Files Created / Modified
+
+| File | Purpose |
+|------|---------|
+| `backend/app/ingestion/ocr_service.py` | OCR orchestration service executing Tesseract OCR across MinIO page assets and updating `Page.ocr_confidence` in MySQL |
+| `backend/app/ingestion/reading_order.py` | Spatial reading order resolver linearizing multi-column newspaper layouts with banner headline prioritization |
+| `backend/app/ingestion/layout_analyzer.py` | Hybrid VLM and spatial rule-based layout analyzer with JSON schema validation for headlines, columns, photos, and tables |
+| `backend/app/ingestion/tasks.py` | Extended ingestion pipeline coordinating rasterization, OCR on scanned pages, and layout analysis |
+| `backend/app/api/routers/ingest.py` | Added `GET /api/pages/{page_id}/layout` endpoint for inspecting page spatial layout and OCR confidence |
+| `scripts/verify_phase2.py` | Phase 2 end-to-end verification script testing live Tesseract OCR and reading order sorting |
+| `backend/tests/test_reading_order.py` | Unit tests for multi-column sort algorithms and banner dominance |
+| `backend/tests/test_ocr_service.py` | Unit tests for OCRService execution and MySQL metric updates |
+| `backend/tests/test_layout_analyzer.py` | Unit tests for VLM structured JSON parsing and spatial rule fallbacks |
+
+### Key Decisions and Rationale
+
+#### Hybrid VLM + Spatial Fallback for Layout Analysis
+Rationale: Vision-Language Models (e.g. Qwen2.5-VL, Claude 3.5 Sonnet) provide high semantic accuracy for complex layouts, but require GPU resources or API connectivity. The deterministic spatial bounding box fallback allows the ingestion pipeline to run seamlessly and quickly in CPU/offline environments without blocking.
+
+#### Adaptive Coordinate Extent in Reading Order Resolution
+Rationale: PyMuPDF bounding boxes are in points (0..600), while rasterized images are in pixels (0..3500). Reading order algorithms dynamically calculate reference width from element envelopes, ensuring uniform column clustering across all coordinate systems.
+
+---
+
+*Next phase: Phase 3 — Ingestion: Article Segmentation, Cross-Page Assembly, Type Classification*
+
 

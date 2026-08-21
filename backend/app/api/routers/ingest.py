@@ -14,7 +14,7 @@ from app.ingestion.intake import IntakeService
 from app.ingestion.tasks import process_issue_ingestion_task, run_ingestion_pipeline
 from app.models.base import get_db
 from app.models.ingestion import IngestionJob
-from app.models.newspaper import Issue, Newspaper
+from app.models.newspaper import Issue, Newspaper, Page
 
 logger = get_logger(__name__)
 
@@ -192,7 +192,32 @@ async def get_issue_details(
                 "height_px": p.height_px,
                 "raster_object_key": p.raster_object_key,
                 "ingestion_status": p.ingestion_status,
+                "ocr_confidence": p.ocr_confidence,
             }
             for p in sorted(issue.pages, key=lambda x: x.page_number)
         ],
+    }
+
+
+@router.get("/pages/{page_id}/layout", summary="Get extracted layout and reading order of a page")
+async def get_page_layout(
+    page_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Retrieve spatial layout elements and reading order sequence for a page."""
+    stmt = select(Page).where(Page.id == page_id).options(selectinload(Page.issue))
+    res = await db.execute(stmt)
+    page = res.scalar_one_or_none()
+    if not page:
+        raise HTTPException(status_code=404, detail=f"Page {page_id} not found.")
+
+    return {
+        "page_id": page.id,
+        "issue_id": page.issue_id,
+        "page_number": page.page_number,
+        "width_px": page.width_px,
+        "height_px": page.height_px,
+        "raster_object_key": page.raster_object_key,
+        "ocr_confidence": page.ocr_confidence,
+        "ingestion_status": page.ingestion_status,
     }

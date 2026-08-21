@@ -73,6 +73,9 @@ verify: ## Run provider verification smoke test (proves config-only swap works)
 verify-phase1: ## Run Phase 1 end-to-end ingestion pipeline verification
 	uv run --project backend python scripts/verify_phase1.py
 
+verify-phase2: ## Run Phase 2 OCR & layout extraction pipeline verification
+	uv run --project backend python scripts/verify_phase2.py
+
 # --- Ollama model management ---
 
 pull-models: ## Pull required Ollama models (run once after 'make up')

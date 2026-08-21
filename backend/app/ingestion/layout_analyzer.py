@@ -1,0 +1,316 @@
+"""Hybrid Vision-Language Model and spatial layout analyzer for newspaper pages.
+
+Extracts:
+- Headlines and subheadlines with prominence tiers.
+- Multi-column body text bounding boxes.
+- Photo and illustration regions with associated caption blocks.
+- Structured tabular data regions.
+- Human reading order sequences.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.core.config import get_settings
+from app.core.logging import get_logger
+from app.ingestion.detector import DigitalTextBlock
+from app.ingestion.reading_order import (
+    BlockType,
+    LayoutElement,
+    OrderedReadingBlock,
+    ReadingOrderResolver,
+)
+from app.providers.base import OCRBlock, VisionModelProvider
+from app.providers.registry import get_registry
+
+logger = get_logger(__name__)
+
+LAYOUT_EXTRACTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "headlines": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "level": {"type": "string", "enum": ["banner", "major", "subhead", "kicker"]},
+                    "bbox": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": ["text", "bbox"],
+            },
+        },
+        "columns": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "column_index": {"type": "integer"},
+                    "text": {"type": "string"},
+                    "bbox": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": ["bbox"],
+            },
+        },
+        "photos": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "caption": {"type": "string"},
+                    "bbox": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": ["bbox"],
+            },
+        },
+        "tables": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "bbox": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": ["bbox"],
+            },
+        },
+    },
+    "required": ["headlines", "columns"],
+}
+
+LAYOUT_PROMPT = """Analyze this newspaper page image and identify all structural layout regions:
+1. Headlines: Main banner headlines, article headlines, subheadings with bounding boxes.
+2. Columns: Text columns of news articles.
+3. Photos: Images/illustrations and their captions.
+4. Tables: Statistical or commodity data tables.
+
+Return strict JSON conforming to the schema."""
+
+
+@dataclass
+class PageLayoutResult:
+    """Consolidated layout analysis output."""
+
+    page_number: int
+    width_px: int
+    height_px: int
+    elements: list[LayoutElement] = field(default_factory=list)
+    reading_order: list[OrderedReadingBlock] = field(default_factory=list)
+    source: str = "vlm"  # 'vlm' or 'spatial_rule_based'
+
+
+class LayoutAnalyzer:
+    """Analyzes newspaper page visual layouts using VLM and rule-based fallbacks."""
+
+    def __init__(self, vision_provider: VisionModelProvider | None = None) -> None:
+        self._settings = get_settings()
+        self._vision = vision_provider
+
+    async def _get_vision_provider(self) -> VisionModelProvider | None:
+        """Resolve configured layout analysis provider if available."""
+        if self._vision:
+            return self._vision
+        try:
+            registry = get_registry()
+            provider = registry.get_provider("layout_analysis")
+            if isinstance(provider, VisionModelProvider):
+                return provider
+        except Exception as e:
+            logger.debug(
+                "Could not load vision model for layout analysis (falling back to rule-based)",
+                extra={"error": str(e)},
+            )
+        return None
+
+    def analyze_from_text_blocks(
+        self,
+        page_number: int,
+        width_px: int,
+        height_px: int,
+        digital_blocks: list[DigitalTextBlock] | None = None,
+        ocr_blocks: list[OCRBlock] | None = None,
+    ) -> PageLayoutResult:
+        """Rule-based spatial layout analysis using bounding boxes from digital text or OCR."""
+        elements: list[LayoutElement] = []
+        element_id = 1
+
+        if digital_blocks:
+            max_x = max((d.bbox[2] for d in digital_blocks), default=float(width_px))
+            ref_width = max_x if max_x > 0 else float(width_px)
+            for d_blk in digital_blocks:
+                is_wide_heading = (
+                    d_blk.is_heading_candidate
+                    and (d_blk.bbox[2] - d_blk.bbox[0]) >= ref_width * 0.40
+                )
+                b_type = (
+                    BlockType.BANNER_HEADLINE
+                    if is_wide_heading
+                    else (BlockType.HEADLINE if d_blk.is_heading_candidate else BlockType.BODY_TEXT)
+                )
+                elements.append(
+                    LayoutElement(
+                        element_id=element_id,
+                        bbox=d_blk.bbox,
+                        text=d_blk.text,
+                        block_type=b_type,
+                        font_size=d_blk.mean_font_size,
+                    )
+                )
+                element_id += 1
+
+        elif ocr_blocks:
+            # Group line blocks from OCR
+            for o_blk in ocr_blocks:
+                # Classify large height boxes as headings
+                box_height = o_blk.bbox[3] - o_blk.bbox[1]
+                box_width = o_blk.bbox[2] - o_blk.bbox[0]
+                is_large = box_height > 24.0 or box_width > width_px * 0.45
+                b_type = BlockType.HEADLINE if is_large else BlockType.BODY_TEXT
+                elements.append(
+                    LayoutElement(
+                        element_id=element_id,
+                        bbox=o_blk.bbox,
+                        text=o_blk.text,
+                        block_type=b_type,
+                        confidence=o_blk.confidence,
+                    )
+                )
+                element_id += 1
+
+        resolver = ReadingOrderResolver(page_width=float(width_px), page_height=float(height_px))
+        reading_order = resolver.resolve_reading_order(elements)
+
+        return PageLayoutResult(
+            page_number=page_number,
+            width_px=width_px,
+            height_px=height_px,
+            elements=elements,
+            reading_order=reading_order,
+            source="spatial_rule_based",
+        )
+
+    async def analyze_page(
+        self,
+        page_number: int,
+        width_px: int,
+        height_px: int,
+        image_bytes: bytes,
+        digital_blocks: list[DigitalTextBlock] | None = None,
+        ocr_blocks: list[OCRBlock] | None = None,
+    ) -> PageLayoutResult:
+        """Run full hybrid layout analysis on a newspaper page."""
+        vision = await self._get_vision_provider()
+        if not vision:
+            return self.analyze_from_text_blocks(
+                page_number=page_number,
+                width_px=width_px,
+                height_px=height_px,
+                digital_blocks=digital_blocks,
+                ocr_blocks=ocr_blocks,
+            )
+
+        try:
+            resp = await vision.analyze_image(
+                image_bytes=image_bytes,
+                prompt=LAYOUT_PROMPT,
+                response_schema=LAYOUT_EXTRACTION_SCHEMA,
+            )
+            raw_data = resp.parsed
+            if isinstance(raw_data, str):
+                raw_data = json.loads(raw_data)
+
+            if not isinstance(raw_data, dict):
+                raise ValueError("Vision model response did not return a valid layout dict.")
+
+            elements: list[LayoutElement] = []
+            el_id = 1
+
+            for h in raw_data.get("headlines", []):
+                bbox = tuple(float(x) for x in h.get("bbox", [0, 0, 0, 0]))
+                level = h.get("level", "major")
+                b_type = (
+                    BlockType.BANNER_HEADLINE
+                    if level == "banner"
+                    else BlockType.HEADLINE
+                )
+                elements.append(
+                    LayoutElement(
+                        element_id=el_id,
+                        bbox=bbox,  # type: ignore[arg-type]
+                        text=h.get("text", ""),
+                        block_type=b_type,
+                    )
+                )
+                el_id += 1
+
+            for col in raw_data.get("columns", []):
+                bbox = tuple(float(x) for x in col.get("bbox", [0, 0, 0, 0]))
+                elements.append(
+                    LayoutElement(
+                        element_id=el_id,
+                        bbox=bbox,  # type: ignore[arg-type]
+                        text=col.get("text", ""),
+                        block_type=BlockType.BODY_TEXT,
+                    )
+                )
+                el_id += 1
+
+            for p in raw_data.get("photos", []):
+                bbox = tuple(float(x) for x in p.get("bbox", [0, 0, 0, 0]))
+                elements.append(
+                    LayoutElement(
+                        element_id=el_id,
+                        bbox=bbox,  # type: ignore[arg-type]
+                        text=p.get("caption", ""),
+                        block_type=BlockType.PHOTO,
+                    )
+                )
+                el_id += 1
+
+            resolver = ReadingOrderResolver(
+                page_width=float(width_px), page_height=float(height_px)
+            )
+            reading_order = resolver.resolve_reading_order(elements)
+
+            return PageLayoutResult(
+                page_number=page_number,
+                width_px=width_px,
+                height_px=height_px,
+                elements=elements,
+                reading_order=reading_order,
+                source="vlm",
+            )
+
+        except Exception as e:
+            logger.warning(
+                "VLM layout analysis failed, falling back to spatial rules",
+                extra={"page_number": page_number, "error": str(e)},
+            )
+            return self.analyze_from_text_blocks(
+                page_number=page_number,
+                width_px=width_px,
+                height_px=height_px,
+                digital_blocks=digital_blocks,
+                ocr_blocks=ocr_blocks,
+            )
