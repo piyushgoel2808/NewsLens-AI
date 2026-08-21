@@ -320,7 +320,58 @@ Rationale: Newspaper intelligence requires strict provenance. Every claim must c
 
 ---
 
-*Next phase: Phase 6 — API Hardening & Next.js Frontend*
+## Phase 6.1 — API Hardening & Barebones Functional React Client
+
+**Date**: 2026-08-21  
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make verify-phase6-1` (`python scripts/verify_phase6_1.py`):
+  - **Streaming API (`POST /api/query/stream`)**: Streamed 171 token events and 178 stage events (`planning` $\rightarrow$ `plan` $\rightarrow$ `tool_execution` $\rightarrow$ `synthesizing` $\rightarrow$ `token` $\rightarrow$ `citations` $\rightarrow$ `done`) via Server-Sent Events (SSE) in 78ms.
+  - **Corpus API (`GET /api/newspapers` & `GET /api/issues`)**: Retrieved 7 newspapers (174 total articles) and 7 issues with aggregated issue spans and distinct article counts in 10ms.
+  - **Issue Details & Image Proxy (`GET /api/issues/{id}` & `GET /api/pages/{id}/image`)**: Retrieved issue manifests (3 pages, 84 articles) and streamed 300 DPI page PNG raster scans (235 KB) from MinIO in 89ms.
+  - **Settings API (`GET & PUT /api/settings/model-bindings`)**: Validated and updated task provider bindings dynamically at runtime without server restart in 17ms.
+  - **Frontend Scaffolding (Vite + React 18 SPA)**: Scaffolding built cleanly (`npm run build`) in 458ms into `frontend/dist/index.html`.
+- `make test` (`pytest tests/ -v`) — **91/91 tests passing in 1.48s**.
+- `make lint` (`ruff check .` + `mypy app/`) — **0 errors across 62 source files**.
+
+### Files Created / Modified
+
+| File | Purpose |
+|------|---------|
+| `backend/app/agent/synthesizer.py` | Added `synthesize_stream()` async generator for real-time token streaming with fallback support |
+| `backend/app/api/routers/query.py` | Added `POST /api/query/stream` SSE endpoint emitting stage, plan, token, and citation events |
+| `backend/app/api/routers/newspapers.py` | Corpus router providing `GET /api/newspapers`, `GET /api/issues`, `GET /api/issues/{id}`, and `GET /api/pages/{id}/image` |
+| `backend/app/api/routers/settings.py` | Settings router providing `GET /api/settings/model-bindings` and `PUT /api/settings/model-bindings` |
+| `backend/app/api/routers/ingest.py` | Removed duplicate legacy routes in favor of `newspapers.py` |
+| `backend/app/api/routers/models.py` | Removed obsolete stub in favor of `settings.py` |
+| `backend/app/api/main.py` | Registered `newspapers_router` and `settings_router` |
+| `frontend/package.json` | Vite + React 18 Single Page Application configuration |
+| `frontend/vite.config.js` | Vite config with `/api` proxy target `http://localhost:8000` |
+| `frontend/index.html` | SPA entry HTML |
+| `frontend/src/main.jsx` | React root mount |
+| `frontend/src/App.jsx` | Master Phase 6.1 functional test bench dashboard |
+| `frontend/src/components/StreamTester.jsx` | Plain React component testing SSE `POST /api/query/stream` |
+| `frontend/src/components/UploadTrigger.jsx` | Plain React component testing file upload to `POST /api/ingest/upload` |
+| `frontend/src/components/RawDataViewer.jsx` | Plain React component inspecting `/newspapers`, `/issues`, and testing runtime settings swapping |
+| `backend/tests/test_streaming_api.py` | Unit tests for SSE query streaming |
+| `backend/tests/test_corpus_api.py` | Unit tests for newspaper and issue listings |
+| `backend/tests/test_settings_api.py` | Unit tests for runtime model-binding updates |
+| `scripts/verify_phase6_1.py` | End-to-end live verification script for Phase 6.1 |
+
+### Key Decisions and Rationale
+
+#### Server-Sent Events (SSE) for Stream Delivery
+Rationale: Research queries involve distinct pipeline stages (`planning`, `tool_execution`, `synthesizing`, `citations`). Standard SSE (`text/event-stream`) allows structured multi-event streaming over a single HTTP connection without the connection overhead or state synchronization complexity of bidirectional WebSockets.
+
+#### Plain React (Vite SPA) Decoupling for Phase 6.1
+Rationale: Validating end-to-end data flow (FastAPI $\rightarrow$ SSE $\rightarrow$ React DOM) before introducing complex CSS frameworks or client-side routing guarantees that networking, serialization, and stream parsing are bulletproof before UI design is applied in Phase 6.2.
+
+---
+
+*Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

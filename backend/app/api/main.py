@@ -120,7 +120,9 @@ def create_app() -> FastAPI:
     from app.api.routers.ingest import router as ingest_router
     from app.api.routers.metadata import router as metadata_router
     from app.api.routers.models import router as models_router
+    from app.api.routers.newspapers import router as newspapers_router
     from app.api.routers.query import router as query_router
+    from app.api.routers.settings import router as settings_router
 
     app.include_router(health_router)
     app.include_router(models_router, prefix="/api")
@@ -128,6 +130,8 @@ def create_app() -> FastAPI:
     app.include_router(articles_router)
     app.include_router(metadata_router)
     app.include_router(query_router)
+    app.include_router(newspapers_router)
+    app.include_router(settings_router)
 
     return app
 

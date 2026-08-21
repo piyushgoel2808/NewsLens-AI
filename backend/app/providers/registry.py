@@ -123,6 +123,15 @@ class ModelRegistry:
         )
         return instance
 
+    def invalidate_task(self, task: str) -> None:
+        """Reload configuration for the specified task."""
+        self._model_config = self._settings.load_model_config()
+
+    def invalidate_all(self) -> None:
+        """Clear cached provider instances and reload configuration."""
+        self._instances.clear()
+        self._model_config = self._settings.load_model_config()
+
     def validate_task_capability(
         self, task: str, required: str
     ) -> None:

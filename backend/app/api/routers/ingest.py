@@ -14,7 +14,7 @@ from app.ingestion.intake import IntakeService
 from app.ingestion.tasks import process_issue_ingestion_task, run_ingestion_pipeline
 from app.models.base import get_db
 from app.models.ingestion import IngestionJob
-from app.models.newspaper import Issue, Newspaper, Page
+from app.models.newspaper import Page
 
 logger = get_logger(__name__)
 
@@ -127,76 +127,6 @@ async def list_ingestion_jobs(
         }
         for j in jobs
     ]
-
-
-@router.get("/newspapers", summary="List all newspapers and their issue counts")
-async def list_newspapers(
-    db: AsyncSession = Depends(get_db),
-) -> list[dict[str, Any]]:
-    """List all newspapers in the system with their issues."""
-    stmt = select(Newspaper).options(selectinload(Newspaper.issues))
-    res = await db.execute(stmt)
-    newspapers = res.scalars().all()
-
-    return [
-        {
-            "id": n.id,
-            "name": n.name,
-            "publisher": n.publisher,
-            "default_language": n.default_language,
-            "country": n.country,
-            "issues_count": len(n.issues),
-            "issues": [
-                {
-                    "id": i.id,
-                    "issue_date": str(i.issue_date),
-                    "edition": i.edition,
-                    "total_pages": i.total_pages,
-                    "ingestion_status": i.ingestion_status,
-                }
-                for i in n.issues
-            ],
-        }
-        for n in newspapers
-    ]
-
-
-@router.get("/issues/{issue_id}", summary="Get detailed issue info with pages")
-async def get_issue_details(
-    issue_id: int,
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """Retrieve an issue and all its rendered page details."""
-    stmt = (
-        select(Issue)
-        .where(Issue.id == issue_id)
-        .options(selectinload(Issue.pages), selectinload(Issue.newspaper))
-    )
-    res = await db.execute(stmt)
-    issue = res.scalar_one_or_none()
-    if not issue:
-        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found.")
-
-    return {
-        "id": issue.id,
-        "newspaper_name": issue.newspaper.name if issue.newspaper else None,
-        "issue_date": str(issue.issue_date),
-        "edition": issue.edition,
-        "total_pages": issue.total_pages,
-        "ingestion_status": issue.ingestion_status,
-        "pages": [
-            {
-                "id": p.id,
-                "page_number": p.page_number,
-                "width_px": p.width_px,
-                "height_px": p.height_px,
-                "raster_object_key": p.raster_object_key,
-                "ingestion_status": p.ingestion_status,
-                "ocr_confidence": p.ocr_confidence,
-            }
-            for p in sorted(issue.pages, key=lambda x: x.page_number)
-        ],
-    }
 
 
 @router.get("/pages/{page_id}/layout", summary="Get extracted layout and reading order of a page")

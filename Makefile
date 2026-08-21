@@ -85,6 +85,9 @@ verify-phase4: ## Run Phase 4 metadata extraction, embedding & vector indexing v
 verify-phase5: ## Run Phase 5 agentic retrieval engine & LangGraph workflow verification
 	uv run --project backend python scripts/verify_phase5.py
 
+verify-phase6-1: ## Run Phase 6.1 API hardening & functional data flow verification
+	uv run --project backend python scripts/verify_phase6_1.py
+
 # --- Ollama model management ---
 
 pull-models: ## Pull required Ollama models (run once after 'make up')

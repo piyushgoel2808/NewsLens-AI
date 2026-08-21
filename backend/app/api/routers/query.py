@@ -1,9 +1,10 @@
-"""FastAPI router for Agentic RAG Queries and Plan Inspection."""
-from __future__ import annotations
-
+import json
+import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +60,100 @@ async def execute_query(
         evidence_count=len(result.get("evidence_items", [])),
         latency_ms=result.get("latency_ms", 0),
         cost_usd=result.get("cost_usd", 0.0),
+    )
+
+
+@router.post(
+    "/stream",
+    summary="Stream agent execution steps and tokens via Server-Sent Events (SSE)",
+)
+async def stream_query(
+    request: QueryRequest,
+) -> StreamingResponse:
+    """Stream real-time agent execution progress, token deltas, and citations."""
+    factory = get_session_factory()
+    workflow = AgentWorkflow(session_factory=factory)
+
+    async def event_generator() -> AsyncIterator[str]:
+        t0 = time.monotonic()
+        query = request.query
+
+        # 1. Planning Stage
+        yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
+        plan_res = workflow._planner.plan_query(query)
+        planned_calls = [
+            {"tool_name": c.tool_name, "arguments": c.arguments, "purpose": c.purpose}
+            for c in plan_res.tool_calls
+        ]
+        plan_data = json.dumps({"archetype": plan_res.archetype, "plan": planned_calls})
+        yield f"event: plan\ndata: {plan_data}\n\n"
+
+        # 2. Tool Execution Stage
+        yield f"event: stage\ndata: {json.dumps({'stage': 'tool_execution'})}\n\n"
+        tool_state = await workflow._execute_tools_node(
+            {
+                "query": query,
+                "archetype": plan_res.archetype,
+                "plan": planned_calls,
+                "tool_executions": [],
+                "evidence_items": [],
+                "synthesized_answer": "",
+                "citations": [],
+                "cost_usd": 0.0,
+                "latency_ms": 0,
+                "user_id": request.user_id,
+                "error": None,
+            }
+        )
+        evidence = tool_state.get("evidence_items", [])
+        tool_records = [dict(t) for t in tool_state.get("tool_executions", [])]
+        tool_data = json.dumps({"evidence_count": len(evidence), "tools": tool_records})
+        yield f"event: tool_results\ndata: {tool_data}\n\n"
+
+        # 3. Synthesis Stage
+        yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
+        full_text_chunks: list[str] = []
+        async for chunk in workflow._synthesizer.synthesize_stream(
+            query=query,
+            archetype=plan_res.archetype,
+            evidence_items=evidence,
+        ):
+            full_text_chunks.append(chunk)
+            yield f"event: token\ndata: {json.dumps({'delta': chunk})}\n\n"
+
+        full_answer = "".join(full_text_chunks)
+        citations = workflow._synthesizer.extract_citations(full_answer, evidence)
+        citations_list = [dict(c) for c in citations]
+        yield f"event: citations\ndata: {json.dumps({'citations': citations_list})}\n\n"
+
+        latency_ms = round((time.monotonic() - t0) * 1000)
+
+        # 4. Save Query Log in DB
+        async with factory() as db:
+            log_record = QueryLog(
+                user_id=request.user_id,
+                query_text=query,
+                query_type=plan_res.archetype,
+                plan_json={"plan": planned_calls},
+                tool_calls_json={"tools": tool_records},
+                answer_text=full_answer,
+                citations_json={"citations": citations_list},
+                latency_ms=latency_ms,
+                cost_usd=0.0,
+            )
+            db.add(log_record)
+            await db.commit()
+
+        yield f"event: done\ndata: {json.dumps({'latency_ms': latency_ms, 'cost_usd': 0.0})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

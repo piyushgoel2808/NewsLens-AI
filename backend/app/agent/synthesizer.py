@@ -1,6 +1,7 @@
 """Answer Synthesizer: Grounded LLM narrative generation with strict source citations."""
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from app.agent.state import AgentCitation
@@ -146,6 +147,51 @@ class AnswerSynthesizer:
             answer_text = self._generate_deterministic_summary(query, evidence_items)
 
         return answer_text, citations, cost_usd
+
+    async def synthesize_stream(
+        self,
+        query: str,
+        archetype: str,
+        evidence_items: list[dict[str, Any]],
+    ) -> AsyncIterator[str]:
+        """Stream synthesized answer token by token."""
+        if not evidence_items:
+            yield f"No relevant newspaper articles found for query: '{query}'."
+            return
+
+        provider = self._get_provider()
+        context = self._build_evidence_context(evidence_items)
+        user_prompt = (
+            f"User Research Query: {query}\n"
+            f"Query Archetype: {archetype}\n\n"
+            f"Available Newspaper Evidence:\n"
+            f"{context}\n\n"
+            f"Synthesize a comprehensive answer citing all relevant sources inline."
+        )
+
+        if provider:
+            try:
+                stream_gen = provider.complete_stream(
+                    messages=[
+                        Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT),
+                        Message(role="user", content=user_prompt),
+                    ],
+                    max_tokens=2048,
+                    temperature=0.1,
+                )
+                async for chunk in stream_gen:
+                    yield chunk
+                return
+            except Exception as e:
+                logger.warning(
+                    "Streaming LLM synthesis failed, streaming fallback text",
+                    extra={"error": str(e)},
+                )
+
+        # Fallback text streaming
+        summary = self._generate_deterministic_summary(query, evidence_items)
+        for word in summary.split(" "):
+            yield word + " "
 
     def _generate_deterministic_summary(
         self,
