@@ -70,6 +70,9 @@ lint-fix: ## Auto-fix ruff lint issues
 verify: ## Run provider verification smoke test (proves config-only swap works)
 	uv run --project backend python scripts/verify_providers.py
 
+verify-phase1: ## Run Phase 1 end-to-end ingestion pipeline verification
+	uv run --project backend python scripts/verify_phase1.py
+
 # --- Ollama model management ---
 
 pull-models: ## Pull required Ollama models (run once after 'make up')

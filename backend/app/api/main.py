@@ -116,10 +116,12 @@ def create_app() -> FastAPI:
 
     # Register routers
     from app.api.routers.health import router as health_router
+    from app.api.routers.ingest import router as ingest_router
     from app.api.routers.models import router as models_router
 
     app.include_router(health_router)
     app.include_router(models_router, prefix="/api")
+    app.include_router(ingest_router)
 
     return app
 

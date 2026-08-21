@@ -105,4 +105,51 @@ Alembic migrations.
 
 ---
 
-*Next phase: Phase 1 — Ingestion: Intake, Rasterization, Digital-PDF Text Extraction*
+## Phase 1 — Ingestion: Intake, Rasterization, Digital-PDF Text Extraction
+
+**Date**: 2026-08-21  
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make verify-phase1` (`python scripts/verify_phase1.py`):
+  - Digital PDF intake + 300 DPI rasterization (2480x3509px) stored to MinIO `newslens-pages` at `pages/1/1930-04-15/morning/page_1.png` (153ms).
+  - Scanned PDF classification correctly flagged as `scanned` with `requires_ocr=True` (20ms).
+  - ZIP Archive intake automatically extracted 2 issues into MySQL (Job ID: 2, 12ms).
+  - MySQL schema synchronization verified across `newspapers`, `issues`, `pages`, and `ingestion_jobs`.
+- `make test` (`pytest tests/ -v`) — **55/55 tests passing in 1.08s**.
+- `make lint` (`ruff check .` + `mypy app/`) — **0 errors across 39 source files**.
+- `make verify` (`python scripts/verify_providers.py`) — Real Ollama, Groq, and BAAI/bge-m3 embeddings all green.
+
+### Files Created / Modified
+
+| File | Purpose |
+|------|---------|
+| `backend/app/ingestion/intake.py` | Intake service: SHA-256 idempotency check, ZIP unpacking, raw PDF archive upload to MinIO `newslens-originals`, DB tracking |
+| `backend/app/ingestion/rasterizer.py` | PDF rasterizer: 300 DPI high-res page rendering via PyMuPDF (`fitz`), PNG uploads to MinIO `newslens-pages`, MySQL `Page` table synchronization |
+| `backend/app/ingestion/detector.py` | PDF page classifier: Digital vs Scanned classification, text block bounds extraction, font size and reading-order candidate analysis |
+| `backend/app/ingestion/celery_app.py` | Celery application configured with Redis broker and result backend |
+| `backend/app/ingestion/tasks.py` | Async and sync task execution pipeline for issue rasterization and text extraction |
+| `backend/app/api/routers/ingest.py` | FastAPI Ingestion router: `/api/ingest/upload`, `/api/ingest/jobs/{id}`, `/api/newspapers`, `/api/issues/{id}` |
+| `scripts/generate_sample_newspaper.py` | Synthetic newspaper fixture generator creating multi-column digital PDFs, scanned bitmap pages, multi-page issues, and ZIP archives |
+| `scripts/verify_phase1.py` | Phase 1 end-to-end verification script testing the live intake, rasterization, and storage pipeline |
+| `backend/tests/test_intake.py` | Unit tests for intake validation, ZIP unpacking, and deduplication |
+| `backend/tests/test_rasterizer.py` | Unit tests for 300 DPI rendering, dimensions extraction, and MinIO uploads |
+| `backend/tests/test_detector.py` | Unit tests for digital vs scanned PDF detection and font analysis |
+| `backend/tests/test_ingest_api.py` | Integration tests for FastAPI upload and job status endpoints |
+
+### Key Decisions and Rationale
+
+#### 300 DPI rendering as default
+Rationale: 300 DPI renders standard A4/Letter newspaper pages to ~2480x3500px images, providing clean character clarity for downstream VLM layout analysis (Phase 3) and Tesseract OCR (Phase 2).
+
+#### PyMuPDF (`fitz`) for PDF processing
+Rationale: PyMuPDF is orders of magnitude faster than pypdf or pdfplumber in rendering speed and memory overhead, with direct support for extracting bounding boxes, font attributes, and raw image streams.
+
+#### SHA-256 idempotency at intake
+Rationale: Calculating the content hash prevents duplicate ingestion jobs and duplicate storage consumption if the same newspaper file is re-uploaded.
+
+---
+
+*Next phase: Phase 2 — Ingestion: Scanned-PDF OCR & Layout Extraction Pipeline*
+

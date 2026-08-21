@@ -1,0 +1,226 @@
+"""PDF text layer detection and extraction service for NewsLens-AI.
+
+Classifies each PDF page as:
+- 'digital': Native selectable text layer present.
+- 'scanned': Pure image bitmap without selectable text (requires OCR in Phase 2).
+- 'hybrid': Native text with major embedded raster images/figures.
+
+Extracts structured text blocks with spatial bounding boxes, font metadata,
+and reading order candidates for downstream article assembly.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+
+import fitz  # PyMuPDF
+
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+# Minimum characters on a page to qualify as having a usable digital text layer
+MIN_DIGITAL_CHARS_THRESHOLD = 80
+
+
+class PageType(StrEnum):
+    DIGITAL = "digital"
+    SCANNED = "scanned"
+    HYBRID = "hybrid"
+
+
+@dataclass
+class TextSpan:
+    """A granular span of text sharing the same font style and size."""
+
+    text: str
+    bbox: tuple[float, float, float, float]  # x0, y0, x1, y1 in points
+    font_name: str
+    font_size: float
+    flags: int
+    is_bold: bool = False
+    is_italic: bool = False
+
+
+@dataclass
+class DigitalTextBlock:
+    """A coherent block of text with spatial bounds and font metrics."""
+
+    block_id: int
+    text: str
+    bbox: tuple[float, float, float, float]
+    lines: list[str] = field(default_factory=list)
+    spans: list[TextSpan] = field(default_factory=list)
+    mean_font_size: float = 10.0
+    is_heading_candidate: bool = False
+
+
+@dataclass
+class PageAnalysisResult:
+    """Complete analysis and classification for a single PDF page."""
+
+    page_number: int
+    page_type: PageType
+    requires_ocr: bool
+    character_count: int
+    word_count: int
+    full_text: str
+    blocks: list[DigitalTextBlock] = field(default_factory=list)
+    dominant_font_size: float = 10.0
+    image_count: int = 0
+
+
+class PDFPageDetector:
+    """Analyzes PDF pages for digital text vs scanned image classification."""
+
+    def analyze_page(
+        self,
+        doc: fitz.Document,
+        page_index: int,
+    ) -> PageAnalysisResult:
+        """Analyze and extract structured text from a 0-indexed page in an open PyMuPDF document."""
+        page = doc.load_page(page_index)
+        page_num = page_index + 1
+
+        # Extract structured text dictionary
+        text_page = page.get_text("dict")
+        raw_text = page.get_text("text").strip()
+        images = page.get_images()
+        image_count = len(images)
+
+        char_count = len(raw_text.replace(" ", "").replace("\n", ""))
+        words = raw_text.split()
+        word_count = len(words)
+
+        blocks: list[DigitalTextBlock] = []
+        font_sizes: list[float] = []
+
+        block_counter = 0
+        for b in text_page.get("blocks", []):
+            if b.get("type") == 0:  # Text block
+                block_lines: list[str] = []
+                block_spans: list[TextSpan] = []
+                block_font_sizes: list[float] = []
+
+                for line in b.get("lines", []):
+                    line_text_parts: list[str] = []
+                    for span in line.get("spans", []):
+                        stext = span.get("text", "")
+                        if not stext.strip():
+                            continue
+                        fsize = float(span.get("size", 10.0))
+                        fname = str(span.get("font", "unknown"))
+                        flags = int(span.get("flags", 0))
+                        is_bold = bool(flags & 2 or "bold" in fname.lower())
+                        is_italic = bool(
+                            flags & 1 or "italic" in fname.lower() or "oblique" in fname.lower()
+                        )
+
+                        span_bbox = (
+                            float(span["bbox"][0]),
+                            float(span["bbox"][1]),
+                            float(span["bbox"][2]),
+                            float(span["bbox"][3]),
+                        )
+                        block_spans.append(
+                            TextSpan(
+                                text=stext,
+                                bbox=span_bbox,
+                                font_name=fname,
+                                font_size=fsize,
+                                flags=flags,
+                                is_bold=is_bold,
+                                is_italic=is_italic,
+                            )
+                        )
+                        line_text_parts.append(stext)
+                        block_font_sizes.append(fsize)
+                        font_sizes.append(fsize)
+
+                    if line_text_parts:
+                        block_lines.append(" ".join(line_text_parts))
+
+                block_full_text = "\n".join(block_lines)
+                if block_full_text.strip():
+                    mean_fsize = (
+                        sum(block_font_sizes) / len(block_font_sizes)
+                        if block_font_sizes
+                        else 10.0
+                    )
+                    block_bbox = (
+                        float(b["bbox"][0]),
+                        float(b["bbox"][1]),
+                        float(b["bbox"][2]),
+                        float(b["bbox"][3]),
+                    )
+                    blocks.append(
+                        DigitalTextBlock(
+                            block_id=block_counter,
+                            text=block_full_text,
+                            bbox=block_bbox,
+                            lines=block_lines,
+                            spans=block_spans,
+                            mean_font_size=mean_fsize,
+                        )
+                    )
+                    block_counter += 1
+
+        # Calculate dominant font size (body text font size)
+        dominant_font_size = 10.0
+        if font_sizes:
+            # Rounded mode of font sizes
+            rounded_sizes = [round(s, 1) for s in font_sizes]
+            from collections import Counter
+            dominant_font_size = Counter(rounded_sizes).most_common(1)[0][0]
+
+        # Flag heading candidates (font size > 1.35 * dominant body size or bold font)
+        for blk in blocks:
+            is_large = blk.mean_font_size >= dominant_font_size * 1.35
+            is_bold_prominent = any(
+                s.is_bold and s.font_size > dominant_font_size for s in blk.spans
+            )
+            if is_large or is_bold_prominent:
+                blk.is_heading_candidate = True
+
+        # Classification heuristics
+        if char_count < MIN_DIGITAL_CHARS_THRESHOLD:
+            page_type = PageType.SCANNED
+            requires_ocr = True
+        elif image_count > 0 and char_count >= MIN_DIGITAL_CHARS_THRESHOLD:
+            page_type = PageType.HYBRID
+            requires_ocr = False
+        else:
+            page_type = PageType.DIGITAL
+            requires_ocr = False
+
+        logger.info(
+            "Page structure analyzed",
+            extra={
+                "page_number": page_num,
+                "type": page_type.value,
+                "char_count": char_count,
+                "blocks": len(blocks),
+                "dominant_font_size": dominant_font_size,
+            },
+        )
+
+        return PageAnalysisResult(
+            page_number=page_num,
+            page_type=page_type,
+            requires_ocr=requires_ocr,
+            character_count=char_count,
+            word_count=word_count,
+            full_text=raw_text,
+            blocks=blocks,
+            dominant_font_size=dominant_font_size,
+            image_count=image_count,
+        )
+
+    def analyze_document_bytes(self, pdf_bytes: bytes) -> list[PageAnalysisResult]:
+        """Analyze all pages of a PDF from raw byte buffer."""
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        results: list[PageAnalysisResult] = []
+        for i in range(len(doc)):
+            results.append(self.analyze_page(doc, i))
+        doc.close()
+        return results

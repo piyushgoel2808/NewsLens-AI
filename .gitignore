@@ -96,3 +96,7 @@ celery_*.pid
 *.bak
 *.tmp
 .aider*
+demo/
+*.pdf
+!backend/tests/fixtures/*.pdf
+!backend/tests/fixtures/*.zip
