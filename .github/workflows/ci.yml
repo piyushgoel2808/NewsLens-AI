@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "backend/pyproject.toml"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --all-extras
+
+      - name: Run ruff
+        working-directory: backend
+        run: uv run ruff check .
+
+      - name: Run mypy
+        working-directory: backend
+        run: uv run mypy app/
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0.39
+        env:
+          MYSQL_ROOT_PASSWORD: test_root
+          MYSQL_DATABASE: newslens_test
+          MYSQL_USER: newslens
+          MYSQL_PASSWORD: newslens_pass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root --password=test_root"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=3s
+          --health-retries=5
+
+    env:
+      MYSQL_HOST: localhost
+      MYSQL_PORT: 3306
+      MYSQL_USER: newslens
+      MYSQL_PASSWORD: newslens_pass
+      MYSQL_DB: newslens_test
+      REDIS_URL: redis://localhost:6379/0
+      QDRANT_HOST: localhost
+      QDRANT_PORT: 6333
+      MINIO_ENDPOINT: localhost:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      TESTING: "true"
+      APP_SECRET_KEY: ci-test-secret-key
+      MODEL_CONFIG_PATH: ../model_config.yaml
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "backend/pyproject.toml"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --all-extras
+
+      - name: Run migrations
+        working-directory: backend
+        run: uv run alembic upgrade head
+
+      - name: Run tests
+        working-directory: backend
+        run: uv run pytest tests/ -v --tb=short

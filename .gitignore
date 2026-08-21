@@ -1,0 +1,98 @@
+# =============================================================================
+# NewsLens-AI — .gitignore
+# =============================================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Type checking & linting caches
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.lcov
+.hypothesis/
+
+# Distribution
+*.tar.gz
+*.whl
+MANIFEST
+
+# --- Node.js / Next.js ---
+node_modules/
+.next/
+out/
+.nuxt/
+.cache/
+*.tsbuildinfo
+.eslintcache
+
+# --- Environment & Secrets (NEVER commit these) ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+secrets/
+model_config.local.yaml    # Local overrides to model_config.yaml
+
+# --- Docker local data volumes ---
+mysql_data/
+qdrant_data/
+minio_data/
+redis_data/
+ollama_data/
+
+# --- IDE & Editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# --- Logs ---
+*.log
+logs/
+celery_*.pid
+
+# --- Alembic (keep versions, ignore generated) ---
+# (versions are intentionally committed)
+
+# --- Misc ---
+*.bak
+*.tmp
+.aider*
