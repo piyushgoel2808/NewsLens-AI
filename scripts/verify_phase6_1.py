@@ -159,6 +159,23 @@ async def run_phase6_1_verification() -> None:
             assert len(detail["pages"]) > 0
             assert len(detail["articles"]) > 0
 
+            # Test Ingestion Transparency Inspector endpoint
+            inspect_resp = await client.get(f"/api/issues/{issue_id}/inspection?chunk_limit=10&chunk_offset=0")
+            assert inspect_resp.status_code == 200
+            inspect_data = inspect_resp.json()
+            assert "issue" in inspect_data
+            assert "pages" in inspect_data
+            assert "chunks" in inspect_data
+            assert "pagination" in inspect_data
+            assert inspect_data["pages"][0]["extraction_mode"] in ("OCR", "Digital Native")
+
+            first_art_id = detail["articles"][0]["id"]
+            art_resp = await client.get(f"/api/articles/{first_art_id}")
+            assert art_resp.status_code == 200
+            art_data = art_resp.json()
+            assert "chunks" in art_data
+            assert art_data["id"] == first_art_id
+
             page_1_id = detail["pages"][0]["id"]
             img_resp = await client.get(f"/api/pages/{page_1_id}/image")
             assert img_resp.status_code == 200
@@ -167,13 +184,13 @@ async def run_phase6_1_verification() -> None:
 
             latency = round((time.monotonic() - t0) * 1000)
             _record(
-                "Issue Details & Page Image API: GET /api/issues/{id} & /api/pages/{id}/image",
+                "Issue Details, Transparency & Image API: GET /api/issues/{id}/inspection & /api/pages/{id}/image",
                 True,
-                f"Fetched issue details ({len(detail['pages'])} pages, {len(detail['articles'])} articles) and streamed 300 DPI page scan ({len(img_resp.content)} bytes) ({latency}ms)",
+                f"Fetched inspection ({len(detail['pages'])} pages, {len(detail['articles'])} articles, {inspect_data['pagination']['total']} chunks) and streamed scan ({len(img_resp.content)} B) ({latency}ms)",
             )
         except Exception as e:
             import traceback
-            _record("Issue Details & Page Image API: GET /api/issues/{id} & /api/pages/{id}/image", False, f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
+            _record("Issue Details, Transparency & Image API: GET /api/issues/{id}/inspection & /api/pages/{id}/image", False, f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
 
         # Test 4: Settings API (Model Bindings Runtime Swapping)
         t0 = time.monotonic()

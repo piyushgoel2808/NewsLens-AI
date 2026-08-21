@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.models.article import Article
+from app.models.article import Article, ArticleChunk
 from app.models.base import get_db
 from app.models.newspaper import Issue, Newspaper, Page
 from app.storage.minio_store import MinioStore
@@ -203,3 +203,128 @@ async def get_page_image(
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+@router.get(
+    "/api/issues/{issue_id}/inspection",
+    summary="Complete Ingestion & Chunking Transparency Inspector",
+)
+async def inspect_issue_ingestion(
+    issue_id: int,
+    chunk_limit: int = Query(50, ge=1, le=200, description="Max number of chunks to return"),
+    chunk_offset: int = Query(0, ge=0, description="Chunk offset pagination index"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Retrieve transparency breakdown of page extraction modes, OCR fallback, and chunks."""
+    stmt = (
+        select(Issue)
+        .where(Issue.id == issue_id)
+        .options(
+            selectinload(Issue.newspaper),
+            selectinload(Issue.pages),
+            selectinload(Issue.articles).selectinload(Article.article_pages),
+        )
+    )
+    res = await db.execute(stmt)
+    issue = res.scalar_one_or_none()
+
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found")
+
+    pages_data = []
+    for p in sorted(issue.pages, key=lambda x: x.page_number):
+        is_ocr_used = p.ocr_confidence is not None and p.ocr_confidence > 0.0
+        pages_data.append(
+            {
+                "id": p.id,
+                "page_number": p.page_number,
+                "width_px": p.width_px,
+                "height_px": p.height_px,
+                "ocr_confidence": p.ocr_confidence,
+                "raster_object_key": p.raster_object_key,
+                "ingestion_status": p.ingestion_status,
+                "extraction_mode": "OCR" if is_ocr_used else "Digital Native",
+                "ocr_fallback_triggered": is_ocr_used,
+                "ocr_fallback_reason": (
+                    "Corrupted Font / Gibberish Detected" if is_ocr_used else None
+                ),
+                "image_url": f"/api/pages/{p.id}/image",
+            }
+        )
+
+    articles_data = [
+        {
+            "id": a.id,
+            "headline": a.headline or "Untitled",
+            "section": a.section,
+            "article_type": a.article_type,
+            "prominence_score": a.prominence_score,
+            "word_count": a.word_count,
+            "summary": a.summary,
+            "full_text_preview": (
+                (a.full_text[:300] + "...")
+                if a.full_text and len(a.full_text) > 300
+                else a.full_text
+            ),
+            "pages": sorted({ap.page_number for ap in a.article_pages}),
+        }
+        for a in issue.articles
+    ]
+
+    # Fetch paginated chunks across the issue
+    total_chunks_stmt = (
+        select(func.count(ArticleChunk.id))
+        .join(Article, Article.id == ArticleChunk.article_id)
+        .where(Article.issue_id == issue_id)
+    )
+    total_chunks_res = await db.execute(total_chunks_stmt)
+    total_chunks = total_chunks_res.scalar() or 0
+
+    chunks_stmt = (
+        select(ArticleChunk, Article.headline)
+        .join(Article, Article.id == ArticleChunk.article_id)
+        .where(Article.issue_id == issue_id)
+        .order_by(Article.id, ArticleChunk.chunk_index)
+        .offset(chunk_offset)
+        .limit(chunk_limit)
+    )
+    chunks_res = await db.execute(chunks_stmt)
+    chunk_rows = chunks_res.all()
+
+    chunks_data = [
+        {
+            "id": chunk.id,
+            "article_id": chunk.article_id,
+            "headline": headline or "Untitled",
+            "chunk_index": chunk.chunk_index,
+            "text": chunk.text,
+            "token_count": chunk.token_count,
+            "embedding_vector_id": chunk.embedding_vector_id,
+        }
+        for chunk, headline in chunk_rows
+    ]
+
+    return {
+        "issue": {
+            "id": issue.id,
+            "newspaper_id": issue.newspaper_id,
+            "newspaper_name": issue.newspaper.name if issue.newspaper else "Daily News",
+            "issue_date": str(issue.issue_date),
+            "edition": issue.edition,
+            "language": issue.language,
+            "total_pages": len(pages_data),
+            "article_count": len(articles_data),
+            "total_chunks": total_chunks,
+            "ingestion_status": issue.ingestion_status,
+        },
+        "pages": pages_data,
+        "articles": articles_data,
+        "chunks": chunks_data,
+        "pagination": {
+            "total": total_chunks,
+            "limit": chunk_limit,
+            "offset": chunk_offset,
+            "has_more": (chunk_offset + chunk_limit) < total_chunks,
+        },
+    }
+

@@ -124,6 +124,62 @@ class RedisSettings(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+DEFAULT_PROVIDERS = {
+    "ollama_chat": ProviderConfig(
+        provider="ollama",
+        model="llama3.2:3b",
+        base_url="http://localhost:11434",
+        supports_tool_use=True,
+    ),
+    "ollama_vlm": ProviderConfig(
+        provider="ollama",
+        model="qwen2.5vl:7b",
+        base_url="http://localhost:11434",
+        supports_vision=True,
+        supports_tool_use=True,
+    ),
+    "ollama_embed": ProviderConfig(
+        provider="ollama",
+        model="nomic-embed-text",
+        base_url="http://localhost:11434",
+        embedding_dim=768,
+    ),
+    "local_embed_bge": ProviderConfig(
+        provider="local_sentence_transformers",
+        model="BAAI/bge-m3",
+        embedding_dim=1024,
+    ),
+    "tesseract_ocr": ProviderConfig(
+        provider="tesseract",
+        lang="eng+hin",
+    ),
+}
+
+DEFAULT_TASK_BINDINGS = {
+    "query_planner": "ollama_chat",
+    "answerer": "ollama_chat",
+    "layout_analysis": "ollama_vlm",
+    "article_segmentation": "ollama_chat",
+    "metadata_extraction": "ollama_chat",
+    "classification": "ollama_chat",
+    "embedding": "local_embed_bge",
+    "ocr": "tesseract_ocr",
+}
+
+
+def find_project_root() -> Path:
+    """Locate the repository root directory by walking upward looking for project markers."""
+    curr = Path.cwd().resolve()
+    for p in [curr, *curr.parents]:
+        if (p / "model_config.yaml").exists() or (p / "docker-compose.local.yml").exists():
+            return p
+    file_p = Path(__file__).resolve().parent
+    for p in [file_p, *file_p.parents]:
+        if (p / "model_config.yaml").exists() or (p / "docker-compose.local.yml").exists():
+            return p
+    return Path.cwd().resolve()
+
+
 class Settings(BaseSettings):
     """NewsLens-AI application settings.
 
@@ -148,7 +204,7 @@ class Settings(BaseSettings):
     testing: bool = False
 
     # --- Model config file path ---
-    model_config_path: str = "../model_config.yaml"
+    model_config_path: str = "model_config.yaml"
 
     # --- MySQL ---
     mysql_host: str = "localhost"
@@ -239,28 +295,47 @@ class Settings(BaseSettings):
         return RedisSettings(url=self.redis_url)
 
     def load_model_config(self) -> ModelConfig:
-        """Load and parse model_config.yaml. Returns empty ModelConfig if file not found.
-
-        The result is cached after the first call.
-        """
+        """Load and parse model_config.yaml with robust root discovery and default fallbacks."""
         if self._model_config_data is not None:
             return self._model_config_data
 
-        path = Path(self.model_config_path)
-        if not path.exists():
-            empty = ModelConfig()
-            object.__setattr__(self, "_model_config_data", empty)
-            return empty
+        candidate_paths: list[Path] = []
+        if self.model_config_path:
+            candidate_paths.append(Path(self.model_config_path))
 
-        with path.open(encoding="utf-8") as f:
-            raw: dict[str, Any] = yaml.safe_load(f) or {}
+        root = find_project_root()
+        candidate_paths.extend([
+            root / "model_config.yaml",
+            Path.cwd() / "model_config.yaml",
+            Path.cwd() / "../model_config.yaml",
+        ])
 
-        config = ModelConfig(
-            providers={
+        found_path: Path | None = None
+        for p in candidate_paths:
+            try:
+                resolved = p.resolve()
+                if resolved.is_file() and resolved.exists():
+                    found_path = resolved
+                    break
+            except Exception:
+                continue
+
+        if found_path:
+            with found_path.open(encoding="utf-8") as f:
+                raw: dict[str, Any] = yaml.safe_load(f) or {}
+            providers = {
                 k: ProviderConfig(**v)
                 for k, v in raw.get("providers", {}).items()
-            },
-            task_bindings=raw.get("task_bindings", {}),
+                if isinstance(v, dict)
+            }
+            task_bindings = dict(raw.get("task_bindings", {}))
+        else:
+            providers = dict(DEFAULT_PROVIDERS)
+            task_bindings = dict(DEFAULT_TASK_BINDINGS)
+
+        config = ModelConfig(
+            providers=providers,
+            task_bindings=task_bindings,
         )
         object.__setattr__(self, "_model_config_data", config)
         return config

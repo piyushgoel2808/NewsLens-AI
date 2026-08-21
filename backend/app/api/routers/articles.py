@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.article import Article
 from app.models.base import get_db
+from app.models.newspaper import Issue
 
 router = APIRouter(prefix="/api", tags=["articles"])
 
@@ -27,7 +28,8 @@ async def get_article_details(
             selectinload(Article.article_pages),
             selectinload(Article.photos),
             selectinload(Article.tables),
-            selectinload(Article.issue),
+            selectinload(Article.chunks),
+            selectinload(Article.issue).selectinload(Issue.newspaper),
         )
     )
     res = await db.execute(stmt)
@@ -35,11 +37,28 @@ async def get_article_details(
     if not article:
         raise HTTPException(status_code=404, detail=f"Article {article_id} not found.")
 
+    chunks_data = [
+        {
+            "id": c.id,
+            "chunk_index": c.chunk_index,
+            "text": c.text,
+            "token_count": c.token_count,
+            "embedding_vector_id": c.embedding_vector_id,
+        }
+        for c in sorted(article.chunks, key=lambda x: x.chunk_index)
+    ]
+
     return {
         "id": article.id,
         "issue_id": article.issue_id,
+        "newspaper_name": (
+            article.issue.newspaper.name
+            if article.issue and article.issue.newspaper
+            else "Unknown"
+        ),
+        "issue_date": str(article.issue.issue_date) if article.issue else "",
         "primary_page_id": article.primary_page_id,
-        "headline": article.headline,
+        "headline": article.headline or "Untitled",
         "subheadline": article.subheadline,
         "byline_author": article.byline_author,
         "section": article.section,
@@ -58,6 +77,7 @@ async def get_article_details(
             }
             for ap in sorted(article.article_pages, key=lambda x: x.block_order)
         ],
+        "chunks": chunks_data,
         "photos": [
             {
                 "id": ph.id,
