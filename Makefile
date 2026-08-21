@@ -76,6 +76,9 @@ verify-phase1: ## Run Phase 1 end-to-end ingestion pipeline verification
 verify-phase2: ## Run Phase 2 OCR & layout extraction pipeline verification
 	uv run --project backend python scripts/verify_phase2.py
 
+verify-phase3: ## Run Phase 3 article segmentation & cross-page assembly verification
+	uv run --project backend python scripts/verify_phase3.py
+
 # --- Ollama model management ---
 
 pull-models: ## Pull required Ollama models (run once after 'make up')

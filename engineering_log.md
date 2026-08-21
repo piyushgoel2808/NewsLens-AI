@@ -189,6 +189,48 @@ Rationale: PyMuPDF bounding boxes are in points (0..600), while rasterized image
 
 ---
 
-*Next phase: Phase 3 — Ingestion: Article Segmentation, Cross-Page Assembly, Type Classification*
+## Phase 3 — Ingestion: Article Segmentation, Cross-Page Assembly & Classification
+
+**Date**: 2026-08-21  
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make verify-phase3` (`python scripts/verify_phase3.py`):
+  - Cross-page continuation and jump line stitching verified across multiple pages.
+  - End-to-end multi-page issue ingestion and MySQL persistence verified (articles created and `article_pages` junction rows populated).
+  - Real Indian newspaper dataset (`demo/BS English Delhi ³⁰⁰⁷²⁰²⁶.pdf`) verified: real multi-column layouts, financial disclosures, and story segmentation processed in 1550ms.
+  - FastAPI article inspection REST API verified: `GET /api/issues/{id}/articles` and `GET /api/articles/{id}` (19ms).
+- `make test` (`pytest tests/ -v`) — **71/71 tests passing in 1.12s**.
+- `make lint` (`ruff check .` + `mypy app/`) — **0 errors across 47 source files**.
+
+### Files Created / Modified
+
+| File | Purpose |
+|------|---------|
+| `backend/app/ingestion/segmenter.py` | Article boundary segmenter clustering 1D reading order blocks into discrete article units, detecting bylines, and extracting jump references |
+| `backend/app/ingestion/cross_page_assembler.py` | Multi-page story continuation assembler stitching disjoint article fragments across pages with exact bounding box sequence mappings |
+| `backend/app/ingestion/classifier.py` | 8-tier article type classifier (`news`, `editorial`, `sidebar`, `advertisement`, `photo_caption`, `table_content`, `continuation`, `unknown`) and prominence scorer (0.0 to 1.0) |
+| `backend/app/ingestion/media_extractor.py` | Cropping service for photo regions to MinIO and structured table metadata records in MySQL |
+| `backend/app/api/routers/articles.py` | FastAPI router for querying detailed article text, media assets, and issue article summaries |
+| `backend/app/ingestion/tasks.py` | Extended ingestion pipeline coordinating intake, rasterization, OCR, layout analysis, segmentation, assembly, and MySQL persistence |
+| `backend/app/api/main.py` | Registered `articles_router` |
+| `scripts/verify_phase3.py` | End-to-end verification script testing synthetic issues and real newspaper fixtures from `demo/` |
+| `backend/tests/test_segmenter.py` | Unit tests for single-page multi-article boundary clustering and jump line extraction |
+| `backend/tests/test_cross_page.py` | Unit tests for multi-page story continuation stitching |
+| `backend/tests/test_classifier.py` | Unit tests for 8-tier article classification and prominence scoring |
+
+### Key Decisions and Rationale
+
+#### Continuation Token Jaccard + Page Anchor Matching
+Rationale: Real newspapers frequently continue stories on subsequent pages using jump lines (*"Continued on Page 4"*) and repeated keyword headlines (*"TAX BILL (Continued from Page 1)"*). Combining explicit target page indexing with token Jaccard similarity enables robust cross-page assembly even when OCR or wording has minor variations.
+
+#### Multi-Factor Prominence Scoring
+Rationale: In newspaper intelligence retrieval, frontpage articles, lead banner stories, and in-depth investigative reports must rank higher for broad queries than small classified ads or photo captions. The prominence score (0.05 to 1.0) combines page location, headline scale, and word count.
+
+---
+
+*Next phase: Phase 4 — Ingestion: Metadata Extraction, Embedding, Vector & Full-Text Indexing*
+
 
 

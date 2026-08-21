@@ -10,10 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ingestion.celery_app import celery_app
+from app.ingestion.classifier import ArticleClassifier
+from app.ingestion.cross_page_assembler import CrossPageAssembler
 from app.ingestion.detector import PDFPageDetector
 from app.ingestion.layout_analyzer import LayoutAnalyzer
 from app.ingestion.ocr_service import OCRService
 from app.ingestion.rasterizer import PDFRasterizer
+from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
+from app.models.article import Article, ArticlePage
 from app.models.newspaper import Issue, Page
 from app.providers.base import OCRBlock
 from app.storage.minio_store import MinioStore
@@ -63,6 +67,7 @@ async def run_ingestion_pipeline(
         layout_analyzer = LayoutAnalyzer()
 
         pages_summary: list[dict[str, Any]] = []
+        all_pages_articles: dict[int, list[SegmentedArticle]] = {}
 
         # Fetch issue upfront
         issue_stmt = select(Issue).where(Issue.id == issue_id)
@@ -112,7 +117,15 @@ async def run_ingestion_pipeline(
                 ocr_blocks=extracted_ocr_blocks if analysis.requires_ocr else None,
             )
 
-            page.ingestion_status = "layout_done"
+            # Store page layout reading blocks for segmentation
+            segmenter = ArticleSegmenter()
+            page_articles = segmenter.segment_page(
+                page_number=page_num,
+                ordered_blocks=layout_res.reading_order,
+            )
+            all_pages_articles[page_num] = page_articles
+
+            page.ingestion_status = "segmented"
 
             pages_summary.append(
                 {
@@ -127,6 +140,69 @@ async def run_ingestion_pipeline(
                     "layout_elements": len(layout_res.elements),
                     "reading_blocks": len(layout_res.reading_order),
                     "layout_source": layout_res.source,
+                    "articles_count": len(page_articles),
+                }
+            )
+
+        # Step 5: Cross-Page Assembly
+        assembler = CrossPageAssembler()
+        assembled_articles = assembler.assemble_issue_articles(all_pages_articles)
+
+        # Step 6: Classification & MySQL Database Persistence
+        classifier = ArticleClassifier()
+        page_id_map: dict[int, int] = {}
+        pages_fetch = await db.execute(select(Page).where(Page.issue_id == issue_id))
+        for p in pages_fetch.scalars().all():
+            page_id_map[p.page_number] = p.id
+
+        created_articles: list[dict[str, Any]] = []
+
+        for assembled in assembled_articles:
+            class_res = classifier.classify_and_score(
+                article=assembled,
+                total_issue_pages=len(rendered_pages),
+            )
+
+            primary_page_id = page_id_map.get(assembled.primary_page_number)
+
+            clean_hl = (assembled.headline or "")[:1024]
+            article_record = Article(
+                issue_id=issue_id,
+                primary_page_id=primary_page_id,
+                headline=clean_hl if clean_hl else "Untitled Article",
+                subheadline=assembled.subheadline[:1024] if assembled.subheadline else None,
+                byline_author=assembled.byline_author[:512] if assembled.byline_author else None,
+                section=class_res.section[:255] if class_res.section else None,
+                article_type=class_res.article_type,
+                language=issue_lang,
+                prominence_score=class_res.prominence_score,
+                word_count=assembled.word_count,
+                full_text=assembled.full_text,
+            )
+            db.add(article_record)
+            await db.flush()
+
+            # Insert junction table article_pages
+            for p_map in assembled.pages_mapping:
+                target_pid = page_id_map.get(p_map.page_number)
+                if target_pid:
+                    art_page = ArticlePage(
+                        article_id=article_record.id,
+                        page_id=target_pid,
+                        page_number=p_map.page_number,
+                        bbox_json={"bboxes": [list(b) for b in p_map.bbox_list]},
+                        block_order=p_map.block_order,
+                    )
+                    db.add(art_page)
+
+            created_articles.append(
+                {
+                    "id": article_record.id,
+                    "headline": article_record.headline,
+                    "type": article_record.article_type,
+                    "prominence_score": article_record.prominence_score,
+                    "word_count": article_record.word_count,
+                    "pages_spanned": [pm.page_number for pm in assembled.pages_mapping],
                 }
             )
 
@@ -135,15 +211,16 @@ async def run_ingestion_pipeline(
         issue_res = await db.execute(issue_stmt)
         issue = issue_res.scalar_one_or_none()
         if issue:
-            issue.ingestion_status = "ready_for_segmentation"
+            issue.ingestion_status = "segmented"
 
         await db.commit()
 
         logger.info(
-            "Phase 2 ingestion pipeline completed successfully",
+            "Phase 3 ingestion pipeline completed successfully",
             extra={
                 "issue_id": issue_id,
                 "rendered_pages": len(rendered_pages),
+                "articles_created": len(created_articles),
             },
         )
 
@@ -151,6 +228,7 @@ async def run_ingestion_pipeline(
             "issue_id": issue_id,
             "total_pages": len(rendered_pages),
             "pages": pages_summary,
+            "articles": created_articles,
         }
 
 

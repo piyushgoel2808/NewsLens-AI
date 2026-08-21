@@ -1,0 +1,113 @@
+"""FastAPI router for Article queries and inspection."""
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.models.article import Article
+from app.models.base import get_db
+
+router = APIRouter(prefix="/api", tags=["articles"])
+
+
+@router.get("/articles/{article_id}", summary="Get detailed article with photos, tables, and pages")
+async def get_article_details(
+    article_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Retrieve full article text, metadata, page bounding boxes, and media assets."""
+    stmt = (
+        select(Article)
+        .where(Article.id == article_id)
+        .options(
+            selectinload(Article.article_pages),
+            selectinload(Article.photos),
+            selectinload(Article.tables),
+            selectinload(Article.issue),
+        )
+    )
+    res = await db.execute(stmt)
+    article = res.scalar_one_or_none()
+    if not article:
+        raise HTTPException(status_code=404, detail=f"Article {article_id} not found.")
+
+    return {
+        "id": article.id,
+        "issue_id": article.issue_id,
+        "primary_page_id": article.primary_page_id,
+        "headline": article.headline,
+        "subheadline": article.subheadline,
+        "byline_author": article.byline_author,
+        "section": article.section,
+        "article_type": article.article_type,
+        "language": article.language,
+        "prominence_score": article.prominence_score,
+        "word_count": article.word_count,
+        "summary": article.summary,
+        "full_text": article.full_text,
+        "pages": [
+            {
+                "page_id": ap.page_id,
+                "page_number": ap.page_number,
+                "bbox_json": ap.bbox_json,
+                "block_order": ap.block_order,
+            }
+            for ap in sorted(article.article_pages, key=lambda x: x.block_order)
+        ],
+        "photos": [
+            {
+                "id": ph.id,
+                "caption": ph.caption,
+                "object_key": ph.object_key,
+                "bbox_json": ph.bbox_json,
+            }
+            for ph in article.photos
+        ],
+        "tables": [
+            {
+                "id": tb.id,
+                "object_key": tb.object_key,
+                "extracted_json": tb.extracted_json,
+                "bbox_json": tb.bbox_json,
+            }
+            for tb in article.tables
+        ],
+    }
+
+
+@router.get(
+    "/issues/{issue_id}/articles",
+    summary="List all articles in an issue ordered by prominence",
+)
+async def list_issue_articles(
+    issue_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List all articles in an issue sorted by prominence score."""
+    stmt = (
+        select(Article)
+        .where(Article.issue_id == issue_id)
+        .order_by(desc(Article.prominence_score))
+        .options(selectinload(Article.article_pages))
+    )
+    res = await db.execute(stmt)
+    articles = res.scalars().all()
+
+    return [
+        {
+            "id": a.id,
+            "headline": a.headline,
+            "subheadline": a.subheadline,
+            "byline_author": a.byline_author,
+            "section": a.section,
+            "article_type": a.article_type,
+            "prominence_score": a.prominence_score,
+            "word_count": a.word_count,
+            "pages_spanned": [ap.page_number for ap in a.article_pages],
+        }
+        for a in articles
+    ]
