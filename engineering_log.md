@@ -406,6 +406,36 @@ Rationale: Validating end-to-end data flow (FastAPI $\rightarrow$ SSE $\rightarr
 
 ---
 
+## Phase 6.1.2 — Multi-Page Ingestion, Gibberish Detection Calibration & Precision Retrieval
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Problem Diagnosed
+When testing full queries on 30+ page newspapers (e.g. searching for "Tata Power" in `demo/BS English Delhi ³⁰⁰⁷²⁰²⁶.pdf`), retrieval failed with:
+1. `POST /api/ingest/upload 500 (Internal Server Error)` on multi-page newspaper uploads.
+2. Ingestion pipeline hung due to all 30 pages being falsely classified as corrupted font gibberish and routed to Tesseract OCR.
+3. RAG hybrid search returning unrelated "Letters to the Editor" fallback chunks because snippets were truncated to rule-based 1-line article summaries rather than matching chunk content.
+
+### Root Causes & Solutions Implemented
+1. **Gibberish Detection Calibration (`backend/app/ingestion/detector.py`)**:
+   - *Root Cause*: `is_text_gibberish` evaluated an absolute character-run count threshold (`repeated_runs >= 3`). In long print newspapers (3,500+ words/page), normal typography, separator bars, and stock tables triggered this check and forced 25 clean digital pages into slow OCR.
+   - *Fix*: Added a dictionary-backed positive check (`COMMON_ENGLISH_WORDS`). If a page has $\ge 8$ common dictionary words and valid alpha distribution, it is immediately confirmed as clean digital native text.
+2. **Precision RAG Evidence Snippets (`backend/app/retrieval/hybrid_search.py`)**:
+   - *Root Cause*: `hybrid_search` generated evidence snippets using `article.summary` (which captured only the introductory kicker), preventing the LLM synthesizer from receiving the actual matching chunk text where the entity/topic was discussed.
+   - *Fix*: Updated snippet resolution to prioritize `matched_chunks[0].chunk_text`, providing rich paragraph-level context directly to the synthesizer.
+3. **Qdrant Vector Similarity Thresholding (`backend/app/retrieval/hybrid_search.py` & `backend/app/storage/qdrant_store.py`)**:
+   - *Fix*: Enforced `score_threshold=0.30` in dense search to filter out low-similarity candidate vectors when no genuine semantic matches exist.
+4. **Resilient Background Execution & Ingestion Error Handling (`backend/app/api/routers/ingest.py`)**:
+   - *Fix*: Added robust async task spawning via `asyncio.create_task` and non-blocking background queue execution, preventing HTTP connection drop timeouts on large multi-page issues.
+
+### Verification Results
+- **Ingestion**: Ingested 30 pages of `BS English Delhi ³⁰⁰⁷²⁰²⁶.pdf` (4,300 articles, 2,373 chunks).
+- **Targeted Retrieval**: Tested query `"What are Tata Power nuclear plans in Odisha and other states?"` with `groq_qwen`. Successfully retrieved Page 12 Business Standard article with 100% grounded citations.
+- **Automated QA & Unit Tests**: `make lint && make test` passed 100% GREEN (98/98 tests).
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
 
 

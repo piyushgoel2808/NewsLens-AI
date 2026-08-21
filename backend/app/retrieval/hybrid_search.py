@@ -116,6 +116,7 @@ class HybridSearchEngine:
             query_vector=query_vector,
             top_k=top_k * 3,  # Fetch more for reciprocal fusion
             filters=search_filters_dict if search_filters_dict else None,
+            score_threshold=0.30,
         )
 
         # 2. Run FULLTEXT Search (Sparse)
@@ -221,8 +222,18 @@ class HybridSearchEngine:
                 else []
             )
 
-            # Snippet: summary or lead paragraph
-            snippet = article.summary or (article.full_text[:300] if article.full_text else "")
+            # Snippet: prefer matched chunk text for maximal grounding precision
+            snippet = ""
+            if score_info["chunks"]:
+                chunk_texts = [
+                    c.get("chunk_text") or c.get("raw_text") or ""
+                    for c in score_info["chunks"]
+                    if (c.get("chunk_text") or c.get("raw_text"))
+                ]
+                snippet = "\n\n".join(chunk_texts[:2]) if chunk_texts else ""
+
+            if not snippet:
+                snippet = article.summary or (article.full_text[:500] if article.full_text else "")
 
             final_results.append(
                 HybridSearchResult(

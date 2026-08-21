@@ -25,15 +25,62 @@ logger = get_logger(__name__)
 # Minimum characters on a page to qualify as having a usable digital text layer
 MIN_DIGITAL_CHARS_THRESHOLD = 80
 
+COMMON_ENGLISH_WORDS = frozenset(
+    {
+        "the",
+        "and",
+        "in",
+        "to",
+        "of",
+        "for",
+        "is",
+        "on",
+        "that",
+        "by",
+        "with",
+        "as",
+        "said",
+        "from",
+        "at",
+        "it",
+        "be",
+        "an",
+        "have",
+        "has",
+        "was",
+        "were",
+        "not",
+        "market",
+        "company",
+        "crore",
+        "bank",
+        "india",
+        "delhi",
+        "year",
+        "per",
+        "cent",
+        "power",
+        "business",
+        "growth",
+        "share",
+        "new",
+        "government",
+        "policy",
+        "report",
+    }
+)
+
 
 def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
     """Check if extracted text is corrupt/gibberish due to missing/broken ToUnicode font CMap.
 
     Heuristics:
-    1. Count replacement characters (\ufffd, \ufeff) and unprintable control / private-use codes.
-    2. Check for single character dominance (e.g. font mapping bug where all glyphs become 'b').
-    3. Check for repeated character runs of 4+ identical non-punctuation characters.
-    4. Check word validity ratio (words that are absurdly long or single-char repetitions).
+    1. Positive Check: If text contains sufficient recognizable common English words,
+       it is valid digital text (not gibberish).
+    2. Count replacement characters (\\ufffd, \\ufeff) and unprintable control / private-use codes.
+    3. Check for single character dominance (e.g. font mapping bug where all glyphs become 'b').
+    4. Check for repeated character runs relative to document size.
+    5. Check word validity ratio.
     """
     if not text or not text.strip():
         return False
@@ -41,13 +88,15 @@ def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
     if len(cleaned) < 50:
         return False
 
+    words_list = re.findall(r"\b[a-z]{2,}\b", text.lower())
+    common_matches = len(set(words_list).intersection(COMMON_ENGLISH_WORDS))
+
     # 1. Count replacement characters and unprintable control / private-use codes
     bad_chars = sum(
         1
         for c in cleaned
         if c in ("\ufffd", "\ufeff")
-        or unicodedata.category(c).startswith(("C", "Co"))
-        or (c == "?" and len(cleaned) > 100)
+        or unicodedata.category(c) in ("Cc", "Cs", "Co")
     )
 
     if (bad_chars / len(cleaned)) >= threshold:
@@ -56,26 +105,33 @@ def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
     # 2. Check for single character dominance (e.g. font mapping bug where all glyphs become 'b')
     counts = Counter(cleaned.lower())
     most_common_char, most_common_count = counts.most_common(1)[0]
-    if most_common_char not in ("-", "_", ".", "=", "*", "/") and (
-        most_common_count / len(cleaned)
-    ) >= 0.20:
+    if (
+        most_common_char not in ("-", "_", ".", "=", "*", "/", " ")
+        and (most_common_count / len(cleaned)) >= 0.25
+        and common_matches < 5
+    ):
         return True
 
-    # 3. Check for repeated character runs (e.g. 'bbbbbbbb')
-    repeated_runs = len(re.findall(r"([^0-9\s\.\-_=\/])\1{4,}", text, re.IGNORECASE))
-    if repeated_runs >= 3:
+    # 3. If page contains high number of common dictionary words, it is valid digital text
+    if common_matches >= 8 and len(words_list) >= 20:
+        return False
+
+    # 4. Check for repeated character runs relative to document size (e.g. 'bbbbbbbb')
+    repeated_matches = re.findall(r"([a-z])\1{4,}", text.lower())
+    if len(repeated_matches) >= 3 and common_matches < 5:
         return True
 
-    # 4. Check word validity ratio (words that are absurdly long or single-char repetitions)
+    # 5. Check word validity ratio
     words = [w for w in text.split() if w.strip()]
-    if words:
+    if words and len(words) >= 10:
         gibberish_words = sum(
             1 for w in words if len(w) > 35 or (len(set(w.lower())) == 1 and len(w) >= 5)
         )
-        if (gibberish_words / len(words)) >= 0.15:
+        if (gibberish_words / len(words)) >= 0.25 and common_matches < 5:
             return True
 
     return False
+
 
 
 class PageType(StrEnum):

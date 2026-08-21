@@ -1,6 +1,7 @@
 """FastAPI Ingestion Router for NewsLens-AI."""
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Any
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
 from app.ingestion.intake import IntakeService
-from app.ingestion.tasks import process_issue_ingestion_task, run_ingestion_pipeline
+from app.ingestion.tasks import run_ingestion_pipeline
 from app.models.base import get_db
 from app.models.ingestion import IngestionJob
 from app.models.newspaper import Page
@@ -66,10 +67,22 @@ async def upload_newspaper_document(
     if filename.lower().endswith(".pdf") and intake_res.issues_created:
         for issue_id in intake_res.issues_created:
             if sync_processing:
-                res = await run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=content)
-                pipeline_results.append(res)
+                try:
+                    res = await run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=content)
+                    pipeline_results.append(res)
+                except Exception as e:
+                    logger.error(
+                        "Sync pipeline execution failed",
+                        extra={"issue_id": issue_id, "error": str(e)},
+                    )
+                    pipeline_results.append(
+                        {"issue_id": issue_id, "error": str(e), "status": "failed"}
+                    )
             else:
-                process_issue_ingestion_task.delay(issue_id=issue_id, pdf_bytes=content)
+                asyncio.create_task(run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=content))
+                pipeline_results.append(
+                    {"issue_id": issue_id, "status": "processing_in_background"}
+                )
 
     return {
         "message": "Upload processed successfully",
