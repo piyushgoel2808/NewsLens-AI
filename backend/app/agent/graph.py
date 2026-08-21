@@ -225,11 +225,13 @@ class AgentWorkflow:
         query = state["query"]
         archetype = state.get("archetype", "factual_lookup")
         evidence = state.get("evidence_items", [])
+        model_override = state.get("model_override")
 
         answer, citations, cost_usd = await self._synthesizer.synthesize(
             query=query,
             archetype=archetype,
             evidence_items=evidence,
+            model_override=model_override,
         )
 
         return {
@@ -257,7 +259,12 @@ class AgentWorkflow:
 
         return {}
 
-    async def run(self, query: str, user_id: str | None = None) -> AgentState:
+    async def run(
+        self,
+        query: str,
+        user_id: str | None = None,
+        model_override: str | None = None,
+    ) -> AgentState:
         """Execute the complete agentic query cycle."""
         t0 = time.monotonic()
         initial_state: AgentState = {
@@ -271,6 +278,7 @@ class AgentWorkflow:
             "cost_usd": 0.0,
             "latency_ms": 0,
             "user_id": user_id,
+            "model_override": model_override,
             "error": None,
         }
 

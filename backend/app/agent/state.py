@@ -37,4 +37,5 @@ class AgentState(TypedDict):
     cost_usd: float
     latency_ms: int
     user_id: str | None
+    model_override: str | None
     error: str | None

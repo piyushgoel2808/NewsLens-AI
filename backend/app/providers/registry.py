@@ -123,6 +123,14 @@ class ModelRegistry:
         )
         return instance
 
+    def get_provider_by_id(self, provider_id: str) -> AnyProvider:
+        """Return a provider directly by its configured provider ID."""
+        if provider_id in self._instances:
+            return self._instances[provider_id]
+        instance = self._instantiate(provider_id)
+        self._instances[provider_id] = instance
+        return instance
+
     def invalidate_task(self, task: str) -> None:
         """Reload configuration for the specified task."""
         self._model_config = self._settings.load_model_config()

@@ -30,18 +30,21 @@ class AnswerSynthesizer:
     def __init__(self, provider: ChatModelProvider | None = None) -> None:
         self._provider = provider
 
-    def _get_provider(self) -> ChatModelProvider | None:
-        if self._provider:
+    def _get_provider(self, model_override: str | None = None) -> ChatModelProvider | None:
+        if self._provider and not model_override:
             return self._provider
         try:
             registry = get_registry()
-            provider = registry.get_provider("answerer")
+            if model_override:
+                provider = registry.get_provider_by_id(model_override)
+            else:
+                provider = registry.get_provider("answerer")
             if isinstance(provider, ChatModelProvider):
                 return provider
         except Exception as e:
             logger.warning(
                 "Could not load LLM answerer provider, using deterministic fallback",
-                extra={"error": str(e)},
+                extra={"error": str(e), "override": model_override},
             )
         return None
 
@@ -105,13 +108,14 @@ class AnswerSynthesizer:
         query: str,
         archetype: str,
         evidence_items: list[dict[str, Any]],
+        model_override: str | None = None,
     ) -> tuple[str, list[AgentCitation], float]:
         """Synthesize answer with citations from evidence."""
         if not evidence_items:
             empty_msg = f"No relevant newspaper articles found for query: '{query}'."
             return empty_msg, [], 0.0
 
-        provider = self._get_provider()
+        provider = self._get_provider(model_override=model_override)
         citations = self.extract_citations("", evidence_items)
         context = self._build_evidence_context(evidence_items)
 
@@ -153,13 +157,14 @@ class AnswerSynthesizer:
         query: str,
         archetype: str,
         evidence_items: list[dict[str, Any]],
+        model_override: str | None = None,
     ) -> AsyncIterator[str]:
         """Stream synthesized answer token by token."""
         if not evidence_items:
             yield f"No relevant newspaper articles found for query: '{query}'."
             return
 
-        provider = self._get_provider()
+        provider = self._get_provider(model_override=model_override)
         context = self._build_evidence_context(evidence_items)
         user_prompt = (
             f"User Research Query: {query}\n"

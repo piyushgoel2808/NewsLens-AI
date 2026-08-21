@@ -22,6 +22,10 @@ class QueryRequest(BaseModel):
 
     query: str = Field(..., description="The user's research query", min_length=2)
     user_id: str | None = Field(None, description="Optional identifier of the user")
+    model_override: str | None = Field(
+        None,
+        description="Optional model provider override (e.g. groq_llama, ollama_chat)",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -45,7 +49,11 @@ async def execute_query(
     """Execute the multi-stage LangGraph query workflow."""
     factory = get_session_factory()
     workflow = AgentWorkflow(session_factory=factory)
-    result = await workflow.run(query=request.query, user_id=request.user_id)
+    result = await workflow.run(
+        query=request.query,
+        user_id=request.user_id,
+        model_override=request.model_override,
+    )
 
     citations_list: list[dict[str, Any]] = [dict(c) for c in result.get("citations", [])]
     tools_list: list[dict[str, Any]] = [dict(t) for t in result.get("tool_executions", [])]
@@ -102,6 +110,7 @@ async def stream_query(
                 "cost_usd": 0.0,
                 "latency_ms": 0,
                 "user_id": request.user_id,
+                "model_override": request.model_override,
                 "error": None,
             }
         )
@@ -117,6 +126,7 @@ async def stream_query(
             query=query,
             archetype=plan_res.archetype,
             evidence_items=evidence,
+            model_override=request.model_override,
         ):
             full_text_chunks.append(chunk)
             yield f"event: token\ndata: {json.dumps({'delta': chunk})}\n\n"

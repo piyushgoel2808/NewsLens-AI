@@ -10,6 +10,9 @@ and reading order candidates for downstream article assembly.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -21,6 +24,58 @@ logger = get_logger(__name__)
 
 # Minimum characters on a page to qualify as having a usable digital text layer
 MIN_DIGITAL_CHARS_THRESHOLD = 80
+
+
+def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
+    """Check if extracted text is corrupt/gibberish due to missing/broken ToUnicode font CMap.
+
+    Heuristics:
+    1. Count replacement characters (\ufffd, \ufeff) and unprintable control / private-use codes.
+    2. Check for single character dominance (e.g. font mapping bug where all glyphs become 'b').
+    3. Check for repeated character runs of 4+ identical non-punctuation characters.
+    4. Check word validity ratio (words that are absurdly long or single-char repetitions).
+    """
+    if not text or not text.strip():
+        return False
+    cleaned = re.sub(r"[\s\n\r\t]+", "", text)
+    if len(cleaned) < 50:
+        return False
+
+    # 1. Count replacement characters and unprintable control / private-use codes
+    bad_chars = sum(
+        1
+        for c in cleaned
+        if c in ("\ufffd", "\ufeff")
+        or unicodedata.category(c).startswith(("C", "Co"))
+        or (c == "?" and len(cleaned) > 100)
+    )
+
+    if (bad_chars / len(cleaned)) >= threshold:
+        return True
+
+    # 2. Check for single character dominance (e.g. font mapping bug where all glyphs become 'b')
+    counts = Counter(cleaned.lower())
+    most_common_char, most_common_count = counts.most_common(1)[0]
+    if most_common_char not in ("-", "_", ".", "=", "*", "/") and (
+        most_common_count / len(cleaned)
+    ) >= 0.20:
+        return True
+
+    # 3. Check for repeated character runs (e.g. 'bbbbbbbb')
+    repeated_runs = len(re.findall(r"([^0-9\s\.\-_=\/])\1{4,}", text, re.IGNORECASE))
+    if repeated_runs >= 3:
+        return True
+
+    # 4. Check word validity ratio (words that are absurdly long or single-char repetitions)
+    words = [w for w in text.split() if w.strip()]
+    if words:
+        gibberish_words = sum(
+            1 for w in words if len(w) > 35 or (len(set(w.lower())) == 1 and len(w) >= 5)
+        )
+        if (gibberish_words / len(words)) >= 0.15:
+            return True
+
+    return False
 
 
 class PageType(StrEnum):
@@ -186,6 +241,14 @@ class PDFPageDetector:
         if char_count < MIN_DIGITAL_CHARS_THRESHOLD:
             page_type = PageType.SCANNED
             requires_ocr = True
+        elif is_text_gibberish(raw_text):
+            page_type = PageType.SCANNED
+            requires_ocr = True
+            blocks = []
+            logger.warning(
+                "Page text flagged as corrupted font gibberish; routing to OCR fallback",
+                extra={"page_number": page_num, "char_count": char_count},
+            )
         elif image_count > 0 and char_count >= MIN_DIGITAL_CHARS_THRESHOLD:
             page_type = PageType.HYBRID
             requires_ocr = False
