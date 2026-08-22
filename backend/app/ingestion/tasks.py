@@ -457,33 +457,34 @@ async def run_ingestion_pipeline(
         identified_advertisements: list[dict[str, Any]] = []
         total_chunks_created = 0
 
-        from app.ingestion.segmenter import is_valid_headline_candidate
-
         for assembled in assembled_articles:
             class_res = classifier.classify_and_score(
                 article=assembled,
                 total_issue_pages=len(rendered_pages),
             )
 
-            is_ad = class_res.article_type == "advertisement" or assembled.headline.startswith(
-                ("[Advertisement]", "[Public Notice]")
+            is_ad = (
+                class_res.article_type == "advertisement"
+                or assembled.headline.startswith(("[Advertisement]", "[Public Notice]"))
+                or check_is_advertisement_text(assembled.full_text)
             )
-            is_shorts = assembled.headline.startswith("[Shorts]") and assembled.word_count >= 15
-            is_substantial = (
-                is_valid_headline_candidate(assembled.headline)
-                and assembled.word_count >= 25
+            is_valid_teaser = bool(
+                assembled.headline.startswith("[Teaser]")
+                or (
+                    assembled.primary_page_number in (1, 2)
+                    and assembled.word_count >= 15
+                    and (
+                        "continued" in assembled.full_text.lower()
+                        or "see on page" in assembled.full_text.lower()
+                        or "see page" in assembled.full_text.lower()
+                    )
+                )
             )
 
-            # Drop sub-threshold fragments and section header stubs
-            is_keep_article = (
-                is_ad
-                or is_shorts
-                or is_substantial
-                or assembled.word_count >= 35
-            )
-            if not is_keep_article:
+            # Strict 40-Word Minimum Floor on all standard editorial news articles
+            if not (is_ad or is_valid_teaser) and assembled.word_count < 40:
                 logger.info(
-                    "Skipping persistence of sub-threshold fragment in tasks.py",
+                    "Purging sub-40-word article from final manifest",
                     extra={
                         "headline": assembled.headline[:60],
                         "word_count": assembled.word_count,

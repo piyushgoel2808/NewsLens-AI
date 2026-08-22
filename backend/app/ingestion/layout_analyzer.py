@@ -481,32 +481,31 @@ class LayoutAnalyzer:
         elems = list(elements)
         merged = True
 
+        from app.ingestion.detector import check_is_advertisement_text
+
         while merged:
             merged = False
             for i in range(len(elems)):
                 elem_a = elems[i]
-                is_heading_a = (
-                    elem_a.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
-                    or elem_a.font_size > 13.0
-                )
-                if not is_heading_a:
+                # Strictly require true headline block types
+                if elem_a.block_type not in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE):
+                    continue
+                if check_is_advertisement_text(elem_a.text):
                     continue
 
                 for j in range(len(elems)):
                     if i == j:
                         continue
                     elem_b = elems[j]
-                    is_heading_b = (
-                        elem_b.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
-                        or elem_b.font_size > 13.0
-                    )
-                    if not is_heading_b:
+                    if elem_b.block_type not in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE):
+                        continue
+                    if check_is_advertisement_text(elem_b.text):
                         continue
 
                     # Require A to be physically left of B
                     ax0, ay0, ax1, ay1 = elem_a.bbox
                     bx0, by0, bx1, by1 = elem_b.bbox
-                    if bx0 < ax0:
+                    if bx0 <= ax0:
                         continue
 
                     ha = max(ay1 - ay0, 1.0)
@@ -514,21 +513,21 @@ class LayoutAnalyzer:
                     min_h = min(ha, hb)
                     max_h = max(ha, hb)
 
-                    # 1. Horizontal Baseline and Vertical Overlap Alignment
+                    # 1. Strict Horizontal Baseline and Vertical Overlap Alignment (<= 10px)
                     baseline_diff = abs(ay0 - by0)
                     v_overlap = max(0.0, min(ay1, by1) - max(ay0, by0))
                     v_overlap_ratio = v_overlap / min_h
 
-                    # 2. X-axis gap (must be adjacent across columns)
+                    # 2. Strict X-axis gutter clamp (standard column gutter is 20-35px)
                     gap_x = bx0 - ax1
-                    max_gap_x = max(page_width * 0.08, 60.0)
+                    max_gap_x = max(page_width * 0.015, 35.0)
 
-                    # 3. Font similarity
+                    # 3. Strict Font similarity (<= 15% difference)
                     font_diff = abs(elem_a.font_size - elem_b.font_size) / max(
                         elem_a.font_size, elem_b.font_size, 1.0
                     )
 
-                    # Anti-collision check:
+                    # Anti-collision word checks:
                     words_a = elem_a.text.strip().split()
                     words_b = elem_b.text.strip().split()
                     if not words_a or not words_b:
@@ -549,9 +548,9 @@ class LayoutAnalyzer:
                     if not (is_open_a or is_open_b):
                         continue
 
-                    # If elem_a has >= 4 words and is not strictly open, do not merge
+                    # If elem_a has >= 3 words and is not strictly open, do not merge
                     if (
-                        len(words_a) >= 4
+                        len(words_a) >= 3
                         and words_a[-1].lower().strip(" \t\n\r.:;,") not in CONTINUATION_END_TOKENS
                         and not elem_a.text.rstrip().endswith((",", "-", "—"))
                     ):
@@ -560,16 +559,16 @@ class LayoutAnalyzer:
                     # If elem_b starts with uppercase and elem_a is not open, do not merge
                     if (
                         words_b[0][0].isupper()
-                        and not elem_a.text.rstrip().endswith((",", "-", "—", "...", ":"))
+                        and not elem_a.text.rstrip().endswith((",", "-", "—", "..."))
                         and words_a[-1].lower().strip(" \t\n\r.:;,") not in CONTINUATION_END_TOKENS
                     ):
                         continue
 
                     if (
-                        baseline_diff <= 0.25 * max_h
-                        and v_overlap_ratio >= 0.60
-                        and -10.0 <= gap_x <= max_gap_x
-                        and font_diff <= 0.25
+                        baseline_diff <= min(max_h * 0.15, 10.0)
+                        and v_overlap_ratio >= 0.75
+                        and -8.0 <= gap_x <= max_gap_x
+                        and font_diff <= 0.15
                     ):
                         # Merge A and B
                         elem_a.text = f"{elem_a.text} {elem_b.text}".strip()

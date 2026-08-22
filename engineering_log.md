@@ -896,7 +896,41 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.19 — Column Gutter Constraints, Ad-Bleed Barriers & Strict 40-Word Minimum Floor
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+
+1. **Intra-Line Word Clustering Clamp (`backend/app/providers/mineru_provider.py`)**:
+   - Fixed chain-reaction horizontal merging across column gutters: clamped `max_h_gap` to `min(max(min_h * 0.85, 15.0), 25.0)` (intra-word spacing) and quantized vertical sorting grid (`round(y0 / 12.0) * 12.0`).
+   - Prevents words across adjacent vertical columns from chain-merging into horizontal Frankenstein lines.
+
+2. **Strict Horizontal Headline Gutter & Anti-Collision Safeguards (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Replaced permissive horizontal lookahead with strictly clamped gutter threshold: `max_gap_x = max(page_width * 0.015, 35.0)` (standard broadsheet column gutter).
+   - Enforced strict vertical baseline alignment ($\le 10\text{px}$), font similarity tolerance ($\le 15\%$), and grammatical openness checks (`is_grammatically_open_headline_fragment`).
+   - Added advertisement barriers: blocks containing commercial keywords are prohibited from merging horizontally or vertically with editorial headlines.
+
+3. **Hybrid Ad-Page Partitioning (`backend/app/ingestion/segmenter.py`)**:
+   - Separated top editorial teasers/headlines (e.g. Page 1 top strip: `"Cognizant beats IT peers, cuts outlook"`) from lower jacket advertisement containers (`"JUNIPER GREEN ENERGY LIMITED"`).
+   - Prevents jacket ads from swallowing adjacent front-page editorial leads.
+
+4. **Strict 40-Word Floor Enforcement at Final Persistence Layer (`backend/app/ingestion/tasks.py`)**:
+   - Enforced the 40-word minimum floor at the absolute final persistence checkpoint prior to MySQL database insertion, vector generation, and debug artifact export.
+   - Any non-advertisement, non-teaser editorial item with $< 40$ words is permanently purged from `articles_manifest.json` and RAG vector store.
+
+### Verification & QA
+- `make lint && make test`: **167/167 tests passing 100% GREEN in 2.74s**.
+- Full pipeline run on `demo/Mint ³⁰⁰⁷²⁰²⁶.pdf`:
+  - `articles_manifest.json`: 13 clean, high-prominence articles/ads ($\ge 40$ words or verified ads), zero Frankenstein horizontal splices.
+  - `identified_advertisements.json`: 5 verified ads on Pages 1, 2, 3, 4, 11 with clean headlines (`[Advertisement] Green Energy`, `[Advertisement] MV Electrosystems Limited`).
+  - `ocr_extracted_text.json`: Fine-grained intra-line word grouping without gutter jumping.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

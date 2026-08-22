@@ -179,10 +179,38 @@ class ArticleSegmenter:
 
         # Pillar 2: Full-Page Advertisement / Notice Single-Unit Enveloping
         if is_advertisement_page:
-            text_blocks = [b for b in ordered_blocks if b.text and b.text.strip()]
-            if text_blocks:
-                combined_text = "\n\n".join(b.text.strip() for b in text_blocks)
-                first_line = combined_text.split("\n")[0][:150].strip()
+            from app.ingestion.detector import check_is_advertisement_text
+
+            ad_blocks: list[OrderedReadingBlock] = []
+            editorial_blocks: list[OrderedReadingBlock] = []
+
+            for b in ordered_blocks:
+                if not b.text or not b.text.strip():
+                    continue
+                # On Page 1, top region (< 850px) without ad keywords is editorial teaser/lead
+                is_top_editorial = (
+                    page_number == 1
+                    and b.bbox[1] < 850
+                    and not check_is_advertisement_text(b.text)
+                )
+                if is_top_editorial:
+                    editorial_blocks.append(b)
+                else:
+                    ad_blocks.append(b)
+
+            results: list[SegmentedArticle] = []
+            if ad_blocks:
+                combined_text = "\n\n".join(b.text.strip() for b in ad_blocks)
+                # Find first line that represents the primary ad title
+                first_line = ""
+                for b in ad_blocks:
+                    t = b.text.strip()
+                    if check_is_advertisement_text(t) or len(t.split()) >= 2:
+                        first_line = t.split("\n")[0][:120].strip()
+                        break
+                if not first_line:
+                    first_line = combined_text.split("\n")[0][:120].strip()
+
                 ad_hl = (
                     f"[Advertisement] {first_line}"
                     if not first_line.upper().startswith("[ADVERTISEMENT]")
@@ -193,14 +221,27 @@ class ArticleSegmenter:
                     headline=ad_hl,
                     body_text=combined_text,
                     word_count=len(combined_text.split()),
-                    bbox_list=[b.bbox for b in text_blocks],
-                    raw_blocks=text_blocks,
+                    bbox_list=[b.bbox for b in ad_blocks],
+                    raw_blocks=ad_blocks,
                 )
                 logger.info(
-                    "Page grouped as single advertisement article",
-                    extra={"page_number": page_number, "word_count": ad_art.word_count},
+                    "Page grouped advertisement unit",
+                    extra={
+                        "page_number": page_number,
+                        "word_count": ad_art.word_count,
+                        "headline": ad_hl,
+                    },
                 )
-                return [ad_art]
+                results.append(ad_art)
+
+            if editorial_blocks:
+                ed_articles = self.segment_page(
+                    page_number, editorial_blocks, is_advertisement_page=False
+                )
+                results.extend(ed_articles)
+
+            if results:
+                return results
 
         articles: list[SegmentedArticle] = []
         current_article: SegmentedArticle | None = None

@@ -529,8 +529,8 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
                 if not raw_items:
                     return None
 
-                # Sort raw items top-to-bottom, left-to-right
-                raw_items.sort(key=lambda b: (b.bbox[1], b.bbox[0]))
+                # Sort raw items top-to-bottom with 12px quantized vertical grid, left-to-right
+                raw_items.sort(key=lambda b: (round(b.bbox[1] / 12.0) * 12.0, b.bbox[0]))
 
                 # Line-level clustering: group horizontally adjacent word/phrase tokens
                 line_clusters: list[list[OCRBlock]] = []
@@ -549,17 +549,17 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
                         v_overlap_ratio = overlap_y / min_h if min_h > 0 else 0.0
 
                         is_same_horizontal_band = (
-                            v_overlap_ratio >= 0.45
-                            or abs(item.bbox[1] - c_y0) <= max(min_h * 0.5, 12.0)
+                            v_overlap_ratio >= 0.50
+                            or abs(item.bbox[1] - c_y0) <= max(min_h * 0.40, 8.0)
                         )
 
                         if is_same_horizontal_band:
-                            # Check horizontal proximity within line track (prevent gutter crossing)
+                            # Clamp horizontal gap to intra-word space (<= 25px)
                             c_x0 = min(b.bbox[0] for b in cluster)
                             c_x1 = max(b.bbox[2] for b in cluster)
                             overlap_x = max(0.0, min(item.bbox[2], c_x1) - max(item.bbox[0], c_x0))
                             gap_x = max(0.0, max(item.bbox[0] - c_x1, c_x0 - item.bbox[2]))
-                            max_h_gap = max(min_h * 2.8, 80.0)
+                            max_h_gap = min(max(min_h * 0.85, 15.0), 25.0)
 
                             if overlap_x > 0.0 or gap_x <= max_h_gap:
                                 matched_cluster = cluster
