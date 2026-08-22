@@ -1347,6 +1347,7 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 - `make lint`: **0 errors across 72 source files** (`ruff` + `mypy` strict).
 - `make test`: **217/217 tests passing 100% GREEN in 19.91s**.
 - `npm run build`: **Vite build succeeded with 0 errors**.
+- **Frontend runtime**: Defined `sanitizeAnswerText` and `extractFallbackThought` at top level in `AgentAssistant.jsx` ensuring hot reload and clean page mounting without `ReferenceError`.
 
 ---
 
