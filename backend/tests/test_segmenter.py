@@ -484,3 +484,157 @@ class TestArticleSegmenter:
         assert len(articles) == 2
         assert articles[0].headline == "At UNSC, India condemns attacks on vessels in Hormuz"
         assert articles[1].headline == "Private labs may get to test power meters"
+
+    def test_syndication_slug_rejected_as_headline_and_actual_headline_preserved(self) -> None:
+        """Verify syndication slugs like 'THE WALL STREET JOURNAL' do not become headlines."""
+        segmenter = ArticleSegmenter()
+        hl_text = "Trump approves landmark nuclear deal with Saudi Arabia in big win for kingdom"
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.BYLINE,
+                text="THE WALL STREET JOURNAL",
+                bbox=(50.0, 50.0, 300.0, 70.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BANNER_HEADLINE,
+                text=hl_text,
+                bbox=(50.0, 80.0, 950.0, 130.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=2,
+                element_id=3,
+                block_type=BlockType.BODY_TEXT,
+                text="By Felicia Schwartz in Washington and Summer Said in Dubai",
+                bbox=(50.0, 140.0, 500.0, 160.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=3,
+                element_id=4,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "President Trump has approved a historic civil nuclear cooperation pact "
+                    "with Saudi Arabia, marking a breakthrough in bilateral energy ties."
+                ),
+                bbox=(50.0, 170.0, 500.0, 350.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=8, ordered_blocks=blocks)
+        assert len(articles) == 1
+        art = articles[0]
+        assert art.headline == hl_text
+        assert "THE WALL STREET JOURNAL" in (art.byline_author or "")
+        assert "historic civil nuclear cooperation" in art.body_text
+
+    def test_mint_primer_grouped_into_single_article_with_all_questions(self) -> None:
+        """Verify multi-part 'mint primer' with Q1..Q5 is consolidated into 1 unified article."""
+        segmenter = ArticleSegmenter()
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.HEADLINE,
+                text="mint primer",
+                bbox=(50.0, 50.0, 200.0, 70.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BANNER_HEADLINE,
+                text="Can India mop up $50 bn via NRI deposit scheme?",
+                bbox=(50.0, 80.0, 950.0, 120.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=2,
+                element_id=3,
+                block_type=BlockType.SUBHEAD,
+                text="1 How does the RBI's swap facility work?",
+                bbox=(50.0, 130.0, 450.0, 150.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=3,
+                element_id=4,
+                block_type=BlockType.BODY_TEXT,
+                text="The Reserve Bank offers dollar-rupee buy-sell swap windows to banks.",
+                bbox=(50.0, 160.0, 450.0, 220.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=4,
+                element_id=5,
+                block_type=BlockType.SUBHEAD,
+                text="2 Why are banks so keen on the scheme?",
+                bbox=(50.0, 230.0, 450.0, 250.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=5,
+                element_id=6,
+                block_type=BlockType.BODY_TEXT,
+                text="Banks earn attractive spreads while boosting foreign currency liquidity.",
+                bbox=(50.0, 260.0, 450.0, 320.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=6,
+                element_id=7,
+                block_type=BlockType.SUBHEAD,
+                text="3 What prompted the RBI to act now?",
+                bbox=(500.0, 130.0, 950.0, 150.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=7,
+                element_id=8,
+                block_type=BlockType.BODY_TEXT,
+                text="Rising global interest rate differentials necessitated forex management.",
+                bbox=(500.0, 160.0, 950.0, 220.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=3, ordered_blocks=blocks)
+        assert len(articles) == 1
+        art = articles[0]
+        assert art.headline == "Can India mop up $50 bn via NRI deposit scheme?"
+        assert art.subheadline == "mint primer"
+        assert "How does the RBI's swap facility work?" in art.body_text
+        assert "Why are banks so keen on the scheme?" in art.body_text
+        assert "What prompted the RBI to act now?" in art.body_text
+        assert art.word_count >= 40
+
+    def test_plain_facts_lead_economy_story_headline_preserved(self) -> None:
+        """Verify 'PLAIN FACTS' feature adopts the overarching lead story banner headline."""
+        segmenter = ArticleSegmenter()
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.HEADLINE,
+                text="PLAIN FACTS",
+                bbox=(50.0, 50.0, 250.0, 70.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BANNER_HEADLINE,
+                text="INDIA RETAINS EM LEAD IN JUNE AS RUPEE RISES",
+                bbox=(50.0, 80.0, 950.0, 120.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=2,
+                element_id=3,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "India's macroeconomic performance outpaced emerging market peers in June "
+                    "driven by resilient services exports and appreciating currency."
+                ),
+                bbox=(50.0, 130.0, 950.0, 280.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=4, ordered_blocks=blocks)
+        assert len(articles) == 1
+        art = articles[0]
+        assert art.headline == "INDIA RETAINS EM LEAD IN JUNE AS RUPEE RISES"
+        assert art.subheadline == "PLAIN FACTS"
+        assert "macroeconomic performance outpaced emerging market peers" in art.body_text

@@ -96,7 +96,10 @@ class IntakeService:
             await self._db.flush()
             if newspaper.id is None:
                 newspaper.id = 1
-            logger.info("Created new newspaper record", extra={"name": name, "id": newspaper.id})
+            logger.info(
+                "Created new newspaper record",
+                extra={"newspaper_name": name, "newspaper_id": newspaper.id},
+            )
         return newspaper
 
     async def process_upload(

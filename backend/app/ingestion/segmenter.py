@@ -117,14 +117,107 @@ def extract_kicker_and_clean_headline(raw_text: str) -> tuple[str, str | None]:
     return clean_lines.strip(), None
 
 
+SYNDICATION_SLUGS = frozenset(
+    {
+        "the wall street journal",
+        "wall street journal",
+        "reuters",
+        "bloomberg",
+        "bloomberg news",
+        "pti",
+        "press trust of india",
+        "afp",
+        "agence france-presse",
+        "ap",
+        "associated press",
+        "financial times",
+        "new york times",
+        "business wire",
+        "pr newswire",
+        "news in numbers",
+        "columns",
+        "inside",
+        "quote of the day",
+        "data bites",
+        "plain facts",
+        "mint primer",
+        "mint curator",
+        "ask mint",
+        "mark to market",
+        "wsj",
+    }
+)
+
+SYNDICATION_REGEX = re.compile(
+    r"^(?:THE\s+)?(?:WALL\s+STREET\s+JOURNAL|REUTERS|BLOOMBERG(?:\s+NEWS)?|PTI|AFP|AP|"
+    r"FINANCIAL\s+TIMES|NEW\s+YORK\s+TIMES|PRESS\s+TRUST\s+OF\s+INDIA|ASSOCIATED\s+PRESS|"
+    r"QUOTE\s+OF\s+THE\s+DAY|DATA\s+BITES|PLAIN\s+FACTS|NEWS\s+IN\s+NUMBERS|COLUMNS|INSIDE|WSJ|"
+    r"MARK\s+TO\s+MARKET|MINT\s+PRIMER|MINT\s+CURATOR|ASK\s+MINT)(?:\s*[\/\-–—|]\s*.*)?$",
+    re.IGNORECASE,
+)
+
+NUMBERED_QUESTION_REGEX = re.compile(
+    r"^(?:(?:Q\.?\s*)?\d{1,2}[\.\/\)]|\b(?:Q\d{1,2}|Part\s+\d+|Step\s+\d+)\b|"
+    r"\b\d{1,2}\s+(?:How|Why|What|When|Where|Who|Which|Can|Will|Is|Are|Do|Does|Did|Should|Could|Would|Has|Have|Had))\s+",
+    re.IGNORECASE,
+)
+
+STANDALONE_FEATURE_KICKER_REGEX = re.compile(
+    r"^(?:MINT\s+PRIMER|PLAIN\s+FACTS|LONG\s+STORY|MARK\s+TO\s+MARKET|MINT\s+CURATOR|"
+    r"ASK\s+MINT|POWER\s+POINT|MYTHS\s+AND\s+MANTRAS|DEALS,\s+TECH\s+&\s+STARTUPS|INSIDE)$",
+    re.IGNORECASE,
+)
+
+
+def is_syndication_or_agency_slug(text: str) -> bool:
+    """Check if text is a syndication slug, wire agency stamp, or recurring column header."""
+    t = text.strip()
+    if not t:
+        return False
+    t_clean = t.lower().strip(" .:;,/–—-")
+    if t_clean in SYNDICATION_SLUGS or t_clean in SECTION_HEADER_BLACKLIST:
+        return True
+    if SYNDICATION_REGEX.match(t):
+        return True
+    return bool(re.match(r"^(?:reuters|pti|bloomberg|afp|ap|ians|ani|uni)\s*[\/|\-–—]", t_clean))
+
+
+def is_numbered_feature_subhead(text: str) -> bool:
+    """Detect numbered subheadings / questions in feature explainers."""
+    t = text.strip()
+    if not t:
+        return False
+    return bool(NUMBERED_QUESTION_REGEX.match(t))
+
+
+def is_garbled_ocr_noise(text: str) -> bool:
+    """Detect garbled OCR noise strings with high ratio of non-words."""
+    if not text or len(text.strip()) < 4:
+        return False
+    clean = re.sub(r"\s+", "", text)
+    if not clean:
+        return False
+    symbol_count = sum(1 for c in clean if not (c.isalnum() or c in ".,!?'\"-–—$₹%()"))
+    if symbol_count / len(clean) > 0.28:
+        return True
+    return bool(re.search(r"[bcdfghjklmnpqrstvwxyz]{6,}", clean.lower()))
+
+
 def is_valid_headline_candidate(text: str) -> bool:
     """Ensure a block text is substantial enough to define an article headline."""
     cleaned = re.sub(r"[^\w\s]", "", text).strip()
     words = cleaned.split()
-    if not words:
+    if not words or len(words) < 2 or len(cleaned) < 8:
         return False
     # Single words (e.g. "LIMITED", "ISSUE", "EQUITY") are never valid article headlines
     if len(words) == 1:
+        return False
+    # Filter out syndication slugs, wire stamps, and numbered subheadings
+    if is_syndication_or_agency_slug(text):
+        return False
+    if is_numbered_feature_subhead(text):
+        return False
+    if is_garbled_ocr_noise(text):
         return False
     # Filter out section headers and recurring layout tags
     if (
@@ -139,8 +232,8 @@ def is_valid_headline_candidate(text: str) -> bool:
     stat_matches = NUMERIC_STAT_PATTERN.findall(text)
     if len(stat_matches) >= 3 or (len(stat_matches) >= 2 and len(words) <= 6):
         return False
-    # Require at least 2 words and substantial character length
-    return not (len(words) < 2 or len(cleaned) < 8)
+    # Multi-sentence paragraphs ending in period are not headlines
+    return not (len(words) > 15 and text.rstrip().endswith((".", ";")))
 
 
 @dataclass
@@ -162,6 +255,35 @@ class SegmentedArticle:
 
 class ArticleSegmenter:
     """Partitions reading blocks on a newspaper page into discrete article units."""
+
+    def _finalize_article(
+        self,
+        art: SegmentedArticle,
+        articles: list[SegmentedArticle],
+        page_number: int,
+    ) -> None:
+        """Compute word count, check teasers, and append article to results."""
+        if not art.body_text:
+            art.body_text = art.headline
+        full_content = (
+            f"{art.headline}\n\n{art.body_text}".strip()
+            if art.headline != art.body_text
+            else art.body_text
+        )
+        art.word_count = len(full_content.split())
+        if (
+            page_number in (1, 2)
+            and art.word_count < 45
+            and (art.jump_to_page is not None or TEASER_REGEX.search(full_content))
+        ):
+            art.is_teaser = True
+            if art.jump_to_page is None:
+                t_match = TEASER_REGEX.search(full_content)
+                if t_match:
+                    t_pages = [p for p in t_match.groups() if p is not None and p.isdigit()]
+                    if t_pages:
+                        art.jump_to_page = int(t_pages[0])
+        articles.append(art)
 
     def segment_page(
         self,
@@ -246,53 +368,129 @@ class ArticleSegmenter:
         articles: list[SegmentedArticle] = []
         current_article: SegmentedArticle | None = None
         article_counter = 1
+        pending_byline: str | None = None
+        pending_kicker: str | None = None
+        in_multi_part_feature = False
 
-        for block in ordered_blocks:
+        for idx, block in enumerate(ordered_blocks):
             text = block.text.strip()
             if not text:
                 continue
 
+            # 1. Multi-part feature kicker check (e.g. standalone MINT PRIMER, PLAIN FACTS) (Task C)
+            if STANDALONE_FEATURE_KICKER_REGEX.match(text):
+                in_multi_part_feature = True
+                # Scan ahead for the immediate sub-banner master headline
+                master_hl: str | None = None
+                for future_blk in ordered_blocks[idx + 1: idx + 8]:
+                    f_text = future_blk.text.strip()
+                    if (
+                        is_valid_headline_candidate(f_text)
+                        and not is_numbered_feature_subhead(f_text)
+                        and not is_syndication_or_agency_slug(f_text)
+                    ):
+                        master_hl = f_text
+                        break
+                if master_hl:
+                    if current_article and (current_article.body_text or current_article.headline):
+                        self._finalize_article(current_article, articles, page_number)
+                    clean_hl, _ = extract_kicker_and_clean_headline(master_hl)
+                    current_article = SegmentedArticle(
+                        article_temp_id=f"p{page_number}_art_{article_counter}",
+                        headline=clean_hl,
+                        subheadline=text,
+                        body_text="",
+                        bbox_list=[block.bbox],
+                        raw_blocks=[block],
+                        byline_author=pending_byline,
+                    )
+                    pending_byline = None
+                    pending_kicker = None
+                    article_counter += 1
+                    continue
+                else:
+                    pending_kicker = text
+                    continue
+
+            # 2. Syndication slug / agency stamp check (Task A)
+            if is_syndication_or_agency_slug(text):
+                if current_article and not current_article.byline_author:
+                    current_article.byline_author = text
+                else:
+                    pending_byline = text
+                continue
+
+            # 3. Numbered feature subhead / question check (Task C)
+            if is_numbered_feature_subhead(text):
+                if current_article:
+                    current_article.body_text = (
+                        f"{current_article.body_text}\n\n{text}".strip()
+                        if current_article.body_text
+                        else text
+                    )
+                    current_article.bbox_list.append(block.bbox)
+                    current_article.raw_blocks.append(block)
+                else:
+                    # Look ahead for master headline on page
+                    master_hl = None
+                    for future_blk in ordered_blocks[idx + 1: idx + 8]:
+                        f_text = future_blk.text.strip()
+                        if (
+                            is_valid_headline_candidate(f_text)
+                            and not is_numbered_feature_subhead(f_text)
+                            and not is_syndication_or_agency_slug(f_text)
+                        ):
+                            master_hl = f_text
+                            break
+                    clean_hl = master_hl or f"Feature: {text[:60]}"
+                    current_article = SegmentedArticle(
+                        article_temp_id=f"p{page_number}_art_{article_counter}",
+                        headline=clean_hl,
+                        body_text=text,
+                        bbox_list=[block.bbox],
+                        raw_blocks=[block],
+                    )
+                    article_counter += 1
+                continue
+
+            # 4. Valid headline check
             is_headline = (
                 block.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
                 and is_valid_headline_candidate(text)
             )
 
-            if is_headline or current_article is None:
-                # Close previous article if exists and has text
-                if current_article and (current_article.body_text or current_article.headline):
-                    if not current_article.body_text:
-                        current_article.body_text = current_article.headline
-                    full_content = (
-                        f"{current_article.headline}\n\n{current_article.body_text}".strip()
-                        if current_article.headline != current_article.body_text
-                        else current_article.body_text
+            # If in multi-part feature (e.g. Mint Primer), do not split on internal headings
+            if (
+                in_multi_part_feature
+                and is_headline
+                and current_article
+                and current_article.headline
+            ):
+                if text == current_article.headline or current_article.headline in text:
+                    continue
+                if block.block_type != BlockType.BANNER_HEADLINE and len(text.split()) <= 15:
+                    current_article.body_text = (
+                        f"{current_article.body_text}\n\n{text}".strip()
+                        if current_article.body_text
+                        else text
                     )
-                    current_article.word_count = len(full_content.split())
-                    articles.append(current_article)
+                    current_article.bbox_list.append(block.bbox)
+                    current_article.raw_blocks.append(block)
+                    continue
+                else:
+                    in_multi_part_feature = False
 
-                # Check if text contains jump-in reference
+            if is_headline:
+                if current_article and (current_article.body_text or current_article.headline):
+                    self._finalize_article(current_article, articles, page_number)
+
+                clean_hl, kicker = extract_kicker_and_clean_headline(text)
                 jump_from = None
                 jump_in_match = JUMP_IN_REGEX.search(text)
                 if jump_in_match:
                     pages = [p for p in jump_in_match.groups() if p is not None]
                     if pages:
                         jump_from = int(pages[0])
-
-                # Extract headline and initial body
-                subhead_text: str | None = None
-                if is_headline:
-                    # Preserve entire headline string (do not truncate multi-line headlines)
-                    clean_hl, kicker = extract_kicker_and_clean_headline(text)
-                    headline_text = clean_hl
-                    subhead_text = kicker
-                    initial_body = ""
-                else:
-                    # First block on page without detected headline
-                    lines = [line.strip() for line in text.split("\n") if line.strip()]
-                    clean_hl, kicker = extract_kicker_and_clean_headline(lines[0] if lines else "")
-                    headline_text = clean_hl if clean_hl else f"Page {page_number} News"
-                    subhead_text = kicker
-                    initial_body = text
 
                 is_teaser_candidate = bool(
                     block.block_type == BlockType.TEASER
@@ -301,18 +499,62 @@ class ArticleSegmenter:
 
                 current_article = SegmentedArticle(
                     article_temp_id=f"p{page_number}_art_{article_counter}",
-                    headline=headline_text,
-                    subheadline=subhead_text,
-                    body_text=initial_body,
+                    headline=clean_hl,
+                    subheadline=kicker or pending_kicker,
+                    body_text="",
                     bbox_list=[block.bbox],
                     jump_from_page=jump_from,
                     is_teaser=is_teaser_candidate,
                     raw_blocks=[block],
+                    byline_author=pending_byline,
                 )
+                pending_byline = None
+                pending_kicker = None
                 article_counter += 1
                 continue
 
-            # Check if this block is a byline
+            # 5. Non-headline block when current_article is None (initial blocks on page) (Task B)
+            if current_article is None:
+                # Scan ahead for the nearest headline on the page
+                nearest_hl = None
+                for future_blk in ordered_blocks[idx:]:
+                    f_text = future_blk.text.strip()
+                    if (
+                        future_blk.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                        and is_valid_headline_candidate(f_text)
+                    ):
+                        nearest_hl = f_text
+                        break
+
+                if nearest_hl:
+                    clean_hl, kicker = extract_kicker_and_clean_headline(nearest_hl)
+                    current_article = SegmentedArticle(
+                        article_temp_id=f"p{page_number}_art_{article_counter}",
+                        headline=clean_hl,
+                        subheadline=kicker or pending_kicker,
+                        body_text=text,
+                        bbox_list=[block.bbox],
+                        raw_blocks=[block],
+                        byline_author=pending_byline,
+                    )
+                    pending_byline = None
+                    pending_kicker = None
+                    article_counter += 1
+                else:
+                    first_line = text.split("\n")[0][:60].strip()
+                    clean_hl, kicker = extract_kicker_and_clean_headline(first_line)
+                    current_article = SegmentedArticle(
+                        article_temp_id=f"p{page_number}_art_{article_counter}",
+                        headline=clean_hl if clean_hl else f"Page {page_number} News",
+                        subheadline=kicker,
+                        body_text=text,
+                        bbox_list=[block.bbox],
+                        raw_blocks=[block],
+                    )
+                    article_counter += 1
+                continue
+
+            # 6. Check byline match
             byline_match = BYLINE_REGEX.match(text)
             if byline_match and not current_article.byline_author and len(text) < 100:
                 current_article.byline_author = text
@@ -320,14 +562,13 @@ class ArticleSegmenter:
                 current_article.raw_blocks.append(block)
                 continue
 
-            # Check if this block contains a jump-to destination
+            # 7. Check jump lines
             jump_out_match = JUMP_OUT_REGEX.search(text)
             if jump_out_match:
                 pages = [p for p in jump_out_match.groups() if p is not None and p.isdigit()]
                 if pages:
                     current_article.jump_to_page = int(pages[0])
 
-            # Check teaser regex if jump not yet set
             if current_article.jump_to_page is None:
                 teaser_match = TEASER_REGEX.search(text)
                 if teaser_match:
@@ -336,7 +577,7 @@ class ArticleSegmenter:
                         current_article.jump_to_page = int(pages[0])
                         current_article.is_teaser = True
 
-            # Append to body text
+            # 8. Append to current article body
             if current_article.body_text:
                 current_article.body_text += "\n\n" + text
             else:
@@ -347,30 +588,7 @@ class ArticleSegmenter:
 
         # Finalize the last article
         if current_article and (current_article.body_text or current_article.headline):
-            if not current_article.body_text:
-                current_article.body_text = current_article.headline
-            full_content = (
-                f"{current_article.headline}\n\n{current_article.body_text}".strip()
-                if current_article.headline != current_article.body_text
-                else current_article.body_text
-            )
-            current_article.word_count = len(full_content.split())
-            if (
-                page_number in (1, 2)
-                and current_article.word_count < 45
-                and (
-                    current_article.jump_to_page is not None
-                    or TEASER_REGEX.search(full_content)
-                )
-            ):
-                current_article.is_teaser = True
-                if current_article.jump_to_page is None:
-                    t_match = TEASER_REGEX.search(full_content)
-                    if t_match:
-                        t_pages = [p for p in t_match.groups() if p is not None and p.isdigit()]
-                        if t_pages:
-                            current_article.jump_to_page = int(t_pages[0])
-            articles.append(current_article)
+            self._finalize_article(current_article, articles, page_number)
 
         # Fallback for OCR/scanned pages with blocks but 0 articles detected
         if not articles:

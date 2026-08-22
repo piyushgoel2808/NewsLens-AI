@@ -20,7 +20,10 @@ from typing import Any
 class BlockType(StrEnum):
     BANNER_HEADLINE = "banner_headline"
     HEADLINE = "headline"
+    SUBHEAD = "subhead"
     BODY_TEXT = "body_text"
+    BYLINE = "byline"
+    METADATA = "metadata"
     PHOTO = "photo"
     CAPTION = "caption"
     TABLE = "table"

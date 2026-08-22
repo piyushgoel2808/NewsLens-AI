@@ -970,7 +970,42 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.21 — Headline Anchor Resolution, Attribution Slug Filtering & Feature Primer Grouping
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+
+1. **Python 3.13 LogRecord Keyword Collision Fix (`backend/app/ingestion/intake.py`)**:
+   - Resolved standard logging `KeyError: "Attempt to overwrite 'name' in LogRecord"` by renaming extra payload keys `{"name": ..., "id": ...}` to `{"newspaper_name": ..., "newspaper_id": ...}` in `get_or_create_newspaper()`.
+
+2. **Syndication Slug & Wire Agency Stamp Rejection (`backend/app/ingestion/layout_analyzer.py`, `segmenter.py`, `reading_order.py`)**:
+   - Added `BlockType.SUBHEAD`, `BlockType.BYLINE`, and `BlockType.METADATA` to the core `BlockType` enum.
+   - Introduced `is_syndication_or_agency_slug()` to classify wire stamps (`THE WALL STREET JOURNAL`, `WSJ`, `REUTERS`, `BLOOMBERG`, `PTI`, `AFP`, `AP`, `FINANCIAL TIMES`, etc.) and recurring kicker slugs as `BlockType.BYLINE` or `BlockType.METADATA`.
+   - Prevented syndication slugs from ever defining or splitting article headlines, attaching them as `byline_author` or metadata instead.
+
+3. **Visual Headline Identification & Body Fallback Prevention (`backend/app/ingestion/layout_analyzer.py`, `segmenter.py`)**:
+   - Enforced font-scale ratio thresholds ($font\_size \ge 1.25 \times median\_body\_font$ and $lh \ge 1.25 \times median\_lh$) for `BlockType.HEADLINE`.
+   - Updated `is_valid_headline_candidate()` to reject garbled OCR noise, numbered explainer subheads, and sentence paragraphs ending in terminal punctuation.
+   - When initial non-headline blocks are encountered at the start of a page, the segmenter scans forward for the nearest true headline anchor rather than defaulting to the first sentence of body text.
+
+4. **Composite Feature & Explainer Grouping (Mint Primer & Plain Facts) (`backend/app/ingestion/segmenter.py`)**:
+   - Added `STANDALONE_FEATURE_KICKER_REGEX` and `is_numbered_feature_subhead()` to detect multi-part explainers (e.g. `mint primer`, `PLAIN FACTS`, `LONG STORY`).
+   - Grouped all numbered Q&A items (`1 How...`, `2 Why...`, `3 What...`, `4...`, `5...`) into a single unified `SegmentedArticle` under the overarching master banner headline, preserving complete body text across columns.
+
+### Verification & QA
+- `make lint`: **0 errors across 66 source files**.
+- `make test`: **170/170 tests passing 100% GREEN in 2.83s**.
+- Added unit tests:
+  - `test_syndication_slug_rejected_as_headline_and_actual_headline_preserved`
+  - `test_mint_primer_grouped_into_single_article_with_all_questions`
+  - `test_plain_facts_lead_economy_story_headline_preserved`
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

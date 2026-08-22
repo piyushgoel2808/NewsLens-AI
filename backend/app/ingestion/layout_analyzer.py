@@ -77,6 +77,71 @@ STANDALONE_NOISE_TOKENS = frozenset(
     }
 )
 
+SYNDICATION_SLUGS = frozenset(
+    {
+        "the wall street journal",
+        "wall street journal",
+        "reuters",
+        "bloomberg",
+        "bloomberg news",
+        "pti",
+        "press trust of india",
+        "afp",
+        "agence france-presse",
+        "ap",
+        "associated press",
+        "financial times",
+        "new york times",
+        "business wire",
+        "pr newswire",
+        "news in numbers",
+        "columns",
+        "inside",
+        "quote of the day",
+        "data bites",
+        "plain facts",
+        "mint primer",
+        "mint curator",
+        "ask mint",
+        "mark to market",
+        "wsj",
+    }
+)
+
+SYNDICATION_REGEX = re.compile(
+    r"^(?:THE\s+)?(?:WALL\s+STREET\s+JOURNAL|REUTERS|BLOOMBERG(?:\s+NEWS)?|PTI|AFP|AP|"
+    r"FINANCIAL\s+TIMES|NEW\s+YORK\s+TIMES|PRESS\s+TRUST\s+OF\s+INDIA|ASSOCIATED\s+PRESS|"
+    r"QUOTE\s+OF\s+THE\s+DAY|DATA\s+BITES|PLAIN\s+FACTS|NEWS\s+IN\s+NUMBERS|COLUMNS|INSIDE|WSJ|"
+    r"MARK\s+TO\s+MARKET|MINT\s+PRIMER|MINT\s+CURATOR|ASK\s+MINT)(?:\s*[\/\-–—|]\s*.*)?$",
+    re.IGNORECASE,
+)
+
+NUMBERED_QUESTION_REGEX = re.compile(
+    r"^(?:(?:Q\.?\s*)?\d{1,2}[\.\/\)]|\b(?:Q\d{1,2}|Part\s+\d+|Step\s+\d+)\b|\b\d{1,2}\s+(?:How|Why|What|When|Where|Who|Which|Can|Will|Is|Are|Do|Does|Did|Should|Could|Would|Has|Have|Had))\s+",
+    re.IGNORECASE,
+)
+
+
+def is_syndication_or_agency_slug(text: str) -> bool:
+    """Check if text is a syndication slug, wire agency stamp, or recurring column header."""
+    t = text.strip()
+    if not t:
+        return False
+    t_clean = t.lower().strip(" .:;,/–—-")
+    if t_clean in SYNDICATION_SLUGS:
+        return True
+    if SYNDICATION_REGEX.match(t):
+        return True
+    return bool(re.match(r"^(?:reuters|pti|bloomberg|afp|ap|ians|ani|uni)\s*[\/|\-–—]", t_clean))
+
+
+def is_numbered_feature_subhead(text: str) -> bool:
+    """Detect numbered subheadings / questions in feature explainers."""
+    t = text.strip()
+    if not t:
+        return False
+    return bool(NUMBERED_QUESTION_REGEX.match(t))
+
 
 NUMERIC_STAT_PATTERN = re.compile(
     r"\b(?:\d+[\d,\.]*\s*(?:cr|crore|mn|million|bn|billion|lakh|%|pts|bps|usd|inr)?|"
@@ -353,7 +418,11 @@ class LayoutAnalyzer:
             ref_width = max_x if max_x > 0 else float(width_px)
             for d_blk in digital_blocks:
                 cleaned_text = clean_ocr_text_artifacts(d_blk.text)
-                if is_numeric_stat_box(cleaned_text):
+                if is_syndication_or_agency_slug(cleaned_text):
+                    b_type = BlockType.BYLINE
+                elif is_numbered_feature_subhead(cleaned_text):
+                    b_type = BlockType.SUBHEAD
+                elif is_numeric_stat_box(cleaned_text):
                     b_type = BlockType.TABLE
                 else:
                     is_wide_heading = (
@@ -407,23 +476,32 @@ class LayoutAnalyzer:
                     and words_blk[0].lower().rstrip(",.:;") in boilerplate_stopwords
                 )
 
-                if is_numeric_stat_box(cleaned_text):
+                if is_syndication_or_agency_slug(cleaned_text):
+                    b_type = BlockType.BYLINE
+                elif is_numbered_feature_subhead(cleaned_text):
+                    b_type = BlockType.SUBHEAD
+                elif is_numeric_stat_box(cleaned_text):
                     b_type = BlockType.TABLE
                 else:
                     is_banner = (
-                        box_width >= float(width_px) * 0.60
-                        and lh >= median_lh * 1.30
+                        box_width >= float(width_px) * 0.50
+                        and lh >= median_lh * 1.25
                         and not is_single_boilerplate
                     )
                     is_headline = (
                         not is_single_boilerplate
                         and (
                             is_banner
-                            or (lh >= median_lh * 1.35 and len(words_blk) >= 2)
+                            or (
+                                lh >= median_lh * 1.25
+                                and 3 <= len(words_blk) <= 25
+                                and not cleaned_text.rstrip().endswith((".", ";", ","))
+                            )
                             or (
                                 cleaned_text.isupper()
-                                and 2 <= len(words_blk) < 15
+                                and 3 <= len(words_blk) <= 20
                                 and lh >= median_lh * 1.10
+                                and not cleaned_text.rstrip().endswith((".", ";", ","))
                             )
                         )
                     )
