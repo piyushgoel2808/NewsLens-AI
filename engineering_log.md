@@ -763,7 +763,49 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.15 — Ingestion, Layout Segmentation, Pagination & Database Idempotency Overhaul
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+
+1. **Heading-Boundary Break in Vertical Column Track Consolidation (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Resolved multi-column swallowing (e.g., Page 10 collision where BMW severance packages story was swallowed into Pavel Durov Telegram probe).
+   - In `_consolidate_elements()`, added a **Heading-Boundary Break**: when reverse-scanning in a column track, encountering an intervening `HEADLINE` / `BANNER_HEADLINE` or heading candidate halts the search immediately (`break`), preventing body text of lower articles from merging with upper body text across story boundaries.
+   - Enforced horizontal overlap $\ge 70\%$ and vertical gap $\le 25\text{px}$ for vertical paragraph consolidation.
+
+2. **Strict 5% Folio Spatial Zone & Total Pages Upper Bound (`backend/app/ingestion/folio_detector.py`)**:
+   - Restricted folio extraction strictly to the top 5% header strip ($y_1 \le 0.05 \times H$) and bottom 5% footer strip ($y_0 \ge 0.95 \times H$), discarding all mid-page body/ad numbers.
+   - Enforced hard physical document upper bound: $\text{folio\_num} \le \text{total\_issue\_pages}$, completely preventing hallucinated numbers (e.g. Page 26, 30, 31 on 16-page issues).
+   - Stripped all date strings, currencies, and volume notations prior to numerical folio parsing.
+
+3. **Headline Anchor-Based 2D Column Binding (`backend/app/ingestion/reading_order.py`)**:
+   - For each headline anchor $B_{\text{head}}$, bounded its horizontal span $[x_0, x_1]$ and lower vertical limit $y_{\text{limit}}$ (top of the next descending headline in that lane).
+   - Clustered candidate body blocks into distinct vertical column lanes (left-to-right) and sequenced top-to-bottom within each lane, ensuring complete narrative flow and eliminating 10–50 word stubs.
+
+4. **Idempotent Ingestion Transactions & Vector Index Purge (`backend/app/ingestion/tasks.py`, `backend/app/ingestion/embedder.py`)**:
+   - Added atomic deletion transaction in `run_ingestion_pipeline` prior to inserting new articles:
+     `DELETE FROM article_entities`, `DELETE FROM article_topics`, `DELETE FROM article_chunks`, `DELETE FROM article_pages`, `DELETE FROM articles WHERE issue_id = :issue_id`.
+   - Added `delete_issue_vectors` in `ArticleEmbedder` to purge Qdrant vector points for `issue_id`, guaranteeing 100% idempotent re-ingestion without duplicate record bloat (46 $\to$ 92).
+
+5. **Dynamic Page 1 Masthead & Publication Date Detection (`backend/app/ingestion/tasks.py`, `backend/app/ingestion/intake.py`, `frontend/src/components/UploadTrigger.jsx`)**:
+   - Implemented `detect_masthead_and_date()` scanning Page 1 top header blocks for authentic newspaper brands (`Mint`, `Business Standard`, `The Hindu`, `The Economic Times`, etc.) and dates (`30 July 2026`).
+   - Dynamically updates `Newspaper` and `Issue` records in MySQL, overriding default intake parameters.
+   - Updated frontend upload form defaults.
+
+### Verification & QA
+- `make lint && make test`: **166/166 tests passing 100% GREEN in 3.00s**.
+- Added unit tests:
+  - `test_heading_boundary_break_prevents_multi_article_swallowing` in `test_layout_analyzer.py`
+  - `test_detect_mint_masthead_and_date_digital` in `test_tasks.py`
+  - `test_detect_business_standard_and_date_ocr` in `test_tasks.py`
+  - `test_ignore_blocks_lower_in_page` in `test_tasks.py`
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

@@ -617,15 +617,33 @@ class LayoutAnalyzer:
                 if gap_y > max_v_gap * 2.5:
                     break
 
+                # Column track overlap
+                overlap_x = max(
+                    0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
+                )
+                min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
+                is_same_track = bool(min_w > 0 and (overlap_x / min_w) >= 0.50)
+
+                # HEADING-BOUNDARY BREAK: Stop immediately if an intervening headline is encountered
+                if (
+                    elem.block_type == BlockType.BODY_TEXT
+                    and is_same_track
+                    and prev.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                ):
+                    break
+
+                if (
+                    elem.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                    and is_same_track
+                    and prev.block_type == BlockType.BODY_TEXT
+                ):
+                    break
+
                 # Case A: Font-Aware Multi-Line Headline Stitching in same column track
                 if (
                     prev.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
                     and elem.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
                 ):
-                    overlap_x = max(
-                        0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
-                    )
-                    min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
                     font_diff = (
                         abs(prev.font_size - elem.font_size)
                         / max(prev.font_size, elem.font_size, 1.0)
@@ -653,11 +671,12 @@ class LayoutAnalyzer:
                     prev.block_type == BlockType.BODY_TEXT
                     and elem.block_type == BlockType.BODY_TEXT
                 ):
-                    overlap_x = max(
-                        0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
-                    )
-                    min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
-                    if min_w > 0 and (overlap_x / min_w) >= 0.65 and 0.0 <= gap_y <= max_v_gap:
+                    max_allowed_gap = max(min(max_v_gap, 25.0), 12.0)
+                    if (
+                        min_w > 0
+                        and (overlap_x / min_w) >= 0.70
+                        and 0.0 <= gap_y <= max_allowed_gap
+                    ):
                         if prev.text.endswith("-"):
                             prev.text = prev.text[:-1] + elem.text
                         elif prev.text.endswith((".", "!", "?", ":")):

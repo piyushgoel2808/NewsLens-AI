@@ -120,8 +120,19 @@ class ArticleEmbedder:
             extra={
                 "article_id": article_id,
                 "chunks_count": len(chunks),
-                "collection": self._settings.qdrant.collection_name,
+                "point_ids": vector_ids[:3],
             },
         )
 
         return vector_ids
+
+    async def delete_issue_vectors(self, issue_id: int) -> None:
+        """Purge all vector points associated with an issue_id from Qdrant."""
+        try:
+            await self._qdrant.delete_by_filter({"issue_id": issue_id})
+            logger.info("Purged Qdrant vectors for issue", extra={"issue_id": issue_id})
+        except Exception as e:
+            logger.warning(
+                "Could not delete Qdrant vectors for issue",
+                extra={"issue_id": issue_id, "error": str(e)},
+            )

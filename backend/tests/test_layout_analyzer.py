@@ -553,3 +553,67 @@ class TestLayoutAnalyzer:
         assert "Boeing's runway looks clear as makers of jet engines struggle" in headlines
         # Must never have the cross-column corrupted collision
         assert not any("could Boeing's runway" in h for h in headlines)
+
+    def test_heading_boundary_break_prevents_multi_article_swallowing(self) -> None:
+        """Test that vertically stacked articles in same lane never swallow each other."""
+        analyzer = LayoutAnalyzer()
+        # Story 1: Headline + Body (Column 1)
+        # Story 2: Headline + Body (Column 1, beneath Story 1)
+        blocks = [
+            DigitalTextBlock(
+                block_id=0,
+                text="BMW offers severance packages to employees to cut 8,000 jobs",
+                bbox=(50.0, 100.0, 450.0, 140.0),
+                mean_font_size=18.0,
+                is_heading_candidate=True,
+            ),
+            DigitalTextBlock(
+                block_id=1,
+                text="German automaker BMW announced restructuring packages for corporate staff.",
+                bbox=(50.0, 150.0, 450.0, 300.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+            DigitalTextBlock(
+                block_id=2,
+                text="France accuses Telegram CEO Pavel Durov in broad probe",
+                bbox=(50.0, 330.0, 450.0, 370.0),
+                mean_font_size=18.0,
+                is_heading_candidate=True,
+            ),
+            DigitalTextBlock(
+                block_id=3,
+                text="French prosecutors opened formal judicial probe into cybercrime allegations.",
+                bbox=(50.0, 380.0, 450.0, 520.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=10,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        headlines = [
+            e.text for e in res.elements
+            if e.block_type in (BlockType.HEADLINE, BlockType.BANNER_HEADLINE)
+        ]
+        assert len(headlines) == 2
+        assert "BMW offers severance packages to employees to cut 8,000 jobs" in headlines
+        assert "France accuses Telegram CEO Pavel Durov in broad probe" in headlines
+
+        from app.ingestion.segmenter import ArticleSegmenter
+        segmenter = ArticleSegmenter()
+        articles = segmenter.segment_page(page_number=10, ordered_blocks=res.reading_order)
+        assert len(articles) == 2
+        art_headlines = [a.headline for a in articles]
+        assert "BMW offers severance packages to employees to cut 8,000 jobs" in art_headlines
+        assert "France accuses Telegram CEO Pavel Durov in broad probe" in art_headlines
+        # Verify Story 2's body text is NOT swallowed into Story 1
+        bmw_art = next(a for a in articles if "BMW" in a.headline)
+        assert "German automaker BMW" in bmw_art.body_text
+        assert "Telegram CEO" not in bmw_art.body_text
+

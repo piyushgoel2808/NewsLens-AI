@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 
 export default function UploadTrigger() {
   const [selectedFiles, setSelectedFiles] = useState([]);
-  const [newspaperName, setNewspaperName] = useState('Business Standard');
-  const [issueDate, setIssueDate] = useState('2026-08-21');
+  const [newspaperName, setNewspaperName] = useState('Mint');
+  const [issueDate, setIssueDate] = useState('2026-07-30');
   const [edition, setEdition] = useState('morning');
   const [forceReingest, setForceReingest] = useState(false);
   const [uploadQueue, setUploadQueue] = useState([]);

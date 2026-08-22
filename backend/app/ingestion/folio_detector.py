@@ -98,9 +98,9 @@ def _validate_folio_candidate(
         num = int(val)
         max_allowed = 200
         if total_issue_pages is not None:
-            max_allowed = max(total_issue_pages + 2, (current_pdf_page or 1) + 2)
+            max_allowed = total_issue_pages
         elif current_pdf_page is not None:
-            max_allowed = current_pdf_page + 4
+            max_allowed = current_pdf_page + 2
         if 1 <= num <= max_allowed:
             return str(num)
         return None
@@ -309,15 +309,15 @@ class FolioDetector:
             rel_y1 = y1 / effective_height
             height_span = rel_y1 - rel_y0
 
-            # Reject full-page spanning blocks (e.g. height span > 15% of page)
-            if height_span > 0.15:
+            # Reject full-page spanning blocks (e.g. height span > 10% of page)
+            if height_span > 0.10:
                 continue
 
-            # Strict spatial check: Top 8% header strip (relative_y0 < 0.08)
-            if rel_y0 < 0.08 and rel_y1 <= 0.12:
+            # Strict spatial check: Top 5% header strip (relative_y0 < 0.05 and rel_y1 <= 0.08)
+            if rel_y0 < 0.05 and rel_y1 <= 0.08:
                 header_blocks.append(((x0, y0, x1, y1), text))
-            # Strict spatial check: Bottom 5% footer strip (relative_y0 > 0.95)
-            elif rel_y0 > 0.95 or rel_y1 >= 0.95:
+            # Strict spatial check: Bottom 5% footer strip (relative_y0 >= 0.95 or rel_y1 >= 0.95)
+            elif rel_y0 >= 0.95 or rel_y1 >= 0.95:
                 footer_blocks.append(((x0, y0, x1, y1), text))
 
         # Sort header and footer blocks left-to-right (x0)

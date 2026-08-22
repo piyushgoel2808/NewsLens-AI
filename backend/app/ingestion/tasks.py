@@ -1,12 +1,13 @@
-"""Celery and synchronous pipeline execution tasks for PDF Ingestion, OCR & Layout Analysis."""
-
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import re
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
 
@@ -25,13 +26,100 @@ from app.ingestion.ocr_service import OCRService
 from app.ingestion.rasterizer import PDFRasterizer
 from app.ingestion.reading_order import BlockType, OrderedReadingBlock
 from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
-from app.models.article import Article, ArticlePage, ArticleTable, Photo
+from app.models.article import Article, ArticleChunk, ArticlePage, ArticleTable, Photo
+from app.models.entity import ArticleEntity, ArticleTopic
 from app.models.ingestion import IngestionJob
-from app.models.newspaper import Issue, Page
+from app.models.newspaper import Issue, Newspaper, Page
 from app.providers.base import OCRBlock
 from app.storage.minio_store import MinioStore
 
 logger = get_logger(__name__)
+
+_KNOWN_MASTHEADS = [
+    ("MINT", "Mint"),
+    ("LIVEMINT", "Mint"),
+    ("BUSINESS STANDARD", "Business Standard"),
+    ("THE HINDU", "The Hindu"),
+    ("ECONOMIC TIMES", "The Economic Times"),
+    ("TIMES OF INDIA", "The Times of India"),
+    ("FINANCIAL EXPRESS", "Financial Express"),
+    ("INDIAN EXPRESS", "The Indian Express"),
+    ("THE TRIBUNE", "The Tribune"),
+    ("DECCAN HERALD", "Deccan Herald"),
+    ("THE TELEGRAPH", "The Telegraph"),
+]
+
+_MONTH_MAP = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10, "october": 10,
+    "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+
+_DATE_EXTRACTION_PATTERNS = [
+    re.compile(
+        r"(?i)\b(\d{1,2})(?:st|nd|rd|th)?[\s\.\,\-\/]+(JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)[\s\.\,\-\/]+(\d{4})\b"
+    ),
+    re.compile(
+        r"(?i)\b(JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)[\s\.\,\-\/]+(\d{1,2})(?:st|nd|rd|th)?[\s\.\,\-\/]+(\d{4})\b"
+    ),
+]
+
+
+def detect_masthead_and_date(
+    blocks: Sequence[Any], height_px: float
+) -> tuple[str | None, date | None]:
+    """Detect authentic newspaper masthead brand and publication date from Page 1 top header."""
+    detected_name: str | None = None
+    detected_date: date | None = None
+
+    for block in blocks:
+        text = ""
+        bbox = None
+        if hasattr(block, "text") and hasattr(block, "bbox"):
+            text = str(block.text)
+            bbox = block.bbox
+        elif isinstance(block, dict):
+            text = str(block.get("text", ""))
+            bbox = block.get("bbox")
+
+        if not text:
+            continue
+
+        if bbox and isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+            y1 = float(bbox[3])
+            if y1 > height_px * 0.25:
+                continue
+
+        text_upper = text.upper()
+
+        if not detected_name:
+            for keyword, brand in _KNOWN_MASTHEADS:
+                if keyword in text_upper:
+                    detected_name = brand
+                    break
+
+        if not detected_date:
+            for pat in _DATE_EXTRACTION_PATTERNS:
+                m = pat.search(text)
+                if m:
+                    g1, g2, g3 = m.groups()
+                    try:
+                        if g1.isdigit() and g3.isdigit():
+                            day = int(g1)
+                            mon = _MONTH_MAP.get(g2.lower(), 1)
+                            yr = int(g3)
+                        else:
+                            mon = _MONTH_MAP.get(g1.lower(), 1)
+                            day = int(g2)
+                            yr = int(g3)
+                        if 1 <= day <= 31 and 1990 <= yr <= 2050:
+                            detected_date = date(yr, mon, day)
+                            break
+                    except Exception:
+                        pass
+
+    return detected_name, detected_date
 
 
 async def run_ingestion_pipeline(
@@ -132,6 +220,31 @@ async def run_ingestion_pipeline(
                 folio_height = float(analysis.page_height or rendered.height_px)
                 folio_width = float(analysis.page_width or rendered.width_px)
                 target_blocks = analysis.blocks
+
+            # Dynamic Page 1 Masthead & Date Detection
+            if page_num == 1 and issue:
+                det_brand, det_date = detect_masthead_and_date(target_blocks, folio_height)
+                if det_brand:
+                    np_stmt = select(Newspaper).where(Newspaper.name == det_brand)
+                    np_res = await db.execute(np_stmt)
+                    np_obj = np_res.scalar_one_or_none()
+                    if not np_obj:
+                        np_obj = Newspaper(name=det_brand, default_language=issue_lang)
+                        db.add(np_obj)
+                        await db.flush()
+                    issue.newspaper_id = np_obj.id
+                    issue.newspaper = np_obj
+                    logger.info(
+                        "Dynamically identified newspaper masthead from Page 1",
+                        extra={"newspaper": det_brand, "issue_id": issue_id},
+                    )
+                if det_date:
+                    issue.issue_date = det_date
+                    logger.info(
+                        "Dynamically identified publication date from Page 1",
+                        extra={"issue_date": str(det_date), "issue_id": issue_id},
+                    )
+                await db.flush()
 
             printed_folio = folio_detector.extract_printed_page_number(
                 page_number=page_num,
@@ -254,7 +367,33 @@ async def run_ingestion_pipeline(
         chunker = NewspaperChunker()
         embedder = ArticleEmbedder(db=db)
 
-        # Get newspaper metadata
+        # Idempotent Atomic Cleanup: Purge any previously inserted articles/chunks for this issue_id
+        with contextlib.suppress(Exception):
+            await embedder.delete_issue_vectors(issue_id)
+
+        existing_arts_res = await db.execute(select(Article.id).where(Article.issue_id == issue_id))
+        existing_art_ids = existing_arts_res.scalars().all()
+        if existing_art_ids:
+            await db.execute(
+                delete(ArticleEntity).where(ArticleEntity.article_id.in_(existing_art_ids))
+            )
+            await db.execute(
+                delete(ArticleTopic).where(ArticleTopic.article_id.in_(existing_art_ids))
+            )
+            await db.execute(
+                delete(ArticleChunk).where(ArticleChunk.article_id.in_(existing_art_ids))
+            )
+            await db.execute(
+                delete(ArticlePage).where(ArticlePage.article_id.in_(existing_art_ids))
+            )
+            await db.execute(delete(Article).where(Article.issue_id == issue_id))
+            await db.flush()
+            logger.info(
+                "Purged previous articles and chunks for idempotent re-ingestion",
+                extra={"issue_id": issue_id, "deleted_articles": len(existing_art_ids)},
+            )
+
+        # Get updated newspaper metadata
         newspaper_name = issue.newspaper.name if issue and issue.newspaper else "Daily"
         issue_date_str = str(issue.issue_date) if issue else ""
 

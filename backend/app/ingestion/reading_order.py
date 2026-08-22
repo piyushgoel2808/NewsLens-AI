@@ -111,9 +111,10 @@ class ReadingOrderResolver:
                 if other_h.element_id == h.element_id:
                     continue
                 oh_x0, oh_y0, oh_x1, oh_y1 = other_h.bbox
+                h_overlap = min(oh_x1, span_x1) - max(oh_x0, span_x0)
                 if (
                     oh_y0 > h_y1
-                    and max(oh_x0, span_x0) < min(oh_x1, span_x1)
+                    and h_overlap > 10.0
                     and oh_y0 < y_limit
                 ):
                     y_limit = oh_y0
@@ -127,11 +128,12 @@ class ReadingOrderResolver:
                     continue
 
                 el_x0, el_y0, el_x1, el_y1 = el.bbox
+                b_overlap = min(el_x1, span_x1) - max(el_x0, span_x0)
                 # Must start at or below headline, above lower limit, and overlap horizontally
                 if (
                     el_y0 >= (h_y1 - 15.0)
-                    and el_y1 <= (y_limit + 25.0)
-                    and max(el_x0, span_x0) < min(el_x1, span_x1)
+                    and el_y0 < y_limit
+                    and b_overlap > 10.0
                 ):
                     candidate_body.append(el)
 
