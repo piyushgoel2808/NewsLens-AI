@@ -82,7 +82,7 @@ class OCRService:
         # Update MySQL Page record
         page.ocr_confidence = ocr_result.mean_confidence
         page.ingestion_status = "ocr_done"
-        await self._db.commit()
+        await self._db.flush()
 
         logger.info(
             "OCR completed on page",

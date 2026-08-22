@@ -103,6 +103,7 @@ class TestIntakeService:
         mock_db.execute.side_effect = [
             mock_newspaper_res,
             mock_issue_res1,
+            mock_newspaper_res,
             mock_issue_res2,
         ]
 

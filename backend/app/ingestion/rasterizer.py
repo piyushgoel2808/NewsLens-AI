@@ -135,7 +135,7 @@ class PDFRasterizer:
             )
 
         issue.ingestion_status = "rasterized"
-        await self._db.commit()
+        await self._db.flush()
         doc.close()
 
         logger.info(

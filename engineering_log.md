@@ -804,7 +804,34 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.16 — Ingestion Transaction Session Fix & Upload Pre-detection (Resolving HTTP 500)
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+
+1. **Premature Session Commit Elimination (`backend/app/ingestion/rasterizer.py`, `backend/app/ingestion/ocr_service.py`)**:
+   - Replaced mid-pipeline `await self._db.commit()` calls in `PDFRasterizer` and `OCRService` with `await self._db.flush()`.
+   - Preserves unit-of-work transaction boundaries within `run_ingestion_pipeline`, eliminating `StaleDataError` on `Page` ORM entities when processing multi-page documents.
+
+2. **Upfront Page 1 Masthead & Publication Date Pre-detection (`backend/app/ingestion/intake.py`)**:
+   - In `IntakeService.process_upload`, added pre-detection of masthead brand and publication date from Page 1 PDF digital blocks prior to deduplication / issue record creation.
+   - Prevents unique constraint collisions (`uq_issue_newspaper_date_edition`) in MySQL when dynamic masthead extraction resolves a different brand than the default intake parameter.
+
+3. **Atomic Multi-Entity Purge on Force Re-ingest (`backend/app/ingestion/intake.py`)**:
+   - Replaced row-by-row `db.delete(page)` loop with atomic relational deletion:
+     `DELETE FROM article_entities`, `DELETE FROM article_topics`, `DELETE FROM article_chunks`, `DELETE FROM article_pages`, `DELETE FROM articles`, `DELETE FROM pages WHERE issue_id = :issue_id`.
+   - Purged stale Qdrant vector index points on force re-ingestion.
+
+### Verification & QA
+- `make lint && make test`: **166/166 tests passing 100% GREEN in 7.05s**.
+- Tested synchronous upload and ingestion of full 21-page `Mint1.pdf` (27.6 MB): **45 articles successfully segmented, embedded in Qdrant, and persisted in MySQL** with zero 500 errors.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

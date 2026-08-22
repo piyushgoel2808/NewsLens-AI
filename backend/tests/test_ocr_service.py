@@ -51,4 +51,4 @@ class TestOCRService:
         assert len(ocr_result.blocks) == 2
         assert mock_page.ocr_confidence == 0.915
         assert mock_page.ingestion_status == "ocr_done"
-        assert mock_db.commit.called
+        assert mock_db.flush.called

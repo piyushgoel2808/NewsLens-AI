@@ -175,9 +175,32 @@ class IntakeService:
         job.total_files = len(items_to_process)
         issues_created: list[int] = []
 
-        newspaper = await self.get_or_create_newspaper(newspaper_name, language)
-
         for item in items_to_process:
+            # Dynamic Page 1 Masthead and Date Pre-detection on uploaded PDF
+            if is_valid_pdf(item.content):
+                try:
+                    import pymupdf
+
+                    from app.ingestion.detector import PDFPageDetector
+                    from app.ingestion.tasks import detect_masthead_and_date
+
+                    doc = pymupdf.open(stream=item.content, filetype="pdf")
+                    if len(doc) > 0:
+                        detector = PDFPageDetector()
+                        p1_res = detector.analyze_page(doc, 0)
+                        det_brand, det_date = detect_masthead_and_date(
+                            p1_res.blocks, float(p1_res.page_height or 1400.0)
+                        )
+                        if det_brand:
+                            item.newspaper_name = det_brand
+                        if det_date:
+                            item.issue_date = det_date
+                    doc.close()
+                except Exception as e:
+                    logger.debug("Page 1 masthead pre-detection skipped", extra={"error": str(e)})
+
+            newspaper = await self.get_or_create_newspaper(item.newspaper_name, item.language)
+
             # Check for existing issue on same newspaper, date, and edition
             stmt = select(Issue).where(
                 Issue.newspaper_id == newspaper.id,
@@ -191,7 +214,7 @@ class IntakeService:
                 logger.info(
                     "Skipping duplicate issue upload",
                     extra={
-                        "newspaper": newspaper_name,
+                        "newspaper": item.newspaper_name,
                         "date": str(item.issue_date),
                         "edition": item.edition,
                         "issue_id": existing_issue.id,
@@ -219,11 +242,33 @@ class IntakeService:
             if existing_issue and force:
                 with contextlib.suppress(Exception):
                     await self._qdrant.delete_by_filter({"issue_id": existing_issue.id})
-                pages_res = await self._db.execute(
-                    select(Page).where(Page.issue_id == existing_issue.id)
+
+                from sqlalchemy import delete
+
+                from app.models.article import Article, ArticleChunk, ArticlePage
+                from app.models.entity import ArticleEntity, ArticleTopic
+
+                art_ids_res = await self._db.execute(
+                    select(Article.id).where(Article.issue_id == existing_issue.id)
                 )
-                for p in pages_res.scalars().all():
-                    await self._db.delete(p)
+                old_art_ids = art_ids_res.scalars().all()
+                if old_art_ids:
+                    await self._db.execute(
+                        delete(ArticleEntity).where(ArticleEntity.article_id.in_(old_art_ids))
+                    )
+                    await self._db.execute(
+                        delete(ArticleTopic).where(ArticleTopic.article_id.in_(old_art_ids))
+                    )
+                    await self._db.execute(
+                        delete(ArticleChunk).where(ArticleChunk.article_id.in_(old_art_ids))
+                    )
+                    await self._db.execute(
+                        delete(ArticlePage).where(ArticlePage.article_id.in_(old_art_ids))
+                    )
+                    await self._db.execute(
+                        delete(Article).where(Article.issue_id == existing_issue.id)
+                    )
+                await self._db.execute(delete(Page).where(Page.issue_id == existing_issue.id))
                 await self._db.flush()
 
                 issue = existing_issue
