@@ -505,10 +505,7 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
                 if not res_list or not res_list[0]:
                     return None
 
-                blocks: list[OCRBlock] = []
-                full_text_lines: list[str] = []
-                confidences: list[float] = []
-
+                raw_items: list[OCRBlock] = []
                 for item in res_list[0]:
                     if not item or len(item) < 2:
                         continue
@@ -520,7 +517,7 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
                     ys = [p[1] for p in box]
                     bbox = (float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys)))
                     conf = float(score) if score is not None else 0.90
-                    blocks.append(
+                    raw_items.append(
                         OCRBlock(
                             text=clean_txt,
                             bbox=bbox,
@@ -528,35 +525,93 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
                             language=lang,
                         )
                     )
-                    full_text_lines.append(clean_txt)
-                    confidences.append(conf)
 
-                if blocks:
-                    # Sort blocks by top-Y then left-X
-                    blocks = sorted(blocks, key=lambda b: (round(b.bbox[1] / 12.0), b.bbox[0]))
-                    line_groups: list[list[str]] = []
-                    current_line: list[str] = []
-                    prev_y = -999.0
+                if not raw_items:
+                    return None
 
-                    for b in blocks:
-                        if prev_y < 0 or abs(b.bbox[1] - prev_y) <= 12.0:
-                            current_line.append(b.text)
-                        else:
-                            if current_line:
-                                line_groups.append(current_line)
-                            current_line = [b.text]
-                        prev_y = b.bbox[1]
-                    if current_line:
-                        line_groups.append(current_line)
+                # Sort raw items top-to-bottom, left-to-right
+                raw_items.sort(key=lambda b: (b.bbox[1], b.bbox[0]))
 
-                    full_text = "\n".join(" ".join(words) for words in line_groups)
-                    mean_conf = sum(confidences) / len(confidences) if confidences else 0.90
-                    return OCRResult(
-                        blocks=blocks,
-                        full_text=full_text,
-                        mean_confidence=mean_conf,
-                        language=lang,
+                # Line-level clustering: group horizontally adjacent word/phrase tokens
+                line_clusters: list[list[OCRBlock]] = []
+                for item in raw_items:
+                    h_item = max(item.bbox[3] - item.bbox[1], 10.0)
+                    matched_cluster: list[OCRBlock] | None = None
+
+                    for cluster in line_clusters:
+                        # Compute cluster vertical boundaries
+                        c_y0 = min(b.bbox[1] for b in cluster)
+                        c_y1 = max(b.bbox[3] for b in cluster)
+                        c_h = max(c_y1 - c_y0, 10.0)
+
+                        overlap_y = max(0.0, min(item.bbox[3], c_y1) - max(item.bbox[1], c_y0))
+                        min_h = min(h_item, c_h)
+                        v_overlap_ratio = overlap_y / min_h if min_h > 0 else 0.0
+
+                        is_same_horizontal_band = (
+                            v_overlap_ratio >= 0.45
+                            or abs(item.bbox[1] - c_y0) <= max(min_h * 0.5, 12.0)
+                        )
+
+                        if is_same_horizontal_band:
+                            # Check horizontal proximity within line track (prevent gutter crossing)
+                            c_x0 = min(b.bbox[0] for b in cluster)
+                            c_x1 = max(b.bbox[2] for b in cluster)
+                            overlap_x = max(0.0, min(item.bbox[2], c_x1) - max(item.bbox[0], c_x0))
+                            gap_x = max(0.0, max(item.bbox[0] - c_x1, c_x0 - item.bbox[2]))
+                            max_h_gap = max(min_h * 2.8, 80.0)
+
+                            if overlap_x > 0.0 or gap_x <= max_h_gap:
+                                matched_cluster = cluster
+                                break
+
+                    if matched_cluster is not None:
+                        matched_cluster.append(item)
+                    else:
+                        line_clusters.append([item])
+
+                # Build consolidated line-level OCRBlocks
+                consolidated_blocks: list[OCRBlock] = []
+                for cluster in line_clusters:
+                    # Sort left-to-right within line
+                    cluster.sort(key=lambda b: b.bbox[0])
+                    joined_text = " ".join(b.text for b in cluster).strip()
+                    if not joined_text:
+                        continue
+                    c_bbox = (
+                        float(min(b.bbox[0] for b in cluster)),
+                        float(min(b.bbox[1] for b in cluster)),
+                        float(max(b.bbox[2] for b in cluster)),
+                        float(max(b.bbox[3] for b in cluster)),
                     )
+                    c_conf = sum(b.confidence for b in cluster) / len(cluster)
+                    consolidated_blocks.append(
+                        OCRBlock(
+                            text=joined_text,
+                            bbox=c_bbox,
+                            confidence=c_conf,
+                            language=lang,
+                        )
+                    )
+
+                # Sort consolidated line blocks by reading order (top-to-bottom, left-to-right)
+                consolidated_blocks.sort(
+                    key=lambda b: (round(b.bbox[1] / 15.0) * 15.0, b.bbox[0])
+                )
+
+                full_text = "\n".join(b.text for b in consolidated_blocks)
+                mean_conf = (
+                    sum(b.confidence for b in consolidated_blocks) / len(consolidated_blocks)
+                    if consolidated_blocks
+                    else 0.90
+                )
+
+                return OCRResult(
+                    blocks=consolidated_blocks,
+                    full_text=full_text,
+                    mean_confidence=mean_conf,
+                    language=lang,
+                )
             except Exception as e:
                 logger.error(
                     "MinerU neural OCR execution failed",

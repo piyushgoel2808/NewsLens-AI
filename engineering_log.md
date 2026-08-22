@@ -862,7 +862,42 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.18 — Neural OCR Line Clustering, DPI Consolidation & Post-OCR Ad Detection
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+
+1. **Neural OCR Line-Level Spatial Grouping (`backend/app/providers/mineru_provider.py`)**:
+   - Replaced raw DBNet word bounding box serialization with dynamic horizontal line clustering.
+   - Merges horizontal word slices ($\ge 45\%$ vertical overlap, horizontal gap $\le 2.8 \times \text{line\_height}$) into unified line-level `OCRBlock` instances with combined bounding boxes `[min(x0), min(y0), max(x1), max(y1)]` and averaged confidence.
+   - Eliminates single-word fragment splinters in `ocr_extracted_text.json`.
+
+2. **DPI-Adaptive Spatial Distance Metric (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Removed rigid `min(max_v_gap, 25.0)` gap ceiling in `_consolidate_elements()`.
+   - Implemented dynamic gap threshold `max_allowed_gap = max(median_lh * 1.6, 20.0 * (page_height / 1000.0))` and column overlap tolerance `overlap_x / min_w >= 0.45` to correctly merge body lines and headlines on high-resolution 300 DPI canvases ($2800 \times 4399$).
+
+3. **Post-OCR Advertisement Detection for Scanned Pages (`backend/app/ingestion/detector.py`, `backend/app/ingestion/tasks.py`)**:
+   - Expanded `AD_KEYWORDS_REGEX` with optional-whitespace and unspaced OCR token patterns (`priceband`, `theissue`, `green energylimited`, `equity shares`, `asba`, `apply through upi`, `oearningsratio`, `taj hotels`).
+   - Added post-OCR re-evaluation inside `run_ingestion_pipeline` on scanned pages, updating `page.is_advertisement_page = True` when IPO / statutory / advertisement keywords are detected.
+   - Groups full-page jacket ads and IPO application forms (Pages 1, 2, 3, 4, 11) into single `[Advertisement]` units, skipping Qdrant vector indexing.
+
+4. **Section Header Blacklisting & Word Count Enforcement (`backend/app/ingestion/segmenter.py`, `backend/app/ingestion/tasks.py`)**:
+   - Added `SECTION_HEADER_BLACKLIST` (`TECH & STARTUPS`, `MARK TO MARKET`, `NEWS WRAP`, `CORPORATE`, `GLOBAL`, `VIEWS`, `LONG STORY`, `MINT MONEY`, `ECONOMY & POLICY`, `PLAIN FACTS`, `SMART WAY`, `HEPRICE`, `SU`, `NITIAL`).
+   - Enforced strict dropping of non-ad sub-threshold fragments in `segmenter.py` and `tasks.py`.
+
+### Verification & QA
+- `make lint && make test`: **167/167 tests passing 100% GREEN in 2.74s**.
+- Full pipeline run on `demo/Mint ³⁰⁰⁷²⁰²⁶.pdf`:
+  - `identified_advertisements.json`: 5 verified ads on Pages 1, 2, 3, 4, 11 (9.7 KB).
+  - `articles_manifest.json`: 30 clean, well-formed articles with zero single-word stubs.
+  - `ocr_extracted_text.json`: Coherent multi-word line blocks.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

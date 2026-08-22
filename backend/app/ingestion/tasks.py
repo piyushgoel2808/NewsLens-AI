@@ -265,6 +265,15 @@ async def run_ingestion_pipeline(
                     )
                 await db.flush()
 
+            # Re-evaluate advertisement status post-OCR for scanned pages
+            if analysis.requires_ocr and extracted_ocr_blocks:
+                from app.ingestion.detector import check_is_advertisement_text
+
+                ocr_full_page_text = "\n".join(b.text for b in extracted_ocr_blocks if b.text)
+                if check_is_advertisement_text(ocr_full_page_text, len(ocr_full_page_text.split())):
+                    analysis.is_advertisement = True
+                    ad_page_numbers.add(page_num)
+
             printed_folio = folio_detector.extract_printed_page_number(
                 page_number=page_num,
                 height_px=folio_height,
@@ -448,11 +457,40 @@ async def run_ingestion_pipeline(
         identified_advertisements: list[dict[str, Any]] = []
         total_chunks_created = 0
 
+        from app.ingestion.segmenter import is_valid_headline_candidate
+
         for assembled in assembled_articles:
             class_res = classifier.classify_and_score(
                 article=assembled,
                 total_issue_pages=len(rendered_pages),
             )
+
+            is_ad = class_res.article_type == "advertisement" or assembled.headline.startswith(
+                ("[Advertisement]", "[Public Notice]")
+            )
+            is_shorts = assembled.headline.startswith("[Shorts]") and assembled.word_count >= 15
+            is_substantial = (
+                is_valid_headline_candidate(assembled.headline)
+                and assembled.word_count >= 25
+            )
+
+            # Drop sub-threshold fragments and section header stubs
+            is_keep_article = (
+                is_ad
+                or is_shorts
+                or is_substantial
+                or assembled.word_count >= 35
+            )
+            if not is_keep_article:
+                logger.info(
+                    "Skipping persistence of sub-threshold fragment in tasks.py",
+                    extra={
+                        "headline": assembled.headline[:60],
+                        "word_count": assembled.word_count,
+                        "type": class_res.article_type,
+                    },
+                )
+                continue
 
             primary_page_id = page_id_map.get(assembled.primary_page_number)
 

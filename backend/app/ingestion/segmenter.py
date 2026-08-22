@@ -53,6 +53,41 @@ BOILERPLATE_TOKENS = {
 
 MIN_ARTICLE_WORD_COUNT = 40
 
+SECTION_HEADER_BLACKLIST = frozenset(
+    {
+        "tech & startups",
+        "tech and startups",
+        "deals, tech & startups",
+        "deals tech startups",
+        "mark to market",
+        "news wrap",
+        "in brief",
+        "news in brief",
+        "corporate",
+        "global",
+        "views",
+        "views & opinions",
+        "views and opinions",
+        "long story",
+        "mint money",
+        "economy & policy",
+        "economy and policy",
+        "business of life",
+        "plain facts",
+        "mint primer",
+        "companies",
+        "markets",
+        "smart way",
+        "heprice",
+        "nitial",
+        "initial",
+        "su",
+        "myths and mantras",
+        "mint curator",
+        "ask mint",
+    }
+)
+
 
 NUMERIC_STAT_PATTERN = re.compile(
     r"\b(?:\d+[\d,\.]*\s*(?:cr|crore|mn|million|bn|billion|lakh|%|pts|bps|usd|inr)?|"
@@ -90,6 +125,12 @@ def is_valid_headline_candidate(text: str) -> bool:
         return False
     # Single words (e.g. "LIMITED", "ISSUE", "EQUITY") are never valid article headlines
     if len(words) == 1:
+        return False
+    # Filter out section headers and recurring layout tags
+    if (
+        cleaned.lower() in SECTION_HEADER_BLACKLIST
+        or text.strip().lower() in SECTION_HEADER_BLACKLIST
+    ):
         return False
     # Filter out pure boilerplate token combinations
     if all(w.lower() in BOILERPLATE_TOKENS for w in words):
@@ -403,6 +444,38 @@ class ArticleSegmenter:
                     )
                     second.word_count = len(second_c.split())
             articles = consolidated
+
+        # Final Purge: Drop any remaining standalone fragment / boilerplate stub < 25 words
+        valid_final_articles: list[SegmentedArticle] = []
+        for art in articles:
+            is_ad = art.headline.startswith(
+                ("[Advertisement]", "[Public Notice]")
+            )
+            is_valid_teaser = bool(art.is_teaser and art.jump_to_page is not None)
+            is_shorts = art.headline.startswith("[Shorts]") and art.word_count >= 15
+            is_substantial = (
+                is_valid_headline_candidate(art.headline)
+                and art.word_count >= 6
+            )
+            is_keep = (
+                is_ad
+                or is_valid_teaser
+                or is_shorts
+                or is_substantial
+                or art.word_count >= MIN_ARTICLE_WORD_COUNT
+            )
+            if is_keep:
+                valid_final_articles.append(art)
+            else:
+                logger.info(
+                    "Dropping standalone sub-threshold article fragment",
+                    extra={
+                        "page_number": page_number,
+                        "headline": art.headline[:60],
+                        "word_count": art.word_count,
+                    },
+                )
+        articles = valid_final_articles
 
         logger.info(
             "Page segmented into articles",

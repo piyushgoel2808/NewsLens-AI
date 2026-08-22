@@ -146,19 +146,46 @@ class PageType(StrEnum):
 
 
 AD_KEYWORDS_REGEX = re.compile(
-    r"(?i)\b(?:advertisement|advertorial|special\s+promotional\s+feature|sponsored\s+feature|"
-    r"promotional\s+feature|t&c\s+apply|terms\s+(?:and|&)\s+conditions\s+apply|"
-    r"call\s+now|visit\s+us\s+at|toll\s+free|showroom|mrp\s*rs|flat\s+\d+%\s+off|"
-    r"exclusive\s+offer|limited\s+period\s+offer|book\s+now\s+at|for\s+bookings\s+call|"
-    # Financial IPO Notices
-    r"initial\s+public\s+offering|red\s+herring\s+prospectus|draft\s+red\s+herring\s+prospectus|"
-    r"book\s+running\s+lead\s+manager|registrar\s+to\s+the\s+issue|bid/issue\s+opens\s+on|"
-    r"price\s+band|floor\s+price|promoters\s+of\s+our\s+company|equity\s+shares\s+of\s+face\s+value|"
+    r"(?i)(?:\b(?:advertisement|advertorial|special\s*promotional\s*feature|sponsored\s*feature|"
+    r"promotional\s*feature|t&c\s*apply|terms\s*(?:and|&)\s*conditions\s*apply|"
+    r"call\s*now|visit\s*us\s*at|toll\s*free|showroom|mrp\s*rs|flat\s*\d+%\s*off|"
+    r"exclusive\s*offer|limited\s*period\s*offer|book\s*now\s*at|for\s*bookings\s*call|"
+    # Financial IPO Notices & Application Forms
+    r"initial\s*public\s*offering|red\s*herring\s*prospectus|draft\s*red\s*herring\s*prospectus|"
+    r"book\s*running\s*lead\s*manager|registrar\s*to\s*the\s*issue|bid/issue\s*opens\s*on|"
+    r"bid\s*opens\s*on|issue\s*opens\s*on|anchor\s*investor|price\s*band|floor\s*price|"
+    r"promoters\s*of\s*our\s*company|equity\s*shares|face\s*value|to\s*be\s*listed|"
+    r"asba|apply\s*through\s*upi|kfintech|link\s*intime|icici\s*securities|kotak\s*mahindra|"
+    r"green\s*energy\s*limited|theissue|priceband|oearningsratio|"
+    # Mutual Funds & Commercials
+    r"mutual\s*fund\s*investments\s*are\s*subject|scheme\s*related\s*documents|taj\s*hotels|"
     # Statutory & Legal Notices
-    r"public\s+notice|statutory\s+notice|notice\s+is\s+hereby\s+given|in\s+the\s+matter\s+of|"
-    r"national\s+company\s+law\s+tribunal|\bnclt\b|insolvency\s+and\s+bankruptcy\s+code|"
-    r"auction\s+sale\s+notice|tender\s+notice|e-auction|corrigendum|possession\s+notice)\b"
+    r"public\s*notice|statutory\s*notice|notice\s*is\s*hereby\s*given|in\s*the\s*matter\s*of|"
+    r"national\s*company\s*law\s*tribunal|\bnclt\b|insolvency\s*and\s*bankruptcy\s*code|"
+    r"auction\s*sale\s*notice|tender\s*notice|e-auction|corrigendum|possession\s*notice)\b)"
 )
+
+
+def check_is_advertisement_text(text: str, word_count: int | None = None) -> bool:
+    """Evaluate whether extracted digital or OCR text represents an advertisement/notice."""
+    if not text or not text.strip():
+        return False
+    norm_text = re.sub(r"\s+", " ", text).strip()
+    upper_text = norm_text.upper()
+    w_count = word_count if word_count is not None else len(norm_text.split())
+
+    ad_matches = len(AD_KEYWORDS_REGEX.findall(norm_text))
+
+    return bool(
+        upper_text.startswith("ADVERTISEMENT")
+        or upper_text.startswith("ADVERTORIAL")
+        or upper_text.startswith("SPECIAL PROMOTIONAL FEATURE")
+        or upper_text.startswith("SPONSORED FEATURE")
+        or upper_text.startswith("PUBLIC NOTICE")
+        or upper_text.startswith("INITIAL PUBLIC OFFERING")
+        or (ad_matches >= 2)
+        or (ad_matches >= 1 and (w_count < 250))
+    )
 
 
 @dataclass

@@ -683,11 +683,12 @@ class LayoutAnalyzer:
                     prev.block_type == BlockType.BODY_TEXT
                     and elem.block_type == BlockType.BODY_TEXT
                 ):
-                    max_allowed_gap = max(min(max_v_gap, 25.0), 12.0)
+                    scale_h = (page_height / 1000.0) if page_height else 1.0
+                    max_allowed_gap = max(median_lh * 1.6, 20.0 * scale_h)
                     if (
                         min_w > 0
-                        and (overlap_x / min_w) >= 0.70
-                        and 0.0 <= gap_y <= max_allowed_gap
+                        and (overlap_x / min_w) >= 0.45
+                        and -8.0 <= gap_y <= max_allowed_gap
                     ):
                         if prev.text.endswith("-"):
                             prev.text = prev.text[:-1] + elem.text
