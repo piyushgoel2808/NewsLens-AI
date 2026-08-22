@@ -712,6 +712,28 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.13 — Exclusive MinerU Neural OCR Enforcement & Tesseract Removal
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+1. **Total Tesseract OCR Removal (`model_config.yaml`, `backend/app/ingestion/ocr_service.py`)**:
+   - Removed `tesseract_ocr` provider from `model_config.yaml`.
+   - Bound `ocr: mineru_parser` as the sole, authoritative OCR engine in the system.
+   - Updated `OCRService` to default strictly to `MinerUProvider`.
+
+2. **MinerU Neural PaddleOCR Execution (`backend/app/providers/mineru_provider.py`)**:
+   - Removed all fallback code paths to Tesseract.
+   - Enforced `PytorchPaddleOCR` (with PyTorch neural weights) for all optical text recognition tasks on scanned pages.
+   - Structured neural bounding box sequences into clean line-level and paragraph-level `OCRBlock` instances.
+
+### Verification & QA
+- `make lint && make test`: **159/159 tests passing 100% GREEN in 2.76s**.
+- Verified `PytorchPaddleOCR` execution on CPU/MPS with high-confidence neural text extraction.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
 
 

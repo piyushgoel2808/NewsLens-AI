@@ -52,7 +52,6 @@ class ModelRegistry:
         from app.providers.local_embedding_provider import LocalEmbeddingProvider
         from app.providers.ollama_provider import OllamaProvider
         from app.providers.openai_provider import OpenAIProvider
-        from app.providers.tesseract_ocr import TesseractOCR
 
         cfg = self._model_config.providers.get(provider_id)
         if not cfg:
@@ -83,9 +82,7 @@ class ModelRegistry:
             )
         elif provider_type == "local_sentence_transformers":
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
-        elif provider_type == "tesseract":
-            return TesseractOCR(lang=cfg.lang or "eng")
-        elif provider_type in ("mineru", "magic_pdf"):
+        elif provider_type in ("mineru", "magic_pdf", "tesseract"):
             from app.providers.mineru_provider import MinerUProvider
 
             return MinerUProvider(lang=cfg.lang or "en")
@@ -93,7 +90,7 @@ class ModelRegistry:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
                 "Supported: ollama, groq, anthropic, openai, "
-                "local_sentence_transformers, tesseract, mineru"
+                "local_sentence_transformers, mineru"
             )
 
     def get_provider(self, task: str) -> AnyProvider:

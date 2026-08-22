@@ -9,7 +9,6 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.newspaper import Page
 from app.providers.base import OCREngine, OCRResult, ProviderError
-from app.providers.tesseract_ocr import TesseractOCR
 from app.storage.minio_store import MinioStore
 
 logger = get_logger(__name__)
@@ -36,9 +35,13 @@ class OCRService:
                 if isinstance(provider, OCREngine):
                     self._ocr = provider
                 else:
-                    self._ocr = TesseractOCR()
+                    from app.providers.mineru_provider import MinerUProvider
+
+                    self._ocr = MinerUProvider()
             except Exception:
-                self._ocr = TesseractOCR()
+                from app.providers.mineru_provider import MinerUProvider
+
+                self._ocr = MinerUProvider()
         self._minio = minio or MinioStore(self._settings.minio)
 
     async def process_page_ocr(

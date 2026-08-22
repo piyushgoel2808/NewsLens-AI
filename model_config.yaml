@@ -45,14 +45,10 @@ providers:
     model: BAAI/bge-m3           # Strong multilingual model; ~2GB download on first use.
     embedding_dim: 1024
 
-  tesseract_ocr:
-    provider: tesseract
-    lang: "eng+hin"              # Add ISO 639-2 language codes separated by + as needed.
-
   mineru_parser:
     provider: mineru
     lang: "en+hi"
-    method: "auto"               # 'auto', 'txt', or 'ocr'
+    method: "auto"               # 'auto', 'txt', or 'ocr' neural engine
 
   # ---------------------------------------------------------------------------
   # Hosted providers — uncomment and set API keys in .env to enable

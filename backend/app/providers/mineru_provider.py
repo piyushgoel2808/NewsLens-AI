@@ -558,8 +558,8 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
                         language=lang,
                     )
             except Exception as e:
-                logger.warning(
-                    "MinerU neural OCR execution failed or weights not ready; using fallback",
+                logger.error(
+                    "MinerU neural OCR execution failed",
                     extra={"error": str(e)},
                 )
                 return None
@@ -577,9 +577,10 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
             )
             return neural_res
 
-        # Fallback to Tesseract OCR if neural weights are not yet initialized
-        from app.providers.tesseract_ocr import TesseractOCR
-
-        tess_lang = "eng" if "en" in lang else ("hin" if "hi" in lang else lang)
-        tesseract = TesseractOCR(lang=tess_lang)
-        return await tesseract.ocr(image_bytes, lang_hint=lang_hint)
+        # If neural OCR returned empty or failed, return empty result with valid structure
+        return OCRResult(
+            blocks=[],
+            full_text="",
+            mean_confidence=0.0,
+            language=lang,
+        )
