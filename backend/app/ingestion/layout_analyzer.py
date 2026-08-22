@@ -90,13 +90,20 @@ OCR_HEADLINE_REPAIRS = [
     (re.compile(r"\bofGlasgow\b"), "of Glasgow"),
     (re.compile(r"\bcourtcases\b"), "court cases"),
     (re.compile(r"\btheworld\b"), "the world"),
+    (re.compile(r"\beconomicdocudramahastheworld\b"), "economic docudrama has the world"),
     (re.compile(r"\bdocudramahastheworld\b"), "docudrama has the world"),
+    (re.compile(r"\bartificialintelligence\b", re.IGNORECASE), "artificial intelligence"),
     (re.compile(r"\bcaseofoTT\b"), "case of OTT"),
     (re.compile(r"\bofaiding\b"), "of aiding"),
     (re.compile(r"\byourfamilybe\b"), "your family be"),
     (re.compile(r"\babletoaccess\b"), "able to access"),
     (re.compile(r"\briskforpharma\b"), "risk for pharma"),
     (re.compile(r"\btoChatGPT\b"), "to ChatGPT"),
+    (re.compile(r"\bmutual fund-onlyPMS\b", re.IGNORECASE), "mutual fund-only PMS"),
+    (re.compile(r"\b25lakh\b", re.IGNORECASE), "25 lakh"),
+    (re.compile(r"\bageneric\b", re.IGNORECASE), "a generic"),
+    (re.compile(r"\bIUNE\b"), "JUNE"),
+    (re.compile(r"\bQl\b"), "Q1"),
 ]
 
 CONTINUATION_END_TOKENS = frozenset(
@@ -145,7 +152,7 @@ def is_grammatically_open_headline_fragment(text: str) -> bool:
         return True
     if text.rstrip().endswith((",", "-", "—", ":", "...")):
         return True
-    return bool(len(words) <= 3 and not text.rstrip().endswith((".", "!", "?")))
+    return bool(len(words) <= 2 and last_word in ("and", "or", "to", "in", "of", "for", "with"))
 
 
 def is_noise_or_boilerplate_block(
@@ -522,33 +529,39 @@ class LayoutAnalyzer:
                     )
 
                     # Anti-collision check:
-                    # Only merge if elem_a is a grammatically open fragment (e.g. "OpenAI says")
-                    # OR if elem_b begins with lowercase / continuation token
                     words_a = elem_a.text.strip().split()
                     words_b = elem_b.text.strip().split()
-                    is_open_a = is_grammatically_open_headline_fragment(elem_a.text)
-                    is_open_b = bool(
-                        words_b
-                        and (
-                            words_b[0][0].islower()
-                            or words_b[0].lower() in CONTINUATION_END_TOKENS
-                        )
-                    )
-
-                    # If BOTH are complete long headlines (>= 6 words each), never merge
-                    if len(words_a) >= 6 and len(words_b) >= 6:
+                    if not words_a or not words_b:
                         continue
 
                     # If elem_a ends with terminal punctuation (. ? ! : " ' ”)
-                    if elem_a.text.rstrip().endswith((".", "?", "!", ":", '"', "'", "”")):
+                    if elem_a.text.rstrip().endswith((".", "?", "!", ":", ";", '"', "'", "”")):
                         continue
 
-                    # If neither is open and both are independent (>= 4 words each), do not merge
+                    is_open_a = is_grammatically_open_headline_fragment(elem_a.text)
+                    is_open_b = bool(
+                        words_b[0][0].islower()
+                        or words_b[0].lower() in CONTINUATION_END_TOKENS
+                    )
+
+                    # STRICT RULE: A and B must ONLY merge if elem_a is grammatically open
+                    # OR elem_b starts with lowercase/continuation token
+                    if not (is_open_a or is_open_b):
+                        continue
+
+                    # If elem_a has >= 4 words and is not strictly open, do not merge
                     if (
                         len(words_a) >= 4
-                        and len(words_b) >= 4
-                        and not is_open_a
-                        and not is_open_b
+                        and words_a[-1].lower().strip(" \t\n\r.:;,") not in CONTINUATION_END_TOKENS
+                        and not elem_a.text.rstrip().endswith((",", "-", "—"))
+                    ):
+                        continue
+
+                    # If elem_b starts with uppercase and elem_a is not open, do not merge
+                    if (
+                        words_b[0][0].isupper()
+                        and not elem_a.text.rstrip().endswith((",", "-", "—", "...", ":"))
+                        and words_a[-1].lower().strip(" \t\n\r.:;,") not in CONTINUATION_END_TOKENS
                     ):
                         continue
 
@@ -557,7 +570,6 @@ class LayoutAnalyzer:
                         and v_overlap_ratio >= 0.60
                         and -10.0 <= gap_x <= max_gap_x
                         and font_diff <= 0.25
-                        and (is_open_a or is_open_b or len(words_a) <= 3 or len(words_b) <= 3)
                     ):
                         # Merge A and B
                         elem_a.text = f"{elem_a.text} {elem_b.text}".strip()
