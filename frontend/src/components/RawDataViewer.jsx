@@ -1,4 +1,14 @@
 import React, { useState, useEffect } from 'react';
+import {
+  Database,
+  Cpu,
+  Sliders,
+  CheckCircle2,
+  AlertCircle,
+  Copy,
+  RefreshCw,
+  Code2,
+} from 'lucide-react';
 
 const TASK_OPTIONS = [
   { value: 'query_planner', label: 'Query Planner (LLM)' },
@@ -12,9 +22,10 @@ const TASK_OPTIONS = [
 ];
 
 export default function RawDataViewer() {
-  const [activeEndpoint, setActiveEndpoint] = useState(null);
+  const [activeEndpoint, setActiveEndpoint] = useState('/api/settings/model-bindings');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Dynamic Settings Swapper State
   const [selectedTask, setSelectedTask] = useState('query_planner');
@@ -41,6 +52,7 @@ export default function RawDataViewer() {
 
   useEffect(() => {
     loadSettings();
+    fetchEndpoint('/api/settings/model-bindings');
   }, []);
 
   async function fetchEndpoint(endpoint) {
@@ -86,7 +98,7 @@ export default function RawDataViewer() {
         throw new Error(result.detail || `Update failed (${response.status})`);
       }
 
-      setSwapMessage({ status: 'success', text: `Successfully updated ${selectedTask} to ${selectedProvider}!` });
+      setSwapMessage({ status: 'success', text: `Successfully bound ${selectedTask} to ${selectedProvider}!` });
       setCurrentBindings(result.task_bindings || {});
       if (activeEndpoint === '/api/settings/model-bindings') {
         fetchEndpoint('/api/settings/model-bindings');
@@ -96,87 +108,145 @@ export default function RawDataViewer() {
     }
   }
 
-  return (
-    <div style={{ border: '1px solid #ccc', padding: '16px', margin: '12px 0' }}>
-      <h3>3. RawDataViewer & Model Settings Swapper</h3>
+  const handleCopyJson = () => {
+    if (!data) return;
+    navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-        <button onClick={() => fetchEndpoint('/api/newspapers')}>GET /api/newspapers</button>
-        <button onClick={() => fetchEndpoint('/api/issues')}>GET /api/issues</button>
-        <button onClick={() => fetchEndpoint('/api/settings/model-bindings')}>GET /api/settings/model-bindings</button>
-        <button onClick={() => fetchEndpoint('/api/entities')}>GET /api/entities</button>
-        <button onClick={() => fetchEndpoint('/api/topics')}>GET /api/topics</button>
-        <button onClick={() => fetchEndpoint('/api/query/history')}>GET /api/query/history</button>
+  return (
+    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 max-w-5xl mx-auto p-4 md:p-6 overflow-y-auto space-y-6">
+      {/* Header */}
+      <div className="pb-4 border-b border-slate-800">
+        <h1 className="text-2xl font-bold font-serif text-slate-100 flex items-center gap-2.5">
+          <Sliders className="w-6 h-6 text-emerald-400" />
+          Model Registry & Ingestion Manifest Inspector
+        </h1>
+        <p className="text-xs text-slate-400 mt-1">
+          Dynamically re-bind LLM, VLM, Embedding, and OCR providers at runtime without service restarts, and inspect live endpoint responses.
+        </p>
       </div>
 
-      <div style={{ borderTop: '1px solid #eee', paddingTop: '10px', marginBottom: '12px' }}>
-        <strong>Runtime Model-Binding Swapper (PUT /api/settings/model-bindings):</strong>
-        <form onSubmit={handleSwapBinding} style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <label style={{ fontSize: '13px' }}>Task: </label>
-          <select
-            value={selectedTask}
-            onChange={(e) => {
-              setSelectedTask(e.target.value);
-              const active = currentBindings[e.target.value];
-              if (active) setSelectedProvider(active);
-            }}
-            style={{ padding: '6px' }}
-          >
-            {TASK_OPTIONS.map((t) => (
-              <option key={t.value} value={t.value}>
-                {t.label} {currentBindings[t.value] ? `(Active: ${currentBindings[t.value]})` : ''}
-              </option>
-            ))}
-          </select>
+      {/* Model Provider Re-Binding Panel */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+          <Cpu className="w-4 h-4 text-emerald-400" />
+          Dynamic Provider Binding Manager
+        </h2>
 
-          <label style={{ fontSize: '13px' }}>Provider: </label>
-          <select
-            value={selectedProvider}
-            onChange={(e) => setSelectedProvider(e.target.value)}
-            style={{ padding: '6px' }}
-          >
-            {configuredProviders.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.id} ({p.provider} - {p.model || 'default'})
-              </option>
-            ))}
-          </select>
+        <form onSubmit={handleSwapBinding} className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <div>
+            <label className="block text-slate-400 font-medium mb-1">Pipeline Task</label>
+            <select
+              value={selectedTask}
+              onChange={(e) => setSelectedTask(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 outline-none focus:border-emerald-500"
+            >
+              {TASK_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
-          <button type="submit" style={{ padding: '6px 12px' }}>Update Task Binding</button>
+          <div>
+            <label className="block text-slate-400 font-medium mb-1">Target Provider Binding</label>
+            <select
+              value={selectedProvider}
+              onChange={(e) => setSelectedProvider(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 outline-none focus:border-emerald-500"
+            >
+              {configuredProviders.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.id} ({p.provider} - {p.model || 'default'})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-end">
+            <button
+              type="submit"
+              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors shadow-md"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Apply Binding</span>
+            </button>
+          </div>
         </form>
 
         {swapMessage && (
           <div
-            style={{
-              marginTop: '8px',
-              padding: '6px 10px',
-              fontSize: '13px',
-              background: swapMessage.status === 'success' ? '#e6ffe6' : swapMessage.status === 'error' ? '#ffe6e6' : '#f0f0f0',
-              border: '1px solid #ccc',
-            }}
+            className={`p-3 rounded-lg text-xs flex items-center gap-2 ${
+              swapMessage.status === 'success'
+                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                : swapMessage.status === 'updating'
+                ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30'
+                : 'bg-red-500/10 text-red-400 border border-red-500/30'
+            }`}
           >
-            {swapMessage.text}
+            {swapMessage.status === 'updating' && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+            {swapMessage.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5" />}
+            {swapMessage.status === 'error' && <AlertCircle className="w-3.5 h-3.5" />}
+            <span>{swapMessage.text}</span>
           </div>
         )}
       </div>
 
-      <div>
-        <strong>Endpoint JSON Output: </strong>
-        <code>{activeEndpoint || 'No endpoint selected'}</code>
-        {loading && <span> (Loading...)</span>}
+      {/* Endpoint Inspector & JSON Console */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Inspect API:</span>
+            {[
+              { label: 'Model Bindings', url: '/api/settings/model-bindings' },
+              { label: 'Corpus Newspapers', url: '/api/newspapers' },
+              { label: 'Issues Catalog', url: '/api/issues?limit=10' },
+              { label: 'System Health', url: '/health' },
+            ].map((btn) => (
+              <button
+                key={btn.url}
+                onClick={() => fetchEndpoint(btn.url)}
+                className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${
+                  activeEndpoint === btn.url
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                {btn.label}
+              </button>
+            ))}
+          </div>
 
-        <pre
-          style={{
-            maxHeight: '300px',
-            overflow: 'auto',
-            background: '#f9f9f9',
-            border: '1px solid #ddd',
-            padding: '8px',
-            marginTop: '8px',
-          }}
-        >
-          {data ? JSON.stringify(data, null, 2) : '// Click an endpoint button above to inspect raw JSON output'}
-        </pre>
+          <button
+            onClick={handleCopyJson}
+            disabled={!data}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-30"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span>{copied ? 'Copied!' : 'Copy JSON'}</span>
+          </button>
+        </div>
+
+        {/* JSON Code Viewer */}
+        <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 overflow-x-auto max-h-[420px]">
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-slate-500 gap-2">
+              <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+              <span className="text-xs">Fetching live JSON payload...</span>
+            </div>
+          ) : data ? (
+            <pre className="text-xs font-mono text-emerald-400 leading-relaxed">
+              {JSON.stringify(data, null, 2)}
+            </pre>
+          ) : (
+            <div className="text-center py-12 text-slate-500 text-xs">
+              Select an endpoint above to view structured response payload.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

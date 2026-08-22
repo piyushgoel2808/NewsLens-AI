@@ -280,6 +280,17 @@ async def inspect_issue_ingestion(
                 for ap in sorted(a.article_pages, key=lambda ap: ap.page_number)
                 if ap.printed_page_number
             ],
+            "bboxes": [
+                bbox
+                for ap in a.article_pages
+                if ap.bbox_json and isinstance(ap.bbox_json, dict)
+                for bbox in ap.bbox_json.get("bboxes", [])
+            ],
+            "page_bboxes": {
+                ap.page_number: ap.bbox_json.get("bboxes", [])
+                for ap in a.article_pages
+                if ap.bbox_json and isinstance(ap.bbox_json, dict)
+            },
         }
         for a in issue.articles
     ]

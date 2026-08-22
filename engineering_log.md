@@ -1193,7 +1193,53 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
-*Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+## Phase 6.2 — Full-Stack Newspaper Intelligence & UI Implementation
+
+**Date**: 2026-08-22
+**Status**: Completed ✅
+
+### What was built
+
+1. **SVG Canvas Coordinate Engine & Spatial Overlays (`CanvasOverlay.jsx`)**:
+   - Implemented native SVG `viewBox="0 0 width height"` scaling mapped directly over MinIO raster images (`/api/pages/{page_id}/image`), completely preventing coordinate drift on responsive window resizing.
+   - Interactive, color-coded `<rect>` elements mapped by category:
+     - 🟢 **News / Articles**: `rgba(34, 197, 94, 0.08)` stroke `rgb(34, 197, 94)`
+     - 🔵 **Structured Tables**: `rgba(59, 130, 246, 0.1)` stroke `rgb(59, 130, 246)`
+     - 🟣 **Photos & Infographics**: `rgba(168, 85, 247, 0.1)` stroke `rgb(168, 85, 247)`
+     - 🟡 **Advertisements & Notices**: `rgba(245, 158, 11, 0.08)` stroke `rgb(245, 158, 11)`
+   - Floating hover tooltips, click selection, and SVG filter glow pulse animation.
+
+2. **Cross-Component Spatial Citation Bridge (`ActiveHighlightContext.jsx`)**:
+   - Shared React Context managing `{ activeIssueId, activePageNumber, activeArticleId, activeBboxes, isPulsing }`.
+   - `highlightArticle()` helper that updates target issue/page, triggers temporary 4-second pulse animation on source bounding boxes, and switches view to Broadsheet Reader.
+
+3. **Interactive Broadsheet Reader (`BroadsheetReader.jsx`)**:
+   - Split-screen workspace: Left canvas with Zoom in/out/reset, page carousel, folio indicators, and overlay toggles; Right inspector pane with serif headlines, kicker, byline, AI summary pill, prominence score gauge, full text, and multi-page continuation jump buttons.
+   - Bidirectional hover and selection synchronization between list cards and SVG overlays.
+
+4. **Real-Time Streaming Agentic Assistant (`AgentAssistant.jsx`)**:
+   - Connected to `POST /api/query/stream` consuming SSE events (`stage`, `plan`, `tool_result`, `token`, `citations`, `done`).
+   - Collapsible **Plan & Tool Telemetry** disclosure showing executed SQL and hybrid vector steps.
+   - Clickable citation badges `[Newspaper, Page N]` wired directly to `ActiveHighlightContext`.
+   - Dynamic LLM model provider switcher (`ollama_llama`, `anthropic_sonnet`, `openai_gpt4`, `groq_llama`).
+
+5. **Faceted Archive Navigator & Ingestion Console (`ArchiveExplorer.jsx`, `UploadTrigger.jsx`, `RawDataViewer.jsx`)**:
+   - `ArchiveExplorer`: Multi-dimensional filtering by publication, date, status, issue metrics, and 3-tier hard deletion.
+   - `UploadTrigger`: Drag-and-drop PDF dropzone, pipeline stage tracker, and direct one-click "Read Issue" button upon completion.
+   - `RawDataViewer`: Runtime dynamic task-provider binding manager (`PUT /api/settings/model-bindings`) and live JSON endpoint inspector.
+
+6. **Application Shell & Styling (`App.jsx`, `index.css`, Tailwind v4)**:
+   - Modern top navigation bar, newspaper-inspired typography, dark slate palette, and custom scrollbars.
+
+### Verification & QA
+- `npm run build`: **Frontend built in 628ms with 0 errors**.
+- `make lint`: **0 errors across 67 backend source files**.
+- `make test`: **195/195 tests passing 100% GREEN in 14.54s**.
+
+---
+
+*Next phase: Phase 7 — Observability, Performance & Cost Control (OpenTelemetry, Prometheus metrics, Token Accounting)*
+
 
 
 
