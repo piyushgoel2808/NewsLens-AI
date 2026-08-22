@@ -45,7 +45,7 @@ BOILERPLATE_TOKENS = {
     "advertisement", "public", "statutory", "tender", "bid", "face", "value",
 }
 
-MIN_ARTICLE_WORD_COUNT = 30
+MIN_ARTICLE_WORD_COUNT = 40
 
 
 def is_valid_headline_candidate(text: str) -> bool:
@@ -157,10 +157,18 @@ class ArticleSegmenter:
                     if pages:
                         jump_from = int(pages[0])
 
-                # Extract headline vs initial body if multi-line or very long
-                lines = [line.strip() for line in text.split("\n") if line.strip()]
-                headline_text = lines[0][:300] if lines else text[:300]
-                initial_body = "\n".join(lines[1:]) if len(lines) > 1 else text
+                # Extract headline and initial body
+                if is_headline:
+                    # Preserve entire headline string (do not truncate multi-line headlines)
+                    headline_text = " ".join(
+                        line.strip() for line in text.split("\n") if line.strip()
+                    )
+                    initial_body = ""
+                else:
+                    # First block on page without detected headline
+                    lines = [line.strip() for line in text.split("\n") if line.strip()]
+                    headline_text = lines[0][:200] if lines else f"Page {page_number} News"
+                    initial_body = text
 
                 current_article = SegmentedArticle(
                     article_temp_id=f"p{page_number}_art_{article_counter}",
@@ -253,8 +261,13 @@ class ArticleSegmenter:
                 and len(art.body_text.split()) >= 5
             )
             is_shorts = art.headline.startswith("[Shorts]") and w_count >= 15
+            is_ad = (
+                art.headline.startswith("[Advertisement]")
+                or art.headline.startswith("[Public Notice]")
+            )
             is_valid_structured_article = (
                 is_shorts
+                or is_ad
                 or (has_valid_hl and has_distinct_body and w_count >= 12)
                 or (w_count >= MIN_ARTICLE_WORD_COUNT)
             )
@@ -286,6 +299,10 @@ class ArticleSegmenter:
                     and len(first.body_text.split()) >= 5
                 )
                 first_is_valid = (
+                    first.headline.startswith("[Shorts]") and first.word_count >= 15
+                ) or (
+                    first.headline.startswith("[Advertisement]")
+                ) or (
                     first_has_valid_hl and first_has_body and first.word_count >= 12
                 ) or (first.word_count >= MIN_ARTICLE_WORD_COUNT)
 

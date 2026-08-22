@@ -64,96 +64,147 @@ class ReadingOrderResolver:
         self,
         elements: list[LayoutElement],
     ) -> list[OrderedReadingBlock]:
-        """Order layout elements following standard newspaper reading rules."""
+        """Order layout elements following 2D newspaper column-binding rules."""
         if not elements:
             return []
 
-        # Step 1: Separate elements into top-banners vs columnar content
-        # An element is a top banner if it's wide (> 40% page width) and in the upper half
-        banners: list[LayoutElement] = []
-        column_elements: list[LayoutElement] = []
+        # Step 1: Identify all headline / banner elements
+        headlines: list[LayoutElement] = [
+            el for el in elements
+            if el.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+            or el.font_size > 14.0
+        ]
 
-        max_x = max((el.bbox[2] for el in elements), default=self.page_width)
-        ref_width = max_x if max_x > 0 else self.page_width
+        # Sort headlines primarily top-to-bottom by y0, then left-to-right by x0
+        headlines.sort(key=lambda h: (round(h.bbox[1] / 30.0), h.bbox[0]))
 
-        for el in elements:
-            x0, y0, x1, y1 = el.bbox
-            width = x1 - x0
-            is_wide = width >= (ref_width * 0.40)
-            is_header_type = (
-                el.block_type
-                in (
-                    BlockType.BANNER_HEADLINE,
-                    BlockType.HEADLINE,
-                )
-                or el.font_size > 14.0
-            )
-
-            if is_wide and is_header_type:
-                banners.append(el)
-            else:
-                column_elements.append(el)
-
-        # Sort banners strictly top-to-bottom by y0
-        banners.sort(key=lambda b: (b.bbox[1], b.bbox[0]))
-
-        # Step 2: Cluster column elements into vertical columns based on x0
+        assigned_ids: set[str | int] = set()
         ordered_blocks: list[OrderedReadingBlock] = []
         current_index = 1
 
-        for b in banners:
+        # Step 2: For each headline, bind underlying multi-column text blocks
+        for h in headlines:
+            if h.element_id in assigned_ids:
+                continue
+
+            assigned_ids.add(h.element_id)
             ordered_blocks.append(
                 OrderedReadingBlock(
                     reading_order_index=current_index,
-                    element_id=b.element_id,
-                    block_type=b.block_type,
-                    text=b.text,
-                    bbox=b.bbox,
+                    element_id=h.element_id,
+                    block_type=h.block_type,
+                    text=h.text,
+                    bbox=h.bbox,
                     column_band=0,
                 )
             )
             current_index += 1
 
-        if not column_elements:
-            return ordered_blocks
+            h_x0, h_y0, h_x1, h_y1 = h.bbox
+            span_x0 = h_x0 - 25.0
+            span_x1 = h_x1 + 25.0
 
-        # Cluster remaining elements into column bands
-        # Sort candidate elements by left position x0
-        sorted_by_x = sorted(column_elements, key=lambda e: e.bbox[0])
+            # Find lower vertical bound: the next headline directly below within this span
+            y_limit = self.page_height * 0.99
+            for other_h in headlines:
+                if other_h.element_id == h.element_id:
+                    continue
+                oh_x0, oh_y0, oh_x1, oh_y1 = other_h.bbox
+                if (
+                    oh_y0 > h_y1
+                    and max(oh_x0, span_x0) < min(oh_x1, span_x1)
+                    and oh_y0 < y_limit
+                ):
+                    y_limit = oh_y0
 
-        columns: list[list[LayoutElement]] = []
-        col_x_threshold = self.page_width * 0.08  # 8% width tolerance for column alignment
+            # Find all unassigned body elements strictly beneath this headline
+            candidate_body: list[LayoutElement] = []
+            for el in elements:
+                if el.element_id in assigned_ids:
+                    continue
+                if el.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE):
+                    continue
 
-        for el in sorted_by_x:
-            assigned = False
-            el_x0 = el.bbox[0]
-            for col in columns:
-                # Average x0 of the column
-                avg_col_x0 = sum(item.bbox[0] for item in col) / len(col)
-                if abs(el_x0 - avg_col_x0) <= col_x_threshold:
-                    col.append(el)
-                    assigned = True
-                    break
-            if not assigned:
-                columns.append([el])
+                el_x0, el_y0, el_x1, el_y1 = el.bbox
+                # Must start at or below headline, above lower limit, and overlap horizontally
+                if (
+                    el_y0 >= (h_y1 - 15.0)
+                    and el_y1 <= (y_limit + 25.0)
+                    and max(el_x0, span_x0) < min(el_x1, span_x1)
+                ):
+                    candidate_body.append(el)
 
-        # Sort columns left-to-right
-        columns.sort(key=lambda col: sum(item.bbox[0] for item in col) / len(col))
+            if not candidate_body:
+                continue
 
-        # Within each column, sort top-to-bottom by y0
-        for col_idx, col in enumerate(columns, start=1):
-            col.sort(key=lambda item: item.bbox[1])
-            for item in col:
-                ordered_blocks.append(
-                    OrderedReadingBlock(
-                        reading_order_index=current_index,
-                        element_id=item.element_id,
-                        block_type=item.block_type,
-                        text=item.text,
-                        bbox=item.bbox,
-                        column_band=col_idx,
+            # Cluster candidate body blocks into column lanes (left-to-right)
+            sorted_candidates = sorted(candidate_body, key=lambda e: e.bbox[0])
+            column_lanes: list[list[LayoutElement]] = []
+            lane_tolerance = max(self.page_width * 0.05, 30.0)
+
+            for cand in sorted_candidates:
+                assigned_to_lane = False
+                for lane in column_lanes:
+                    avg_lane_x = sum(item.bbox[0] for item in lane) / len(lane)
+                    if abs(cand.bbox[0] - avg_lane_x) <= lane_tolerance:
+                        lane.append(cand)
+                        assigned_to_lane = True
+                        break
+                if not assigned_to_lane:
+                    column_lanes.append([cand])
+
+            # Sort column lanes left-to-right
+            column_lanes.sort(key=lambda lane: sum(item.bbox[0] for item in lane) / len(lane))
+
+            # Within each column lane, sort top-to-bottom and add to reading sequence
+            for lane_idx, lane in enumerate(column_lanes, start=1):
+                lane.sort(key=lambda item: item.bbox[1])
+                for item in lane:
+                    assigned_ids.add(item.element_id)
+                    ordered_blocks.append(
+                        OrderedReadingBlock(
+                            reading_order_index=current_index,
+                            element_id=item.element_id,
+                            block_type=item.block_type,
+                            text=item.text,
+                            bbox=item.bbox,
+                            column_band=lane_idx,
+                        )
                     )
-                )
-                current_index += 1
+                    current_index += 1
+
+        # Step 3: Append any remaining unassigned elements (e.g. footers, orphan sidebars)
+        remaining = [el for el in elements if el.element_id not in assigned_ids]
+        if remaining:
+            remaining_sorted = sorted(remaining, key=lambda e: e.bbox[0])
+            rem_lanes: list[list[LayoutElement]] = []
+            lane_tol = max(self.page_width * 0.06, 35.0)
+
+            for rem in remaining_sorted:
+                assigned_to_rem = False
+                for r_lane in rem_lanes:
+                    avg_x = sum(item.bbox[0] for item in r_lane) / len(r_lane)
+                    if abs(rem.bbox[0] - avg_x) <= lane_tol:
+                        r_lane.append(rem)
+                        assigned_to_rem = True
+                        break
+                if not assigned_to_rem:
+                    rem_lanes.append([rem])
+
+            rem_lanes.sort(key=lambda lane: sum(item.bbox[0] for item in lane) / len(lane))
+            for r_lane_idx, r_lane in enumerate(rem_lanes, start=1):
+                r_lane.sort(key=lambda item: item.bbox[1])
+                for item in r_lane:
+                    ordered_blocks.append(
+                        OrderedReadingBlock(
+                            reading_order_index=current_index,
+                            element_id=item.element_id,
+                            block_type=item.block_type,
+                            text=item.text,
+                            bbox=item.bbox,
+                            column_band=r_lane_idx,
+                        )
+                    )
+                    current_index += 1
 
         return ordered_blocks

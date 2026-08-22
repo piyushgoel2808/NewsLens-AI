@@ -73,3 +73,25 @@ class TestReadingOrderResolver:
 
         ordered = resolver.resolve_reading_order([c3, c1, c2])
         assert [b.element_id for b in ordered] == ["c1", "c2", "c3"]
+
+    def test_2d_column_binding_beneath_multiple_stacked_articles(self) -> None:
+        """Verify reading order resolves 2D multi-column articles without interleaving."""
+        resolver = ReadingOrderResolver(page_width=1000, page_height=1500)
+
+        # Article 1: Headline 1 spanning Col 1-2 (top)
+        h1 = LayoutElement("h1", (50, 50, 550, 100), "Headline 1", BlockType.HEADLINE)
+        c1_top = LayoutElement("c1_top", (50, 120, 280, 400), "Col 1 Top", BlockType.BODY_TEXT)
+        c2_top = LayoutElement("c2_top", (300, 120, 550, 400), "Col 2 Top", BlockType.BODY_TEXT)
+
+        # Article 2: Headline 2 spanning Col 1-2 (bottom)
+        h2 = LayoutElement("h2", (50, 450, 550, 500), "Headline 2", BlockType.HEADLINE)
+        c1_bot = LayoutElement("c1_bot", (50, 520, 280, 800), "Col 1 Bot", BlockType.BODY_TEXT)
+        c2_bot = LayoutElement("c2_bot", (300, 520, 550, 800), "Col 2 Bot", BlockType.BODY_TEXT)
+
+        # Scramble elements
+        elements = [c2_bot, c1_top, h2, c2_top, c1_bot, h1]
+        ordered = resolver.resolve_reading_order(elements)
+
+        # Order must bind: h1 -> c1_top -> c2_top -> h2 -> c1_bot -> c2_bot
+        expected_ids = ["h1", "c1_top", "c2_top", "h2", "c1_bot", "c2_bot"]
+        assert [b.element_id for b in ordered] == expected_ids

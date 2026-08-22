@@ -250,3 +250,45 @@ class TestLayoutAnalyzer:
         expected_hl = "GOVERNMENT APPROVES MAJOR RENEWABLE ENERGY INCENTIVE PACKAGE"
         assert expected_hl in res.elements[0].text
         assert res.elements[1].block_type == BlockType.BODY_TEXT
+
+    def test_masthead_purged_from_layout_elements(self) -> None:
+        """Verify date stamps, folios, and mastheads in top 8% are purged."""
+        analyzer = LayoutAnalyzer()
+        blocks = [
+            # Top running masthead (y0=10, y1=30, in top 8% of 1400px page)
+            DigitalTextBlock(
+                block_id=0,
+                text="MINT | THURSDAY, 30 JULY 2026 | PAGE 14",
+                bbox=(50.0, 10.0, 950.0, 30.0),
+                mean_font_size=9.0,
+                is_heading_candidate=False,
+            ),
+            # Actual article headline (y0=100)
+            DigitalTextBlock(
+                block_id=1,
+                text="CENTRAL BANK MAINTAINS REPO RATE STABILITY",
+                bbox=(50.0, 100.0, 950.0, 140.0),
+                mean_font_size=20.0,
+                is_heading_candidate=True,
+            ),
+            # Body text (y0=150)
+            DigitalTextBlock(
+                block_id=2,
+                text="The monetary policy committee voted unanimously to hold rates steady.",
+                bbox=(50.0, 150.0, 450.0, 250.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=14,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        # The masthead block must be completely filtered out
+        assert len(res.elements) == 2
+        assert not any("THURSDAY, 30 JULY 2026" in e.text for e in res.elements)
+        assert res.elements[0].text == "CENTRAL BANK MAINTAINS REPO RATE STABILITY"

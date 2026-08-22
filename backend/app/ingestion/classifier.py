@@ -44,6 +44,11 @@ TABLE_PATTERNS = re.compile(
 )
 
 
+SIDEBAR_KEYWORDS = re.compile(
+    r"(?i)\b(?:sidebar|box\s+story|highlights|key\s+takeaways|at\s+a\s+glance|in\s+a\s+nutshell|quick\s+facts)\b"
+)
+
+
 @dataclass
 class ClassificationResult:
     """Type classification and prominence assessment."""
@@ -87,9 +92,16 @@ class ArticleClassifier:
         elif article.word_count < 40 and not headline:
             article_type = "photo_caption"
             section = "Graphics"
-        elif article.word_count < 80 and article.primary_page_number > 1:
+        elif (
+            headline.upper().startswith("[SIDEBAR]")
+            or headline.upper().startswith("[BOX]")
+            or SIDEBAR_KEYWORDS.search(headline)
+        ):
             article_type = "sidebar"
-            section = "General"
+            section = "General News" if article.primary_page_number == 1 else "Inside News"
+        elif headline.upper().startswith("[SHORTS]"):
+            article_type = "news"
+            section = "News Briefs"
         else:
             article_type = "news"
             section = "General News" if article.primary_page_number == 1 else "Inside News"

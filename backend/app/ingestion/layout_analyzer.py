@@ -11,6 +11,7 @@ Extracts:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,6 +34,40 @@ from app.providers.base import (
 from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
+
+MASTHEAD_KEYWORDS = re.compile(
+    r"(?i)\b(?:mint|livemint|hindu|the\s+hindu|times\s+of\s+india|economic\s+times|"
+    r"business\s+standard|indian\s+express|hindustan\s+times|dainik\s+bhaskar|"
+    r"think\s+ahead|think\s+growth|epaper|vol(?:\.|ume)?\s*\d+|no\s*\d+|edition|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"page\s*\d+|pg\s*\d+|p\.\s*\d+)\b"
+)
+
+
+def is_masthead_or_running_header(
+    elem: LayoutElement,
+    page_height: float,
+    page_width: float,
+) -> bool:
+    """Detect if a layout element is a running header, date line, or masthead in top 8% of page."""
+    x0, y0, x1, y1 = elem.bbox
+    # Must be located in the top 8% of the page
+    if y1 > page_height * 0.08 and y0 > page_height * 0.06:
+        return False
+
+    text = elem.text.strip()
+    if not text:
+        return False
+
+    words = text.split()
+    # Check for keywords matching date lines, newspaper branding, volume info, or folios
+    if len(words) <= 15 and MASTHEAD_KEYWORDS.search(text):
+        return True
+
+    # Standalone numbers or very short strings in header band
+    return bool(len(words) <= 3 and (len(text) < 15 or re.match(r"^\d{1,3}$", text)))
+
 
 LAYOUT_EXTRACTION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -253,6 +288,13 @@ class LayoutAnalyzer:
                 )
                 element_id += 1
 
+        # Filter out mastheads and running headers in top 8%
+        non_masthead_elements = [
+            e for e in elements
+            if not is_masthead_or_running_header(e, float(height_px), float(width_px))
+        ]
+        elements = non_masthead_elements if non_masthead_elements else elements
+
         # Consolidate bounding boxes and merge adjacent paragraph fragments
         elements = self._consolidate_elements(
             elements=elements,
@@ -302,7 +344,7 @@ class LayoutAnalyzer:
 
             prev = consolidated[-1]
 
-            # Case A: Merge multi-line headlines
+            # Case A: Font-Aware Multi-Line Headline Stitching
             if (
                 prev.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
                 and elem.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
@@ -312,7 +354,16 @@ class LayoutAnalyzer:
                 )
                 min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
                 gap_y = elem.bbox[1] - prev.bbox[3]
-                if min_w > 0 and (overlap_x / min_w) >= 0.50 and 0.0 <= gap_y <= max_v_gap * 1.5:
+                font_diff = (
+                    abs(prev.font_size - elem.font_size) / max(prev.font_size, elem.font_size, 1.0)
+                )
+
+                if (
+                    min_w > 0
+                    and (overlap_x / min_w) >= 0.35
+                    and -5.0 <= gap_y <= max_v_gap * 2.0
+                    and font_diff <= 0.35
+                ):
                     prev.text = f"{prev.text} {elem.text}".strip()
                     prev.bbox = (
                         min(prev.bbox[0], elem.bbox[0]),
@@ -320,6 +371,7 @@ class LayoutAnalyzer:
                         max(prev.bbox[2], elem.bbox[2]),
                         max(prev.bbox[3], elem.bbox[3]),
                     )
+                    prev.font_size = max(prev.font_size, elem.font_size)
                     continue
 
             # Case B: Merge adjacent body paragraphs in the same column
@@ -430,15 +482,17 @@ class LayoutAnalyzer:
                     )
                     elements.append(elem)
 
-                    reading_order.append(
-                        OrderedReadingBlock(
-                            reading_order_index=idx,
-                            element_id=idx + 1,
-                            block_type=b_type,
-                            text=node.text,
-                            bbox=node.bbox,
-                        )
-                    )
+                # Filter out mastheads and running headers from MinerU elements
+                non_masthead_elements = [
+                    e for e in elements
+                    if not is_masthead_or_running_header(e, float(height_px), float(width_px))
+                ]
+                elements = non_masthead_elements if non_masthead_elements else elements
+
+                resolver = ReadingOrderResolver(
+                    page_width=float(width_px), page_height=float(height_px)
+                )
+                reading_order = resolver.resolve_reading_order(elements)
 
                 return PageLayoutResult(
                     page_number=page_number,
@@ -518,6 +572,13 @@ class LayoutAnalyzer:
                     )
                 )
                 el_id += 1
+
+            # Filter mastheads in VLM output
+            non_masthead_vlm = [
+                e for e in vlm_elements
+                if not is_masthead_or_running_header(e, float(height_px), float(width_px))
+            ]
+            vlm_elements = non_masthead_vlm if non_masthead_vlm else vlm_elements
 
             resolver = ReadingOrderResolver(
                 page_width=float(width_px), page_height=float(height_px)

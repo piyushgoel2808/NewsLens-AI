@@ -616,7 +616,41 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.10 — 2D Column-Binding Heuristics, Masthead Purging & Sidebar Fix
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+1. **2D Spatial Column Binding (`backend/app/ingestion/reading_order.py`)**:
+   - Replaced flat 1D page-wide column stripes with 2D geometric column-binding beneath headline spans.
+   - For each headline $B_{head}$, binds all body blocks located beneath $B_{head}$ within its $[x_0, x_1]$ horizontal span down to the next lower headline or footer.
+   - Traverses multi-column stories left-to-right across column lanes and top-to-bottom within each lane, eliminating body text dropping and word count starvation across broadsheet pages.
+
+2. **Top 8% Masthead & Running Header Purging (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Implemented `is_masthead_or_running_header()` to detect and drop date stamps (e.g. `THURSDAY, 30 JULY 2026`), brand slogans (`"Think Ahead. Think Growth."`), volume information, and running headers in the top 8% of the page.
+   - Prevents masthead strings from polluting the article segmentation queue.
+
+3. **Font-Aware Multi-Line Headline Stitching (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Enhanced `_consolidate_elements()` to merge adjacent multi-line headline fragments sharing compatible font sizes ($\pm 35\%$), horizontal overlap $\ge 35\%$, and vertical proximity ($< 1.5\times$ line height) into single cohesive headline elements.
+   - Prevents mid-sentence headline splits and truncations.
+
+4. **Sidebar Misclassification Fix (`backend/app/ingestion/classifier.py`)**:
+   - Eliminated narrow-column width / low word count heuristics for `sidebar` typing.
+   - Defaults all standard broadsheet news stories to `news` (`section = "General News"` on Page 1, `"Inside News"` on subsequent pages), reserving `sidebar` strictly for visually framed/boxed stories or explicit keywords.
+
+5. **The 40-Word Rule & Headline Preservation (`backend/app/ingestion/segmenter.py`)**:
+   - Enforced `MIN_ARTICLE_WORD_COUNT = 40` with spatial absorption of floating subheads or orphaned snippets into their nearest adjacent body container.
+   - Preserved full stitched multi-line headline strings without truncating at line breaks.
+
+### Verification & QA
+- `make lint && make test`: **150/150 tests passing 100% GREEN in 2.65s**.
+- Added unit tests in `test_layout_analyzer.py`, `test_reading_order.py`, and `test_classifier.py`.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

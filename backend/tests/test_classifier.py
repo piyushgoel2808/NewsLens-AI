@@ -77,3 +77,40 @@ class TestArticleClassifier:
         res = classifier.classify_and_score(article, total_issue_pages=4)
         assert res.article_type == "table_content"
         assert res.section == "Markets & Data"
+
+    def test_classify_inside_page_standard_news_is_not_sidebar(self) -> None:
+        """Verify standard inside page news story defaults to 'news' (not 'sidebar')."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="SERVICES INDEX EXPANDS AT FASTEST PACE IN FIVE MONTHS",
+            full_text=(
+                "India's services sector growth accelerated sharply in May, driven by strong "
+                "inflows of new business orders from international clients. Employment across "
+                "service providers continued to expand steadily according to survey findings."
+            ),
+            primary_page_number=6,
+            word_count=50,
+            pages_mapping=[PageBBoxMapping(page_number=6, bbox_list=[(50.0, 50.0, 300.0, 400.0)])],
+        )
+
+        res = classifier.classify_and_score(article, total_issue_pages=12)
+        assert res.article_type == "news"
+        assert res.section == "Inside News"
+
+    def test_classify_explicit_sidebar_box_story(self) -> None:
+        """Verify explicit sidebar or box story is classified as 'sidebar'."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="[BOX] KEY TAKEAWAYS FROM MONETARY POLICY STATEMENT",
+            full_text=(
+                "1. Repo rate unchanged at 6.50%.\n"
+                "2. GDP growth projection retained at 7.2%.\n"
+                "3. CPI inflation forecast steady at 4.5%."
+            ),
+            primary_page_number=3,
+            word_count=35,
+            pages_mapping=[PageBBoxMapping(page_number=3, bbox_list=[(50.0, 50.0, 300.0, 200.0)])],
+        )
+
+        res = classifier.classify_and_score(article, total_issue_pages=12)
+        assert res.article_type == "sidebar"
