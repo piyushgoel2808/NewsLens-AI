@@ -17,6 +17,7 @@ from app.agent.condenser import (
 )
 from app.agent.graph import AgentWorkflow
 from app.agent.planner import QueryPlanner
+from app.agent.synthesizer import parse_thought_and_answer
 from app.models.base import get_db, get_session_factory
 from app.models.query import QueryLog
 
@@ -226,16 +227,39 @@ async def stream_query(
         if raw_buffer:
             if in_think:
                 think_chunks.append(raw_buffer)
-                yield f"event: thought\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
-                t_dur = round(time.monotonic() - (think_start_time or time.monotonic()), 1)
-                full_th = "".join(think_chunks).strip()
-                done_th = json.dumps({"thought": full_th, "duration_sec": t_dur})
-                yield f"event: thought_done\ndata: {done_th}\n\n"
+                th_payload = json.dumps({"delta": raw_buffer})
+                yield f"event: thought\ndata: {th_payload}\n\n"
             else:
                 answer_chunks.append(raw_buffer)
                 yield f"event: token\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
 
-        full_answer = "".join(answer_chunks).strip()
+        # Robust recovery for reasoning models where answer may be trapped inside <think>
+        if not answer_chunks and think_chunks:
+            combined_raw = "".join(think_chunks)
+            parsed_thought, parsed_ans = parse_thought_and_answer(f"<think>{combined_raw}")
+            t_dur = round(time.monotonic() - (think_start_time or t0), 1)
+            if parsed_ans:
+                full_thought = parsed_thought
+                full_answer = parsed_ans
+                done_th = json.dumps({"thought": full_thought, "duration_sec": t_dur})
+                yield f"event: thought_done\ndata: {done_th}\n\n"
+                yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
+                yield f"event: token\ndata: {json.dumps({'delta': full_answer})}\n\n"
+            else:
+                # If cannot separate, emit as answer so response view is NEVER blank
+                full_answer = combined_raw
+                full_thought = ""
+                yield f"event: token\ndata: {json.dumps({'delta': full_answer})}\n\n"
+        elif in_think and think_chunks:
+            t_dur = round(time.monotonic() - (think_start_time or t0), 1)
+            full_th = "".join(think_chunks).strip()
+            done_th = json.dumps({"thought": full_th, "duration_sec": t_dur})
+            yield f"event: thought_done\ndata: {done_th}\n\n"
+
+        if answer_chunks:
+            full_answer = "".join(answer_chunks).strip()
+        else:
+            full_answer = locals().get("full_answer", "")
         citations = workflow._synthesizer.extract_citations(full_answer, evidence)
         citations_list = [dict(c) for c in citations]
         yield f"event: citations\ndata: {json.dumps({'citations': citations_list})}\n\n"

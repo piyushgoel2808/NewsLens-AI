@@ -19,18 +19,49 @@ Answer the user's research question thoroughly, objectively, and accurately base
 on the evidence excerpts.
 
 CRITICAL CITATION RULES:
-1. Every factual claim MUST include an inline citation in the format:
-   [Newspaper Name, YYYY-MM-DD, Page X (PDF p.Y), "Headline"]
-   or [Newspaper Name, YYYY-MM-DD, Page X, "Headline"]
-2. If multiple sources corroborate a claim, cite them together.
-3. For aggregate questions (e.g. "How many articles?", "List all articles",
+1. Every factual claim MUST include an inline citation formatted strictly as:
+   [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page_Number}, "{Headline}"]
+   Example: [Mint, 2026-08-01, Page 3, "Telecom AGR Dues Ruling"]
+2. Use the physical PDF page number specified in the evidence excerpt (e.g. Page 1, Page 3).
+3. If multiple sources corroborate a claim, cite them together.
+4. For aggregate questions (e.g. "How many articles?", "List all articles",
    "Overview of the issue"), use the structured relational archive manifest
    in the evidence to provide exact, authoritative numbers, section breakdowns,
    and complete lists.
-4. Do NOT make up any dates, figures, quotes, or events not present in the evidence.
-5. If evidence is insufficient, explicitly state what is missing.
-6. Structure your response clearly with headings or lists where appropriate.
+5. Do NOT make up any dates, figures, quotes, or events not present in the evidence.
+6. If evidence is insufficient, explicitly state what is missing.
+7. Structure your response clearly with headings or lists where appropriate.
 """
+
+
+def parse_thought_and_answer(text: str) -> tuple[str, str]:
+    """Extract thought/reasoning trace and clean response text from model output."""
+    if not text:
+        return "", ""
+
+    if "<think>" in text:
+        if "</think>" in text:
+            match = re.search(r"<think>(.*?)</think>(.*)", text, flags=re.DOTALL)
+            if match:
+                thought = match.group(1).strip()
+                ans = match.group(2).strip()
+                return thought, ans
+        else:
+            # Unclosed <think> tag
+            after_think = text.split("<think>", 1)[1]
+            pattern = (
+                r"\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|"
+                r"In summary|Summary:|Answer:)"
+            )
+            split_match = re.search(pattern, after_think, flags=re.IGNORECASE)
+            if split_match:
+                split_idx = split_match.start()
+                thought = after_think[:split_idx].strip()
+                ans = after_think[split_idx:].strip()
+                return thought, ans
+            return "", after_think.strip()
+
+    return "", text.strip()
 
 
 class AnswerSynthesizer:
@@ -64,22 +95,20 @@ class AnswerSynthesizer:
             np_name = item.get("newspaper_name", "Unknown Publication")
             dt = item.get("issue_date", "Unknown Date")
             pages = item.get("pages", [1])
-            printed_pages = item.get("printed_pages", [])
-            if printed_pages:
-                p_str = ", ".join(str(p) for p in printed_pages)
-                pdf_str = ", ".join(str(p) for p in pages)
-                pages_str = f"{p_str} (PDF p.{pdf_str})"
-            else:
-                pages_str = ", ".join(str(p) for p in pages) if pages else "1"
-
+            pdf_page = int(pages[0]) if pages and pages[0] else 1
             hl = item.get("headline", "Untitled Article")
             text = item.get("snippet") or item.get("full_text") or item.get("summary") or ""
 
+            evidence_tag = (
+                f"[Evidence: {np_name}, {dt}, Page {pdf_page} "
+                f"(PDF Page {pdf_page}), Headline: \"{hl}\"]"
+            )
             context_blocks.append(
                 f"--- EVIDENCE EXCERPT [{i}] ---\n"
+                f"{evidence_tag}\n"
                 f"Publication: {np_name}\n"
                 f"Date: {dt}\n"
-                f"Page(s): {pages_str}\n"
+                f"Page(s): Page {pdf_page} (PDF Page {pdf_page})\n"
                 f"Headline: {hl}\n"
                 f"Content:\n{text.strip()}\n"
             )
@@ -98,10 +127,12 @@ class AnswerSynthesizer:
             np_name = item.get("newspaper_name", "Daily News")
             dt = item.get("issue_date", "")
             pages = item.get("pages", [1])
-            page_num = pages[0] if pages else 1
+            page_num = int(pages[0]) if pages and pages[0] else 1
             hl = item.get("headline", "Untitled")
             art_id = item.get("article_id", 0)
             snip = item.get("snippet") or item.get("summary") or ""
+            issue_id = item.get("issue_id", 0)
+            bboxes = item.get("bboxes", [])
 
             key = (np_name, dt, page_num, hl)
             if key not in seen_keys:
@@ -114,6 +145,8 @@ class AnswerSynthesizer:
                         headline=hl,
                         article_id=art_id,
                         snippet=snip[:300],
+                        issue_id=issue_id,
+                        bboxes=bboxes,
                     )
                 )
 
@@ -155,11 +188,8 @@ class AnswerSynthesizer:
                     max_tokens=2048,
                     temperature=0.1,
                 )
-                answer_text = response.text
-                if "<think>" in answer_text:
-                    answer_text = re.sub(
-                        r"<think>.*?</think>", "", answer_text, flags=re.DOTALL
-                    ).strip()
+                _, cleaned_answer = parse_thought_and_answer(response.text)
+                answer_text = cleaned_answer if cleaned_answer else response.text
                 p_name = getattr(provider, "provider_name", "llm")
                 m_name = getattr(provider, "model_name", "default")
                 calc_cost = record_usage_and_cost(

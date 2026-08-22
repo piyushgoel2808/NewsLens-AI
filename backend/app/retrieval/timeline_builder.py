@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import asc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,6 +27,8 @@ class TimelineMilestone:
     summary: str
     prominence_score: float
     pages: list[int]
+    issue_id: int = 0
+    bboxes: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -108,6 +111,15 @@ class TimelineBuilder:
                 )
                 summary = art.summary or (art.full_text[:250] if art.full_text else "")
 
+                bboxes_list: list[dict[str, Any]] = []
+                if art.article_pages:
+                    for ap in art.article_pages:
+                        if ap.bbox_json:
+                            if isinstance(ap.bbox_json, list):
+                                bboxes_list.extend(ap.bbox_json)
+                            elif isinstance(ap.bbox_json, dict):
+                                bboxes_list.append(ap.bbox_json)
+
                 grouped[key].append(
                     TimelineMilestone(
                         article_id=art.id,
@@ -117,6 +129,8 @@ class TimelineBuilder:
                         summary=summary,
                         prominence_score=art.prominence_score,
                         pages=pages_list,
+                        issue_id=art.issue_id,
+                        bboxes=bboxes_list,
                     )
                 )
 

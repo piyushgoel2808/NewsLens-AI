@@ -18,8 +18,40 @@ import {
 } from 'lucide-react';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
 
+// Robust separation of reasoning trace vs answer
+const splitThoughtAndAnswer = (text) => {
+  if (!text) return ['', ''];
+  if (text.includes('<think>')) {
+    if (text.includes('</think>')) {
+      const match = text.match(/<think>([\s\S]*?)<\/think>([\s\S]*)/i);
+      if (match) {
+        return [match[1].trim(), match[2].trim()];
+      }
+    } else {
+      const parts = text.split('<think>');
+      const after = parts.slice(1).join('<think>');
+      const splitMatch = after.search(
+        /\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|In summary|Summary:|Answer:)/i
+      );
+      if (splitMatch !== -1) {
+        return [
+          after.slice(0, splitMatch).trim(),
+          after.slice(splitMatch).trim(),
+        ];
+      }
+      return ['', after.trim()];
+    }
+  }
+  return ['', text.trim()];
+};
+
 // Helper to strip <think>...</think> and unclosed reasoning tags from main answer text
-const sanitizeAnswerText = (text) => {
+const sanitizeAnswerText = (text, fallbackThought = '') => {
+  if (!text && fallbackThought) {
+    const [, ans] = splitThoughtAndAnswer(fallbackThought);
+    if (ans) return ans;
+    return fallbackThought;
+  }
   if (!text) return '';
   return text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -179,6 +211,18 @@ export default function AgentAssistant() {
                 };
                 current.isStreaming = false;
                 current.stage = 'completed';
+
+                // Safety fallback: if content is empty but thought exists, recover answer
+                if (!current.content && current.thought) {
+                  const [th, ans] = splitThoughtAndAnswer(current.thought);
+                  if (ans) {
+                    current.thought = th;
+                    current.content = ans;
+                  } else {
+                    current.content = current.thought;
+                    current.thought = '';
+                  }
+                }
               }
 
               updated[updated.length - 1] = current;
@@ -438,7 +482,12 @@ export default function AgentAssistant() {
 
               {/* Message Content */}
               <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans text-slate-200">
-                {sanitizeAnswerText(msg.content) || (msg.isStreaming ? (msg.stage === 'thinking' ? 'Reasoning through evidence...' : 'Synthesizing response...') : '')}
+                {sanitizeAnswerText(msg.content, msg.thought) ||
+                  (msg.isStreaming
+                    ? msg.stage === 'thinking'
+                      ? 'Reasoning through evidence...'
+                      : 'Synthesizing response...'
+                    : '')}
               </div>
 
               {/* Clickable Citations Grounding */}

@@ -52,10 +52,11 @@ export function ActiveHighlightProvider({ children }) {
   }, []);
 
   const highlightArticle = useCallback((issueId, pageNumber, articleId, bboxes = []) => {
-    if (issueId) setSelectedIssueId(issueId);
-    if (pageNumber) setSelectedPageNumber(pageNumber);
-    if (articleId) setSelectedArticleId(articleId);
-    setHighlightedBboxes(bboxes);
+    const pageNum = Number(pageNumber) || 1;
+    if (issueId) setSelectedIssueId(Number(issueId));
+    setSelectedPageNumber(pageNum);
+    if (articleId) setSelectedArticleId(Number(articleId));
+    setHighlightedBboxes(Array.isArray(bboxes) ? bboxes : []);
     setIsPulsing(true);
     setActiveTab('reader');
 
@@ -65,8 +66,9 @@ export function ActiveHighlightProvider({ children }) {
   }, []);
 
   const openIssueInReader = useCallback((issueId, pageNumber = 1) => {
-    setSelectedIssueId(issueId);
-    setSelectedPageNumber(pageNumber);
+    const pageNum = Number(pageNumber) || 1;
+    if (issueId) setSelectedIssueId(Number(issueId));
+    setSelectedPageNumber(pageNum);
     setSelectedArticleId(null);
     setHighlightedBboxes([]);
     setActiveTab('reader');

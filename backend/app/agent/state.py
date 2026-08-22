@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 
-class AgentCitation(TypedDict):
+class AgentCitation(TypedDict, total=False):
     """A verified source citation grounding an agent response."""
 
     newspaper_name: str
@@ -14,6 +14,8 @@ class AgentCitation(TypedDict):
     headline: str
     article_id: int
     snippet: str
+    issue_id: int
+    bboxes: list[dict[str, Any]]
 
 
 class ToolExecutionRecord(TypedDict):

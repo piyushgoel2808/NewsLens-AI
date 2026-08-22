@@ -58,6 +58,8 @@ class HybridSearchResult:
     newspaper_name: str
     issue_date: str
     pages: list[int]
+    issue_id: int = 0
+    bboxes: list[dict[str, Any]] = field(default_factory=list)
     printed_pages: list[str] = field(default_factory=list)
     matched_chunks: list[dict[str, Any]] = field(default_factory=list)
 
@@ -265,6 +267,15 @@ class HybridSearchEngine:
             if not snippet:
                 snippet = article.summary or (article.full_text[:500] if article.full_text else "")
 
+            bboxes_list: list[dict[str, Any]] = []
+            if article.article_pages:
+                for ap in article.article_pages:
+                    if ap.bbox_json:
+                        if isinstance(ap.bbox_json, list):
+                            bboxes_list.extend(ap.bbox_json)
+                        elif isinstance(ap.bbox_json, dict):
+                            bboxes_list.append(ap.bbox_json)
+
             final_results.append(
                 HybridSearchResult(
                     article_id=article.id,
@@ -281,6 +292,8 @@ class HybridSearchEngine:
                     newspaper_name=np_name,
                     issue_date=issue_date,
                     pages=pages_list,
+                    issue_id=article.issue_id,
+                    bboxes=bboxes_list,
                     printed_pages=printed_pages_list,
                     matched_chunks=score_info["chunks"],
                 )

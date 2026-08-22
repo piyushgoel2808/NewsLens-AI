@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -34,6 +35,8 @@ class EntitySearchResult:
     issue_date: str
     pages: list[int]
     summary: str
+    issue_id: int = 0
+    bboxes: list[dict[str, Any]] = field(default_factory=list)
 
 
 class EntitySearchEngine:
@@ -113,6 +116,15 @@ class EntitySearchEngine:
                     else []
                 )
 
+                bboxes_list: list[dict[str, Any]] = []
+                if art.article_pages:
+                    for ap in art.article_pages:
+                        if ap.bbox_json:
+                            if isinstance(ap.bbox_json, list):
+                                bboxes_list.extend(ap.bbox_json)
+                            elif isinstance(ap.bbox_json, dict):
+                                bboxes_list.append(ap.bbox_json)
+
                 results.append(
                     EntitySearchResult(
                         article_id=art.id,
@@ -129,6 +141,8 @@ class EntitySearchEngine:
                         issue_date=issue_date,
                         pages=pages_list,
                         summary=art.summary or (art.full_text[:250] if art.full_text else ""),
+                        issue_id=art.issue_id,
+                        bboxes=bboxes_list,
                     )
                 )
 

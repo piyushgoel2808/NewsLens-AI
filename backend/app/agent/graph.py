@@ -155,10 +155,12 @@ class AgentWorkflow:
                         evidence_items.append(
                             {
                                 "article_id": hr.article_id,
+                                "issue_id": hr.issue_id,
                                 "headline": hr.headline,
                                 "newspaper_name": hr.newspaper_name,
                                 "issue_date": hr.issue_date,
                                 "pages": hr.pages,
+                                "bboxes": hr.bboxes,
                                 "printed_pages": hr.printed_pages,
                                 "snippet": hr.snippet,
                                 "prominence_score": hr.prominence_score,
@@ -181,10 +183,12 @@ class AgentWorkflow:
                         evidence_items.append(
                             {
                                 "article_id": er.article_id,
+                                "issue_id": er.issue_id,
                                 "headline": er.headline,
                                 "newspaper_name": er.newspaper_name,
                                 "issue_date": er.issue_date,
                                 "pages": er.pages,
+                                "bboxes": er.bboxes,
                                 "snippet": snip_str,
                                 "prominence_score": er.prominence_score,
                                 "source_tool": "entity_search",
@@ -202,10 +206,12 @@ class AgentWorkflow:
                             evidence_items.append(
                                 {
                                     "article_id": m.article_id,
+                                    "issue_id": m.issue_id,
                                     "headline": m.headline,
                                     "newspaper_name": g.newspaper_name,
                                     "issue_date": g.date,
                                     "pages": m.pages,
+                                    "bboxes": m.bboxes,
                                     "snippet": f"Timeline Event ({g.date}): {m.summary}",
                                     "prominence_score": m.prominence_score,
                                     "source_tool": "timeline_builder",

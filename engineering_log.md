@@ -1345,9 +1345,42 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 
 ### Verification
 - `make lint`: **0 errors across 72 source files** (`ruff` + `mypy` strict).
-- `make test`: **217/217 tests passing 100% GREEN in 19.91s**.
+- `make test`: **217/217 tests passing 100% GREEN in 25.21s**.
 - `npm run build`: **Vite build succeeded with 0 errors**.
 - **Frontend runtime**: Defined `sanitizeAnswerText` and `extractFallbackThought` at top level in `AgentAssistant.jsx` ensuring hot reload and clean page mounting without `ReferenceError`.
+
+---
+
+## Critical Bugfix — Robust `<think>` Tag Stream Parsing & 1-Based Physical PDF Page Number Standardization
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Problems Solved
+1. **Thinking Token Leakage / Blank Final Response**: When using reasoning models (e.g. `Qwen 3.6`, `DeepSeek R1`), the response was trapped inside `<think>` or unclosed thinking blocks, rendering only in the Thought Process accordion and leaving the final answer blank.
+2. **Page Number Disconnect**: Citations and deep links pointed to mismatched pages where extracted printed folios collided with physical PDF page numbers.
+
+### Key Architectural Fixes
+1. **Robust `<think>` Tag Stream & Answer Recovery (`synthesizer.py` & `query.py`)**:
+   - Implemented `parse_thought_and_answer()` helper using regex section pattern matching (`\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|Summary:|Answer:)`) to separate reasoning notes from answer narrative even if `</think>` is omitted by the LLM.
+   - In `stream_query`, if `answer_chunks` is empty at stream completion, dynamically parses `think_chunks` and emits `event: token` with the clean narrative so the response view is **never left blank**.
+2. **Frontend Robust Decoupling (`AgentAssistant.jsx`)**:
+   - Implemented `splitThoughtAndAnswer` and updated `sanitizeAnswerText` in `AgentAssistant.jsx`.
+   - On SSE `done` event, recovers answer text if `msg.content` was trapped in `msg.thought`.
+   - Collapsible `Thought for Xs >` accordion displays ONLY internal reasoning trace, while main message bubble displays clean markdown answer.
+3. **Strict 1-Based Physical PDF Page Number Standardization**:
+   - Grounded all retrieval results (`HybridSearchResult`, `EntitySearchResult`, `TimelineMilestone`), prompt context templates, and citation badges strictly on the physical 1-based PDF page index: `page_number` (1..$N$).
+   - Updated `SYNTHESIZER_SYSTEM_PROMPT` to enforce citation format:
+     `[{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page_Number}, "{Headline}"]`
+   - Updated `_build_evidence_context()` to explicitly state:
+     `[Evidence: Newspaper Name, YYYY-MM-DD, Page {pdf_page} (PDF Page {pdf_page}), Headline: "..."]`
+   - Populated `issue_id` and `bboxes` on all retrieval results and `AgentCitation` records.
+   - Updated `ActiveHighlightContext.jsx` and `AgentAssistant.jsx` to pass `Number(pageNumber) || 1` directly to `BroadsheetReader` to load the exact PDF page image.
+
+### Verification
+- `make lint`: **0 errors across 72 source files** (`ruff` + `mypy` strict).
+- `make test`: **217/217 tests passing 100% GREEN in 25.21s**.
+- `npm run build`: **Vite production build completed with 0 errors**.
 
 ---
 
