@@ -82,6 +82,10 @@ class ModelRegistry:
             )
         elif provider_type == "local_sentence_transformers":
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
+        elif provider_type in ("docling", "docling_parser"):
+            from app.providers.docling_provider import DoclingProvider
+
+            return DoclingProvider(lang=cfg.lang or "en")
         elif provider_type in ("mineru", "magic_pdf", "tesseract"):
             from app.providers.mineru_provider import MinerUProvider
 
@@ -90,7 +94,7 @@ class ModelRegistry:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
                 "Supported: ollama, groq, anthropic, openai, "
-                "local_sentence_transformers, mineru"
+                "local_sentence_transformers, docling, mineru"
             )
 
     def get_provider(self, task: str) -> AnyProvider:

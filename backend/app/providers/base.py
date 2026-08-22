@@ -42,6 +42,7 @@ class ProviderType(StrEnum):
     PADDLE_OCR = "paddleocr"
     HOSTED_OCR = "hosted_ocr"
     MINERU = "mineru"
+    DOCLING = "docling"
 
 
 # ---------------------------------------------------------------------------

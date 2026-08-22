@@ -1051,6 +1051,50 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.23 — Document Ingestion Migration to Docling (Layout, Reading Order, Table Extraction & MCP)
+
+**Date**: 2026-08-22
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+1. **Fragile Custom Spatial Math**: Manual column-gutter calculation and horizontal lookahead routines in broadsheet newspapers were fragile on complex multi-column front pages.
+2. **Deep Neural Layout & Table Extraction**: Replacing custom heuristics with IBM Docling (`docling==2.121.0`) provides state-of-the-art document layout parsing, pre-linearized human reading order, and table matrix extraction.
+3. **Container-Friendly Local Execution**: Seamless execution locally on Apple Silicon (MPS / CPU) and NVIDIA CUDA without cloud dependencies.
+
+### Architectural Solutions & Implementations
+
+1. **Docling Ingestion Adapter (`backend/app/providers/docling_provider.py`)**:
+   - Implemented `DoclingProvider` adhering to both `DocumentLayoutProvider` and `OCREngine` protocols.
+   - Initialized `DocumentConverter` with `PdfPipelineOptions(do_ocr=True, do_table_structure=True)` and dynamic accelerator detection (MPS/CUDA/CPU).
+   - Extracted pre-linearized reading order via `doc.iterate_items(page_no=p)`.
+   - Converted Docling `BoundingBox` to standard top-left origin coordinates `(x0, y0, x1, y1)`.
+   - Extracted structured table matrices (`headers`, `rows`, `raw_markdown`, `raw_html`) into `ExtractedTableData`.
+   - Provided deterministic PyMuPDF fallback adapter for lightweight offline unit tests.
+
+2. **Configuration & Registry Integration (`backend/app/providers/base.py`, `registry.py`, `model_config.yaml`)**:
+   - Added `ProviderType.DOCLING = "docling"` in `base.py`.
+   - Registered `DoclingProvider` in `ModelRegistry` for `provider_type in ("docling", "docling_parser")`.
+   - Configured `docling_parser` in `model_config.yaml` and bound `layout_analysis`, `document_parser`, and `ocr` tasks to `docling_parser`.
+
+3. **Pipeline Refactoring (`backend/app/ingestion/layout_analyzer.py`, `segmenter.py`)**:
+   - Refactored `LayoutAnalyzer.analyze_page()` to consume Docling's structured document graph and pre-linearized reading order directly, bypassing fragile spatial lookahead math.
+   - Preserved bounding box envelopes in `SegmentedArticle.bbox_list` and `ArticlePage.bbox_json` for frontend canvas overlays.
+
+### Verification & QA
+- `make lint`: **0 errors across 67 source files**.
+- `make test`: **187/187 tests passing 100% GREEN in 12.82s**.
+- Added unit test suite `backend/tests/test_docling_provider.py`:
+  - `test_docling_provider_protocols`
+  - `test_detect_device_mode`
+  - `test_parse_markdown_table_to_matrix`
+  - `test_parse_html_table_to_matrix`
+  - `test_docling_parse_pdf_document_live_fixture`
+  - `test_docling_parse_page_image_and_ocr`
+  - `test_docling_model_registry_resolution`
+  - `test_layout_analyzer_with_docling`
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
 
 

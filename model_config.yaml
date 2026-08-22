@@ -45,6 +45,12 @@ providers:
     model: BAAI/bge-m3           # Strong multilingual model; ~2GB download on first use.
     embedding_dim: 1024
 
+  docling_parser:
+    provider: docling
+    lang: "en+hi"
+    do_ocr: true
+    do_table_structure: true
+
   mineru_parser:
     provider: mineru
     lang: "en+hi"
@@ -106,8 +112,8 @@ task_bindings:
   answerer: ollama_chat           # Synthesizes final answer with citations
 
   # --- Ingestion pipeline ---
-  layout_analysis: mineru_parser  # MinerU neural layout and multi-column parsing
-  document_parser: mineru_parser
+  layout_analysis: docling_parser  # Docling neural layout, table structure, and multi-column reading order
+  document_parser: docling_parser
   article_segmentation: ollama_chat
   metadata_extraction: ollama_chat
   classification: ollama_chat
@@ -116,4 +122,4 @@ task_bindings:
   embedding: local_embed_bge      # Change to ollama_embed for lighter resource use
 
   # --- OCR ---
-  ocr: mineru_parser
+  ocr: docling_parser

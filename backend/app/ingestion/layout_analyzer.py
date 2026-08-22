@@ -873,7 +873,7 @@ class LayoutAnalyzer:
                 ocr_blocks=ocr_blocks,
             )
 
-        # Path A: MinerU DocumentLayoutProvider
+        # Path A: DocumentLayoutProvider (Docling / MinerU)
         if isinstance(provider, DocumentLayoutProvider):
             try:
                 parsed_res = await provider.parse_page_image(
@@ -893,7 +893,6 @@ class LayoutAnalyzer:
                     )
 
                 elements: list[LayoutElement] = []
-                reading_order: list[OrderedReadingBlock] = []
                 tables: list[ExtractedTableData] = []
                 photos: list[ExtractedPhotoData] = []
 
@@ -915,7 +914,9 @@ class LayoutAnalyzer:
                         b_type = BlockType.CAPTION
 
                     cleaned_t = clean_ocr_text_artifacts(node.text)
-                    if is_numeric_stat_box(cleaned_t):
+                    if is_syndication_or_agency_slug(cleaned_t):
+                        b_type = BlockType.BYLINE
+                    elif is_numeric_stat_box(cleaned_t):
                         b_type = BlockType.TABLE
 
                     elem = LayoutElement(
@@ -926,25 +927,26 @@ class LayoutAnalyzer:
                     )
                     elements.append(elem)
 
-                # Filter out mastheads and running headers from MinerU elements
+                # Filter out mastheads and running headers from elements
                 non_masthead_elements = [
                     e for e in elements
                     if not is_masthead_or_running_header(e, float(height_px), float(width_px))
                 ]
                 elements = non_masthead_elements if non_masthead_elements else elements
 
-                # Consolidate bounding boxes and merge adjacent paragraph fragments
-                elements = self._consolidate_elements(
-                    elements=elements,
-                    page_width=float(width_px),
-                    page_height=float(height_px),
-                )
+                # For neural Docling layout, use Docling's pre-linearized reading order directly
+                reading_order = [
+                    OrderedReadingBlock(
+                        reading_order_index=i + 1,
+                        element_id=elem.element_id,
+                        block_type=elem.block_type,
+                        text=elem.text,
+                        bbox=elem.bbox,
+                    )
+                    for i, elem in enumerate(elements)
+                ]
 
-                resolver = ReadingOrderResolver(
-                    page_width=float(width_px), page_height=float(height_px)
-                )
-                reading_order = resolver.resolve_reading_order(elements)
-
+                provider_source = getattr(provider, "provider_name", "docling")
                 return PageLayoutResult(
                     page_number=page_number,
                     width_px=width_px,
@@ -954,11 +956,11 @@ class LayoutAnalyzer:
                     tables=tables,
                     photos=photos,
                     markdown_content=parsed_res.markdown_content,
-                    source="mineru",
+                    source=provider_source,
                 )
             except Exception as e:
                 logger.warning(
-                    "MinerU layout analysis failed, falling back to spatial rules",
+                    "DocumentLayoutProvider analysis failed, falling back to spatial rules",
                     extra={"page_number": page_number, "error": str(e)},
                 )
                 return self.analyze_from_text_blocks(

@@ -30,6 +30,7 @@ dependencies = [
     "redis[hiredis]>=5.0.8",
     "aiofiles>=24.1.0",
     "python-magic>=0.4.27",
+    "docling>=2.0.0",
 ]
 
 [project.optional-dependencies]
