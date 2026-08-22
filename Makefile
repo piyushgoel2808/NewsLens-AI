@@ -67,6 +67,9 @@ lint-fix: ## Auto-fix ruff lint issues
 	$(BACKEND) uv run ruff check . --fix
 	$(BACKEND) uv run ruff format .
 
+setup-docling: ## Download and warm up Docling neural layout & OCR models locally
+	uv run --project backend python scripts/setup_docling_local.py
+
 verify: ## Run provider verification smoke test (proves config-only swap works)
 	uv run --project backend python scripts/verify_providers.py
 
