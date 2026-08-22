@@ -1,4 +1,5 @@
 """Unit tests for Metadata Extractor (NER, Topics, and Summarization)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

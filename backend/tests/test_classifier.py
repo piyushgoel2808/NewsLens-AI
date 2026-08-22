@@ -1,4 +1,5 @@
 """Unit tests for Article Type Classifier and Prominence Scorer."""
+
 from __future__ import annotations
 
 from app.ingestion.classifier import ArticleClassifier
@@ -62,8 +63,7 @@ class TestArticleClassifier:
     def test_classify_table_content(self) -> None:
         classifier = ArticleClassifier()
         table_rows = [
-            f"Ticker {i} High 12{i}.50 Low 11{i}.20 Close 12{i}.00 Volume 500000"
-            for i in range(10)
+            f"Ticker {i} High 12{i}.50 Low 11{i}.20 Close 12{i}.00 Volume 500000" for i in range(10)
         ]
         table_text = "\n".join(table_rows)
         article = AssembledArticle(

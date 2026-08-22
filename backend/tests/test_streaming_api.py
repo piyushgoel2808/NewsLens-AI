@@ -1,4 +1,5 @@
 """Unit tests for Server-Sent Events (SSE) Query Streaming API."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch

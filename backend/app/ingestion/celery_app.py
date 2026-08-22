@@ -1,4 +1,5 @@
 """Celery application configuration for NewsLens-AI asynchronous tasks."""
+
 from __future__ import annotations
 
 from celery import Celery

@@ -6,6 +6,7 @@ by a running Ollama instance (http://localhost:11434 by default).
 Models with 'vl' in their name are treated as vision-capable.
 Cost is always 0.0 (local inference).
 """
+
 from __future__ import annotations
 
 import base64
@@ -56,31 +57,25 @@ class OllamaProvider:
     def provider_name(self) -> str:
         return "ollama"
 
-    def _to_ollama_messages(
-        self, messages: list[Message]
-    ) -> list[dict[str, Any]]:
+    def _to_ollama_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for m in messages:
             if isinstance(m.content, str):
                 result.append({"role": m.role, "content": m.content})
             else:
                 # Multimodal: extract text parts and image parts
-                text_parts = [
-                    p["text"] for p in m.content if p.get("type") == "text"
-                ]
-                image_parts = [
-                    p["data"] for p in m.content if p.get("type") == "image"
-                ]
-                result.append({
-                    "role": m.role,
-                    "content": " ".join(text_parts),
-                    "images": image_parts,
-                })
+                text_parts = [p["text"] for p in m.content if p.get("type") == "text"]
+                image_parts = [p["data"] for p in m.content if p.get("type") == "image"]
+                result.append(
+                    {
+                        "role": m.role,
+                        "content": " ".join(text_parts),
+                        "images": image_parts,
+                    }
+                )
         return result
 
-    def _to_ollama_tools(
-        self, tools: list[ToolDefinition]
-    ) -> list[dict[str, Any]]:
+    def _to_ollama_tools(self, tools: list[ToolDefinition]) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",

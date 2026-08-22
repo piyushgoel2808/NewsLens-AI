@@ -5,6 +5,7 @@ export default function UploadTrigger() {
   const [newspaperName, setNewspaperName] = useState('Business Standard');
   const [issueDate, setIssueDate] = useState('2026-08-21');
   const [edition, setEdition] = useState('morning');
+  const [forceReingest, setForceReingest] = useState(false);
   const [uploadQueue, setUploadQueue] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -46,6 +47,7 @@ export default function UploadTrigger() {
         formData.append('newspaper_name', newspaperName);
         formData.append('issue_date', issueDate);
         formData.append('edition', edition);
+        formData.append('force', forceReingest ? 'true' : 'false');
 
         const response = await fetch('/api/ingest/upload', {
           method: 'POST',
@@ -57,7 +59,21 @@ export default function UploadTrigger() {
           throw new Error(data.detail || `HTTP ${response.status}`);
         }
 
-        const isDuplicate = data.status === 'duplicate_skipped' || data.is_duplicate;
+        const isDuplicate =
+          data.status === 'skipped_duplicate' ||
+          data.is_duplicate ||
+          (data.skipped_duplicates && data.skipped_duplicates.length > 0);
+
+        let infoDetail = '';
+        if (isDuplicate) {
+          infoDetail = 'Already in archive. Check "Force Re-ingest" to overwrite.';
+        } else if (data.pipeline_results && data.pipeline_results.length > 0) {
+          const res = data.pipeline_results[0];
+          infoDetail = `Issue #${data.issue_id} | ${res.articles_created || 0} articles, ${res.chunks_created || 0} chunks`;
+        } else {
+          infoDetail = `Issue #${data.issue_id || 'Queued'}`;
+        }
+
         setUploadQueue((prev) =>
           prev.map((item, idx) =>
             idx === i
@@ -65,7 +81,7 @@ export default function UploadTrigger() {
                   ...item,
                   status: isDuplicate ? 'skipped (duplicate)' : 'completed',
                   jobId: data.job_id || 'N/A',
-                  detail: isDuplicate ? `SHA256: ${data.sha256?.substring(0, 12)}...` : `Issue ID: ${data.issue_id || 'Queued'}`,
+                  detail: infoDetail,
                 }
               : item
           )
@@ -92,7 +108,7 @@ export default function UploadTrigger() {
     <div style={{ border: '1px solid #ccc', padding: '16px', margin: '12px 0' }}>
       <h3>2. UploadTrigger (Multi-PDF / ZIP Sequential Ingestion)</h3>
       <form onSubmit={handleBatchUpload}>
-        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '8px' }}>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '8px', alignItems: 'center' }}>
           <div>
             <label>Select Files (Multiple Allowed): </label>
             <input
@@ -138,10 +154,23 @@ export default function UploadTrigger() {
             </select>
           </div>
 
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <input
+              type="checkbox"
+              id="forceReingestCheck"
+              checked={forceReingest}
+              onChange={(e) => setForceReingest(e.target.checked)}
+              disabled={isUploading}
+            />
+            <label htmlFor="forceReingestCheck" style={{ cursor: 'pointer', fontWeight: forceReingest ? 'bold' : 'normal', color: forceReingest ? '#d9534f' : 'inherit' }}>
+              ⚡ Force Re-ingest (Overwrite)
+            </label>
+          </div>
+
           <button
             type="submit"
             disabled={selectedFiles.length === 0 || isUploading}
-            style={{ padding: '4px 16px', fontWeight: 'bold' }}
+            style={{ padding: '6px 16px', fontWeight: 'bold', background: '#0066cc', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
           >
             {isUploading ? `Uploading (${uploadQueue.filter(u => u.status === 'completed' || u.status === 'skipped (duplicate)').length}/${selectedFiles.length})...` : `Upload ${selectedFiles.length} File(s)`}
           </button>

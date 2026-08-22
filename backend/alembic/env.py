@@ -3,6 +3,7 @@
 Uses synchronous pymysql driver for migrations (Alembic is synchronous).
 DB URL is read from app Settings so it stays consistent with the application.
 """
+
 from __future__ import annotations
 
 import sys

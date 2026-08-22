@@ -1,4 +1,5 @@
 """Unit tests for OCRService orchestration."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock

@@ -9,6 +9,7 @@ Standard newspapers feature complex multi-column grids where:
 This module provides spatial topological sorting to linearize 2D layout blocks
 into human reading order.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -79,10 +80,14 @@ class ReadingOrderResolver:
             x0, y0, x1, y1 = el.bbox
             width = x1 - x0
             is_wide = width >= (ref_width * 0.40)
-            is_header_type = el.block_type in (
-                BlockType.BANNER_HEADLINE,
-                BlockType.HEADLINE,
-            ) or el.font_size > 14.0
+            is_header_type = (
+                el.block_type
+                in (
+                    BlockType.BANNER_HEADLINE,
+                    BlockType.HEADLINE,
+                )
+                or el.font_size > 14.0
+            )
 
             if is_wide and is_header_type:
                 banners.append(el)

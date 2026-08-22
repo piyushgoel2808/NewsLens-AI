@@ -5,6 +5,7 @@ Three backends:
 - ObjectStore  — binary blob storage (MinIO / S3)
 - SearchIndex  — full-text / lexical search (MySQL FULLTEXT or OpenSearch)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 class VectorPoint:
     """A vector + payload to upsert into the vector store."""
 
-    id: str               # UUID string (matches article_chunks.embedding_vector_id)
+    id: str  # UUID string (matches article_chunks.embedding_vector_id)
     vector: list[float]
     payload: dict[str, Any]  # {article_id, newspaper_id, issue_date, section, language, ...}
 
@@ -24,8 +25,8 @@ class VectorPoint:
 class VectorSearchResult:
     """A single result from a vector similarity search."""
 
-    id: str            # Qdrant point ID
-    score: float       # Cosine similarity (0-1)
+    id: str  # Qdrant point ID
+    score: float  # Cosine similarity (0-1)
     payload: dict[str, Any]
     article_id: int | None = None
     chunk_index: int | None = None

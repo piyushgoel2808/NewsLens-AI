@@ -1,4 +1,5 @@
 """Unit tests for Corpus and Issue APIs: GET /api/newspapers and GET /api/issues."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
@@ -251,4 +252,3 @@ async def test_inspect_issue_ingestion_endpoint() -> None:
         assert len(data["articles"]) == 1
         assert len(data["chunks"]) == 1
         assert data["pagination"]["total"] == 1
-

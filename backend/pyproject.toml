@@ -72,8 +72,25 @@ ignore = ["B008"]  # FastAPI Depends() in function defaults
 [tool.mypy]
 python_version = "3.12"
 strict = true
+disallow_untyped_calls = false
 ignore_missing_imports = true
 exclude = ["alembic/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "pymupdf",
+    "pymupdf.*",
+    "fitz",
+    "fitz.*",
+    "magic_pdf",
+    "magic_pdf.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
+    "torch",
+    "torch.*",
+]
+disallow_untyped_calls = false
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

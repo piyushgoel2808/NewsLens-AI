@@ -3,6 +3,7 @@
 Implements EmbeddingProvider. Default model: BAAI/bge-m3 (multilingual, ~2GB).
 Model is loaded lazily on first embed() call to avoid slow startup.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -80,19 +81,31 @@ class LocalEmbeddingProvider:
             )
             return self._model
 
+    def _detect_device(self) -> str:
+        """Detect best available hardware accelerator (CUDA -> MPS -> CPU)."""
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return "cuda"
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+
     def _load_model(self) -> object:
         try:
             from sentence_transformers import SentenceTransformer
-            return SentenceTransformer(self._model_name)
+
+            device = self._detect_device()
+            return SentenceTransformer(self._model_name, device=device)
         except ImportError as e:
             raise ProviderError(
-                "sentence-transformers is not installed. "
-                "Run: pip install sentence-transformers"
+                "sentence-transformers is not installed. Run: pip install sentence-transformers"
             ) from e
         except Exception as e:
-            raise ProviderError(
-                f"Failed to load embedding model {self._model_name!r}: {e}"
-            ) from e
+            raise ProviderError(f"Failed to load embedding model {self._model_name!r}: {e}") from e
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a list of texts. Returns list of float vectors."""

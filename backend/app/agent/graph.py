@@ -1,4 +1,5 @@
 """LangGraph State Machine for Newspaper Intelligence Agentic RAG."""
+
 from __future__ import annotations
 
 import time
@@ -85,11 +86,26 @@ class AgentWorkflow:
             try:
                 if name == "hybrid_search":
                     filters = None
-                    if "newspaper_id" in args or "date_from" in args or "date_to" in args:
+                    filter_keys = (
+                        "newspaper_id",
+                        "date_from",
+                        "date_to",
+                        "page_filter",
+                        "page_number",
+                        "printed_page",
+                    )
+                    has_filter = any(k in args for k in filter_keys)
+                    if has_filter:
+                        p_filt = args.get("page_filter") or args.get("printed_page")
+                        p_num = args.get("page_number")
+                        if p_filt and not p_num and str(p_filt).isdigit():
+                            p_num = int(p_filt)
                         filters = SearchFilter(
                             newspaper_id=args.get("newspaper_id"),
                             date_from=args.get("date_from"),
                             date_to=args.get("date_to"),
+                            page_number=p_num,
+                            printed_page=str(p_filt) if p_filt else None,
                         )
                     hybrid_results = await self._hybrid_search.search(
                         query=args.get("query", ""),
@@ -105,6 +121,7 @@ class AgentWorkflow:
                                 "newspaper_name": hr.newspaper_name,
                                 "issue_date": hr.issue_date,
                                 "pages": hr.pages,
+                                "printed_pages": hr.printed_pages,
                                 "snippet": hr.snippet,
                                 "prominence_score": hr.prominence_score,
                                 "source_tool": "hybrid_search",
@@ -169,9 +186,8 @@ class AgentWorkflow:
                             f"({t['total_mentions']} mentions)"
                             for t in trends[:5]
                         ]
-                        summary_str = (
-                            f"Mention Trends for '{args.get('term')}': "
-                            + ", ".join(trend_items)
+                        summary_str = f"Mention Trends for '{args.get('term')}': " + ", ".join(
+                            trend_items
                         )
                         evidence_items.append(
                             {
@@ -184,20 +200,80 @@ class AgentWorkflow:
                                 "source_tool": "sql_analytics",
                             }
                         )
-                    elif analysis_type == "topic_distribution":
-                        dist = await self._sql_analytics.get_topic_distribution()
-                        hits_count = len(dist)
-                        dist_str = "Topic Distribution: " + ", ".join(
-                            f"{d['section']} ({d['count']} articles)" for d in dist[:5]
+                    elif analysis_type == "issue_summary":
+                        page_filter = args.get("page_filter")
+                        summary = await self._sql_analytics.get_issue_summary(
+                            newspaper_name=args.get("newspaper_name"),
+                            issue_date=args.get("issue_date"),
+                            issue_id=args.get("issue_id"),
+                            page_filter=page_filter,
                         )
+                        if "error" in summary:
+                            summary_str = summary["error"]
+                            hits_count = 0
+                        else:
+                            total_arts = summary.get("total_articles", 0)
+                            total_pgs = summary.get("total_pages", 0)
+                            sec_breakdown = ", ".join(
+                                f"{k}: {v}" for k, v in summary.get("section_breakdown", {}).items()
+                            )
+                            articles_list = summary.get("articles", [])
+                            hits_count = total_arts
+
+                            manifest_lines = []
+                            for idx, a in enumerate(articles_list[:50], 1):
+                                folio_info = (
+                                    f"Page {a['printed_page']} (PDF p.{a['page_number']})"
+                                    if a.get("printed_page")
+                                    else f"PDF p.{a['page_number']}"
+                                )
+                                author_info = (
+                                    f" by {a['byline_author']}" if a.get("byline_author") else ""
+                                )
+                                manifest_lines.append(
+                                    f'{idx}. [{a["section"]}] "{a["headline"]}" '
+                                    f"({folio_info}{author_info}, {a['word_count']} words)"
+                                )
+                            manifest_text = "\n".join(manifest_lines)
+
+                            np_title = summary.get("newspaper", "Archive")
+                            iss_d = summary.get("issue_date", "")
+                            if page_filter:
+                                no_arts_msg = (
+                                    "No editorial articles found on this page "
+                                    "(Page may be a full-page advertisement, "
+                                    "photo gallery, or unindexed wrap)."
+                                )
+                                body_content = manifest_text if manifest_lines else no_arts_msg
+                                summary_str = (
+                                    f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
+                                    f"({iss_d}) - PAGE {page_filter} ===\n"
+                                    f"• Total Articles on Page {page_filter}: {total_arts}\n"
+                                    f"• Total Issue Pages: {total_pgs}\n\n"
+                                    f"Articles on Page {page_filter}:\n{body_content}"
+                                )
+                            else:
+                                summary_str = (
+                                    f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
+                                    f"({iss_d}) ===\n"
+                                    f"• Total Articles Ingested: {total_arts}\n"
+                                    f"• Total Issue Pages: {total_pgs}\n"
+                                    f"• Sections Breakdown: {sec_breakdown}\n\n"
+                                    f"Article Manifest:\n{manifest_text}"
+                                )
+
                         evidence_items.append(
                             {
                                 "article_id": 0,
-                                "headline": "Topic Volume Breakdown",
-                                "newspaper_name": "Aggregated Archive Analytics",
-                                "issue_date": "Overview",
+                                "headline": (
+                                    f"Issue Manifest: {summary.get('newspaper', 'Archive')} "
+                                    f"({summary.get('issue_date', '')})"
+                                ),
+                                "newspaper_name": summary.get("newspaper", "Archive"),
+                                "issue_date": summary.get("issue_date", "Overview"),
                                 "pages": [1],
-                                "snippet": dist_str,
+                                "snippet": summary_str,
+                                "prominence_score": 1.0,
                                 "source_tool": "sql_analytics",
                             }
                         )

@@ -465,7 +465,127 @@ When testing full queries on 30+ page newspapers (e.g. searching for "Tata Power
 
 ---
 
-*Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+## Phase 6.1.4 — Printed Folios, Advertisement Exclusion & SQL Manifest Analytics
 
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Challenges Solved
+1. **Printed Folio Detection & Disconnect Resolution (Problem 1)**:
+   - Implemented `FolioDetector` (`backend/app/ingestion/folio_detector.py`) extracting printed page strings (e.g., `Page 12`, `B-3`, `IV`) from running headers, section folios, and corner numerals, with fallback extrapolation for unnumbered jackets and editorial sections.
+   - Added `printed_page_number` to `Page` and `ArticlePage` schema with Alembic migration `002_add_printed_page_and_ad_flags.py`.
+   - Updated `NewspaperChunker` and `ArticleEmbedder` to link and embed both printed and PDF indices, generating authoritative dual-citation formatting: `Page 7 (PDF p.12)`.
+2. **Advertisement Detection & Vector Store Hygiene (Problem 2)**:
+   - Added `PageType.ADVERTISEMENT` and ad keyword detection heuristics in `PDFPageDetector` (`backend/app/ingestion/detector.py`).
+   - Persisted ad pages with `is_advertisement_page=True` in MySQL for completeness while completely skipping vector embedding in `tasks.py` (`embedder.embed_and_index_chunks()`), preventing ad copy from poisoning RAG search results.
+   - Added `📢 Ad Wrap` and `📢 Ad (No Vectors)` badges in `InspectionViewer.jsx`.
+3. **Relational Manifest Engine for Quantitative / Counting Queries (Problem 3)**:
+   - Added `get_issue_summary`, `count_articles`, and `list_issue_articles` in `SQLAnalyticsEngine` (`backend/app/retrieval/sql_analytics.py`) to execute parameterized MySQL aggregations.
+   - Updated `QueryPlanner` (`backend/app/agent/planner.py`) to route counting/manifest keywords (`"how many"`, `"count"`, `"list all"`, `"summarize issue"`, `"what articles"`) directly to `sql_analytics` tool bindings without hitting vector storage.
+   - Updated `AgentWorkflow` (`backend/app/agent/graph.py`) and `AnswerSynthesizer` (`backend/app/agent/synthesizer.py`) to synthesize exact counts, section breakdowns, and structured article manifests.
+
+### Verification & QA
+- `make lint` (`ruff check .` + `mypy app/`): **0 errors across 65 source files**.
+- `make test` (`pytest tests/ -v`): **123/123 tests passing green in 2.15s**.
+- Unit tests added: `test_folio_detector.py`, `test_sql_analytics.py`, updated `test_planner.py` and `test_detector.py`.
+
+---
+
+## Phase 6.1.5 — Structure-Aware Article Segmentation, Noise Rejection & Page-Specific Retrieval
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+1. **Structure-Aware Article Segmentation & Noise Rejection (`backend/app/ingestion/segmenter.py`)**:
+   - Resolved the noise/OCR chunking problem where isolated bolded stopwords or OCR artifacts (e.g., `"of"`, `"and"`, `"growth"`, `"ARTICLES"`, `"VF7"`) triggered spurious article boundary splits.
+   - Introduced `is_valid_headline_candidate()` to reject lone stopwords and tiny tokens (< 3 chars) from ever acting as headline delimiters.
+   - Added a post-segmentation consolidation pass to automatically merge small article fragments (< 12 words) into their adjacent parent stories on the page, eliminating fragmented single-word chunks.
+   - Updated `backend/app/ingestion/tasks.py` to skip Qdrant dense vector indexing for any article with `word_count < 10` or trivial text length (< 8 words).
+
+2. **Page-Specific Query Routing & Parameterized Filtering (`backend/app/agent/planner.py`, `graph.py`)**:
+   - Added `PAGE_ARTICLE_QUERY_PATTERN` and `PAGE_PATTERN` in `QueryPlanner` to identify page-targeted queries (e.g., `"list no of articles on pg 7"`, `"how many articles on page 3"`, `"articles on page 10"`).
+   - Routed page-targeted queries directly to `sql_analytics` (`analysis_type="issue_summary"`, `page_filter="7"`) for instant, authoritative MySQL aggregation, bypassing vector search hallucinations.
+   - Augmented `SearchFilter` and `hybrid_search.py` with `page_number` and `printed_page` filters to support page-restricted factual search queries.
+
+3. **Page-Filtered SQL Analytics Manifests (`backend/app/retrieval/sql_analytics.py`)**:
+   - Extended `SQLAnalyticsEngine.get_issue_summary()` with `page_filter` support, prioritizing physical printed page folios with fallback to PDF page indices.
+   - Updated `AgentWorkflow` (`graph.py`) to render page-filtered manifests with exact counts and article titles.
+
+### Verification & QA
+- `make lint` (`ruff check .` + `mypy app/`): **0 errors across 65 source files**.
+- `make test` (`pytest tests/ -v`): **126/126 tests passing green in 2.10s**.
+- Live workflow verified on `"list no of articles on pg 7"` with exact database manifests and dual-index citations.
+
+---
+
+## Phase 6.1.6 — Spatial Folio Parsing, DPI Normalization & Header/Footer Zone Isolation
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+1. **Spatial Header/Footer Zone Isolation (`backend/app/ingestion/folio_detector.py`)**:
+   - Replaced flat-text regex scanning with coordinate-based spatial parsing.
+   - Enforced strict Y-axis bounding box filtering: header zone ($y_1 \le \text{height} \times 0.08$) and footer zone ($y_0 \ge \text{height} \times 0.95$). All page body text ($0.08 < y < 0.95$) is discarded before regex execution, eliminating false positives from ad prices, phone numbers, and body text digits.
+2. **DPI Synchronization & Relative Coordinate Normalization**:
+   - Synchronized coordinate scales across 72 DPI digital PDF point coordinates and 300 DPI rasterized OCR pixel coordinates in `backend/app/ingestion/tasks.py`.
+   - Handled missing bounding boxes gracefully by returning sequential fallbacks without flat body scans.
+3. **Boundary Regex Isolation**:
+   - Refined `FOLIO_HEADER_LINE_REGEX` and `_TRAILING_FOLIO_REGEX` to prevent trailing city/header letters (e.g., `'U'` from `'BENGALURU 13'`) from being captured as section codes.
+
+### Verification & QA
+- Added 7 spatial parsing and DPI sync tests to `backend/tests/test_folio_detector.py` (total 16 unit tests).
+- `make lint && make test`: **136/136 tests passing green**.
+
+---
+
+## Phase 6.1.7 — Over-Segmentation & Advertisement Handling Overhaul
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Problem Diagnosed
+In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advertisements and statutory notices), the ingestion pipeline suffered from extreme over-segmentation — creating 774 fragmented single-word "articles" for a 68-article issue. Single bold/uppercase tokens like `"LIMITED"`, `"ISSUE,"`, and `"EQUITY"` triggered new article boundaries.
+
+### Three-Pillar Architecture Implemented
+1. **Pillar 1: Bounding Box Consolidation (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Implemented `_consolidate_elements()` to perform spatial column grouping (horizontal overlap $\ge 65\%$) and vertical flow merging ($y_{0,B} - y_{1,A} \le 1.8 \times \text{median line height}$) on adjacent paragraph fragments.
+   - Merged multi-line headlines sharing column bounds into unified headline elements before article splitting.
+   - Automatic de-hyphenation across line breaks ending with trailing hyphens (`-`).
+2. **Pillar 2: Advertisement & Statutory Notice Grouping (`backend/app/ingestion/detector.py`, `segmenter.py`, `classifier.py`)**:
+   - Expanded domain lexicon for commercial ads, financial IPO notices (`INITIAL PUBLIC OFFERING`, `RED HERRING PROSPECTUS`, `BOOK RUNNING LEAD MANAGERS`, `PRICE BAND`), and legal/statutory disclosures (`PUBLIC NOTICE`, `NCLT`, `INSOLVENCY`, `TENDER NOTICE`).
+   - Single-Unit Grouping Rule: If `is_advertisement_page == True`, headline-based splitting is bypassed, grouping the entire page into **exactly 1 `SegmentedArticle`** with `headline="[Advertisement] ..."` and complete body text.
+   - Classified under `section="Advertisements & Notices"` in `ArticleClassifier`.
+3. **Pillar 3: Minimum Structural Thresholds & Boilerplate Exclusion (`backend/app/ingestion/segmenter.py`)**:
+   - Corporate boilerplate tokens (`"LIMITED"`, `"LTD"`, `"CORP"`, `"EQUITY"`, `"PVT"`, `"SHARES"`, `"PROMOTERS"`) are excluded from standing alone as article headlines.
+   - Strict validation requiring $\ge 2$ words and $\ge 12$ characters for headline candidates.
+   - Enforced minimum word count threshold ($\ge 30$ words) and structural pairing (headline + substantive body $\ge 5$ words).
+   - Orphan snippets and tiny fragments are absorbed into the preceding/adjacent article on the page.
+
+### Verification & QA
+- `make lint && make test`: **141/141 tests passing green in 2.03s**.
+- Added unit tests: `test_full_page_advertisement_groups_into_single_article`, `test_single_word_boilerplate_rejected_as_headline`, `test_orphan_snippets_absorbed_into_adjacent_article`, `test_spatial_consolidation_merges_adjacent_column_paragraphs`, `test_spatial_consolidation_merges_multiline_headlines`.
+
+---
+
+## Phase 6.1.8 — Full Local MinerU Neural Weights & Neural PaddleOCR Integration
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### What was built
+1. **MinerU Neural Weights Deployment**:
+   - Downloaded and configured official MinerU heavy weights (`DocLayout-YOLO`, `LayoutLMv3`, `TableMaster`, `ReadingOrder`, and `PytorchPaddleOCR` multilingual checkpoints) to `/Users/piyushgoel/.cache/mineru/models`.
+   - Configured `~/magic-pdf.json` with `"device-mode": "mps"`, `doclayout_yolo`, and `TableMaster`.
+2. **Native Neural OCR in [`MinerUProvider`](backend/app/providers/mineru_provider.py)**:
+   - Wired native `PytorchPaddleOCR` neural text detection and recognition inside `MinerUProvider.ocr()` with line-aware spatial word grouping and high confidence (> 0.97).
+   - Graceful automated fallback to `TesseractOCR` if neural model weights are missing or in lightweight CI environments.
+3. **Verification & QA**:
+   - `make lint && make test`: **141/141 tests passing green in 2.60s**.
+
+---
+
+*Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
 
 

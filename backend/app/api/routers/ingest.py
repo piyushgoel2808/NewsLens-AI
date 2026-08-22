@@ -1,4 +1,5 @@
 """FastAPI Ingestion Router for NewsLens-AI."""
+
 from __future__ import annotations
 
 import asyncio
@@ -84,11 +85,19 @@ async def upload_newspaper_document(
                     {"issue_id": issue_id, "status": "processing_in_background"}
                 )
 
+    is_duplicate_skipped = bool(intake_res.skipped_duplicates and not intake_res.issues_created)
     return {
-        "message": "Upload processed successfully",
+        "message": (
+            "Upload skipped (duplicate issue already exists. Check 'Force Re-ingest' to overwrite)"
+            if is_duplicate_skipped
+            else "Upload processed successfully"
+        ),
+        "status": "skipped_duplicate" if is_duplicate_skipped else "success",
+        "is_duplicate": is_duplicate_skipped,
         "job_id": intake_res.job_id,
         "total_files": intake_res.total_files,
         "issues_created": intake_res.issues_created,
+        "issue_id": intake_res.issues_created[0] if intake_res.issues_created else None,
         "skipped_duplicates": intake_res.skipped_duplicates,
         "pipeline_results": pipeline_results,
     }
@@ -179,4 +188,3 @@ async def delete_ingestion_job(
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     return result
-

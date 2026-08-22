@@ -1,4 +1,5 @@
 """Unit tests for Cross-Page Story Continuation and Jump Assembler."""
+
 from __future__ import annotations
 
 from app.ingestion.cross_page_assembler import CrossPageAssembler

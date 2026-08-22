@@ -4,6 +4,7 @@ GET /health — pings all downstream dependencies and returns their status.
 Always returns 200 (never 503) so load balancers don't drop the pod for
 a degraded-but-running dependency. The 'status' field conveys the severity.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +26,7 @@ async def _check_mysql() -> dict[str, Any]:
     try:
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import create_async_engine
+
         engine = create_async_engine(settings.database.async_url, pool_pre_ping=True)
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -40,6 +42,7 @@ async def _check_qdrant() -> dict[str, Any]:
     t0 = time.monotonic()
     try:
         from app.storage.qdrant_store import QdrantStore
+
         store = QdrantStore(settings.qdrant)
         reachable = await store.ping()
         await store.close()
@@ -55,6 +58,7 @@ async def _check_minio() -> dict[str, Any]:
     t0 = time.monotonic()
     try:
         from app.storage.minio_store import MinioStore
+
         store = MinioStore(settings.minio)
         reachable = await store.ping()
         if reachable:
@@ -69,6 +73,7 @@ async def _check_redis() -> dict[str, Any]:
     t0 = time.monotonic()
     try:
         import redis.asyncio as aioredis
+
         r = aioredis.Redis.from_url(settings.redis_url, socket_connect_timeout=2)
         await r.ping()
         await r.aclose()
@@ -98,9 +103,7 @@ async def health_check() -> dict[str, Any]:
         "minio": minio_result,
         "redis": redis_result,
     }
-    all_up = all(
-        isinstance(d, dict) and d.get("status") == "up" for d in deps.values()
-    )
+    all_up = all(isinstance(d, dict) and d.get("status") == "up" for d in deps.values())
     return {
         "status": "healthy" if all_up else "degraded",
         "dependencies": deps,

@@ -9,6 +9,7 @@ Usage:
     logger = get_logger(__name__)
     logger.info("Processing page", extra={"page_id": 42, "duration_ms": 150})
 """
+
 from __future__ import annotations
 
 import logging

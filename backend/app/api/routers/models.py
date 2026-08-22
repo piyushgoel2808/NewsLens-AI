@@ -4,6 +4,7 @@ GET  /api/models/available       — list all configured providers + reachabilit
 GET  /api/settings/model-bindings — read current task→provider bindings
 PUT  /api/settings/model-bindings — update bindings (admin, Phase 6+)
 """
+
 from __future__ import annotations
 
 from typing import Any

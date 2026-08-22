@@ -13,6 +13,7 @@ Classifies articles into 8 standardized types:
 Calculates normalized prominence score (0.0 to 1.0) based on page positioning,
 headline bounding box scale, and word count.
 """
+
 from __future__ import annotations
 
 import re
@@ -29,7 +30,11 @@ EDITORIAL_KEYWORDS = re.compile(
 )
 
 ADVERTISEMENT_KEYWORDS = re.compile(
-    r"\b(?:advertisement|sponsored|classified|for\s+sale|special\s+offer|discount|call\s+now|inquiries)\b",
+    r"\b(?:advertisement|advertorial|special\s+promotional\s+feature|sponsored|"
+    r"initial\s+public\s+offering|\bipo\b|red\s+herring\s+prospectus|"
+    r"book\s+running\s+lead\s+manager|price\s+band|public\s+notice|statutory\s+notice|"
+    r"tender\s+notice|auction\s+sale|corrigendum|classified|for\s+sale|special\s+offer|"
+    r"discount|call\s+now|inquiries)\b",
     re.IGNORECASE,
 )
 
@@ -62,14 +67,20 @@ class ArticleClassifier:
         combined_text = f"{headline}\n{body}"
 
         # 1. Determine Article Type
-        if EDITORIAL_KEYWORDS.search(headline) or (
-            article.primary_page_number in (2, 4) and EDITORIAL_KEYWORDS.search(combined_text[:300])
+        if headline.upper().startswith("[ADVERTISEMENT]") or headline.upper().startswith(
+            "[PUBLIC NOTICE]"
+        ):
+            article_type = "advertisement"
+            section = "Advertisements & Notices"
+        elif EDITORIAL_KEYWORDS.search(headline) or (
+            article.primary_page_number in (2, 4)
+            and EDITORIAL_KEYWORDS.search(combined_text[:300])
         ):
             article_type = "editorial"
             section = "Opinion & Editorial"
-        elif ADVERTISEMENT_KEYWORDS.search(combined_text[:400]) and article.word_count < 150:
+        elif ADVERTISEMENT_KEYWORDS.search(combined_text[:400]):
             article_type = "advertisement"
-            section = "Advertisements"
+            section = "Advertisements & Notices"
         elif len(TABLE_PATTERNS.findall(body)) > 15 and article.word_count < 400:
             article_type = "table_content"
             section = "Markets & Data"

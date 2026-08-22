@@ -8,8 +8,10 @@ Handles:
 - Uploading raw source files to MinIO `newslens-originals` bucket.
 - Creating and managing `IngestionJob`, `Newspaper`, `Issue`, and `Page` records in MySQL.
 """
+
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import os
@@ -23,8 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.ingestion import IngestionJob
-from app.models.newspaper import Issue, Newspaper
+from app.models.newspaper import Issue, Newspaper, Page
 from app.storage.minio_store import MinioStore
+from app.storage.qdrant_store import QdrantStore
 
 logger = get_logger(__name__)
 
@@ -65,10 +68,16 @@ def is_valid_pdf(data: bytes) -> bool:
 class IntakeService:
     """Coordinates incoming file uploads, deduplication, storage, and DB tracking."""
 
-    def __init__(self, db: AsyncSession, minio: MinioStore | None = None) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        minio: MinioStore | None = None,
+        qdrant: QdrantStore | None = None,
+    ) -> None:
         self._db = db
         self._settings = get_settings()
         self._minio = minio or MinioStore(self._settings.minio)
+        self._qdrant = qdrant or QdrantStore(self._settings.qdrant)
 
     async def get_or_create_newspaper(
         self, name: str, default_language: str | None = "en"
@@ -208,6 +217,15 @@ class IntakeService:
                 )
 
             if existing_issue and force:
+                with contextlib.suppress(Exception):
+                    await self._qdrant.delete_by_filter({"issue_id": existing_issue.id})
+                pages_res = await self._db.execute(
+                    select(Page).where(Page.issue_id == existing_issue.id)
+                )
+                for p in pages_res.scalars().all():
+                    await self._db.delete(p)
+                await self._db.flush()
+
                 issue = existing_issue
                 issue.source_zip_id = job.id
                 issue.ingestion_status = "pending"

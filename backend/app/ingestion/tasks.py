@@ -1,7 +1,9 @@
 """Celery and synchronous pipeline execution tasks for PDF Ingestion, OCR & Layout Analysis."""
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import func, select
@@ -16,6 +18,7 @@ from app.ingestion.classifier import ArticleClassifier
 from app.ingestion.cross_page_assembler import CrossPageAssembler
 from app.ingestion.detector import PDFPageDetector
 from app.ingestion.embedder import ArticleEmbedder
+from app.ingestion.folio_detector import FolioDetector
 from app.ingestion.layout_analyzer import LayoutAnalyzer
 from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.ocr_service import OCRService
@@ -77,15 +80,17 @@ async def run_ingestion_pipeline(
 
         # Fetch issue upfront
         issue_stmt = (
-            select(Issue)
-            .where(Issue.id == issue_id)
-            .options(selectinload(Issue.newspaper))
+            select(Issue).where(Issue.id == issue_id).options(selectinload(Issue.newspaper))
         )
         issue_res = await db.execute(issue_stmt)
         issue = issue_res.scalar_one_or_none()
         issue_lang = issue.language if issue else "en"
 
         # Step 3 & 4: OCR and Layout Analysis per page
+        folio_detector = FolioDetector()
+        last_known_folio: int | None = None
+        last_known_pdf_page: int | None = None
+
         for i, rendered in enumerate(rendered_pages):
             page_num = rendered.page_number
             analysis = analysis_results[i]
@@ -117,6 +122,33 @@ async def run_ingestion_pipeline(
                         extra={"page_id": page.id, "error": str(e)},
                     )
 
+            # Extract printed page number using FolioDetector with strict DPI synchronization
+            target_blocks: Sequence[Any]
+            if analysis.requires_ocr:
+                folio_height = float(rendered.height_px)
+                folio_width = float(rendered.width_px)
+                target_blocks = extracted_ocr_blocks
+            else:
+                folio_height = float(analysis.page_height or rendered.height_px)
+                folio_width = float(analysis.page_width or rendered.width_px)
+                target_blocks = analysis.blocks
+
+            printed_folio = folio_detector.extract_printed_page_number(
+                page_number=page_num,
+                height_px=folio_height,
+                width_px=folio_width,
+                blocks=target_blocks,
+                is_advertisement_page=analysis.is_advertisement,
+                last_known_folio_num=last_known_folio,
+                last_known_pdf_page=last_known_pdf_page,
+            )
+            page.printed_page_number = printed_folio
+            page.is_advertisement_page = analysis.is_advertisement
+
+            if printed_folio and printed_folio.isdigit():
+                last_known_folio = int(printed_folio)
+                last_known_pdf_page = page_num
+
             # Run layout analysis
             layout_res = await layout_analyzer.analyze_page(
                 page_number=page_num,
@@ -132,6 +164,7 @@ async def run_ingestion_pipeline(
             page_articles = segmenter.segment_page(
                 page_number=page_num,
                 ordered_blocks=layout_res.reading_order,
+                is_advertisement_page=analysis.is_advertisement,
             )
 
             # Robust fallback: if 0 articles generated but OCR or layout text exists
@@ -225,10 +258,12 @@ async def run_ingestion_pipeline(
         issue_date_str = str(issue.issue_date) if issue else ""
 
         page_id_map: dict[int, int] = {}
+        page_folio_map: dict[int, str] = {}
         pages_fetch = await db.execute(select(Page).where(Page.issue_id == issue_id))
         all_db_pages = pages_fetch.scalars().all()
         for p in all_db_pages:
             page_id_map[p.page_number] = p.id
+            page_folio_map[p.page_number] = p.printed_page_number or str(p.page_number)
 
         created_articles: list[dict[str, Any]] = []
         total_chunks_created = 0
@@ -266,6 +301,7 @@ async def run_ingestion_pipeline(
                         article_id=article_record.id,
                         page_id=target_pid,
                         page_number=p_map.page_number,
+                        printed_page_number=page_folio_map.get(p_map.page_number),
                         bbox_json={"bboxes": [list(b) for b in p_map.bbox_list]},
                         block_order=p_map.block_order,
                     )
@@ -285,6 +321,7 @@ async def run_ingestion_pipeline(
 
             # Hierarchical Chunking
             pages_list = [pm.page_number for pm in assembled.pages_mapping] or [1]
+            printed_pages_list = [page_folio_map.get(p, str(p)) for p in pages_list]
             chunks = chunker.chunk_article(
                 full_text=art_text,
                 newspaper_name=newspaper_name,
@@ -292,24 +329,41 @@ async def run_ingestion_pipeline(
                 headline=art_hl,
                 section=article_record.section,
                 pages=pages_list,
+                printed_pages=printed_pages_list,
             )
 
-            # Dense Vector Embedding & Qdrant Upsert
-            await embedder.embed_and_index_chunks(
-                article_id=article_record.id,
-                issue_id=issue_id,
-                newspaper_name=newspaper_name,
-                issue_date=issue_date_str,
-                headline=art_hl,
-                section=article_record.section,
-                article_type=article_record.article_type,
-                prominence_score=article_record.prominence_score,
-                page_numbers=pages_list,
-                entities=[e.name for e in meta_res.entities],
-                topics=[t.name for t in meta_res.topics],
-                chunks=chunks,
+            # Vector Embedding: Skip ads and trivial fragments from Qdrant vector index
+            is_trivial_fragment = (
+                article_record.word_count < 10 or len(art_text.strip().split()) < 8
             )
-            total_chunks_created += len(chunks)
+            if article_record.article_type == "advertisement" or is_trivial_fragment:
+                logger.info(
+                    "Skipping Qdrant vector indexing for advertisement or trivial fragment",
+                    extra={
+                        "article_id": article_record.id,
+                        "headline": art_hl[:60],
+                        "type": article_record.article_type,
+                        "word_count": article_record.word_count,
+                    },
+                )
+            else:
+                # Dense Vector Embedding & Qdrant Upsert
+                await embedder.embed_and_index_chunks(
+                    article_id=article_record.id,
+                    issue_id=issue_id,
+                    newspaper_name=newspaper_name,
+                    issue_date=issue_date_str,
+                    headline=art_hl,
+                    section=article_record.section,
+                    article_type=article_record.article_type,
+                    prominence_score=article_record.prominence_score,
+                    page_numbers=pages_list,
+                    printed_pages=printed_pages_list,
+                    entities=[e.name for e in meta_res.entities],
+                    topics=[t.name for t in meta_res.topics],
+                    chunks=chunks,
+                )
+                total_chunks_created += len(chunks)
 
             created_articles.append(
                 {

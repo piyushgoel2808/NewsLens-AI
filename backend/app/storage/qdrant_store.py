@@ -3,6 +3,7 @@
 Implements VectorStore using the qdrant-client async API.
 Creates the collection on startup if it doesn't exist.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -64,8 +65,7 @@ class QdrantStore:
         if not points:
             return
         qdrant_points = [
-            qmodels.PointStruct(id=p.id, vector=p.vector, payload=p.payload)
-            for p in points
+            qmodels.PointStruct(id=p.id, vector=p.vector, payload=p.payload) for p in points
         ]
         await self._client.upsert(
             collection_name=self._collection,

@@ -1,4 +1,5 @@
 """Dense Vector Embedding and Qdrant Indexing Engine for Newspaper Chunks."""
+
 from __future__ import annotations
 
 import uuid
@@ -55,6 +56,7 @@ class ArticleEmbedder:
         entities: list[str],
         topics: list[str],
         chunks: list[DocumentChunk],
+        printed_pages: list[str] | None = None,
     ) -> list[str]:
         """Embed a batch of document chunks, upsert to Qdrant, and persist ArticleChunk records."""
         if not chunks:
@@ -84,6 +86,7 @@ class ArticleEmbedder:
                 "prominence_score": prominence_score,
                 "chunk_index": chunk.chunk_index,
                 "page_numbers": page_numbers,
+                "printed_pages": printed_pages or [],
                 "entities": entities,
                 "topics": topics,
                 "chunk_text": chunk.text,

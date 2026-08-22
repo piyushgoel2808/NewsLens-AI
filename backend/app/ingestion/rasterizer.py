@@ -4,11 +4,12 @@ Renders vector and scanned PDF pages to high-resolution PNG images (300 DPI)
 using PyMuPDF (fitz). Uploads rasterized pages to MinIO `newslens-pages`
 bucket and synchronizes page metadata (dimensions, object key, status) in MySQL.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import fitz  # PyMuPDF
+import pymupdf
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,14 +46,14 @@ class PDFRasterizer:
 
     def render_page(
         self,
-        doc: fitz.Document,
+        doc: pymupdf.Document,
         page_index: int,
         dpi: int = DEFAULT_DPI,
     ) -> tuple[bytes, int, int]:
         """Render a single 0-indexed page from an open PyMuPDF document to PNG bytes."""
         page = doc.load_page(page_index)
         zoom = dpi / 72.0  # 72 points per inch in PDF spec
-        matrix = fitz.Matrix(zoom, zoom)
+        matrix = pymupdf.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=matrix, alpha=False)
         img_bytes = pix.tobytes(output="png")
         return img_bytes, pix.width, pix.height
@@ -70,7 +71,7 @@ class PDFRasterizer:
         if not issue:
             raise ValueError(f"Issue with id {issue_id} not found.")
 
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         total_pages = len(doc)
         issue.total_pages = total_pages
         logger.info(

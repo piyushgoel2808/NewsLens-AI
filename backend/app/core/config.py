@@ -9,6 +9,7 @@ Usage:
     settings = get_settings()
     model_cfg = settings.load_model_config()
 """
+
 from __future__ import annotations
 
 import functools
@@ -310,11 +311,13 @@ class Settings(BaseSettings):
             candidate_paths.append(Path(self.model_config_path))
 
         root = find_project_root()
-        candidate_paths.extend([
-            root / "model_config.yaml",
-            Path.cwd() / "model_config.yaml",
-            Path.cwd() / "../model_config.yaml",
-        ])
+        candidate_paths.extend(
+            [
+                root / "model_config.yaml",
+                Path.cwd() / "model_config.yaml",
+                Path.cwd() / "../model_config.yaml",
+            ]
+        )
 
         found_path: Path | None = None
         for p in candidate_paths:

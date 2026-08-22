@@ -6,6 +6,7 @@ Implements the 3-Tier Hard Deletion Blueprint:
 3. MySQL Relational DB: Delete Issue (cascading pages, articles, chunks, tables, photos)
    and any parent IngestionJob records.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -141,4 +142,3 @@ class DeletionService:
         await self._db.delete(job)
         await self._db.commit()
         return {"status": "deleted", "job_id": job_id}
-

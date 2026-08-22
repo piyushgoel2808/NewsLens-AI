@@ -1,7 +1,9 @@
 """SQLAlchemy ORM models: Entity, Topic, Event and their article join tables."""
+
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 from sqlalchemy import Date, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -13,15 +15,11 @@ _ENTITY_TYPES = ("person", "org", "location", "misc")
 
 class Entity(Base):
     __tablename__ = "entities"
-    __table_args__ = (
-        UniqueConstraint("name", "type", name="uq_entity_name_type"),
-    )
+    __table_args__ = (UniqueConstraint("name", "type", name="uq_entity_name_type"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(512), nullable=False)
-    type: Mapped[str] = mapped_column(
-        Enum(*_ENTITY_TYPES, name="entity_type_enum"), nullable=False
-    )
+    type: Mapped[str] = mapped_column(Enum(*_ENTITY_TYPES, name="entity_type_enum"), nullable=False)
     # Self-referential FK for entity merging/canonicalization
     canonical_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("entities.id", ondelete="SET NULL")
@@ -34,9 +32,8 @@ class Entity(Base):
 
 class ArticleEntity(Base):
     __tablename__ = "article_entities"
-    __table_args__ = (
-        UniqueConstraint("article_id", "entity_id", name="uq_article_entity"),
-    )
+    __mapper_args__ = {"confirm_deleted_rows": False}
+    __table_args__ = (UniqueConstraint("article_id", "entity_id", name="uq_article_entity"),)
 
     article_id: Mapped[int] = mapped_column(
         Integer,
@@ -54,7 +51,7 @@ class ArticleEntity(Base):
     mention_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     salience_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
-    article: Mapped[Article] = relationship(  # type: ignore[name-defined]
+    article: Mapped[Any] = relationship(
         "Article", back_populates="article_entities"
     )
     entity: Mapped[Entity] = relationship("Entity", back_populates="article_entities")
@@ -76,6 +73,7 @@ class Topic(Base):
 
 class ArticleTopic(Base):
     __tablename__ = "article_topics"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     article_id: Mapped[int] = mapped_column(
         Integer,
@@ -92,7 +90,7 @@ class ArticleTopic(Base):
     )
     confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
 
-    article: Mapped[Article] = relationship(  # type: ignore[name-defined]
+    article: Mapped[Any] = relationship(
         "Article", back_populates="article_topics"
     )
     topic: Mapped[Topic] = relationship("Topic", back_populates="article_topics")
@@ -117,6 +115,7 @@ class Event(Base):
 
 class ArticleEvent(Base):
     __tablename__ = "article_events"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     article_id: Mapped[int] = mapped_column(
         Integer,
@@ -133,7 +132,7 @@ class ArticleEvent(Base):
     )
     confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
 
-    article: Mapped[Article] = relationship(  # type: ignore[name-defined]
+    article: Mapped[Any] = relationship(
         "Article", back_populates="article_events"
     )
     event: Mapped[Event] = relationship("Event", back_populates="article_events")

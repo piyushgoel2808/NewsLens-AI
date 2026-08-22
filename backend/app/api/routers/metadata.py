@@ -1,4 +1,5 @@
 """FastAPI router for Entity and Topic metadata discovery."""
+
 from __future__ import annotations
 
 from typing import Any

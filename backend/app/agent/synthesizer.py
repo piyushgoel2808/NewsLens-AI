@@ -1,4 +1,5 @@
 """Answer Synthesizer: Grounded LLM narrative generation with strict source citations."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -12,15 +13,21 @@ from app.providers.registry import get_registry
 logger = get_logger(__name__)
 
 SYNTHESIZER_SYSTEM_PROMPT = """You are NewsLens-AI, an expert newspaper research assistant.
-Answer the user's research question thoroughly and accurately based ONLY on the evidence excerpts.
+Answer the user's research question thoroughly, objectively, and accurately based ONLY
+on the evidence excerpts.
 
 CRITICAL CITATION RULES:
 1. Every factual claim MUST include an inline citation in the format:
-   [Newspaper Name, YYYY-MM-DD, Page X, "Headline"]
-2. If multiple sources corroborate a claim, cite them together: [Paper 1, Date] [Paper 2, Date].
-3. Do NOT make up any dates, figures, quotes, or events not present in the evidence.
-4. If evidence is insufficient, explicitly state what is missing.
-5. Structure your response clearly with headings or chronological sections where appropriate.
+   [Newspaper Name, YYYY-MM-DD, Page X (PDF p.Y), "Headline"]
+   or [Newspaper Name, YYYY-MM-DD, Page X, "Headline"]
+2. If multiple sources corroborate a claim, cite them together.
+3. For aggregate questions (e.g. "How many articles?", "List all articles",
+   "Overview of the issue"), use the structured relational archive manifest
+   in the evidence to provide exact, authoritative numbers, section breakdowns,
+   and complete lists.
+4. Do NOT make up any dates, figures, quotes, or events not present in the evidence.
+5. If evidence is insufficient, explicitly state what is missing.
+6. Structure your response clearly with headings or lists where appropriate.
 """
 
 
@@ -55,7 +62,14 @@ class AnswerSynthesizer:
             np_name = item.get("newspaper_name", "Unknown Publication")
             dt = item.get("issue_date", "Unknown Date")
             pages = item.get("pages", [1])
-            pages_str = ", ".join(str(p) for p in pages) if pages else "1"
+            printed_pages = item.get("printed_pages", [])
+            if printed_pages:
+                p_str = ", ".join(str(p) for p in printed_pages)
+                pdf_str = ", ".join(str(p) for p in pages)
+                pages_str = f"{p_str} (PDF p.{pdf_str})"
+            else:
+                pages_str = ", ".join(str(p) for p in pages) if pages else "1"
+
             hl = item.get("headline", "Untitled Article")
             text = item.get("snippet") or item.get("full_text") or item.get("summary") or ""
 
@@ -217,7 +231,7 @@ class AnswerSynthesizer:
             hl = item.get("headline", "Untitled")
             snippet = item.get("snippet") or item.get("summary") or ""
 
-            lines.append(f"- **{hl}**: {snippet} [{np_name}, {dt}, {page_str}, \"{hl}\"]\n")
+            lines.append(f'- **{hl}**: {snippet} [{np_name}, {dt}, {page_str}, "{hl}"]\n')
 
         lines.append("\n*All findings verified against primary newspaper source scans.*")
         return "\n".join(lines)

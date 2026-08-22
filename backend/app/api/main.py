@@ -4,6 +4,7 @@ Manages the full application lifecycle:
 - Startup: logging, DB, MinIO, Qdrant
 - Shutdown: clean connection teardown
 """
+
 from __future__ import annotations
 
 import uuid
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize MinIO (create buckets if missing)
     try:
         from app.storage.minio_store import MinioStore
+
         minio = MinioStore(settings.minio)
         await minio.startup()
         app.state.minio = minio
@@ -46,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize Qdrant (create collection if missing)
     try:
         from app.storage.qdrant_store import QdrantStore
+
         qdrant = QdrantStore(settings.qdrant)
         await qdrant._ensure_collection()
         app.state.qdrant = qdrant

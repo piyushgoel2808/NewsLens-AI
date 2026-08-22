@@ -6,6 +6,7 @@ prepending global newspaper context headers:
 
 Ensures each chunk retains global document context for vector retrieval.
 """
+
 from __future__ import annotations
 
 import re
@@ -47,6 +48,7 @@ class NewspaperChunker:
         headline: str,
         section: str | None = None,
         pages: list[int] | None = None,
+        printed_pages: list[str] | None = None,
     ) -> str:
         """Construct the standardized contextual metadata header."""
         parts = [
@@ -56,7 +58,14 @@ class NewspaperChunker:
         if section:
             parts.append(f"Section: {section}")
         parts.append(f"Headline: {headline}")
-        if pages:
+        if printed_pages:
+            p_str = ", ".join(printed_pages)
+            if pages:
+                pdf_str = ", ".join(str(p) for p in sorted(pages))
+                parts.append(f"Page(s): {p_str} (PDF p.{pdf_str})")
+            else:
+                parts.append(f"Page(s): {p_str}")
+        elif pages:
             pages_str = ", ".join(str(p) for p in sorted(pages))
             parts.append(f"Page(s): {pages_str}")
 
@@ -70,6 +79,7 @@ class NewspaperChunker:
         headline: str = "",
         section: str | None = None,
         pages: list[int] | None = None,
+        printed_pages: list[str] | None = None,
     ) -> list[DocumentChunk]:
         """Split article text into overlapping, header-contextualized chunks."""
         text = full_text.strip()
@@ -82,6 +92,7 @@ class NewspaperChunker:
             headline=headline,
             section=section,
             pages=pages,
+            printed_pages=printed_pages,
         )
 
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]

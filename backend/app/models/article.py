@@ -1,4 +1,5 @@
 """SQLAlchemy ORM models: Article, ArticlePage, ArticleChunk, Photo, Table."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -24,6 +25,7 @@ _ARTICLE_TYPES = (
 
 class Article(Base):
     __tablename__ = "articles"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     issue_id: Mapped[int] = mapped_column(
@@ -51,7 +53,7 @@ class Article(Base):
         DateTime, server_default=func.now(), nullable=False
     )
 
-    issue: Mapped[Issue] = relationship("Issue", back_populates="articles")  # type: ignore[name-defined]
+    issue: Mapped[Any] = relationship("Issue", back_populates="articles")
     article_pages: Mapped[list[ArticlePage]] = relationship(
         "ArticlePage", back_populates="article", cascade="all, delete-orphan"
     )
@@ -64,13 +66,13 @@ class Article(Base):
     tables: Mapped[list[ArticleTable]] = relationship(
         "ArticleTable", back_populates="article", cascade="all, delete-orphan"
     )
-    article_entities: Mapped[list[ArticleEntity]] = relationship(  # type: ignore[name-defined]
+    article_entities: Mapped[list[Any]] = relationship(
         "ArticleEntity", back_populates="article", cascade="all, delete-orphan"
     )
-    article_topics: Mapped[list[ArticleTopic]] = relationship(  # type: ignore[name-defined]
+    article_topics: Mapped[list[Any]] = relationship(
         "ArticleTopic", back_populates="article", cascade="all, delete-orphan"
     )
-    article_events: Mapped[list[ArticleEvent]] = relationship(  # type: ignore[name-defined]
+    article_events: Mapped[list[Any]] = relationship(
         "ArticleEvent", back_populates="article", cascade="all, delete-orphan"
     )
 
@@ -79,6 +81,7 @@ class ArticlePage(Base):
     """Junction: one article can span multiple pages."""
 
     __tablename__ = "article_pages"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     article_id: Mapped[int] = mapped_column(
@@ -88,6 +91,7 @@ class ArticlePage(Base):
         Integer, ForeignKey("pages.id", ondelete="CASCADE"), nullable=False, index=True
     )
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    printed_page_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # bboxes on this page for this article
     bbox_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     block_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -99,6 +103,7 @@ class ArticleChunk(Base):
     """Sub-chunk of an article's full_text for embedding/retrieval."""
 
     __tablename__ = "article_chunks"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     article_id: Mapped[int] = mapped_column(
@@ -115,6 +120,7 @@ class ArticleChunk(Base):
 
 class Photo(Base):
     __tablename__ = "photos"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     article_id: Mapped[int | None] = mapped_column(
@@ -134,6 +140,7 @@ class ArticleTable(Base):
     """Extracted table from a page."""
 
     __tablename__ = "tables"
+    __mapper_args__ = {"confirm_deleted_rows": False}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     article_id: Mapped[int | None] = mapped_column(

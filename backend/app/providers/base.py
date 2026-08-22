@@ -8,6 +8,7 @@ Design: Python Protocol (PEP 544) provides structural subtyping (duck-typing)
 without forced inheritance. This makes it trivial to wrap third-party clients
 that don't share a common base class.
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -97,8 +98,8 @@ class ModelResponse:
     output_tokens: int = 0
     model: str = ""
     provider: str = ""
-    parsed: Any | None = None   # Structured output (when response_schema was given)
-    raw: Any | None = None      # Raw provider response (for debugging)
+    parsed: Any | None = None  # Structured output (when response_schema was given)
+    raw: Any | None = None  # Raw provider response (for debugging)
 
     @property
     def total_tokens(self) -> int:
@@ -116,7 +117,7 @@ class OCRBlock:
 
     text: str
     bbox: tuple[float, float, float, float]  # x0, y0, x1, y1 in pixels
-    confidence: float                          # 0.0 to 1.0
+    confidence: float  # 0.0 to 1.0
     language: str | None = None
 
 
@@ -194,12 +195,10 @@ class EmbeddingProvider(Protocol):
     """Interface for text embedding models."""
 
     @property
-    def capability(self) -> ProviderCapability:
-        ...
+    def capability(self) -> ProviderCapability: ...
 
     @property
-    def provider_name(self) -> str:
-        ...
+    def provider_name(self) -> str: ...
 
     @property
     def embedding_dim(self) -> int:
@@ -230,12 +229,10 @@ class VisionModelProvider(Protocol):
     """Interface for vision-language models (layout analysis, image understanding)."""
 
     @property
-    def capability(self) -> ProviderCapability:
-        ...
+    def capability(self) -> ProviderCapability: ...
 
     @property
-    def provider_name(self) -> str:
-        ...
+    def provider_name(self) -> str: ...
 
     async def analyze_image(
         self,
@@ -266,8 +263,7 @@ class OCREngine(Protocol):
     """Interface for OCR engines used on scanned newspaper pages."""
 
     @property
-    def provider_name(self) -> str:
-        ...
+    def provider_name(self) -> str: ...
 
     async def ocr(
         self,
@@ -338,12 +334,10 @@ class DocumentLayoutProvider(Protocol):
     """Interface for neural document layout analysis & reading order engines."""
 
     @property
-    def capability(self) -> ProviderCapability:
-        ...
+    def capability(self) -> ProviderCapability: ...
 
     @property
-    def provider_name(self) -> str:
-        ...
+    def provider_name(self) -> str: ...
 
     async def parse_pdf_document(
         self,
@@ -362,4 +356,3 @@ class DocumentLayoutProvider(Protocol):
     ) -> MinerUParseResult:
         """Parse a single page raster image using neural layout analysis."""
         ...
-

@@ -3,6 +3,7 @@
 Wraps the synchronous MinIO Python client in asyncio executors so it's
 safe to call from async FastAPI/Celery code without blocking the event loop.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,6 +42,7 @@ class MinioStore:
 
     async def ensure_bucket(self, bucket: str) -> None:
         """Create the bucket if it does not already exist."""
+
         def _ensure() -> None:
             if not self._client.bucket_exists(bucket):
                 self._client.make_bucket(bucket)
@@ -56,6 +58,7 @@ class MinioStore:
         content_type: str = "application/octet-stream",
     ) -> None:
         """Upload bytes as an object."""
+
         def _put() -> None:
             self._client.put_object(
                 bucket_name=bucket,
@@ -69,6 +72,7 @@ class MinioStore:
 
     async def get(self, bucket: str, key: str) -> bytes:
         """Download an object and return its bytes."""
+
         def _get() -> bytes:
             response = self._client.get_object(bucket_name=bucket, object_name=key)
             try:
@@ -85,6 +89,7 @@ class MinioStore:
 
     async def delete_prefix(self, bucket: str, prefix: str) -> int:
         """Delete all objects with given prefix (e.g. 'issues/42/')."""
+
         def _delete_prefix() -> int:
             objects = self._client.list_objects(bucket, prefix=prefix, recursive=True)
             count = 0
@@ -102,6 +107,7 @@ class MinioStore:
         expires_seconds: int = 3600,
     ) -> str:
         """Generate a pre-signed GET URL."""
+
         def _presign() -> str:
             return self._client.presigned_get_object(
                 bucket_name=bucket,
@@ -113,6 +119,7 @@ class MinioStore:
 
     async def exists(self, bucket: str, key: str) -> bool:
         """Return True if the object exists."""
+
         def _exists() -> bool:
             try:
                 self._client.stat_object(bucket, key)

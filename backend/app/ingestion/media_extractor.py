@@ -1,4 +1,5 @@
 """Photo region cropping and table metadata extractor for newspaper pages."""
+
 from __future__ import annotations
 
 import io

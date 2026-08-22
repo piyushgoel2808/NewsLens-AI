@@ -1,4 +1,5 @@
 """Tests for the config loading system."""
+
 from __future__ import annotations
 
 import textwrap
@@ -64,7 +65,8 @@ class TestModelConfig:
 
     def test_providers_parsed_correctly(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "model_config.yaml"
-        cfg_file.write_text(textwrap.dedent("""
+        cfg_file.write_text(
+            textwrap.dedent("""
             providers:
               my_ollama:
                 provider: ollama
@@ -73,7 +75,8 @@ class TestModelConfig:
                 supports_tool_use: true
             task_bindings:
               query_planner: my_ollama
-        """))
+        """)
+        )
         settings = Settings(model_config_path=str(cfg_file))
         cfg = settings.load_model_config()
 
@@ -87,7 +90,8 @@ class TestModelConfig:
 
     def test_task_bindings_parsed(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "model_config.yaml"
-        cfg_file.write_text(textwrap.dedent("""
+        cfg_file.write_text(
+            textwrap.dedent("""
             providers:
               my_ollama:
                 provider: ollama
@@ -95,7 +99,8 @@ class TestModelConfig:
             task_bindings:
               answerer: my_ollama
               embedding: my_ollama
-        """))
+        """)
+        )
         settings = Settings(model_config_path=str(cfg_file))
         cfg = settings.load_model_config()
         assert cfg.task_bindings["answerer"] == "my_ollama"
@@ -103,14 +108,16 @@ class TestModelConfig:
 
     def test_get_provider_for_task_resolves_correctly(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "model_config.yaml"
-        cfg_file.write_text(textwrap.dedent("""
+        cfg_file.write_text(
+            textwrap.dedent("""
             providers:
               my_provider:
                 provider: ollama
                 model: llama3.2:3b
             task_bindings:
               query_planner: my_provider
-        """))
+        """)
+        )
         settings = Settings(model_config_path=str(cfg_file))
         cfg = settings.load_model_config()
         provider_cfg = cfg.get_provider_for_task("query_planner")
@@ -126,11 +133,13 @@ class TestModelConfig:
 
     def test_get_provider_for_undefined_provider_raises(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "model_config.yaml"
-        cfg_file.write_text(textwrap.dedent("""
+        cfg_file.write_text(
+            textwrap.dedent("""
             providers: {}
             task_bindings:
               query_planner: undefined_provider
-        """))
+        """)
+        )
         settings = Settings(model_config_path=str(cfg_file))
         cfg = settings.load_model_config()
         with pytest.raises(ValueError, match="not defined"):

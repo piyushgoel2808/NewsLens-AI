@@ -3,6 +3,7 @@
 Implements OCREngine. Runs synchronous pytesseract calls in a thread pool
 executor to avoid blocking the asyncio event loop.
 """
+
 from __future__ import annotations
 
 import asyncio

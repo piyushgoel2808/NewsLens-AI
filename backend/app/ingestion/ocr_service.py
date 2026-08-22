@@ -1,4 +1,5 @@
 """OCR orchestration service for scanned newspaper pages."""
+
 from __future__ import annotations
 
 from sqlalchemy import select

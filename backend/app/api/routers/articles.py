@@ -1,4 +1,5 @@
 """FastAPI router for Article queries and inspection."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -52,9 +53,7 @@ async def get_article_details(
         "id": article.id,
         "issue_id": article.issue_id,
         "newspaper_name": (
-            article.issue.newspaper.name
-            if article.issue and article.issue.newspaper
-            else "Unknown"
+            article.issue.newspaper.name if article.issue and article.issue.newspaper else "Unknown"
         ),
         "issue_date": str(article.issue.issue_date) if article.issue else "",
         "primary_page_id": article.primary_page_id,

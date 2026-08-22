@@ -6,6 +6,7 @@ start on Page 1 and continue on Page 4 via jump lines).
 Constructs unified AssembledArticle objects and tracks exact per-page spatial
 bounding box sequences for the `article_pages` junction table.
 """
+
 from __future__ import annotations
 
 import re

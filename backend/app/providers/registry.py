@@ -5,6 +5,7 @@ and lazily instantiates concrete provider classes on first access. This is
 the single place where provider selection happens — all other code calls
 registry.get_provider(task_name) and gets back a properly-typed instance.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,11 +28,7 @@ from app.providers.base import (
 logger = get_logger(__name__)
 
 AnyProvider = (
-    ChatModelProvider
-    | EmbeddingProvider
-    | VisionModelProvider
-    | OCREngine
-    | DocumentLayoutProvider
+    ChatModelProvider | EmbeddingProvider | VisionModelProvider | OCREngine | DocumentLayoutProvider
 )
 
 
@@ -59,9 +56,7 @@ class ModelRegistry:
 
         cfg = self._model_config.providers.get(provider_id)
         if not cfg:
-            raise ProviderError(
-                f"Provider {provider_id!r} is not defined in model_config.yaml"
-            )
+            raise ProviderError(f"Provider {provider_id!r} is not defined in model_config.yaml")
 
         provider_type = cfg.provider
         model = cfg.model or ""
@@ -149,9 +144,7 @@ class ModelRegistry:
         self._instances.clear()
         self._model_config = self._settings.load_model_config()
 
-    def validate_task_capability(
-        self, task: str, required: str
-    ) -> None:
+    def validate_task_capability(self, task: str, required: str) -> None:
         """Validate that the provider bound to a task has a required capability.
 
         Args:
@@ -183,23 +176,23 @@ class ModelRegistry:
         results: list[dict[str, Any]] = []
         for provider_id, cfg in self._model_config.providers.items():
             is_reachable = await self._check_reachable(provider_id, cfg.provider)
-            results.append({
-                "id": provider_id,
-                "provider": cfg.provider,
-                "model": cfg.model,
-                "is_reachable": is_reachable,
-                "capabilities": {
-                    "supports_vision": cfg.supports_vision,
-                    "supports_tool_use": cfg.supports_tool_use,
-                    "context_window": cfg.context_window,
-                    "embedding_dim": cfg.embedding_dim,
-                },
-            })
+            results.append(
+                {
+                    "id": provider_id,
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                    "is_reachable": is_reachable,
+                    "capabilities": {
+                        "supports_vision": cfg.supports_vision,
+                        "supports_tool_use": cfg.supports_tool_use,
+                        "context_window": cfg.context_window,
+                        "embedding_dim": cfg.embedding_dim,
+                    },
+                }
+            )
         return results
 
-    async def _check_reachable(
-        self, provider_id: str, provider_type: str
-    ) -> bool | None:
+    async def _check_reachable(self, provider_id: str, provider_type: str) -> bool | None:
         """Quick reachability check for a provider. Returns None on timeout."""
         try:
             if provider_type == "ollama":

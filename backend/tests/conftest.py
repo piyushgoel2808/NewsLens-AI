@@ -1,4 +1,5 @@
 """Shared pytest fixtures for NewsLens-AI backend tests."""
+
 from __future__ import annotations
 
 import os
@@ -48,7 +49,6 @@ async def app_client() -> AsyncGenerator[AsyncClient, None]:
         patch("app.storage.qdrant_store.QdrantStore._ensure_collection", new_callable=AsyncMock),
     ):
         from app.api.main import app
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             yield client

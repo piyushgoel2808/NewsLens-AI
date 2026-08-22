@@ -1,4 +1,5 @@
 """Query Planner: Archetype classification and multi-step tool execution planning."""
+
 from __future__ import annotations
 
 import re
@@ -16,8 +17,9 @@ TIMELINE_KEYWORDS = re.compile(
 )
 
 TREND_KEYWORDS = re.compile(
-    r"\b(?:how many|frequency|trend|trends|ratio|percentage|distribution|"
-    r"count|statistics|volume|metric)\b",
+    r"\b(?:how many|count|total articles|total pages|list all|all articles|"
+    r"summarize issue|overview of|what articles|frequency|trend|trends|ratio|"
+    r"percentage|distribution|statistics|volume|metric|no\.?\s*of\s*articles|number\s*of\s*articles)\b",
     re.IGNORECASE,
 )
 
@@ -29,6 +31,20 @@ COMPARISON_KEYWORDS = re.compile(
 
 ENTITY_KEYWORDS = re.compile(
     r"\b(?:everything about|all mentions of|profile|who is|what did .* say|coverage of)\b",
+    re.IGNORECASE,
+)
+
+PAGE_PATTERN = re.compile(
+    r"\b(?:page|pg|p\.)\s*([0-9]{1,3}|[A-Za-z]?[-–]?[0-9]{1,3})\b",
+    re.IGNORECASE,
+)
+
+PAGE_ARTICLE_QUERY_PATTERN = re.compile(
+    r"\b(?:list|how many|count|number of|no\.?\s*of|what|show|all)?\s*"
+    r"(?:of\s*)?articles\b.*?\b(?:page|pg|p\.)\s*"
+    r"([0-9]{1,3}|[A-Za-z]?[-–]?[0-9]{1,3})\b"
+    r"|\b(?:page|pg|p\.)\s*([0-9]{1,3}|[A-Za-z]?[-–]?[0-9]{1,3})\b.*?"
+    r"\b(?:articles|stories|news|manifest)\b",
     re.IGNORECASE,
 )
 
@@ -58,7 +74,12 @@ class QueryPlanner:
         """Determine archetype based on semantic cues and intent."""
         query_clean = query.strip()
 
-        if TIMELINE_KEYWORDS.search(query_clean):
+        if PAGE_ARTICLE_QUERY_PATTERN.search(query_clean):
+            return (
+                "quantitative_trend",
+                "User requested article listing or count for a specific newspaper page.",
+            )
+        elif TIMELINE_KEYWORDS.search(query_clean):
             return (
                 "thematic_timeline",
                 "User requested chronological event progression or evolution over time.",
@@ -106,35 +127,90 @@ class QueryPlanner:
             )
 
         elif archetype == "quantitative_trend":
-            # Extract potential entity or topic keyword
-            stop_words = {"trend", "frequency", "ratio", "show", "what", "many"}
-            keywords = [
-                w for w in re.findall(r"\b[A-Za-z]{4,}\b", query)
-                if w.lower() not in stop_words
-            ]
-            primary_term = keywords[0] if keywords else query
+            page_match = PAGE_ARTICLE_QUERY_PATTERN.search(query)
+            is_issue_aggregate = bool(
+                page_match
+                or re.search(
+                    r"\b(?:how many articles|how many pages|total articles|list all|"
+                    r"all articles|summarize issue|overview of the issue|what articles|"
+                    r"manifest|all headlines|no\.?\s*of\s*articles)\b",
+                    query,
+                    re.IGNORECASE,
+                )
+            )
 
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="sql_analytics",
-                    arguments={"analysis_type": "entity_trends", "term": primary_term},
-                    purpose="Calculate quantitative mention volume and frequency over time",
+            if page_match:
+                page_token = [g for g in page_match.groups() if g is not None][0]
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments={
+                            "analysis_type": "issue_summary",
+                            "page_filter": page_token,
+                            "query": query,
+                        },
+                        purpose=(
+                            f"Query MySQL system of record for exact article count and "
+                            f"manifest on Page {page_token}"
+                        ),
+                    )
                 )
-            )
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="sql_analytics",
-                    arguments={"analysis_type": "topic_distribution"},
-                    purpose="Analyze topic volume and section prominence ratios",
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={"query": query, "page_filter": page_token, "top_k": 6},
+                        purpose=f"Retrieve article content and snippets on Page {page_token}",
+                    )
                 )
-            )
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="hybrid_search",
-                    arguments={"query": query, "top_k": 5},
-                    purpose="Retrieve representative qualitative examples for statistical findings",
+            elif is_issue_aggregate:
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments={"analysis_type": "issue_summary", "query": query},
+                        purpose=(
+                            "Query MySQL system of record for exact article "
+                            "counts, pages, and manifest"
+                        ),
+                    )
                 )
-            )
+            else:
+                stop_words = {
+                    "trend",
+                    "frequency",
+                    "ratio",
+                    "show",
+                    "what",
+                    "many",
+                    "count",
+                }
+                keywords = [
+                    w for w in re.findall(r"\b[A-Za-z]{4,}\b", query) if w.lower() not in stop_words
+                ]
+                primary_term = keywords[0] if keywords else query
+
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments={"analysis_type": "entity_trends", "term": primary_term},
+                        purpose="Calculate quantitative mention volume and frequency over time",
+                    )
+                )
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments={"analysis_type": "topic_distribution"},
+                        purpose="Analyze topic volume and section prominence ratios",
+                    )
+                )
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={"query": query, "top_k": 5},
+                        purpose=(
+                            "Retrieve representative qualitative examples for statistical findings"
+                        ),
+                    )
+                )
 
         elif archetype == "cross_newspaper_comparison":
             tool_calls.append(
@@ -166,13 +242,24 @@ class QueryPlanner:
             )
 
         else:  # factual_lookup
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="hybrid_search",
-                    arguments={"query": query, "top_k": 6},
-                    purpose="Execute hybrid dense/sparse search for direct factual evidence",
+            p_match = PAGE_PATTERN.search(query)
+            if p_match:
+                p_token = p_match.group(1)
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={"query": query, "page_filter": p_token, "top_k": 6},
+                        purpose=f"Execute hybrid search filtered to Page {p_token}",
+                    )
                 )
-            )
+            else:
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={"query": query, "top_k": 6},
+                        purpose="Execute hybrid dense/sparse search for direct factual evidence",
+                    )
+                )
 
         logger.info(
             "Query planned",

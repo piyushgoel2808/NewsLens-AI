@@ -1,4 +1,5 @@
 """Unit tests for Settings endpoints: GET & PUT /api/settings/model-bindings."""
+
 from __future__ import annotations
 
 import pytest

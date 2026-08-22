@@ -3,6 +3,7 @@
 Implements ChatModelProvider and EmbeddingProvider.
 Raises ProviderError at construction time if OPENAI_API_KEY is not set.
 """
+
 from __future__ import annotations
 
 import json
@@ -42,10 +43,7 @@ class OpenAIProvider:
 
     def __init__(self, model: str, api_key: str | None) -> None:
         if not api_key:
-            raise ProviderError(
-                "OpenAI API key is required. "
-                "Set OPENAI_API_KEY in your .env file."
-            )
+            raise ProviderError("OpenAI API key is required. Set OPENAI_API_KEY in your .env file.")
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key)
         self._capability = ProviderCapability(
@@ -64,9 +62,7 @@ class OpenAIProvider:
     def provider_name(self) -> str:
         return "openai"
 
-    def _to_openai_messages(
-        self, messages: list[Message]
-    ) -> list[dict[str, Any]]:
+    def _to_openai_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for m in messages:
             if isinstance(m.content, str):
@@ -77,18 +73,16 @@ class OpenAIProvider:
                     if part["type"] == "text":
                         parts.append({"type": "text", "text": part["text"]})
                     elif part["type"] == "image":
-                        parts.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{part['data']}"
-                            },
-                        })
+                        parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{part['data']}"},
+                            }
+                        )
                 out.append({"role": m.role, "content": parts})
         return out
 
-    def _to_openai_tools(
-        self, tools: list[ToolDefinition]
-    ) -> list[dict[str, Any]]:
+    def _to_openai_tools(self, tools: list[ToolDefinition]) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",
@@ -115,9 +109,10 @@ class OpenAIProvider:
 
         if response_schema:
             schema_str = json.dumps(response_schema)
-            inject = {"role": "system", "content": (
-                f"Respond ONLY with valid JSON matching this schema:\n{schema_str}"
-            )}
+            inject = {
+                "role": "system",
+                "content": (f"Respond ONLY with valid JSON matching this schema:\n{schema_str}"),
+            }
             oai_messages = [inject, *self._to_openai_messages(messages)]
         else:
             oai_messages = self._to_openai_messages(messages)
@@ -231,9 +226,7 @@ class OpenAIProvider:
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
             try:
-                response = await self._client.embeddings.create(
-                    model=self._model, input=batch
-                )
+                response = await self._client.embeddings.create(model=self._model, input=batch)
             except Exception as e:
                 raise ProviderError(f"OpenAI embedding error: {e}") from e
             all_embeddings.extend([item.embedding for item in response.data])

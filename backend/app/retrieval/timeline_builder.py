@@ -1,4 +1,5 @@
 """Timeline Builder: Chronological event trajectory and milestone aggregation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -94,9 +95,7 @@ class TimelineBuilder:
             for art in articles:
                 issue_date = str(art.issue.issue_date) if art.issue else "Unknown Date"
                 np_name = (
-                    art.issue.newspaper.name
-                    if art.issue and art.issue.newspaper
-                    else "Daily News"
+                    art.issue.newspaper.name if art.issue and art.issue.newspaper else "Daily News"
                 )
                 key = (issue_date, np_name)
                 if key not in grouped:

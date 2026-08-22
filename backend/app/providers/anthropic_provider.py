@@ -4,6 +4,7 @@ Implements ChatModelProvider and VisionModelProvider.
 Reads ANTHROPIC_API_KEY from environment / Settings.
 Raises ProviderError at construction time if the key is not set.
 """
+
 from __future__ import annotations
 
 import base64
@@ -40,8 +41,7 @@ _PRICING: dict[str, dict[str, float]] = {
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     pricing = _PRICING.get(model, _PRICING["default"])
     return (
-        input_tokens / 1_000_000 * pricing["input"]
-        + output_tokens / 1_000_000 * pricing["output"]
+        input_tokens / 1_000_000 * pricing["input"] + output_tokens / 1_000_000 * pricing["output"]
     )
 
 
@@ -51,8 +51,7 @@ class AnthropicProvider:
     def __init__(self, model: str, api_key: str | None) -> None:
         if not api_key:
             raise ProviderError(
-                "Anthropic API key is required. "
-                "Set ANTHROPIC_API_KEY in your .env file."
+                "Anthropic API key is required. Set ANTHROPIC_API_KEY in your .env file."
             )
         self._model = model
         self._client = anthropic.Anthropic(api_key=api_key)
@@ -91,20 +90,20 @@ class AnthropicProvider:
                     if part["type"] == "text":
                         parts.append({"type": "text", "text": part["text"]})
                     elif part["type"] == "image":
-                        parts.append({
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": part.get("media_type", "image/png"),
-                                "data": part["data"],
-                            },
-                        })
+                        parts.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": part.get("media_type", "image/png"),
+                                    "data": part["data"],
+                                },
+                            }
+                        )
                 out.append({"role": m.role, "content": parts})
         return system, out
 
-    def _to_anthropic_tools(
-        self, tools: list[ToolDefinition]
-    ) -> list[dict[str, Any]]:
+    def _to_anthropic_tools(self, tools: list[ToolDefinition]) -> list[dict[str, Any]]:
         return [
             {
                 "name": t.name,

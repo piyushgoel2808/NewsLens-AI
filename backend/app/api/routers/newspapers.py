@@ -1,4 +1,5 @@
 """FastAPI router for Newspaper Corpus, Issues, Pages, and Image Proxying."""
+
 from __future__ import annotations
 
 import io
@@ -238,12 +239,18 @@ async def inspect_issue_ingestion(
             {
                 "id": p.id,
                 "page_number": p.page_number,
+                "printed_page_number": p.printed_page_number,
+                "is_advertisement_page": p.is_advertisement_page,
                 "width_px": p.width_px,
                 "height_px": p.height_px,
                 "ocr_confidence": p.ocr_confidence,
                 "raster_object_key": p.raster_object_key,
                 "ingestion_status": p.ingestion_status,
-                "extraction_mode": "OCR" if is_ocr_used else "Digital Native",
+                "extraction_mode": (
+                    "Advertisement"
+                    if p.is_advertisement_page
+                    else ("OCR" if is_ocr_used else "Digital Native")
+                ),
                 "ocr_fallback_triggered": is_ocr_used,
                 "ocr_fallback_reason": (
                     "Corrupted Font / Gibberish Detected" if is_ocr_used else None
@@ -258,6 +265,7 @@ async def inspect_issue_ingestion(
             "headline": a.headline or "Untitled",
             "section": a.section,
             "article_type": a.article_type,
+            "is_advertisement": a.article_type == "advertisement",
             "prominence_score": a.prominence_score,
             "word_count": a.word_count,
             "summary": a.summary,
@@ -267,6 +275,11 @@ async def inspect_issue_ingestion(
                 else a.full_text
             ),
             "pages": sorted({ap.page_number for ap in a.article_pages}),
+            "printed_pages": [
+                ap.printed_page_number
+                for ap in sorted(a.article_pages, key=lambda ap: ap.page_number)
+                if ap.printed_page_number
+            ],
         }
         for a in issue.articles
     ]
@@ -342,5 +355,3 @@ async def delete_issue(
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found")
     return result
-
-

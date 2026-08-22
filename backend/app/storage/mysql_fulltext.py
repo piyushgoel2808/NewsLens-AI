@@ -3,6 +3,7 @@
 Implements SearchIndex using MySQL's FULLTEXT index on articles(headline, full_text).
 This provides lexical/BM25-style retrieval as the keyword search leg of hybrid RAG.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -50,8 +51,12 @@ class MySQLFullTextSearch:
         date_to = filters.get("date_to")
 
         # Build SQL dynamically but safely (parameterised, no f-string injection)
-        joins = "JOIN issues i ON a.issue_id = i.id" if (newspaper_id or date_from or date_to) else ""
-        conditions = ["MATCH(a.headline, a.full_text) AGAINST (:query IN NATURAL LANGUAGE MODE) > 0"]
+        joins = (
+            "JOIN issues i ON a.issue_id = i.id" if (newspaper_id or date_from or date_to) else ""
+        )
+        conditions = [
+            "MATCH(a.headline, a.full_text) AGAINST (:query IN NATURAL LANGUAGE MODE) > 0"
+        ]
         params: dict[str, Any] = {"query": query, "limit": top_k}
 
         if newspaper_id:

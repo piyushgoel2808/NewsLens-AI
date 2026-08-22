@@ -1,4 +1,5 @@
 """Unit tests for PDFPageDetector digital vs scanned classification and gibberish detection."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -65,13 +66,31 @@ class TestPDFPageDetector:
 
     def test_is_text_gibberish_font_mapping_b_repetition(self) -> None:
         # Font unmapped glyph loop (as seen in Business Standard PDF)
-        b_loop_text = (
-            "NEW DELHI | TUESDAY 7 JULY 2026\n"
-            + "b" * 600
-        )
+        b_loop_text = "NEW DELHI | TUESDAY 7 JULY 2026\n" + "b" * 600
         assert is_text_gibberish(b_loop_text) is True
 
     def test_is_text_gibberish_control_characters(self) -> None:
         # Unmapped TrueType subset codes (as seen in Indian Express PDF)
         control_text = "".join(chr(i % 30 + 1) for i in range(500))
         assert is_text_gibberish(control_text) is True
+
+    def test_detect_advertisement_heuristics(self) -> None:
+        from unittest.mock import MagicMock
+
+        detector = PDFPageDetector()
+        mock_doc = MagicMock()
+        mock_page = MagicMock()
+        mock_doc.load_page.return_value = mock_page
+
+        # Mock page with advertisement text and graphics
+        mock_page.get_text.side_effect = lambda arg: (
+            {"blocks": []}
+            if arg == "dict"
+            else "ADVERTISEMENT\nExclusive luxury apartments. Call now 1800-000. T&C Apply."
+        )
+        mock_page.get_images.return_value = [("img1", 0, 0, 0, 0, 0, 0, 0, 0)]
+
+        res = detector.analyze_page(mock_doc, 0)
+        assert res.page_type == PageType.ADVERTISEMENT
+        assert res.is_advertisement is True
+        assert res.requires_ocr is False

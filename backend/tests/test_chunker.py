@@ -1,4 +1,5 @@
 """Unit tests for Newspaper-Aware Hierarchical Chunker."""
+
 from __future__ import annotations
 
 from app.ingestion.chunker import NewspaperChunker
@@ -46,10 +47,7 @@ class TestNewspaperChunker:
 
     def test_chunk_multi_paragraph_splitting(self) -> None:
         chunker = NewspaperChunker(target_chunk_tokens=50, chunk_overlap_tokens=20)
-        paras = [
-            f"Paragraph {i}: " + " ".join(["word" for _ in range(35)])
-            for i in range(5)
-        ]
+        paras = [f"Paragraph {i}: " + " ".join(["word" for _ in range(35)]) for i in range(5)]
         full_text = "\n\n".join(paras)
 
         chunks = chunker.chunk_article(

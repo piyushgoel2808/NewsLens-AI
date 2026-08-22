@@ -11,6 +11,7 @@ Features:
 - Unified support for both DocumentLayoutProvider and OCREngine protocols.
 - Seamless fallback adapter for lightweight/unit-testing environments.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +21,7 @@ import os
 import re
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf
 from PIL import Image
 
 from app.core.logging import get_logger
@@ -30,6 +31,7 @@ from app.providers.base import (
     ExtractedPhotoData,
     ExtractedTableData,
     MinerUParseResult,
+    OCRBlock,
     OCREngine,
     OCRResult,
     ProviderCapability,
@@ -121,9 +123,7 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
             or str(Path.home() / ".cache" / "mineru" / "models")
         )
         self._config_path = (
-            config_path
-            or os.getenv("MINERU_CONFIG_PATH")
-            or str(Path.home() / "magic-pdf.json")
+            config_path or os.getenv("MINERU_CONFIG_PATH") or str(Path.home() / "magic-pdf.json")
         )
         self._magic_pdf_available: bool | None = None
         self._ensure_magic_pdf_config()
@@ -146,39 +146,48 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
     def _ensure_magic_pdf_config(self) -> None:
         """Initialize and validate the magic-pdf.json configuration file."""
         cfg_file = Path(self._config_path)
-        if not cfg_file.exists():
-            cfg_data = {
-                "models-dir": self._models_dir,
-                "device-mode": self._device,
-                "table-config": {
-                    "model": "TableMaster",
-                    "is_table_recog_enable": True,
-                    "max_time": 400,
+        cfg_data = {
+            "models-dir": self._models_dir,
+            "device-mode": self._device,
+            "layout-config": {
+                "model": "doclayout_yolo",
+            },
+            "table-config": {
+                "model": "TableMaster",
+                "is_table_recog_enable": True,
+                "max_time": 400,
+            },
+        }
+        try:
+            cfg_file.parent.mkdir(parents=True, exist_ok=True)
+            cfg_file.write_text(json.dumps(cfg_data, indent=2), encoding="utf-8")
+            logger.info(
+                "Configured MinerU magic-pdf.json settings",
+                extra={
+                    "path": str(cfg_file),
+                    "device": self._device,
+                    "models_dir": self._models_dir,
                 },
-            }
-            try:
-                cfg_file.parent.mkdir(parents=True, exist_ok=True)
-                cfg_file.write_text(json.dumps(cfg_data, indent=2), encoding="utf-8")
-                logger.info(
-                    "Initialized MinerU magic-pdf.json configuration",
-                    extra={"path": str(cfg_file), "device": self._device},
-                )
-            except Exception as e:
-                logger.warning(
-                    "Could not write magic-pdf.json config file",
-                    extra={"error": str(e), "path": str(cfg_file)},
-                )
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not write magic-pdf.json config file",
+                extra={"error": str(e), "path": str(cfg_file)},
+            )
 
     def _check_magic_pdf(self) -> bool:
-        """Verify if magic-pdf library is available in environment."""
+        """Verify if magic-pdf library and UNIPipe pipeline are available in environment."""
         if self._magic_pdf_available is None:
             try:
-                import magic_pdf  # noqa: F401
+                from magic_pdf.data.data_reader_writer import FileBasedDataWriter  # noqa: F401
+                from magic_pdf.pipe.UNIPipe import UNIPipe  # noqa: F401
 
                 self._magic_pdf_available = True
             except ImportError:
                 self._magic_pdf_available = False
-                logger.info("magic-pdf not in environment; utilizing native MinerU adapter")
+                logger.info(
+                    "Full magic-pdf UNIPipe not available; using native MinerU adapter"
+                )
         return self._magic_pdf_available
 
     async def parse_pdf_document(
@@ -209,8 +218,9 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
                     extract_tables=extract_tables,
                 )
             except Exception as e:
-                logger.warning(
-                    "magic-pdf execution raised error; falling back to resilient adapter",
+                logger.error(
+                    "MinerU magic-pdf execution failed; falling back to resilient adapter",
+                    exc_info=True,
                     extra={"error": str(e)},
                 )
 
@@ -311,10 +321,11 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
         extract_tables: bool = True,
     ) -> list[MinerUParseResult]:
         """Resilient native adapter producing full MinerU-conforming structured nodes."""
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         results: list[MinerUParseResult] = []
 
-        for page_idx, page in enumerate(doc):
+        for page_idx in range(len(doc)):
+            page = doc[page_idx]
             page_num = page_idx + 1
             nodes: list[ExtractedDocumentNode] = []
             rect = page.rect
@@ -472,10 +483,103 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
         image_bytes: bytes,
         lang_hint: str | None = None,
     ) -> OCRResult:
-        """Execute OCR on an image conforming to OCREngine protocol."""
+        """Execute OCR on an image using MinerU's Neural PaddleOCR engine."""
+        lang = lang_hint or self._lang
+        loop = asyncio.get_event_loop()
+
+        def _run_neural_ocr() -> OCRResult | None:
+            try:
+                import cv2
+                import numpy as np
+                from magic_pdf.model.sub_modules.ocr.paddleocr2pytorch.pytorch_paddle import (
+                    PytorchPaddleOCR,
+                )
+
+                img_pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                img_np = np.array(img_pil)
+                img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+                paddle_lang = "devanagari" if "hi" in lang else "ch_lite_v4"
+                ocr_engine = PytorchPaddleOCR(lang=paddle_lang, show_log=False)
+                res_list = ocr_engine.ocr(img_cv)
+                if not res_list or not res_list[0]:
+                    return None
+
+                blocks: list[OCRBlock] = []
+                full_text_lines: list[str] = []
+                confidences: list[float] = []
+
+                for item in res_list[0]:
+                    if not item or len(item) < 2:
+                        continue
+                    box, (text, score) = item[0], item[1]
+                    clean_txt = (text or "").strip()
+                    if not clean_txt:
+                        continue
+                    xs = [p[0] for p in box]
+                    ys = [p[1] for p in box]
+                    bbox = (float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys)))
+                    conf = float(score) if score is not None else 0.90
+                    blocks.append(
+                        OCRBlock(
+                            text=clean_txt,
+                            bbox=bbox,
+                            confidence=conf,
+                            language=lang,
+                        )
+                    )
+                    full_text_lines.append(clean_txt)
+                    confidences.append(conf)
+
+                if blocks:
+                    # Sort blocks by top-Y then left-X
+                    blocks = sorted(blocks, key=lambda b: (round(b.bbox[1] / 12.0), b.bbox[0]))
+                    line_groups: list[list[str]] = []
+                    current_line: list[str] = []
+                    prev_y = -999.0
+
+                    for b in blocks:
+                        if prev_y < 0 or abs(b.bbox[1] - prev_y) <= 12.0:
+                            current_line.append(b.text)
+                        else:
+                            if current_line:
+                                line_groups.append(current_line)
+                            current_line = [b.text]
+                        prev_y = b.bbox[1]
+                    if current_line:
+                        line_groups.append(current_line)
+
+                    full_text = "\n".join(" ".join(words) for words in line_groups)
+                    mean_conf = sum(confidences) / len(confidences) if confidences else 0.90
+                    return OCRResult(
+                        blocks=blocks,
+                        full_text=full_text,
+                        mean_confidence=mean_conf,
+                        language=lang,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "MinerU neural OCR execution failed or weights not ready; using fallback",
+                    extra={"error": str(e)},
+                )
+                return None
+            return None
+
+        neural_res = await loop.run_in_executor(None, _run_neural_ocr)
+        if neural_res and neural_res.blocks:
+            logger.info(
+                "MinerU Neural PaddleOCR complete",
+                extra={
+                    "blocks": len(neural_res.blocks),
+                    "mean_confidence": round(neural_res.mean_confidence, 3),
+                    "lang": lang,
+                },
+            )
+            return neural_res
+
+        # Fallback to Tesseract OCR if neural weights are not yet initialized
         from app.providers.tesseract_ocr import TesseractOCR
 
-        lang = lang_hint or self._lang
         tess_lang = "eng" if "en" in lang else ("hin" if "hi" in lang else lang)
         tesseract = TesseractOCR(lang=tess_lang)
         return await tesseract.ocr(image_bytes, lang_hint=lang_hint)

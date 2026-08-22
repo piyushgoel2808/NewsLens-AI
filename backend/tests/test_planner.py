@@ -1,4 +1,5 @@
 """Unit tests for QueryPlanner: Archetype classification and tool execution sequences."""
+
 from __future__ import annotations
 
 from app.agent.planner import QueryPlanner
@@ -81,3 +82,42 @@ class TestQueryPlanner:
         assert plan.archetype == "entity_deep_dive"
         tool_names = [t.tool_name for t in plan.tool_calls]
         assert "entity_search" in tool_names
+
+    def test_plan_issue_manifest_aggregate_query(self) -> None:
+        planner = QueryPlanner()
+        queries = [
+            "How many articles are in this newspaper?",
+            "List all the articles in today's paper",
+            "Summarize issue overview",
+            "What articles are in the July 7 edition?",
+        ]
+        for q in queries:
+            plan = planner.plan_query(q)
+            assert plan.archetype == "quantitative_trend"
+            assert len(plan.tool_calls) == 1
+            assert plan.tool_calls[0].tool_name == "sql_analytics"
+            assert plan.tool_calls[0].arguments.get("analysis_type") == "issue_summary"
+
+    def test_plan_page_specific_article_queries(self) -> None:
+        planner = QueryPlanner()
+        queries = [
+            ("list no of articles on pg 7", "7"),
+            ("how many articles on page 3", "3"),
+            ("articles on page 10", "10"),
+            ("what articles are on pg 4", "4"),
+        ]
+        for q, expected_page in queries:
+            plan = planner.plan_query(q)
+            assert plan.archetype == "quantitative_trend"
+            sql_tool = next((t for t in plan.tool_calls if t.tool_name == "sql_analytics"), None)
+            assert sql_tool is not None
+            assert sql_tool.arguments.get("analysis_type") == "issue_summary"
+            assert sql_tool.arguments.get("page_filter") == expected_page
+
+    def test_plan_page_specific_factual_lookup(self) -> None:
+        planner = QueryPlanner()
+        plan = planner.plan_query("What did the minister announce on page 4?")
+        assert plan.archetype == "factual_lookup"
+        assert len(plan.tool_calls) == 1
+        assert plan.tool_calls[0].tool_name == "hybrid_search"
+        assert plan.tool_calls[0].arguments.get("page_filter") == "4"

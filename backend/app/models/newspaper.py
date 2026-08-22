@@ -1,9 +1,21 @@
 """SQLAlchemy ORM models: Newspaper, Issue, Page."""
+
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -28,8 +40,11 @@ class Newspaper(Base):
 
 class Issue(Base):
     __tablename__ = "issues"
+    __mapper_args__ = {"confirm_deleted_rows": False}
     __table_args__ = (
-        UniqueConstraint("newspaper_id", "issue_date", "edition", name="uq_issue_newspaper_date_edition"),
+        UniqueConstraint(
+            "newspaper_id", "issue_date", "edition", name="uq_issue_newspaper_date_edition"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -52,16 +67,15 @@ class Issue(Base):
     pages: Mapped[list[Page]] = relationship(
         "Page", back_populates="issue", cascade="all, delete-orphan"
     )
-    articles: Mapped[list[Article]] = relationship(  # type: ignore[name-defined]
+    articles: Mapped[list[Any]] = relationship(
         "Article", back_populates="issue", cascade="all, delete-orphan"
     )
 
 
 class Page(Base):
     __tablename__ = "pages"
-    __table_args__ = (
-        UniqueConstraint("issue_id", "page_number", name="uq_page_issue_number"),
-    )
+    __mapper_args__ = {"confirm_deleted_rows": False}
+    __table_args__ = (UniqueConstraint("issue_id", "page_number", name="uq_page_issue_number"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     issue_id: Mapped[int] = mapped_column(
@@ -72,6 +86,8 @@ class Page(Base):
     width_px: Mapped[int | None] = mapped_column(Integer)
     height_px: Mapped[int | None] = mapped_column(Integer)
     ocr_confidence: Mapped[float | None] = mapped_column(Float)
+    printed_page_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_advertisement_page: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Status state machine:
     # pending → rasterized → layout_done → ocr_done → segmented →
     # classified → metadata_done → embedded → indexed → failed

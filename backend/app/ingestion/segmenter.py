@@ -10,6 +10,7 @@ Extracts:
 - Bounding box envelopes on the page
 - Jump lines (continuation references)
 """
+
 from __future__ import annotations
 
 import re
@@ -37,6 +38,32 @@ BYLINE_REGEX = re.compile(
 )
 
 
+BOILERPLATE_TOKENS = {
+    "limited", "ltd", "corp", "corporation", "pvt", "private", "equity", "issue",
+    "issue,", "shares", "company", "notice", "promoters", "price", "band", "page",
+    "continued", "from", "and", "or", "of", "in", "on", "at", "to", "for", "with",
+    "advertisement", "public", "statutory", "tender", "bid", "face", "value",
+}
+
+MIN_ARTICLE_WORD_COUNT = 30
+
+
+def is_valid_headline_candidate(text: str) -> bool:
+    """Ensure a block text is substantial enough to define an article headline."""
+    cleaned = re.sub(r"[^\w\s]", "", text).strip()
+    words = cleaned.split()
+    if not words:
+        return False
+    # Single words (e.g. "LIMITED", "ISSUE", "EQUITY") are never valid article headlines
+    if len(words) == 1:
+        return False
+    # Filter out pure boilerplate token combinations
+    if all(w.lower() in BOILERPLATE_TOKENS for w in words):
+        return False
+    # Require at least 2 words and substantial character length
+    return not (len(words) < 2 or len(cleaned) < 12)
+
+
 @dataclass
 class SegmentedArticle:
     """A single coherent article unit on a page."""
@@ -60,10 +87,40 @@ class ArticleSegmenter:
         self,
         page_number: int,
         ordered_blocks: list[OrderedReadingBlock],
+        is_advertisement_page: bool = False,
     ) -> list[SegmentedArticle]:
-        """Group ordered reading blocks into segmented article units."""
+        """Group ordered reading blocks into segmented article units.
+
+        If is_advertisement_page is True, the entire page is grouped into a single
+        cohesive [Advertisement] article without internal fragmentation.
+        """
         if not ordered_blocks:
             return []
+
+        # Pillar 2: Full-Page Advertisement / Notice Single-Unit Enveloping
+        if is_advertisement_page:
+            text_blocks = [b for b in ordered_blocks if b.text and b.text.strip()]
+            if text_blocks:
+                combined_text = "\n\n".join(b.text.strip() for b in text_blocks)
+                first_line = combined_text.split("\n")[0][:150].strip()
+                ad_hl = (
+                    f"[Advertisement] {first_line}"
+                    if not first_line.upper().startswith("[ADVERTISEMENT]")
+                    else first_line
+                )
+                ad_art = SegmentedArticle(
+                    article_temp_id=f"p{page_number}_art_ad_1",
+                    headline=ad_hl,
+                    body_text=combined_text,
+                    word_count=len(combined_text.split()),
+                    bbox_list=[b.bbox for b in text_blocks],
+                    raw_blocks=text_blocks,
+                )
+                logger.info(
+                    "Page grouped as single advertisement article",
+                    extra={"page_number": page_number, "word_count": ad_art.word_count},
+                )
+                return [ad_art]
 
         articles: list[SegmentedArticle] = []
         current_article: SegmentedArticle | None = None
@@ -74,9 +131,9 @@ class ArticleSegmenter:
             if not text:
                 continue
 
-            is_headline = block.block_type in (
-                BlockType.BANNER_HEADLINE,
-                BlockType.HEADLINE,
+            is_headline = (
+                block.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                and is_valid_headline_candidate(text)
             )
 
             if is_headline or current_article is None:
@@ -168,6 +225,76 @@ class ArticleSegmenter:
                     raw_blocks=text_blocks,
                 )
                 articles.append(fallback_art)
+
+        # Pillar 3: Minimum Structural Thresholds & Orphan Snippet Absorption Pass
+        consolidated: list[SegmentedArticle] = []
+        for art in articles:
+            full_c = (
+                f"{art.headline}\n\n{art.body_text}".strip()
+                if art.headline != art.body_text
+                else art.body_text
+            )
+            w_count = len(full_c.split())
+            art.word_count = w_count
+
+            has_valid_hl = bool(art.headline and is_valid_headline_candidate(art.headline))
+            has_distinct_body = bool(
+                art.body_text
+                and art.body_text != art.headline
+                and len(art.body_text.split()) >= 5
+            )
+            is_valid_structured_article = (
+                has_valid_hl and has_distinct_body and w_count >= 12
+            ) or (w_count >= MIN_ARTICLE_WORD_COUNT)
+
+            if not is_valid_structured_article and consolidated:
+                prev = consolidated[-1]
+                prev.body_text += f"\n\n{full_c}"
+                prev.bbox_list.extend(art.bbox_list)
+                prev.raw_blocks.extend(art.raw_blocks)
+                prev_c = (
+                    f"{prev.headline}\n\n{prev.body_text}".strip()
+                    if prev.headline != prev.body_text
+                    else prev.body_text
+                )
+                prev.word_count = len(prev_c.split())
+            else:
+                consolidated.append(art)
+
+        if consolidated:
+            # If first article is an orphan snippet, merge forward into next
+            if len(consolidated) > 1:
+                first = consolidated[0]
+                first_has_valid_hl = bool(
+                    first.headline and is_valid_headline_candidate(first.headline)
+                )
+                first_has_body = bool(
+                    first.body_text
+                    and first.body_text != first.headline
+                    and len(first.body_text.split()) >= 5
+                )
+                first_is_valid = (
+                    first_has_valid_hl and first_has_body and first.word_count >= 12
+                ) or (first.word_count >= MIN_ARTICLE_WORD_COUNT)
+
+                if not first_is_valid:
+                    first = consolidated.pop(0)
+                    second = consolidated[0]
+                    first_c = (
+                        f"{first.headline}\n\n{first.body_text}".strip()
+                        if first.headline != first.body_text
+                        else first.body_text
+                    )
+                    second.body_text = f"{first_c}\n\n{second.body_text}"
+                    second.bbox_list = first.bbox_list + second.bbox_list
+                    second.raw_blocks = first.raw_blocks + second.raw_blocks
+                    second_c = (
+                        f"{second.headline}\n\n{second.body_text}".strip()
+                        if second.headline != second.body_text
+                        else second.body_text
+                    )
+                    second.word_count = len(second_c.split())
+            articles = consolidated
 
         logger.info(
             "Page segmented into articles",

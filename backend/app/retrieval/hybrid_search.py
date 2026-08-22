@@ -5,6 +5,7 @@ Combines dense semantic vector retrieval (Qdrant) and sparse keyword retrieval
     RRF_score(d) = sum_{m in Models} 1 / (k + rank_m(d))
 with standard smoothing parameter k = 60.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -35,6 +36,8 @@ class SearchFilter:
     date_to: str | None = None  # YYYY-MM-DD
     article_type: str | None = None
     min_prominence: float | None = None
+    page_number: int | None = None
+    printed_page: str | None = None
 
 
 @dataclass
@@ -55,6 +58,7 @@ class HybridSearchResult:
     newspaper_name: str
     issue_date: str
     pages: list[int]
+    printed_pages: list[str] = field(default_factory=list)
     matched_chunks: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -100,6 +104,10 @@ class HybridSearchEngine:
         if filters:
             if filters.newspaper_id:
                 search_filters_dict["newspaper_id"] = filters.newspaper_id
+            if filters.page_number:
+                search_filters_dict["page_numbers"] = filters.page_number
+            if filters.printed_page:
+                search_filters_dict["printed_pages"] = filters.printed_page
             if filters.date_from or filters.date_to:
                 date_range: dict[str, str] = {}
                 if filters.date_from:
@@ -221,6 +229,28 @@ class HybridSearchEngine:
                 if article.article_pages
                 else []
             )
+            printed_pages_list = (
+                [
+                    ap.printed_page_number
+                    for ap in sorted(article.article_pages, key=lambda p: p.page_number)
+                    if ap.printed_page_number
+                ]
+                if article.article_pages
+                else []
+            )
+
+            # Check page filter if specified
+            if filters and filters.page_number and filters.page_number not in pages_list:
+                continue
+            if filters and filters.printed_page:
+                p_filter_clean = filters.printed_page.strip().lower()
+                matches_printed = any(
+                    p.lower() == p_filter_clean or f"page {p_filter_clean}" == p.lower()
+                    for p in printed_pages_list
+                )
+                matches_pdf_page = any(str(p) == p_filter_clean for p in pages_list)
+                if not (matches_printed or matches_pdf_page):
+                    continue
 
             # Snippet: prefer matched chunk text for maximal grounding precision
             snippet = ""
@@ -251,6 +281,7 @@ class HybridSearchEngine:
                     newspaper_name=np_name,
                     issue_date=issue_date,
                     pages=pages_list,
+                    printed_pages=printed_pages_list,
                     matched_chunks=score_info["chunks"],
                 )
             )

@@ -1,10 +1,11 @@
 """Unit tests for MinerU (magic-pdf) document layout and OCR engine provider."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import fitz
+import pymupdf
 import pytest
 
 from app.providers.base import (
@@ -21,7 +22,7 @@ from app.providers.mineru_provider import (
 
 def _create_sample_pdf_bytes() -> bytes:
     """Create an in-memory 2-page PDF for testing."""
-    doc = fitz.open()
+    doc = pymupdf.open()
     # Page 1: Multi-column article with title and table
     page1 = doc.new_page(width=600, height=800)
     page1.insert_text((50, 50), "MAJOR BREAKTHROUGH IN CLEAN ENERGY", fontsize=18)
@@ -133,8 +134,7 @@ class TestMinerUProvider:
     @pytest.mark.asyncio
     async def test_ocr_engine_protocol(self) -> None:
         """Verify OCR interface on image raster bytes."""
-        import fitz
-        doc = fitz.open()
+        doc = pymupdf.open()
         p = doc.new_page(width=300, height=300)
         p.insert_text((50, 50), "OCR TEST HEADING", fontsize=14)
         pix = p.get_pixmap()

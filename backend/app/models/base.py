@@ -3,6 +3,7 @@
 All database access goes through get_db() (a FastAPI dependency).
 The sync engine is used ONLY by Alembic migrations (not the application).
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator

@@ -163,12 +163,12 @@ async def run_phase3_verification() -> None:
         if not demo_files:
             _record("Real Demo Newspaper Ingestion", False, "No PDF files found in demo/ directory")
         else:
-            import fitz
+            import pymupdf
 
             demo_pdf = demo_files[0]
             # Take a 2-page slice from the demo newspaper for fast verification
-            src_doc = fitz.open(demo_pdf)
-            slice_doc = fitz.open()
+            src_doc = pymupdf.open(demo_pdf)
+            slice_doc = pymupdf.open()
             slice_doc.insert_pdf(src_doc, from_page=0, to_page=min(1, len(src_doc) - 1))
             demo_bytes = slice_doc.tobytes()
             slice_doc.close()

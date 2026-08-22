@@ -6,6 +6,7 @@ Implements ChatModelProvider for models like:
 - deepseek-r1-distill-llama-70b
 - mixtral-8x7b-32768
 """
+
 from __future__ import annotations
 
 import json
@@ -35,9 +36,7 @@ class GroqProvider:
 
     def __init__(self, model: str, api_key: str | None) -> None:
         if not api_key:
-            raise ProviderError(
-                "Groq API key is required. Set GROQ_API_KEY in your .env file."
-            )
+            raise ProviderError("Groq API key is required. Set GROQ_API_KEY in your .env file.")
         self._model = model
         self._client = AsyncOpenAI(
             base_url=GROQ_BASE_URL,
@@ -59,9 +58,7 @@ class GroqProvider:
     def provider_name(self) -> str:
         return "groq"
 
-    def _to_openai_messages(
-        self, messages: list[Message]
-    ) -> list[dict[str, Any]]:
+    def _to_openai_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for m in messages:
             if isinstance(m.content, str):
@@ -71,9 +68,7 @@ class GroqProvider:
                 out.append({"role": m.role, "content": " ".join(text_parts)})
         return out
 
-    def _to_openai_tools(
-        self, tools: list[ToolDefinition]
-    ) -> list[dict[str, Any]]:
+    def _to_openai_tools(self, tools: list[ToolDefinition]) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",

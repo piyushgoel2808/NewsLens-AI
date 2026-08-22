@@ -1,4 +1,5 @@
 """API endpoint tests for the Ingestion router."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
@@ -57,9 +58,7 @@ async def test_upload_endpoint(mock_db_session: AsyncMock) -> None:
             "pages": [],
         }
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             files = {"file": ("frontpage.pdf", pdf_bytes, "application/pdf")}
             data = {
                 "newspaper_name": "The Daily Chronicle",
@@ -94,8 +93,6 @@ async def test_get_ingestion_job_not_found(mock_db_session: AsyncMock) -> None:
         patch("app.storage.minio_store.MinioStore.startup", new_callable=AsyncMock),
         patch("app.storage.qdrant_store.QdrantStore._ensure_collection", new_callable=AsyncMock),
     ):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/ingest/jobs/999")
             assert resp.status_code == 404

@@ -7,6 +7,7 @@ Verifies that:
 4. ProviderError raised without API key
 5. ModelRegistry resolves task→provider bindings correctly
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -83,6 +84,7 @@ class TestOllamaProvider:
     @pytest.mark.asyncio
     async def test_complete_with_tools(self) -> None:
         from app.providers.base import ToolDefinition
+
         with patch("app.providers.ollama_provider.ollama") as mock_ollama:
             mock_client = AsyncMock()
             mock_ollama.AsyncClient.return_value = mock_client
@@ -157,9 +159,7 @@ class TestAnthropicProvider:
                 stop_reason="end_turn",
             )
             provider = AnthropicProvider(model="claude-sonnet-4-5", api_key="test-key")
-            response = await provider.complete(
-                [Message(role="user", content="Hello")]
-            )
+            response = await provider.complete([Message(role="user", content="Hello")])
             assert isinstance(response, ModelResponse)
             assert response.text == "Hello from Claude"
             assert response.provider == "anthropic"
@@ -185,12 +185,14 @@ class TestGroqProvider:
 
     def test_raises_without_api_key(self) -> None:
         from app.providers.groq_provider import GroqProvider
+
         with pytest.raises(ProviderError):
             GroqProvider(model="qwen/qwen3.6-27b", api_key=None)
 
     @pytest.mark.asyncio
     async def test_complete_returns_model_response(self) -> None:
         from app.providers.groq_provider import GroqProvider
+
         with patch("app.providers.groq_provider.AsyncOpenAI") as mock_oai_cls:
             mock_client = AsyncMock()
             mock_oai_cls.return_value = mock_client
@@ -226,7 +228,9 @@ class TestProviderSwap:
             mock_ollama.AsyncClient.return_value = mock_client
             mock_client.chat.return_value = MagicMock(
                 message=MagicMock(content="Ollama summary", tool_calls=None),
-                prompt_eval_count=10, eval_count=5, model="llama3.2:3b",
+                prompt_eval_count=10,
+                eval_count=5,
+                model="llama3.2:3b",
             )
             ollama_provider = OllamaProvider(model="llama3.2:3b")
             r1 = await ollama_provider.complete(messages)
@@ -239,11 +243,10 @@ class TestProviderSwap:
             mock_async_client.messages.create.return_value = MagicMock(
                 content=[MagicMock(type="text", text="Claude summary")],
                 usage=MagicMock(input_tokens=10, output_tokens=5),
-                model="claude-sonnet-4-5", stop_reason="end_turn",
+                model="claude-sonnet-4-5",
+                stop_reason="end_turn",
             )
-            anthropic_provider = AnthropicProvider(
-                model="claude-sonnet-4-5", api_key="test-key"
-            )
+            anthropic_provider = AnthropicProvider(model="claude-sonnet-4-5", api_key="test-key")
             r2 = await anthropic_provider.complete(messages)
 
         # Both return ModelResponse — identical interface
@@ -266,6 +269,7 @@ class TestModelRegistry:
 
     def test_registry_get_provider_for_valid_task(self, mock_settings: Any) -> None:
         from app.providers.registry import ModelRegistry
+
         registry = ModelRegistry(mock_settings)
         with patch("app.providers.ollama_provider.OllamaProvider") as mock_cls:
             mock_cls.return_value = MagicMock()
@@ -281,6 +285,7 @@ class TestModelRegistry:
 
     def test_registry_raises_for_unknown_task(self, mock_settings: Any) -> None:
         from app.providers.registry import ModelRegistry
+
         registry = ModelRegistry(mock_settings)
         with pytest.raises((ValueError, Exception)):
             registry.get_provider("nonexistent_task_xyz")

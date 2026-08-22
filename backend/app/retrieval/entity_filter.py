@@ -1,4 +1,5 @@
 """Entity-Based Search Engine for structured entity and taxonomy queries."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -61,7 +62,9 @@ class EntitySearchEngine:
                 .join(Issue, Article.issue_id == Issue.id)
                 .options(
                     selectinload(ArticleEntity.entity),
-                    selectinload(ArticleEntity.article).selectinload(Article.issue).selectinload(Issue.newspaper),
+                    selectinload(ArticleEntity.article)
+                    .selectinload(Article.issue)
+                    .selectinload(Issue.newspaper),
                     selectinload(ArticleEntity.article).selectinload(Article.article_pages),
                 )
             )
@@ -80,16 +83,16 @@ class EntitySearchEngine:
                 stmt = stmt.where(Issue.issue_date <= date_to)
 
             if topic_name:
-                stmt = stmt.join(ArticleTopic, ArticleTopic.article_id == Article.id).join(
-                    Topic, ArticleTopic.topic_id == Topic.id
-                ).where(Topic.name.ilike(f"%{topic_name}%"))
+                stmt = (
+                    stmt.join(ArticleTopic, ArticleTopic.article_id == Article.id)
+                    .join(Topic, ArticleTopic.topic_id == Topic.id)
+                    .where(Topic.name.ilike(f"%{topic_name}%"))
+                )
 
-            stmt = (
-                stmt.order_by(
-                    desc(ArticleEntity.salience_score),
-                    desc(ArticleEntity.mention_count),
-                ).limit(top_k)
-            )
+            stmt = stmt.order_by(
+                desc(ArticleEntity.salience_score),
+                desc(ArticleEntity.mention_count),
+            ).limit(top_k)
 
             res = await db.execute(stmt)
             records = res.scalars().all()
@@ -101,9 +104,7 @@ class EntitySearchEngine:
                     continue
 
                 np_name = (
-                    art.issue.newspaper.name
-                    if art.issue and art.issue.newspaper
-                    else "Daily News"
+                    art.issue.newspaper.name if art.issue and art.issue.newspaper else "Daily News"
                 )
                 issue_date = str(art.issue.issue_date) if art.issue else ""
                 pages_list = (

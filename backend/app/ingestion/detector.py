@@ -8,6 +8,7 @@ Classifies each PDF page as:
 Extracts structured text blocks with spatial bounding boxes, font metadata,
 and reading order candidates for downstream article assembly.
 """
+
 from __future__ import annotations
 
 import re
@@ -16,7 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-import fitz  # PyMuPDF
+import pymupdf
 
 from app.core.logging import get_logger
 
@@ -95,8 +96,7 @@ def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
     bad_chars = sum(
         1
         for c in cleaned
-        if c in ("\ufffd", "\ufeff")
-        or unicodedata.category(c) in ("Cc", "Cs", "Co")
+        if c in ("\ufffd", "\ufeff") or unicodedata.category(c) in ("Cc", "Cs", "Co")
     )
 
     if (bad_chars / len(cleaned)) >= threshold:
@@ -133,11 +133,27 @@ def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
     return False
 
 
-
 class PageType(StrEnum):
     DIGITAL = "digital"
     SCANNED = "scanned"
     HYBRID = "hybrid"
+    ADVERTISEMENT = "advertisement"
+
+
+AD_KEYWORDS_REGEX = re.compile(
+    r"(?i)\b(?:advertisement|advertorial|special\s+promotional\s+feature|sponsored\s+feature|"
+    r"promotional\s+feature|t&c\s+apply|terms\s+(?:and|&)\s+conditions\s+apply|"
+    r"call\s+now|visit\s+us\s+at|toll\s+free|showroom|mrp\s*rs|flat\s+\d+%\s+off|"
+    r"exclusive\s+offer|limited\s+period\s+offer|book\s+now\s+at|for\s+bookings\s+call|"
+    # Financial IPO Notices
+    r"initial\s+public\s+offering|red\s+herring\s+prospectus|draft\s+red\s+herring\s+prospectus|"
+    r"book\s+running\s+lead\s+manager|registrar\s+to\s+the\s+issue|bid/issue\s+opens\s+on|"
+    r"price\s+band|floor\s+price|promoters\s+of\s+our\s+company|equity\s+shares\s+of\s+face\s+value|"
+    # Statutory & Legal Notices
+    r"public\s+notice|statutory\s+notice|notice\s+is\s+hereby\s+given|in\s+the\s+matter\s+of|"
+    r"national\s+company\s+law\s+tribunal|\bnclt\b|insolvency\s+and\s+bankruptcy\s+code|"
+    r"auction\s+sale\s+notice|tender\s+notice|e-auction|corrigendum|possession\s+notice)\b"
+)
 
 
 @dataclass
@@ -179,6 +195,9 @@ class PageAnalysisResult:
     blocks: list[DigitalTextBlock] = field(default_factory=list)
     dominant_font_size: float = 10.0
     image_count: int = 0
+    is_advertisement: bool = False
+    page_width: float = 0.0
+    page_height: float = 0.0
 
 
 class PDFPageDetector:
@@ -186,12 +205,14 @@ class PDFPageDetector:
 
     def analyze_page(
         self,
-        doc: fitz.Document,
+        doc: pymupdf.Document,
         page_index: int,
     ) -> PageAnalysisResult:
         """Analyze and extract structured text from a 0-indexed page in an open PyMuPDF document."""
         page = doc.load_page(page_index)
         page_num = page_index + 1
+        page_width = float(page.rect.width)
+        page_height = float(page.rect.height)
 
         # Extract structured text dictionary
         text_page = page.get_text("dict")
@@ -254,9 +275,7 @@ class PDFPageDetector:
                 block_full_text = "\n".join(block_lines)
                 if block_full_text.strip():
                     mean_fsize = (
-                        sum(block_font_sizes) / len(block_font_sizes)
-                        if block_font_sizes
-                        else 10.0
+                        sum(block_font_sizes) / len(block_font_sizes) if block_font_sizes else 10.0
                     )
                     block_bbox = (
                         float(b["bbox"][0]),
@@ -282,10 +301,28 @@ class PDFPageDetector:
             # Rounded mode of font sizes
             rounded_sizes = [round(s, 1) for s in font_sizes]
             from collections import Counter
+
             dominant_font_size = Counter(rounded_sizes).most_common(1)[0][0]
+
+        # Boilerplate tokens that must never stand alone as article headings
+        boilerplate_stopwords = {
+            "limited", "ltd", "corp", "corporation", "pvt", "private", "equity", "issue",
+            "issue,", "shares", "company", "notice", "promoters", "price", "band", "page",
+            "continued", "from", "and", "or", "of", "in", "on", "at", "to", "for", "with",
+        }
 
         # Flag heading candidates (font size > 1.35 * dominant body size or bold font)
         for blk in blocks:
+            clean_blk = blk.text.strip()
+            words_blk = clean_blk.split()
+            # Reject single-word corporate boilerplate or very short fragments
+            if len(words_blk) == 1 and words_blk[0].lower().rstrip(",.:;") in boilerplate_stopwords:
+                blk.is_heading_candidate = False
+                continue
+            if len(words_blk) < 2 and len(clean_blk) < 12:
+                blk.is_heading_candidate = False
+                continue
+
             is_large = blk.mean_font_size >= dominant_font_size * 1.35
             is_bold_prominent = any(
                 s.is_bold and s.font_size > dominant_font_size for s in blk.spans
@@ -293,8 +330,25 @@ class PDFPageDetector:
             if is_large or is_bold_prominent:
                 blk.is_heading_candidate = True
 
+        # Advertisement & Legal Notice detection heuristics
+        upper_text = raw_text.strip().upper()
+        ad_matches = len(AD_KEYWORDS_REGEX.findall(raw_text))
+        is_ad = (
+            upper_text.startswith("ADVERTISEMENT")
+            or upper_text.startswith("ADVERTORIAL")
+            or upper_text.startswith("SPECIAL PROMOTIONAL FEATURE")
+            or upper_text.startswith("SPONSORED FEATURE")
+            or upper_text.startswith("PUBLIC NOTICE")
+            or upper_text.startswith("INITIAL PUBLIC OFFERING")
+            or (ad_matches >= 2)
+            or (ad_matches >= 1 and (word_count < 250 or image_count >= 1))
+        )
+
         # Classification heuristics
-        if char_count < MIN_DIGITAL_CHARS_THRESHOLD:
+        if is_ad:
+            page_type = PageType.ADVERTISEMENT
+            requires_ocr = False
+        elif char_count < MIN_DIGITAL_CHARS_THRESHOLD:
             page_type = PageType.SCANNED
             requires_ocr = True
         elif is_text_gibberish(raw_text):
@@ -317,6 +371,7 @@ class PDFPageDetector:
             extra={
                 "page_number": page_num,
                 "type": page_type.value,
+                "is_advertisement": is_ad,
                 "char_count": char_count,
                 "blocks": len(blocks),
                 "dominant_font_size": dominant_font_size,
@@ -333,11 +388,14 @@ class PDFPageDetector:
             blocks=blocks,
             dominant_font_size=dominant_font_size,
             image_count=image_count,
+            is_advertisement=is_ad,
+            page_width=page_width,
+            page_height=page_height,
         )
 
     def analyze_document_bytes(self, pdf_bytes: bytes) -> list[PageAnalysisResult]:
         """Analyze all pages of a PDF from raw byte buffer."""
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         results: list[PageAnalysisResult] = []
         for i in range(len(doc)):
             results.append(self.analyze_page(doc, i))

@@ -1,4 +1,5 @@
 """FastAPI router for Model Settings and Runtime Provider Binding Swapping."""
+
 from __future__ import annotations
 
 from typing import Any

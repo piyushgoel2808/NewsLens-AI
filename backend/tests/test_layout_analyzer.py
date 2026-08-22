@@ -1,4 +1,5 @@
 """Unit tests for LayoutAnalyzer (VLM and rule-based modes)."""
+
 from __future__ import annotations
 
 import pytest
@@ -156,10 +157,96 @@ class TestLayoutAnalyzer:
         )
 
         assert res.source == "spatial_rule_based"
-        assert len(res.elements) == 3
+        assert len(res.elements) == 2
         assert res.elements[0].block_type in (
             BlockType.BANNER_HEADLINE,
             BlockType.HEADLINE,
         )
-        assert res.elements[2].block_type == BlockType.BODY_TEXT
+        assert res.elements[1].block_type == BlockType.BODY_TEXT
 
+    def test_spatial_consolidation_merges_adjacent_column_paragraphs(self) -> None:
+        """Verify adjacent body paragraphs in the same column are merged."""
+        analyzer = LayoutAnalyzer()
+        blocks = [
+            # Headline
+            DigitalTextBlock(
+                block_id=0,
+                text="MARKET SUMMARY REPORT",
+                bbox=(50.0, 30.0, 950.0, 70.0),
+                mean_font_size=20.0,
+                is_heading_candidate=True,
+            ),
+            # Paragraph 1 (same column)
+            DigitalTextBlock(
+                block_id=1,
+                text="Equity benchmark indices opened in the green on positive Asian cues.",
+                bbox=(50.0, 80.0, 450.0, 130.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+            # Paragraph 2 directly below (gap = 8px)
+            DigitalTextBlock(
+                block_id=2,
+                text="Banking and IT stocks led the initial rally with broad-based buying.",
+                bbox=(50.0, 138.0, 450.0, 185.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=1,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        # The 2 adjacent body paragraphs should be consolidated into 1 body element
+        assert len(res.elements) == 2
+        assert res.elements[0].block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+        assert res.elements[1].block_type == BlockType.BODY_TEXT
+        assert "Equity benchmark" in res.elements[1].text
+        assert "Banking and IT" in res.elements[1].text
+
+    def test_spatial_consolidation_merges_multiline_headlines(self) -> None:
+        """Verify multi-line headline fragments are merged into a single headline element."""
+        analyzer = LayoutAnalyzer()
+        blocks = [
+            # Headline line 1
+            DigitalTextBlock(
+                block_id=0,
+                text="GOVERNMENT APPROVES MAJOR",
+                bbox=(50.0, 30.0, 950.0, 65.0),
+                mean_font_size=22.0,
+                is_heading_candidate=True,
+            ),
+            # Headline line 2
+            DigitalTextBlock(
+                block_id=1,
+                text="RENEWABLE ENERGY INCENTIVE PACKAGE",
+                bbox=(50.0, 70.0, 950.0, 105.0),
+                mean_font_size=22.0,
+                is_heading_candidate=True,
+            ),
+            # Body text
+            DigitalTextBlock(
+                block_id=2,
+                text="The union cabinet approved the scheme late yesterday evening.",
+                bbox=(50.0, 120.0, 450.0, 200.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=1,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        assert len(res.elements) == 2
+        assert res.elements[0].block_type == BlockType.BANNER_HEADLINE
+        expected_hl = "GOVERNMENT APPROVES MAJOR RENEWABLE ENERGY INCENTIVE PACKAGE"
+        assert expected_hl in res.elements[0].text
+        assert res.elements[1].block_type == BlockType.BODY_TEXT

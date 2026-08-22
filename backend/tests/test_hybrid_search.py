@@ -1,4 +1,5 @@
 """Unit tests for Hybrid Search Engine and Reciprocal Rank Fusion (RRF)."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock

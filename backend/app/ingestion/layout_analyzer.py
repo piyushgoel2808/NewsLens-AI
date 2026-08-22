@@ -7,6 +7,7 @@ Extracts:
 - Structured tabular data regions.
 - Human reading order sequences.
 """
+
 from __future__ import annotations
 
 import json
@@ -205,11 +206,36 @@ class LayoutAnalyzer:
 
             median_lh = statistics.median(line_heights) if line_heights else 20.0
 
+            boilerplate_stopwords = {
+                "limited", "ltd", "corp", "corporation", "pvt", "private", "equity", "issue",
+                "issue,", "shares", "company", "notice", "promoters", "price", "band", "page",
+                "continued", "from", "and", "or", "of", "in", "on", "at", "to", "for", "with",
+            }
+
             for o_blk, lh in zip(ocr_blocks, line_heights, strict=False):
                 box_width = o_blk.bbox[2] - o_blk.bbox[0]
-                is_banner = box_width >= float(width_px) * 0.60 and lh >= median_lh * 1.30
-                is_headline = is_banner or (lh >= median_lh * 1.35) or (
-                    o_blk.text.isupper() and len(o_blk.text.split()) < 15 and lh >= median_lh * 1.10
+                words_blk = o_blk.text.strip().split()
+                is_single_boilerplate = (
+                    len(words_blk) == 1
+                    and words_blk[0].lower().rstrip(",.:;") in boilerplate_stopwords
+                )
+
+                is_banner = (
+                    box_width >= float(width_px) * 0.60
+                    and lh >= median_lh * 1.30
+                    and not is_single_boilerplate
+                )
+                is_headline = (
+                    not is_single_boilerplate
+                    and (
+                        is_banner
+                        or (lh >= median_lh * 1.35 and len(words_blk) >= 2)
+                        or (
+                            o_blk.text.isupper()
+                            and 2 <= len(words_blk) < 15
+                            and lh >= median_lh * 1.10
+                        )
+                    )
                 )
                 b_type = (
                     BlockType.BANNER_HEADLINE
@@ -227,6 +253,13 @@ class LayoutAnalyzer:
                 )
                 element_id += 1
 
+        # Consolidate bounding boxes and merge adjacent paragraph fragments
+        elements = self._consolidate_elements(
+            elements=elements,
+            page_width=float(width_px),
+            page_height=float(height_px),
+        )
+
         resolver = ReadingOrderResolver(page_width=float(width_px), page_height=float(height_px))
         reading_order = resolver.resolve_reading_order(elements)
 
@@ -238,6 +271,86 @@ class LayoutAnalyzer:
             reading_order=reading_order,
             source="spatial_rule_based",
         )
+
+    def _consolidate_elements(
+        self,
+        elements: list[LayoutElement],
+        page_width: float,
+        page_height: float,
+    ) -> list[LayoutElement]:
+        """Consolidate spatially adjacent text boxes and multi-line headlines."""
+        if len(elements) <= 1:
+            return elements
+
+        # Sort elements primarily by top-Y, then left-X
+        sorted_elements = sorted(elements, key=lambda e: (round(e.bbox[1] / 20.0), e.bbox[0]))
+
+        # Compute median line height across body elements
+        body_heights = [
+            (e.bbox[3] - e.bbox[1]) / max(len(e.text.split("\n")), 1)
+            for e in sorted_elements
+            if e.block_type == BlockType.BODY_TEXT and (e.bbox[3] - e.bbox[1]) > 0
+        ]
+        median_lh = float(sorted(body_heights)[len(body_heights) // 2]) if body_heights else 20.0
+        max_v_gap = max(median_lh * 1.8, 15.0)
+
+        consolidated: list[LayoutElement] = []
+        for elem in sorted_elements:
+            if not consolidated:
+                consolidated.append(elem)
+                continue
+
+            prev = consolidated[-1]
+
+            # Case A: Merge multi-line headlines
+            if (
+                prev.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                and elem.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+            ):
+                overlap_x = max(
+                    0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
+                )
+                min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
+                gap_y = elem.bbox[1] - prev.bbox[3]
+                if min_w > 0 and (overlap_x / min_w) >= 0.50 and 0.0 <= gap_y <= max_v_gap * 1.5:
+                    prev.text = f"{prev.text} {elem.text}".strip()
+                    prev.bbox = (
+                        min(prev.bbox[0], elem.bbox[0]),
+                        min(prev.bbox[1], elem.bbox[1]),
+                        max(prev.bbox[2], elem.bbox[2]),
+                        max(prev.bbox[3], elem.bbox[3]),
+                    )
+                    continue
+
+            # Case B: Merge adjacent body paragraphs in the same column
+            if prev.block_type == BlockType.BODY_TEXT and elem.block_type == BlockType.BODY_TEXT:
+                overlap_x = max(
+                    0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
+                )
+                min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
+                gap_y = elem.bbox[1] - prev.bbox[3]
+                if min_w > 0 and (overlap_x / min_w) >= 0.65 and 0.0 <= gap_y <= max_v_gap:
+                    if prev.text.endswith("-"):
+                        prev.text = prev.text[:-1] + elem.text
+                    elif prev.text.endswith((".", "!", "?", ":")):
+                        prev.text = f"{prev.text}\n\n{elem.text}"
+                    else:
+                        prev.text = f"{prev.text} {elem.text}"
+                    prev.bbox = (
+                        min(prev.bbox[0], elem.bbox[0]),
+                        min(prev.bbox[1], elem.bbox[1]),
+                        max(prev.bbox[2], elem.bbox[2]),
+                        max(prev.bbox[3], elem.bbox[3]),
+                    )
+                    continue
+
+            consolidated.append(elem)
+
+        # Re-index element IDs
+        for idx, elem in enumerate(consolidated):
+            elem.element_id = idx + 1
+
+        return consolidated
 
     async def analyze_page(
         self,
@@ -296,9 +409,7 @@ class LayoutAnalyzer:
                     b_type = BlockType.BODY_TEXT
                     if node.node_type == "title":
                         b_type = (
-                            BlockType.BANNER_HEADLINE
-                            if node.level == 1
-                            else BlockType.HEADLINE
+                            BlockType.BANNER_HEADLINE if node.level == 1 else BlockType.HEADLINE
                         )
                     elif node.node_type == "table":
                         b_type = BlockType.TABLE
@@ -373,11 +484,7 @@ class LayoutAnalyzer:
             for h in raw_data.get("headlines", []):
                 bbox = tuple(float(x) for x in h.get("bbox", [0, 0, 0, 0]))
                 level = h.get("level", "major")
-                b_type = (
-                    BlockType.BANNER_HEADLINE
-                    if level == "banner"
-                    else BlockType.HEADLINE
-                )
+                b_type = BlockType.BANNER_HEADLINE if level == "banner" else BlockType.HEADLINE
                 vlm_elements.append(
                     LayoutElement(
                         element_id=el_id,

@@ -194,12 +194,19 @@ export default function InspectionViewer() {
         <div>
           <h4>Page Extraction Analysis</h4>
           {pages.length === 0 ? <p>No pages ingested for this issue.</p> : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '12px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '12px' }}>
               {pages.map((p) => (
-                <div key={p.id} style={{ border: '1px solid #ddd', padding: '10px', borderRadius: '4px', background: '#fff' }}>
+                <div key={p.id} style={{ border: '1px solid #ddd', padding: '10px', borderRadius: '4px', background: p.is_advertisement_page ? '#fffdf7' : '#fff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <strong>Page {p.page_number}</strong>
-                    <span style={{ fontSize: '12px', color: '#666' }}>{p.width_px} x {p.height_px} px</span>
+                    <div>
+                      <strong>Printed Folio: Page {p.printed_page_number || p.page_number}</strong>
+                      <div style={{ fontSize: '11px', color: '#666' }}>PDF Index: p.{p.page_number} ({p.width_px} x {p.height_px} px)</div>
+                    </div>
+                    {p.is_advertisement_page && (
+                      <span style={{ fontSize: '11px', background: '#ffe082', color: '#b78103', padding: '2px 6px', borderRadius: '3px', fontWeight: 'bold' }}>
+                        📢 Ad Wrap
+                      </span>
+                    )}
                   </div>
 
                   <div style={{ marginTop: '6px', fontSize: '13px' }}>
@@ -234,16 +241,22 @@ export default function InspectionViewer() {
           {articles.length === 0 ? <p>No articles segmented.</p> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {articles.map((art) => (
-                <div key={art.id} style={{ border: '1px solid #ddd', padding: '10px', background: '#fff' }}>
+                <div key={art.id} style={{ border: '1px solid #ddd', padding: '10px', background: art.is_advertisement ? '#fffdf7' : '#fff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <div>
                       <strong style={{ fontSize: '15px' }}>{art.headline}</strong>
                       <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
-                        Section: {art.section || 'General'} | Type: <code>{art.article_type}</code> | Pages: {art.pages?.join(', ')}
+                        Section: {art.section || 'General'} | Type: <code>{art.article_type}</code> | Folio: <strong>{art.printed_pages?.length ? art.printed_pages.join(', ') : (art.pages?.join(', ') || '1')}</strong> <span style={{ color: '#888' }}>(PDF p.{art.pages?.join(', ')})</span>
                       </div>
                     </div>
                     <div style={{ textAlign: 'right', fontSize: '12px' }}>
-                      <div>Prominence: <strong>{art.prominence_score?.toFixed(2)}</strong></div>
+                      {art.is_advertisement ? (
+                        <span style={{ fontSize: '11px', background: '#ffe082', color: '#b78103', padding: '2px 6px', borderRadius: '3px', fontWeight: 'bold' }}>
+                          📢 Ad (No Vectors)
+                        </span>
+                      ) : (
+                        <div>Prominence: <strong>{art.prominence_score?.toFixed(2)}</strong></div>
+                      )}
                       <div>Word Count: {art.word_count}</div>
                     </div>
                   </div>

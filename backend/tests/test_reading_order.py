@@ -1,4 +1,5 @@
 """Unit tests for spatial reading order resolver."""
+
 from __future__ import annotations
 
 from app.ingestion.reading_order import (

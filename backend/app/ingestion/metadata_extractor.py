@@ -1,4 +1,5 @@
 """Metadata Extractor: Named Entity Recognition (NER), Topic Classification, and Summarization."""
+
 from __future__ import annotations
 
 import re
@@ -27,9 +28,29 @@ ORG_SUFFIXES = re.compile(
 CAPITALIZED_NAME_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b")
 
 KNOWN_LOCATIONS = {
-    "Delhi", "New Delhi", "Mumbai", "London", "Washington", "Geneva", "Paris", "Tokyo",
-    "Beijing", "Kolkata", "Chennai", "Bengaluru", "Hyderabad", "India", "US", "USA",
-    "United States", "China", "UK", "United Kingdom", "Russia", "Europe", "Asia",
+    "Delhi",
+    "New Delhi",
+    "Mumbai",
+    "London",
+    "Washington",
+    "Geneva",
+    "Paris",
+    "Tokyo",
+    "Beijing",
+    "Kolkata",
+    "Chennai",
+    "Bengaluru",
+    "Hyderabad",
+    "India",
+    "US",
+    "USA",
+    "United States",
+    "China",
+    "UK",
+    "United Kingdom",
+    "Russia",
+    "Europe",
+    "Asia",
 }
 
 TOPIC_TAXONOMY_MAP = {
