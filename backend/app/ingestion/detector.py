@@ -89,36 +89,41 @@ def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
     if len(cleaned) < 50:
         return False
 
+    # 1. Explicit replacement characters (\ufffd, \ufeff) signify decoded font corruption
+    replacement_chars = sum(1 for c in cleaned if c in ("\ufffd", "\ufeff"))
+    if (replacement_chars / len(cleaned)) >= 0.05:
+        return True
+
     words_list = re.findall(r"\b[a-z]{2,}\b", text.lower())
     common_matches = len(set(words_list).intersection(COMMON_ENGLISH_WORDS))
 
-    # 1. Count replacement characters and unprintable control / private-use codes
+    # 2. Positive Check: If page contains dictionary words, it is valid digital text
+    if common_matches >= 6 and len(words_list) >= 15:
+        return False
+
+    # 3. Count unprintable control codes
     bad_chars = sum(
         1
         for c in cleaned
-        if c in ("\ufffd", "\ufeff") or unicodedata.category(c) in ("Cc", "Cs", "Co")
+        if unicodedata.category(c) in ("Cc", "Cs", "Co")
     )
 
-    if (bad_chars / len(cleaned)) >= threshold:
+    if (bad_chars / len(cleaned)) >= threshold and common_matches < 4:
         return True
 
-    # 2. Check for single character dominance (e.g. font mapping bug where all glyphs become 'b')
+    # 3. Check for single character dominance (e.g. font mapping bug where all glyphs become 'b')
     counts = Counter(cleaned.lower())
     most_common_char, most_common_count = counts.most_common(1)[0]
     if (
         most_common_char not in ("-", "_", ".", "=", "*", "/", " ")
         and (most_common_count / len(cleaned)) >= 0.25
-        and common_matches < 5
+        and common_matches < 4
     ):
         return True
 
-    # 3. If page contains high number of common dictionary words, it is valid digital text
-    if common_matches >= 8 and len(words_list) >= 20:
-        return False
-
     # 4. Check for repeated character runs relative to document size (e.g. 'bbbbbbbb')
     repeated_matches = re.findall(r"([a-z])\1{4,}", text.lower())
-    if len(repeated_matches) >= 3 and common_matches < 5:
+    if len(repeated_matches) >= 3 and common_matches < 4:
         return True
 
     # 5. Check word validity ratio
@@ -127,7 +132,7 @@ def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
         gibberish_words = sum(
             1 for w in words if len(w) > 35 or (len(set(w.lower())) == 1 and len(w) >= 5)
         )
-        if (gibberish_words / len(words)) >= 0.25 and common_matches < 5:
+        if (gibberish_words / len(words)) >= 0.25 and common_matches < 4:
             return True
 
     return False

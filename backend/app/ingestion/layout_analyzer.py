@@ -737,10 +737,14 @@ class LayoutAnalyzer:
                     elif node.node_type == "caption":
                         b_type = BlockType.CAPTION
 
+                    cleaned_t = clean_ocr_text_artifacts(node.text)
+                    if is_numeric_stat_box(cleaned_t):
+                        b_type = BlockType.TABLE
+
                     elem = LayoutElement(
                         element_id=idx + 1,
                         bbox=node.bbox,
-                        text=node.text,
+                        text=cleaned_t,
                         block_type=b_type,
                     )
                     elements.append(elem)
@@ -751,6 +755,13 @@ class LayoutAnalyzer:
                     if not is_masthead_or_running_header(e, float(height_px), float(width_px))
                 ]
                 elements = non_masthead_elements if non_masthead_elements else elements
+
+                # Consolidate bounding boxes and merge adjacent paragraph fragments
+                elements = self._consolidate_elements(
+                    elements=elements,
+                    page_width=float(width_px),
+                    page_height=float(height_px),
+                )
 
                 resolver = ReadingOrderResolver(
                     page_width=float(width_px), page_height=float(height_px)
@@ -799,27 +810,33 @@ class LayoutAnalyzer:
             el_id = 1
 
             for h in raw_data.get("headlines", []):
+                cleaned_h = clean_ocr_text_artifacts(h.get("text", ""))
                 bbox = tuple(float(x) for x in h.get("bbox", [0, 0, 0, 0]))
                 level = h.get("level", "major")
-                b_type = BlockType.BANNER_HEADLINE if level == "banner" else BlockType.HEADLINE
+                if is_numeric_stat_box(cleaned_h):
+                    b_type = BlockType.TABLE
+                else:
+                    b_type = BlockType.BANNER_HEADLINE if level == "banner" else BlockType.HEADLINE
                 vlm_elements.append(
                     LayoutElement(
                         element_id=el_id,
                         bbox=bbox,  # type: ignore[arg-type]
-                        text=h.get("text", ""),
+                        text=cleaned_h,
                         block_type=b_type,
                     )
                 )
                 el_id += 1
 
             for col in raw_data.get("columns", []):
+                cleaned_c = clean_ocr_text_artifacts(col.get("text", ""))
                 bbox = tuple(float(x) for x in col.get("bbox", [0, 0, 0, 0]))
+                b_type = BlockType.TABLE if is_numeric_stat_box(cleaned_c) else BlockType.BODY_TEXT
                 vlm_elements.append(
                     LayoutElement(
                         element_id=el_id,
                         bbox=bbox,  # type: ignore[arg-type]
-                        text=col.get("text", ""),
-                        block_type=BlockType.BODY_TEXT,
+                        text=cleaned_c,
+                        block_type=b_type,
                     )
                 )
                 el_id += 1
@@ -842,6 +859,13 @@ class LayoutAnalyzer:
                 if not is_masthead_or_running_header(e, float(height_px), float(width_px))
             ]
             vlm_elements = non_masthead_vlm if non_masthead_vlm else vlm_elements
+
+            # Consolidate bounding boxes and merge adjacent paragraph fragments
+            vlm_elements = self._consolidate_elements(
+                elements=vlm_elements,
+                page_width=float(width_px),
+                page_height=float(height_px),
+            )
 
             resolver = ReadingOrderResolver(
                 page_width=float(width_px), page_height=float(height_px)

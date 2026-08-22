@@ -75,9 +75,11 @@ def _run_ocr(image_bytes: bytes, lang: str) -> OCRResult:
     except Exception as e:
         raise ProviderError(f"Tesseract OCR failed: {e}") from e
 
-    blocks: list[OCRBlock] = []
-    confidences: list[float] = []
-    full_text_parts: list[str] = []
+    from collections import defaultdict
+
+    lines_by_par: dict[
+        tuple[int, int], dict[int, list[tuple[str, float, float, float, float, float]]]
+    ] = defaultdict(lambda: defaultdict(list))
 
     n = len(data["text"])
     for i in range(n):
@@ -86,19 +88,51 @@ def _run_ocr(image_bytes: bytes, lang: str) -> OCRResult:
         if not text or conf_raw < 0:
             continue
 
-        confidence = float(conf_raw) / 100.0  # Tesseract gives 0-100
+        b_num = int(data.get("block_num", [0] * n)[i])
+        p_num = int(data.get("par_num", [0] * n)[i])
+        l_num = int(data.get("line_num", [0] * n)[i])
+
+        confidence = float(conf_raw) / 100.0
         x = float(data["left"][i])
         y = float(data["top"][i])
         w = float(data["width"][i])
         h = float(data["height"][i])
-        bbox = (x, y, x + w, y + h)
 
-        blocks.append(OCRBlock(text=text, bbox=bbox, confidence=confidence))
-        confidences.append(confidence)
-        full_text_parts.append(text)
+        lines_by_par[(b_num, p_num)][l_num].append((text, confidence, x, y, x + w, y + h))
+
+    blocks: list[OCRBlock] = []
+    confidences: list[float] = []
+    full_text_parts: list[str] = []
+
+    for (_b_num, _p_num), lines_dict in lines_by_par.items():
+        par_lines: list[str] = []
+        par_x0 = float("inf")
+        par_y0 = float("inf")
+        par_x1 = float("-inf")
+        par_y1 = float("-inf")
+        par_confs: list[float] = []
+
+        for l_num in sorted(lines_dict.keys()):
+            word_tuples = lines_dict[l_num]
+            line_text = " ".join(wt[0] for wt in word_tuples)
+            par_lines.append(line_text)
+            for _, c, x0, y0, x1, y1 in word_tuples:
+                par_x0 = min(par_x0, x0)
+                par_y0 = min(par_y0, y0)
+                par_x1 = max(par_x1, x1)
+                par_y1 = max(par_y1, y1)
+                par_confs.append(c)
+
+        if par_lines:
+            block_text = "\n".join(par_lines)
+            block_conf = sum(par_confs) / len(par_confs) if par_confs else 1.0
+            block_bbox = (par_x0, par_y0, par_x1, par_y1)
+            blocks.append(OCRBlock(text=block_text, bbox=block_bbox, confidence=block_conf))
+            confidences.extend(par_confs)
+            full_text_parts.append(block_text)
 
     mean_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-    full_text = " ".join(full_text_parts)
+    full_text = "\n\n".join(full_text_parts)
 
     return OCRResult(
         blocks=blocks,

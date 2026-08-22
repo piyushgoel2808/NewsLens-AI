@@ -698,12 +698,17 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 3. **Numeric Stat-Box & Tabular Filter (`backend/app/ingestion/layout_analyzer.py`, `backend/app/ingestion/segmenter.py`)**:
    - Implemented `is_numeric_stat_box()`: detects financial number lists and currency strings (e.g. `"75 cr 3,620.40 cr 4,167 cr $250 mn"`), classifying them as `BlockType.TABLE` and preventing them from becoming fake article headlines.
 
-4. **Discrete Article Preservation on Dense Multi-Story Pages (`backend/app/ingestion/segmenter.py`)**:
-   - Maintained all titled news stories with distinct bodies as independent `SegmentedArticle` units, capturing all 67+ editorial stories across Pages 1–16.
+5. **Structured Hierarchical Block Grouping in Tesseract OCR (`backend/app/providers/tesseract_ocr.py`)**:
+   - Resolved the fundamental root cause of OCR word-shattering: previously, `pytesseract.image_to_data` word-level entries were un-grouped, yielding 2,971 isolated single-word `OCRBlock` elements per page (`"HEPRICE"`, `"NITIAL"`, `"SU"`, `"FROM"`, `"valuation"`, `"test"`).
+   - Re-engineered `_run_ocr` to group words by `(block_num, par_num, line_num)` into coherent multi-line paragraphs and headlines with full encompassing bounding boxes matching native PDF layout structures.
+
+6. **Positive Dictionary Word Bypass in `is_text_gibberish` (`backend/app/ingestion/detector.py`)**:
+   - Fixed false-positive OCR triggers on digital PDF pages containing custom font drop-caps or private-use bullet glyphs.
+   - Evaluates positive dictionary word density (`common_matches >= 6 and len(words_list) >= 15`) at the top of the heuristic chain, ensuring digital PDFs use crisp native vector text extraction without falling back to lossy OCR.
 
 ### Verification & QA
-- `make lint && make test`: **159/159 tests passing 100% GREEN in 2.74s**.
-- Added unit tests in `test_layout_analyzer.py`, `test_segmenter.py`, and `test_classifier.py`.
+- `make lint && make test`: **159/159 tests passing 100% GREEN in 2.70s**.
+- Added unit tests across all affected modules.
 
 ---
 
