@@ -1004,6 +1004,53 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.22 — Native PDF Layout Parsing, Strict Column Reading Order, Font-Heuristic Headlines, Pre-Chunking Sanitizer & Drop Cap Reattachment
+
+**Date**: 2026-08-22
+**Status**: Completed ✅
+
+### Problems Addressed
+1. **Cross-Column Horizontal Bleeding**: Multi-column text blocks in digital PDFs were being sorted horizontally or merged across vertical column gutters, conflating distinct articles (e.g. Column 1 ISRO launch news vs Column 2 Cotton imports).
+2. **False Mid-Paragraph Headlines**: Mid-paragraph bold emphasis spans were incorrectly tagged as `BlockType.HEADLINE`, while real headlines lacking font flags were missed.
+3. **Standalone Drop Caps**: Single-letter initial uppercase drop caps (`"I"`, `"W"`, `"S"`, `"T"`, `"A"`) extracted by PyMuPDF were output as standalone 1-character blocks, causing fragmented sentences in downstream chunks.
+4. **Noise / Promo Text Leakage**: UUID hashes, WhatsApp/Telegram promotional spam, and printer CMYK calibration marks were leaking into layout elements and vector chunks.
+
+### Architectural Solutions & Implementations
+
+1. **Pre-Chunking Regex Sanitizer (`backend/app/ingestion/detector.py`, `layout_analyzer.py`, `segmenter.py`, `chunker.py`)**:
+   - Implemented `is_noise_or_promo_text()` and `sanitize_block_text()`:
+     - UUIDs: `\b[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}\b`
+     - Social/Promo Links: `(?i)(?:Join\s+FREE\s+(?:Whatsapp|Telegram)\s+Channel.*|https?://(?:t\.me|chat\.whatsapp\.com|wa\.me|bit\.ly|tinyurl\.com)/\S*|\bt\.me/\S*|\bwhatsapp\s+channel\b|\btelegram\s+group\b)`
+     - Printer Marks: `(?i)(?:A\s*ND-NDE\s*C\s*M\s*Y\s*K|\bC\s*M\s*Y\s*K\b|\bcyan\s+magenta\s+yellow\s+black\b|epaper\s*[\.\-]\s*livemint|pdf\s*version\s*generated)`
+   - Applied noise filtering across all stages: digital block extraction, spatial layout element creation, article segmentation, and hierarchical document chunking.
+
+2. **Drop Cap Reattachment (`backend/app/ingestion/detector.py`, `layout_analyzer.py`)**:
+   - Implemented `reattach_drop_caps()` for `DigitalTextBlock` and Pass 0 spatial drop cap consolidation in `LayoutAnalyzer._consolidate_elements()`.
+   - Single-letter uppercase blocks (`len(text.strip()) == 1` and `text.strip().isupper()`) positioned adjacent to subsequent body paragraph blocks in the same column track are automatically merged (`"I"` + `"ndia is planning..."` $\to$ `"India is planning..."`), expanding bounding box envelopes and eliminating 1-letter orphan blocks.
+
+3. **Font-Heuristic Headline Detection (`backend/app/ingestion/detector.py`, `layout_analyzer.py`)**:
+   - Computed median body text font size ($dominant\_font\_size$) and line height ($median\_lh$).
+   - Enforced strict criteria for `BlockType.HEADLINE`:
+     - $font\_size \ge 1.25 \times dominant\_font\_size$
+     - Title Case ($>55\%$ capitalized content words) or UPPERCASE (`text.isupper()`)
+     - Minimum 2 words, not ending in terminal sentence punctuation (`.`, `;`) for long blocks
+     - Rejected boilerplate stopwords and syndication/kicker slugs from becoming headlines.
+
+4. **Strict Column-Bound Reading Order (`backend/app/ingestion/reading_order.py`, `layout_analyzer.py`)**:
+   - In `ReadingOrderResolver`, strictly partitioned elements into discrete 2D column tracks under headline containers.
+   - Enforced top-to-bottom traversal within Column 1 before moving to Column 2, preventing horizontal cross-column bleeding.
+   - Prohibited horizontal merging across detected column gutters.
+
+### Verification & QA
+- `make lint`: **0 errors across 66 source files**.
+- `make test`: **182/182 tests passing 100% GREEN in 2.89s**.
+- Added new unit test suites:
+  - `backend/tests/test_sanitizer.py`: 5 tests covering UUIDs, WhatsApp/Telegram promos, printer marks, and block sanitization.
+  - `backend/tests/test_drop_cap.py`: 3 tests covering `DigitalTextBlock` lowercase continuation, capitalized continuation, and `LayoutAnalyzer` consolidation.
+  - `backend/tests/test_reading_order.py::test_side_by_side_column_stories_never_bleed`: Verified independent side-by-side columns (ISRO in Col 1 vs Cotton Imports in Col 2) resolve in strict column-bound reading order.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
 
 

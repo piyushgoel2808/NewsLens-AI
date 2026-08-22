@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 
 from app.core.logging import get_logger
+from app.ingestion.detector import is_noise_or_promo_text, sanitize_block_text
 
 logger = get_logger(__name__)
 
@@ -82,7 +83,7 @@ class NewspaperChunker:
         printed_pages: list[str] | None = None,
     ) -> list[DocumentChunk]:
         """Split article text into overlapping, header-contextualized chunks."""
-        text = full_text.strip()
+        text = sanitize_block_text(full_text).strip()
         if not text:
             return []
 
@@ -95,9 +96,12 @@ class NewspaperChunker:
             printed_pages=printed_pages,
         )
 
-        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        paragraphs = [
+            p.strip() for p in re.split(r"\n\s*\n", text)
+            if p.strip() and not is_noise_or_promo_text(p.strip())
+        ]
         if not paragraphs:
-            paragraphs = [text]
+            return []
 
         chunks: list[DocumentChunk] = []
         current_paragraphs: list[str] = []

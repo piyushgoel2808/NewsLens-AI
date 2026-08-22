@@ -95,3 +95,42 @@ class TestReadingOrderResolver:
         # Order must bind: h1 -> c1_top -> c2_top -> h2 -> c1_bot -> c2_bot
         expected_ids = ["h1", "c1_top", "c2_top", "h2", "c1_bot", "c2_bot"]
         assert [b.element_id for b in ordered] == expected_ids
+
+    def test_side_by_side_column_stories_never_bleed(self) -> None:
+        """Verify side-by-side stories in Col 1 and Col 2 do not interleave or bleed."""
+        resolver = ReadingOrderResolver(page_width=1000, page_height=1500)
+
+        # Story A in Column 1 (x=50..350)
+        h_a = LayoutElement(
+            "h_a", (50, 100, 350, 160), "ISRO Launches EOS-08", BlockType.HEADLINE
+        )
+        p_a1 = LayoutElement(
+            "p_a1",
+            (50, 180, 350, 350),
+            "ISRO rocket lifts off from Sriharikota.",
+            BlockType.BODY_TEXT,
+        )
+        p_a2 = LayoutElement(
+            "p_a2", (50, 370, 350, 550), "The payload was placed in orbit.", BlockType.BODY_TEXT
+        )
+
+        # Story B in Column 2 (x=400..700)
+        h_b = LayoutElement(
+            "h_b", (400, 100, 700, 160), "Cotton Imports Jump 25%", BlockType.HEADLINE
+        )
+        p_b1 = LayoutElement(
+            "p_b1", (400, 180, 700, 350), "Textile mills ramp up procurement.", BlockType.BODY_TEXT
+        )
+        p_b2 = LayoutElement(
+            "p_b2",
+            (400, 370, 700, 550),
+            "Duty exemptions spur overseas orders.",
+            BlockType.BODY_TEXT,
+        )
+
+        elements = [p_b1, p_a2, h_b, p_a1, h_a, p_b2]  # Scrambled
+        ordered = resolver.resolve_reading_order(elements)
+
+        # Story A must be read entirely (h_a -> p_a1 -> p_a2) before Story B (h_b -> p_b1 -> p_b2)
+        expected_ids = ["h_a", "p_a1", "p_a2", "h_b", "p_b1", "p_b2"]
+        assert [b.element_id for b in ordered] == expected_ids

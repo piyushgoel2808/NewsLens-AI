@@ -72,6 +72,158 @@ COMMON_ENGLISH_WORDS = frozenset(
 )
 
 
+UUID_REGEX = re.compile(
+    r"\b[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}\b"
+)
+
+SOCIAL_PROMO_REGEX = re.compile(
+    r"(?i)(?:Join\s+FREE\s+(?:Whatsapp|Telegram)\s+Channel.*|"
+    r"https?://(?:t\.me|chat\.whatsapp\.com|wa\.me|bit\.ly|tinyurl\.com)/\S*|"
+    r"\bt\.me/\S*|\bwhatsapp\s+channel\b|\btelegram\s+group\b)",
+    re.IGNORECASE,
+)
+
+PRINTER_MARKS_REGEX = re.compile(
+    r"(?i)(?:A\s*ND-NDE\s*C\s*M\s*Y\s*K|\bC\s*M\s*Y\s*K\b|\bcyan\s+magenta\s+yellow\s+black\b|"
+    r"epaper\s*[\.\-]\s*livemint|pdf\s*version\s*generated|epaper\s*edition\s*generated)",
+    re.IGNORECASE,
+)
+
+
+def is_noise_or_promo_text(text: str) -> bool:
+    """Detect if text is a UUID hash, social media/WhatsApp promo, or printer mark."""
+    t = text.strip()
+    if not t:
+        return True
+    if UUID_REGEX.search(t):
+        return True
+    if SOCIAL_PROMO_REGEX.search(t):
+        return True
+    return bool(PRINTER_MARKS_REGEX.search(t))
+
+
+def sanitize_block_text(text: str) -> str:
+    """Sanitize block text by removing UUIDs, promo links, and printer registration marks."""
+    if not text:
+        return ""
+    paragraphs = re.split(r"\n\s*\n", text)
+    cleaned_paragraphs: list[str] = []
+    for para in paragraphs:
+        lines = para.split("\n")
+        cleaned_lines: list[str] = []
+        for line in lines:
+            l_str = line.strip()
+            if not l_str or is_noise_or_promo_text(l_str):
+                continue
+            l_clean = UUID_REGEX.sub("", l_str)
+            l_clean = SOCIAL_PROMO_REGEX.sub("", l_clean)
+            l_clean = PRINTER_MARKS_REGEX.sub("", l_clean).strip()
+            if l_clean:
+                cleaned_lines.append(l_clean)
+        if cleaned_lines:
+            cleaned_paragraphs.append("\n".join(cleaned_lines))
+    return "\n\n".join(cleaned_paragraphs)
+
+
+def is_title_case_or_uppercase(text: str) -> bool:
+    """Check if text is in Title Case or UPPERCASE."""
+    clean = re.sub(r"[^\w\s]", "", text).strip()
+    words = clean.split()
+    if not words:
+        return False
+    if clean.isupper() and len(words) >= 2:
+        return True
+
+    stopwords = {
+        "a", "an", "the", "in", "on", "at", "to", "for", "of", "and", "or",
+        "by", "with", "as", "is", "its", "from", "into", "over", "after",
+    }
+    content_words = [w for w in words if w.lower() not in stopwords]
+    if not content_words:
+        content_words = words
+
+    cap_count = sum(1 for w in content_words if w and w[0].isupper())
+    return (cap_count / len(content_words)) >= 0.55
+
+
+def reattach_drop_caps(blocks: list[DigitalTextBlock]) -> list[DigitalTextBlock]:
+    """Reattach single-letter uppercase drop caps to subsequent body paragraphs."""
+    if len(blocks) <= 1:
+        return blocks
+
+    merged_blocks: list[DigitalTextBlock] = []
+    skip_indices: set[int] = set()
+
+    for idx, blk in enumerate(blocks):
+        if idx in skip_indices:
+            continue
+
+        raw_t = blk.text.strip()
+        is_single_letter_drop_cap = (
+            len(raw_t) == 1
+            and raw_t.isalpha()
+            and raw_t.isupper()
+        )
+
+        if is_single_letter_drop_cap and idx + 1 < len(blocks):
+            target_next: DigitalTextBlock | None = None
+            target_idx: int | None = None
+
+            for next_idx in range(idx + 1, min(idx + 5, len(blocks))):
+                if next_idx in skip_indices:
+                    continue
+                cand = blocks[next_idx]
+                cand_t = cand.text.strip()
+                if not cand_t:
+                    continue
+
+                is_near_y = (blk.bbox[1] - 8.0 <= cand.bbox[1] <= blk.bbox[3] + 25.0)
+                h_overlap = min(blk.bbox[2], cand.bbox[2]) - max(blk.bbox[0], cand.bbox[0])
+                is_col_aligned = h_overlap > -40.0 and cand.bbox[0] >= blk.bbox[0] - 10.0
+
+                if is_near_y and is_col_aligned:
+                    target_next = cand
+                    target_idx = next_idx
+                    break
+
+            if target_next and target_idx is not None:
+                drop_char = raw_t
+                next_text = target_next.text
+                if next_text.startswith(" ") or next_text.startswith("\n"):
+                    new_text = drop_char + next_text.lstrip()
+                elif next_text and next_text[0].islower():
+                    new_text = drop_char + next_text
+                else:
+                    new_text = f"{drop_char} {next_text}".strip()
+
+                new_bbox = (
+                    min(blk.bbox[0], target_next.bbox[0]),
+                    min(blk.bbox[1], target_next.bbox[1]),
+                    max(blk.bbox[2], target_next.bbox[2]),
+                    max(blk.bbox[3], target_next.bbox[3]),
+                )
+                new_spans = blk.spans + target_next.spans
+                new_lines = (
+                    [drop_char + target_next.lines[0]] + target_next.lines[1:]
+                    if target_next.lines
+                    else [new_text]
+                )
+
+                target_next.text = new_text
+                target_next.bbox = new_bbox
+                target_next.spans = new_spans
+                target_next.lines = new_lines
+                target_next.mean_font_size = (
+                    (blk.mean_font_size + target_next.mean_font_size * 4) / 5.0
+                )
+                skip_indices.add(idx)
+                continue
+
+        merged_blocks.append(blk)
+
+    return merged_blocks
+
+
 def is_text_gibberish(text: str, threshold: float = 0.10) -> bool:
     """Check if extracted text is corrupt/gibberish due to missing/broken ToUnicode font CMap.
 
@@ -354,10 +506,13 @@ class PDFPageDetector:
                         font_sizes.append(fsize)
 
                     if line_text_parts:
-                        block_lines.append(" ".join(line_text_parts))
+                        line_str = " ".join(line_text_parts)
+                        if not is_noise_or_promo_text(line_str):
+                            block_lines.append(line_str)
 
                 block_full_text = "\n".join(block_lines)
-                if block_full_text.strip():
+                sanitized_text = sanitize_block_text(block_full_text)
+                if sanitized_text.strip():
                     mean_fsize = (
                         sum(block_font_sizes) / len(block_font_sizes) if block_font_sizes else 10.0
                     )
@@ -370,7 +525,7 @@ class PDFPageDetector:
                     blocks.append(
                         DigitalTextBlock(
                             block_id=block_counter,
-                            text=block_full_text,
+                            text=sanitized_text,
                             bbox=block_bbox,
                             lines=block_lines,
                             spans=block_spans,
@@ -378,6 +533,9 @@ class PDFPageDetector:
                         )
                     )
                     block_counter += 1
+
+        # Reattach single-letter uppercase drop caps to subsequent body paragraphs
+        blocks = reattach_drop_caps(blocks)
 
         # Calculate dominant font size (body text font size)
         dominant_font_size = 10.0
@@ -395,7 +553,8 @@ class PDFPageDetector:
             "continued", "from", "and", "or", "of", "in", "on", "at", "to", "for", "with",
         }
 
-        # Flag heading candidates (font size > 1.35 * dominant body size or bold font)
+        # Flag heading candidates using Font-Heuristic:
+        # Font size >= 1.25 * dominant_font_size AND Title Case or UPPERCASE
         for blk in blocks:
             clean_blk = blk.text.strip()
             words_blk = clean_blk.split()
@@ -406,13 +565,20 @@ class PDFPageDetector:
             if len(words_blk) < 2 and len(clean_blk) < 12:
                 blk.is_heading_candidate = False
                 continue
+            if is_noise_or_promo_text(clean_blk):
+                blk.is_heading_candidate = False
+                continue
+            # Multi-sentence paragraphs ending in period/semicolon are never headlines
+            if len(words_blk) > 12 and clean_blk.rstrip().endswith((".", ";")):
+                blk.is_heading_candidate = False
+                continue
 
-            is_large = blk.mean_font_size >= dominant_font_size * 1.35
-            is_bold_prominent = any(
-                s.is_bold and s.font_size > dominant_font_size for s in blk.spans
-            )
-            if is_large or is_bold_prominent:
+            is_large = blk.mean_font_size >= dominant_font_size * 1.25
+            is_cased = is_title_case_or_uppercase(clean_blk)
+            if is_large and is_cased and len(words_blk) >= 2:
                 blk.is_heading_candidate = True
+            else:
+                blk.is_heading_candidate = False
 
         # Advertisement & Legal Notice detection heuristics
         upper_text = raw_text.strip().upper()

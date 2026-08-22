@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.core.logging import get_logger
+from app.ingestion.detector import is_noise_or_promo_text
 from app.ingestion.reading_order import BlockType, OrderedReadingBlock
 
 logger = get_logger(__name__)
@@ -217,7 +218,7 @@ def is_valid_headline_candidate(text: str) -> bool:
         return False
     if is_numbered_feature_subhead(text):
         return False
-    if is_garbled_ocr_noise(text):
+    if is_garbled_ocr_noise(text) or is_noise_or_promo_text(text):
         return False
     # Filter out section headers and recurring layout tags
     if (
@@ -374,7 +375,7 @@ class ArticleSegmenter:
 
         for idx, block in enumerate(ordered_blocks):
             text = block.text.strip()
-            if not text:
+            if not text or is_noise_or_promo_text(text):
                 continue
 
             # 1. Multi-part feature kicker check (e.g. standalone MINT PRIMER, PLAIN FACTS) (Task C)

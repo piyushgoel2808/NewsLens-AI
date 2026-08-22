@@ -17,7 +17,11 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.ingestion.detector import DigitalTextBlock
+from app.ingestion.detector import (
+    DigitalTextBlock,
+    is_noise_or_promo_text,
+    sanitize_block_text,
+)
 from app.ingestion.reading_order import (
     BlockType,
     LayoutElement,
@@ -184,11 +188,11 @@ CONTINUATION_END_TOKENS = frozenset(
 
 
 def clean_ocr_text_artifacts(text: str) -> str:
-    """Repair unspaced tokens and font ligature bugs in OCR text."""
+    """Repair unspaced tokens, font ligature bugs, and purge UUID/promo noise."""
     res = text
     for pattern, repl in OCR_HEADLINE_REPAIRS:
         res = pattern.sub(repl, res)
-    return res
+    return sanitize_block_text(res).strip()
 
 
 def is_numeric_stat_box(text: str) -> bool:
@@ -418,6 +422,8 @@ class LayoutAnalyzer:
             ref_width = max_x if max_x > 0 else float(width_px)
             for d_blk in digital_blocks:
                 cleaned_text = clean_ocr_text_artifacts(d_blk.text)
+                if not cleaned_text or is_noise_or_promo_text(cleaned_text):
+                    continue
                 if is_syndication_or_agency_slug(cleaned_text):
                     b_type = BlockType.BYLINE
                 elif is_numbered_feature_subhead(cleaned_text):
@@ -682,6 +688,51 @@ class LayoutAnalyzer:
 
         # Sort elements primarily by top-Y, then left-X
         sorted_elements = sorted(elements, key=lambda e: (round(e.bbox[1] / 20.0), e.bbox[0]))
+
+        # Pass 0: Drop Cap Reattachment (Merge single uppercase initials into subsequent body)
+        drop_cap_merged: list[LayoutElement] = []
+        skip_indices: set[int] = set()
+        for i, el in enumerate(sorted_elements):
+            if i in skip_indices:
+                continue
+            raw_t = el.text.strip()
+            if (
+                len(raw_t) == 1
+                and raw_t.isalpha()
+                and raw_t.isupper()
+                and i + 1 < len(sorted_elements)
+            ):
+                target_j: int | None = None
+                for j in range(i + 1, min(i + 6, len(sorted_elements))):
+                    if j in skip_indices:
+                        continue
+                    cand = sorted_elements[j]
+                    if not cand.text.strip():
+                        continue
+                    is_near_y = (el.bbox[1] - 8.0 <= cand.bbox[1] <= el.bbox[3] + 25.0)
+                    h_overlap = min(el.bbox[2], cand.bbox[2]) - max(el.bbox[0], cand.bbox[0])
+                    is_col_aligned = h_overlap > -40.0 and cand.bbox[0] >= el.bbox[0] - 10.0
+                    if is_near_y and is_col_aligned:
+                        target_j = j
+                        break
+                if target_j is not None:
+                    cand = sorted_elements[target_j]
+                    if cand.text.startswith(" ") or cand.text.startswith("\n"):
+                        cand.text = raw_t + cand.text.lstrip()
+                    elif cand.text and cand.text[0].islower():
+                        cand.text = raw_t + cand.text
+                    else:
+                        cand.text = f"{raw_t} {cand.text}".strip()
+                    cand.bbox = (
+                        min(el.bbox[0], cand.bbox[0]),
+                        min(el.bbox[1], cand.bbox[1]),
+                        max(el.bbox[2], cand.bbox[2]),
+                        max(el.bbox[3], cand.bbox[3]),
+                    )
+                    skip_indices.add(i)
+                    continue
+            drop_cap_merged.append(el)
+        sorted_elements = drop_cap_merged
 
         # Compute median line height across body elements
         body_heights = [
