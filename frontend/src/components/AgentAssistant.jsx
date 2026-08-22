@@ -18,6 +18,21 @@ import {
 } from 'lucide-react';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
 
+// Helper to strip <think>...</think> and unclosed reasoning tags from main answer text
+const sanitizeAnswerText = (text) => {
+  if (!text) return '';
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*/gi, '')
+    .trim();
+};
+
+const extractFallbackThought = (text) => {
+  if (!text) return '';
+  const match = text.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
+  return match ? match[1].trim() : '';
+};
+
 export default function AgentAssistant() {
   const {
     highlightArticle,
