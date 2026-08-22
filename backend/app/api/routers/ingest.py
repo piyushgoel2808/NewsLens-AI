@@ -16,7 +16,7 @@ from app.ingestion.intake import IntakeService
 from app.ingestion.tasks import run_ingestion_pipeline
 from app.models.base import get_db
 from app.models.ingestion import IngestionJob
-from app.models.newspaper import Page
+from app.models.newspaper import Issue, Page
 
 logger = get_logger(__name__)
 
@@ -188,3 +188,111 @@ async def delete_ingestion_job(
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     return result
+
+
+@router.get(
+    "/ingest/issues/{issue_id}/debug-artifacts",
+    summary="Get list of exported debug artifacts for an issue",
+)
+async def get_issue_debug_artifacts(
+    issue_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """List available debug artifacts (OCR text, RAG chunks, articles manifest, advertisements)."""
+    from app.ingestion.debug_exporter import DebugArtifactsExporter
+
+    stmt = select(Issue).where(Issue.id == issue_id).options(selectinload(Issue.newspaper))
+    res = await db.execute(stmt)
+    issue = res.scalar_one_or_none()
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found.")
+
+    np_name = issue.newspaper.name if issue.newspaper else "daily"
+    exporter = DebugArtifactsExporter()
+    issue_dir = exporter.get_issue_debug_dir(
+        issue_id=issue.id,
+        newspaper_name=np_name,
+        issue_date=str(issue.issue_date),
+        edition=issue.edition or "morning",
+    )
+
+    artifacts = {}
+    for filename in [
+        "ocr_extracted_text.json",
+        "rag_chunks.json",
+        "articles_manifest.json",
+        "identified_advertisements.json",
+        "ingestion_summary.json",
+    ]:
+        file_path = issue_dir / filename
+        key = filename.replace(".json", "")
+        artifacts[key] = {
+            "exists": file_path.exists(),
+            "path": str(file_path.resolve()) if file_path.exists() else None,
+            "size_bytes": file_path.stat().st_size if file_path.exists() else 0,
+        }
+
+    return {
+        "issue_id": issue_id,
+        "newspaper_name": np_name,
+        "issue_date": str(issue.issue_date),
+        "debug_directory": str(issue_dir.resolve()),
+        "artifacts": artifacts,
+    }
+
+
+@router.get(
+    "/ingest/issues/{issue_id}/debug-artifacts/{artifact_name}",
+    summary="Fetch contents of a specific debug artifact JSON file",
+)
+async def get_issue_debug_artifact_content(
+    issue_id: int,
+    artifact_name: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Fetch content of a specific debug artifact (e.g. ocr_extracted_text, rag_chunks, etc.)."""
+    import json
+
+    from app.ingestion.debug_exporter import DebugArtifactsExporter
+
+    clean_name = artifact_name.replace(".json", "").strip().lower()
+    allowed_artifacts = {
+        "ocr_extracted_text",
+        "rag_chunks",
+        "articles_manifest",
+        "identified_advertisements",
+        "ingestion_summary",
+    }
+    if clean_name not in allowed_artifacts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid artifact name '{artifact_name}'. Allowed: {sorted(allowed_artifacts)}",
+        )
+
+    stmt = select(Issue).where(Issue.id == issue_id).options(selectinload(Issue.newspaper))
+    res = await db.execute(stmt)
+    issue = res.scalar_one_or_none()
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found.")
+
+    np_name = issue.newspaper.name if issue.newspaper else "daily"
+    exporter = DebugArtifactsExporter()
+    issue_dir = exporter.get_issue_debug_dir(
+        issue_id=issue.id,
+        newspaper_name=np_name,
+        issue_date=str(issue.issue_date),
+        edition=issue.edition or "morning",
+    )
+    target_file = issue_dir / f"{clean_name}.json"
+    if not target_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Artifact '{clean_name}.json' not found for issue {issue_id}. "
+                "Ingestion may not have completed."
+            ),
+        )
+
+    with target_file.open("r", encoding="utf-8") as f:
+        data: dict[str, Any] = json.load(f)
+    return data

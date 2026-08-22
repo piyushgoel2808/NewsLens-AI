@@ -830,7 +830,40 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.17 — Ingestion & OCR Debug Artifacts Exporter
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+
+1. **Debug Artifacts Exporter (`backend/app/ingestion/debug_exporter.py`)**:
+   - Created `DebugArtifactsExporter` to serialize and persist structured debug JSON files into `debug_output/{newspaper}_{date}_{issue_id}/` during pipeline execution.
+   - Generates 5 dedicated JSON files per issue:
+     - `ocr_extracted_text.json`: Complete raw text, line-level tokens, bounding boxes `[x0, y0, x1, y1]`, OCR engine metadata, and confidence scores across all pages.
+     - `rag_chunks.json`: Complete listing of hierarchical RAG chunks generated for vector retrieval (chunk index, chunk ID, article ID, headline, section, spanned pages, text body, token/character count, vector index status).
+     - `articles_manifest.json`: Full manifest of all segmented discrete editorial articles (headline, subheadline, byline, section, prominence, word count, spanned pages, folio mapping, NER entities, topics, full text).
+     - `identified_advertisements.json`: All classified full-page advertisements, jacket ads, IPO notices, and commercial display blocks with spatial bounding boxes.
+     - `ingestion_summary.json`: Diagnostic metrics (total pages, total articles, total chunks, total ads, OCR confidence, file locations).
+
+2. **Pipeline Integration (`backend/app/ingestion/tasks.py`)**:
+   - Integrated debug collector inside `run_ingestion_pipeline` page and article processing loops.
+   - Automatically exports all 5 JSON debug files upon pipeline completion and returns file references in the response payload.
+
+3. **REST Debug Endpoints (`backend/app/api/routers/ingest.py`)**:
+   - Added `GET /api/ingest/issues/{issue_id}/debug-artifacts` to inspect available debug JSON files.
+   - Added `GET /api/ingest/issues/{issue_id}/debug-artifacts/{artifact_name}` to fetch raw JSON content directly via HTTP.
+
+### Verification & QA
+- `make lint && make test`: **167/167 tests passing 100% GREEN in 3.45s**.
+- Added unit tests in `tests/test_debug_exporter.py`.
+- Tested real 21-page ingestion of `Mint1.pdf`: all 5 JSON files generated on disk in `backend/debug_output/mint_2026_07_30_morning_issue_29/` (282.6 KB OCR text, 38.5 KB chunks, 36.4 KB articles, 1.7 KB ads, 1.2 KB summary).
+- REST API endpoint verification: `GET /api/ingest/issues/29/debug-artifacts` returned HTTP 200 with all 5 artifacts verified.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

@@ -178,10 +178,14 @@ async def run_ingestion_pipeline(
         folio_detector = FolioDetector()
         last_known_folio: int | None = None
         last_known_pdf_page: int | None = None
+        page_extractions: list[dict[str, Any]] = []
+        ad_page_numbers: set[int] = set()
 
         for i, rendered in enumerate(rendered_pages):
             page_num = rendered.page_number
             analysis = analysis_results[i]
+            if analysis.is_advertisement:
+                ad_page_numbers.add(page_num)
 
             stmt = select(Page).where(
                 Page.issue_id == issue_id,
@@ -220,6 +224,21 @@ async def run_ingestion_pipeline(
                 folio_height = float(analysis.page_height or rendered.height_px)
                 folio_width = float(analysis.page_width or rendered.width_px)
                 target_blocks = analysis.blocks
+
+            # Record page extraction for debug artifact
+            blocks_data: list[dict[str, Any]] = []
+            for b_idx, blk in enumerate(target_blocks):
+                raw_bbox = getattr(blk, "bbox", (0, 0, 0, 0))
+                blocks_data.append(
+                    {
+                        "block_index": b_idx,
+                        "text": getattr(blk, "text", ""),
+                        "bbox": list(raw_bbox) if isinstance(raw_bbox, (list, tuple)) else [],
+                        "confidence": getattr(blk, "confidence", 1.0),
+                        "font_size": getattr(blk, "font_size", None),
+                        "block_type": str(getattr(blk, "block_type", "text")),
+                    }
+                )
 
             # Dynamic Page 1 Masthead & Date Detection
             if page_num == 1 and issue:
@@ -262,6 +281,24 @@ async def run_ingestion_pipeline(
             if printed_folio and printed_folio.isdigit():
                 last_known_folio = int(printed_folio)
                 last_known_pdf_page = page_num
+
+            page_extractions.append(
+                {
+                    "page_number": page_num,
+                    "printed_page_number": printed_folio,
+                    "page_type": analysis.page_type,
+                    "requires_ocr": analysis.requires_ocr,
+                    "ocr_confidence": page.ocr_confidence,
+                    "is_advertisement_page": analysis.is_advertisement,
+                    "dimensions": {
+                        "width_px": rendered.width_px,
+                        "height_px": rendered.height_px,
+                    },
+                    "total_blocks": len(blocks_data),
+                    "blocks": blocks_data,
+                    "full_page_text": "\n".join(b["text"] for b in blocks_data if b["text"]),
+                }
+            )
 
             # Run layout analysis
             layout_res = await layout_analyzer.analyze_page(
@@ -406,6 +443,9 @@ async def run_ingestion_pipeline(
             page_folio_map[p.page_number] = p.printed_page_number or str(p.page_number)
 
         created_articles: list[dict[str, Any]] = []
+        articles_manifest: list[dict[str, Any]] = []
+        all_rag_chunks: list[dict[str, Any]] = []
+        identified_advertisements: list[dict[str, Any]] = []
         total_chunks_created = 0
 
         for assembled in assembled_articles:
@@ -476,7 +516,9 @@ async def run_ingestion_pipeline(
             is_trivial_fragment = (
                 article_record.word_count < 10 or len(art_text.strip().split()) < 8
             )
-            if article_record.article_type == "advertisement" or is_trivial_fragment:
+            is_indexed = not (article_record.article_type == "advertisement" or is_trivial_fragment)
+
+            if not is_indexed:
                 logger.info(
                     "Skipping Qdrant vector indexing for advertisement or trivial fragment",
                     extra={
@@ -504,6 +546,66 @@ async def run_ingestion_pipeline(
                     chunks=chunks,
                 )
                 total_chunks_created += len(chunks)
+
+            # Collect RAG chunks for debug export
+            for ch in chunks:
+                all_rag_chunks.append(
+                    {
+                        "chunk_index": len(all_rag_chunks),
+                        "chunk_id": f"art-{article_record.id}-chunk-{ch.chunk_index}",
+                        "article_id": article_record.id,
+                        "headline": art_hl,
+                        "section": article_record.section,
+                        "article_type": article_record.article_type,
+                        "pages_spanned": pages_list,
+                        "printed_pages_spanned": printed_pages_list,
+                        "token_count": ch.token_count,
+                        "word_count": len(ch.text.split()),
+                        "character_count": len(ch.text),
+                        "text": ch.text,
+                        "is_indexed_in_vector_db": is_indexed,
+                    }
+                )
+
+            # Collect article manifest
+            articles_manifest.append(
+                {
+                    "article_id": article_record.id,
+                    "headline": article_record.headline,
+                    "subheadline": article_record.subheadline,
+                    "byline_author": article_record.byline_author,
+                    "section": article_record.section,
+                    "article_type": article_record.article_type,
+                    "prominence_score": article_record.prominence_score,
+                    "word_count": article_record.word_count,
+                    "pages_spanned": pages_list,
+                    "printed_pages_spanned": printed_pages_list,
+                    "summary": meta_res.summary,
+                    "entities": [e.name for e in meta_res.entities],
+                    "topics": [t.name for t in meta_res.topics],
+                    "full_text": article_record.full_text,
+                }
+            )
+
+            # Collect identified advertisement
+            if article_record.article_type == "advertisement" or any(
+                p in ad_page_numbers for p in pages_list
+            ):
+                identified_advertisements.append(
+                    {
+                        "ad_id": article_record.id,
+                        "headline_or_banner": article_record.headline,
+                        "article_type": article_record.article_type,
+                        "pages_spanned": pages_list,
+                        "printed_pages_spanned": printed_pages_list,
+                        "word_count": article_record.word_count,
+                        "text_content": article_record.full_text,
+                        "bboxes": [
+                            {"page": pm.page_number, "bboxes": [list(b) for b in pm.bbox_list]}
+                            for pm in assembled.pages_mapping
+                        ],
+                    }
+                )
 
             created_articles.append(
                 {
@@ -535,6 +637,29 @@ async def run_ingestion_pipeline(
 
         await db.commit()
 
+        # Step 6: Export Ingestion & OCR Debug Artifacts
+        from app.ingestion.debug_exporter import DebugArtifactsExporter
+
+        debug_exporter = DebugArtifactsExporter()
+        debug_artifacts = debug_exporter.export_issue_artifacts(
+            issue_id=issue_id,
+            newspaper_name=newspaper_name,
+            issue_date=issue_date_str,
+            edition=issue.edition if issue and issue.edition else "morning",
+            page_extractions=page_extractions,
+            rag_chunks=all_rag_chunks,
+            articles=articles_manifest,
+            advertisements=identified_advertisements,
+            summary_metrics={
+                "total_rendered_pages": len(rendered_pages),
+                "total_articles": len(articles_manifest),
+                "total_rag_chunks": len(all_rag_chunks),
+                "indexed_rag_chunks": total_chunks_created,
+                "total_advertisements": len(identified_advertisements),
+                "issue_language": issue_lang,
+            },
+        )
+
         logger.info(
             "Phase 4 ingestion pipeline completed successfully",
             extra={
@@ -542,6 +667,7 @@ async def run_ingestion_pipeline(
                 "rendered_pages": len(rendered_pages),
                 "articles_created": len(created_articles),
                 "chunks_created": total_chunks_created,
+                "debug_output": debug_artifacts.get("ingestion_summary"),
             },
         )
 
@@ -551,6 +677,7 @@ async def run_ingestion_pipeline(
             "pages": pages_summary,
             "articles": created_articles,
             "total_chunks": total_chunks_created,
+            "debug_artifacts": debug_artifacts,
         }
 
 
