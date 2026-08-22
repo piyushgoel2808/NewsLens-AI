@@ -929,7 +929,49 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.20 — Full-Resolution DBNet Text Recovery, 2D Column-Aware Containment, Multi-Signal Ad Classification & Dynamic Date Extraction
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+
+1. **Full-Resolution DBNet Neural OCR Detection (`backend/app/providers/mineru_provider.py`)**:
+   - Initialized `PytorchPaddleOCR` with `det_limit_side_len = max(img.shape[:2], 4000)`, `det_db_box_thresh = 0.5`, and `det_db_unclip_ratio = 1.6`.
+   - Preserves native 300 DPI broadsheet resolution ($2800 \times 4399\text{px}$), allowing DBNet to detect all 8pt body text lines across all columns without downscale loss (increasing detected raw items from 36 to ~600 per page).
+
+2. **Strict 2D Column-Aware Headline Isolation (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Enforced normalized unit coordinate constants: `GUTTER_MIN_WIDTH = 0.012`, `VERTICAL_PARA_GAP_MAX = 0.015`, `MASTHEAD_TOP_ZONE = 0.06`, `FOOTER_BOTTOM_ZONE = 0.94`.
+   - Refactored `_merge_horizontal_headline_slices`: forbids horizontal merging across active column gutters ($|x_{0,B} - x_{1,A}| > 0.012 \times W$), requiring vertical overlap $\ge 80\%$, baseline $\le 10\text{px}$, and grammatical openness.
+
+3. **Headline Anchor 2D Bounding Container & Zero-Drop Body Text Recovery (`backend/app/ingestion/reading_order.py`)**:
+   - Implemented 2D container bounding: for each headline $H_i$, binds all body text blocks falling inside $[H_{i, x0} - 0.015W, H_{i, x1} + 0.015W] \times [H_{i, y1}, y_{\text{limit}}]$.
+   - Sequences body blocks column-by-column left-to-right, and top-to-bottom within each column.
+   - Enforced Zero-Drop Guarantee: all orphan blocks attach to adjacent headline containers.
+
+4. **Multi-Signal Ad Classifier (`backend/app/ingestion/detector.py`, `tasks.py`, `segmenter.py`)**:
+   - Implemented `is_page_advertisement()` combining commercial triggers (`"pre-order"`, `"starting at ₹"`, `"down payment"`, `"exchange bonus"`, `"no cost emi"`, `"t&c apply"`, `"buyback"`, `"care+"`, `"samsung.com"`, `"arcelormittal"`, `"am/ns india"`, `"manipal health"`, `"axiscapital"`, `"goldman"`, `"jefferies"`, `"j.pmorgan"`, `"kfintech"`), low text density on cover/wrap pages ($< 120$ words), and high graphic dominance.
+   - Groups full-page ads into `[Advertisement]` units, suppresses Qdrant vector indexing, and exports to `identified_advertisements.json`.
+
+5. **Robust Dynamic Masthead Date Extraction (`backend/app/ingestion/tasks.py`, `intake.py`)**:
+   - Scans top 6% of Pages 1–3 using date regex and parses unicode superscript filename strings (`³⁰⁰⁷²⁰²⁶` $\to$ `2026-07-30`, `³¹⁰⁷²⁰²⁶` $\to$ `2026-07-31`).
+   - Dynamically updates `Issue.issue_date` in MySQL.
+
+### Verification & QA
+- `make lint && make test`: **167/167 tests passing 100% GREEN in 3.68s**.
+- Full pipeline run on `demo/Mint ³⁰⁰⁷²⁰²⁶.pdf` (July 30, 2026, 21 pages):
+  - `articles_manifest.json`: **62 distinct articles** (10,757 words), zero Frankenstein horizontal splices (**137.4 KB**).
+  - `identified_advertisements.json`: **4 verified advertisements** (**55.3 KB**).
+  - `rag_chunks.json`: **77 chunks, 66 indexed** (**144.3 KB**).
+- Full pipeline run on `demo/Mint ³¹⁰⁷²⁰²⁶.pdf` (July 31, 2026, 24 pages):
+  - `articles_manifest.json`: **50 distinct articles** (13,405 words) (**153.2 KB**).
+  - `identified_advertisements.json`: **6 verified advertisements** including AM/NS ArcelorMittal, Manipal Health IPO, Axis/Goldman/JPMorgan issue notice (**88.1 KB**).
+  - `rag_chunks.json`: **71 chunks, 58 indexed** (**161.0 KB**).
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

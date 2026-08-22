@@ -500,7 +500,14 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
                 img_cv = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
                 paddle_lang = "devanagari" if "hi" in lang else "ch_lite_v4"
-                ocr_engine = PytorchPaddleOCR(lang=paddle_lang, show_log=False)
+                max_dim = max(img_cv.shape[0], img_cv.shape[1], 4000)
+                ocr_engine = PytorchPaddleOCR(
+                    lang=paddle_lang,
+                    show_log=False,
+                    det_limit_side_len=max_dim,
+                    det_db_box_thresh=0.5,
+                    det_db_unclip_ratio=1.6,
+                )
                 res_list = ocr_engine.ocr(img_cv)
                 if not res_list or not res_list[0]:
                     return None

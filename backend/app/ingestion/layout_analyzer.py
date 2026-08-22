@@ -518,9 +518,9 @@ class LayoutAnalyzer:
                     v_overlap = max(0.0, min(ay1, by1) - max(ay0, by0))
                     v_overlap_ratio = v_overlap / min_h
 
-                    # 2. Strict X-axis gutter clamp (standard column gutter is 20-35px)
+                    # 2. Strict X-axis gutter clamp (GUTTER_MIN_WIDTH = 0.012)
                     gap_x = bx0 - ax1
-                    max_gap_x = max(page_width * 0.015, 35.0)
+                    max_gap_x = page_width * 0.012
 
                     # 3. Strict Font similarity (<= 15% difference)
                     font_diff = abs(elem_a.font_size - elem_b.font_size) / max(
@@ -537,37 +537,36 @@ class LayoutAnalyzer:
                     if elem_a.text.rstrip().endswith((".", "?", "!", ":", ";", '"', "'", "”")):
                         continue
 
+                    # Rule 3: If block A and B both contain >= 3 title-cased words and are closed,
+                    # horizontal merging across column tracks is forbidden
                     is_open_a = is_grammatically_open_headline_fragment(elem_a.text)
                     is_open_b = bool(
                         words_b[0][0].islower()
                         or words_b[0].lower() in CONTINUATION_END_TOKENS
                     )
+                    last_token_a = words_a[-1].lower().strip(" \t\n\r.:;,")
+                    ends_with_hyphen = elem_a.text.rstrip().endswith(("-", "—", ","))
+                    is_open_connector = bool(
+                        last_token_a in CONTINUATION_END_TOKENS or is_open_a or is_open_b
+                    )
 
-                    # STRICT RULE: A and B must ONLY merge if elem_a is grammatically open
-                    # OR elem_b starts with lowercase/continuation token
-                    if not (is_open_a or is_open_b):
+                    if not is_open_connector:
                         continue
 
-                    # If elem_a has >= 3 words and is not strictly open, do not merge
+                    # If both have >= 3 words and neither ends with a connector/hyphen
                     if (
                         len(words_a) >= 3
-                        and words_a[-1].lower().strip(" \t\n\r.:;,") not in CONTINUATION_END_TOKENS
-                        and not elem_a.text.rstrip().endswith((",", "-", "—"))
+                        and len(words_b) >= 3
+                        and not (ends_with_hyphen or last_token_a in CONTINUATION_END_TOKENS)
                     ):
                         continue
 
-                    # If elem_b starts with uppercase and elem_a is not open, do not merge
-                    if (
-                        words_b[0][0].isupper()
-                        and not elem_a.text.rstrip().endswith((",", "-", "—", "..."))
-                        and words_a[-1].lower().strip(" \t\n\r.:;,") not in CONTINUATION_END_TOKENS
-                    ):
-                        continue
+                    max_gap_x = max(page_width * 0.035, 35.0)
 
                     if (
                         baseline_diff <= min(max_h * 0.15, 10.0)
-                        and v_overlap_ratio >= 0.75
-                        and -8.0 <= gap_x <= max_gap_x
+                        and v_overlap_ratio >= 0.80
+                        and -5.0 <= gap_x <= max_gap_x
                         and font_diff <= 0.15
                     ):
                         # Merge A and B
@@ -580,7 +579,7 @@ class LayoutAnalyzer:
                         )
                         elem_a.font_size = max(elem_a.font_size, elem_b.font_size)
                         total_width = elem_a.bbox[2] - elem_a.bbox[0]
-                        if total_width >= page_width * 0.40:
+                        if total_width >= page_width * 0.50:
                             elem_a.block_type = BlockType.BANNER_HEADLINE
                         else:
                             elem_a.block_type = BlockType.HEADLINE

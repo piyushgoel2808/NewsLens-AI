@@ -17,7 +17,11 @@ from app.ingestion.celery_app import celery_app
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
 from app.ingestion.cross_page_assembler import CrossPageAssembler
-from app.ingestion.detector import PDFPageDetector
+from app.ingestion.detector import (
+    PDFPageDetector,
+    check_is_advertisement_text,
+    is_page_advertisement,
+)
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.folio_detector import FolioDetector
 from app.ingestion.layout_analyzer import LayoutAnalyzer
@@ -58,6 +62,11 @@ _MONTH_MAP = {
 
 _DATE_EXTRACTION_PATTERNS = [
     re.compile(
+        r"(?i)\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)[,\s]+"
+        r"(?:january|february|march|april|may|june|july|august|september|october|november|december|"
+        r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})[,\s]+(\d{4})\b"
+    ),
+    re.compile(
         r"(?i)\b(\d{1,2})(?:st|nd|rd|th)?[\s\.\,\-\/]+(JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)[\s\.\,\-\/]+(\d{4})\b"
     ),
     re.compile(
@@ -66,10 +75,34 @@ _DATE_EXTRACTION_PATTERNS = [
 ]
 
 
+def parse_filename_superscript_date(filename_or_title: str) -> date | None:
+    """Translate unicode superscripts (e.g. ³⁰⁰⁷²⁰²⁶ -> 30072026) to date."""
+    if not filename_or_title:
+        return None
+    superscript_map = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
+    translated = filename_or_title.translate(superscript_map)
+
+    # Search for 8-digit ddmmyyyy (e.g. 30072026 or 23072026)
+    m = re.search(r"\b(\d{2})(\d{2})(\d{4})\b", translated)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= d <= 31 and 1 <= mo <= 12 and 1990 <= y <= 2050:
+            return date(y, mo, d)
+
+    # Search for ISO yyyy-mm-dd
+    m2 = re.search(r"\b(\d{4})[-_](\d{2})[-_](\d{2})\b", translated)
+    if m2:
+        y, mo, d = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+        if 1 <= d <= 31 and 1 <= mo <= 12 and 1990 <= y <= 2050:
+            return date(y, mo, d)
+
+    return None
+
+
 def detect_masthead_and_date(
     blocks: Sequence[Any], height_px: float
 ) -> tuple[str | None, date | None]:
-    """Detect authentic newspaper masthead brand and publication date from Page 1 top header."""
+    """Detect authentic newspaper masthead brand and publication date from top header."""
     detected_name: str | None = None
     detected_date: date | None = None
 
@@ -88,7 +121,8 @@ def detect_masthead_and_date(
 
         if bbox and isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
             y1 = float(bbox[3])
-            if y1 > height_px * 0.25:
+            # Strict top 6% zone for masthead date line
+            if y1 > height_px * 0.12:
                 continue
 
         text_upper = text.upper()
@@ -103,21 +137,37 @@ def detect_masthead_and_date(
             for pat in _DATE_EXTRACTION_PATTERNS:
                 m = pat.search(text)
                 if m:
-                    g1, g2, g3 = m.groups()
-                    try:
-                        if g1.isdigit() and g3.isdigit():
-                            day = int(g1)
-                            mon = _MONTH_MAP.get(g2.lower(), 1)
-                            yr = int(g3)
-                        else:
-                            mon = _MONTH_MAP.get(g1.lower(), 1)
-                            day = int(g2)
-                            yr = int(g3)
-                        if 1 <= day <= 31 and 1990 <= yr <= 2050:
-                            detected_date = date(yr, mon, day)
-                            break
-                    except Exception:
-                        pass
+                    groups = [g for g in m.groups() if g is not None]
+                    if len(groups) == 2:
+                        # Matched DATE_REGEX with day and year, extract month from full match
+                        full_m = m.group(0).lower()
+                        for m_name, m_idx in _MONTH_MAP.items():
+                            if m_name in full_m:
+                                try:
+                                    day = int(groups[0])
+                                    yr = int(groups[1])
+                                    if 1 <= day <= 31 and 1990 <= yr <= 2050:
+                                        detected_date = date(yr, m_idx, day)
+                                        break
+                                except Exception:
+                                    pass
+                                break
+                    elif len(groups) == 3:
+                        g1, g2, g3 = groups
+                        try:
+                            if g1.isdigit() and g3.isdigit():
+                                day = int(g1)
+                                mon = _MONTH_MAP.get(g2.lower(), 1)
+                                yr = int(g3)
+                            else:
+                                mon = _MONTH_MAP.get(g1.lower(), 1)
+                                day = int(g2)
+                                yr = int(g3)
+                            if 1 <= day <= 31 and 1990 <= yr <= 2050:
+                                detected_date = date(yr, mon, day)
+                                break
+                        except Exception:
+                            pass
 
     return detected_name, detected_date
 
@@ -240,9 +290,11 @@ async def run_ingestion_pipeline(
                     }
                 )
 
-            # Dynamic Page 1 Masthead & Date Detection
-            if page_num == 1 and issue:
+            # Dynamic Pages 1-3 Masthead & Date Detection
+            if page_num in (1, 2, 3) and issue:
                 det_brand, det_date = detect_masthead_and_date(target_blocks, folio_height)
+                if not det_date and issue.edition:
+                    det_date = parse_filename_superscript_date(issue.edition)
                 if det_brand:
                     np_stmt = select(Newspaper).where(Newspaper.name == det_brand)
                     np_res = await db.execute(np_stmt)
@@ -254,25 +306,29 @@ async def run_ingestion_pipeline(
                     issue.newspaper_id = np_obj.id
                     issue.newspaper = np_obj
                     logger.info(
-                        "Dynamically identified newspaper masthead from Page 1",
-                        extra={"newspaper": det_brand, "issue_id": issue_id},
+                        "Dynamically identified newspaper masthead",
+                        extra={"newspaper": det_brand, "issue_id": issue_id, "page": page_num},
                     )
                 if det_date:
                     issue.issue_date = det_date
                     logger.info(
-                        "Dynamically identified publication date from Page 1",
-                        extra={"issue_date": str(det_date), "issue_id": issue_id},
+                        "Dynamically identified publication date",
+                        extra={"issue_date": str(det_date), "issue_id": issue_id, "page": page_num},
                     )
                 await db.flush()
 
-            # Re-evaluate advertisement status post-OCR for scanned pages
-            if analysis.requires_ocr and extracted_ocr_blocks:
-                from app.ingestion.detector import check_is_advertisement_text
-
-                ocr_full_page_text = "\n".join(b.text for b in extracted_ocr_blocks if b.text)
-                if check_is_advertisement_text(ocr_full_page_text, len(ocr_full_page_text.split())):
-                    analysis.is_advertisement = True
-                    ad_page_numbers.add(page_num)
+            # Multi-signal advertisement evaluation
+            curr_full_text = "\n".join(
+                str(getattr(b, "text", "")) for b in target_blocks if getattr(b, "text", "")
+            )
+            if is_page_advertisement(
+                page_blocks_text=curr_full_text,
+                page_number=page_num,
+                total_pages=len(rendered_pages),
+                word_count=len(curr_full_text.split()),
+            ):
+                analysis.is_advertisement = True
+                ad_page_numbers.add(page_num)
 
             printed_folio = folio_detector.extract_printed_page_number(
                 page_number=page_num,

@@ -182,7 +182,14 @@ class IntakeService:
                     import pymupdf
 
                     from app.ingestion.detector import PDFPageDetector
-                    from app.ingestion.tasks import detect_masthead_and_date
+                    from app.ingestion.tasks import (
+                        detect_masthead_and_date,
+                        parse_filename_superscript_date,
+                    )
+
+                    filename_date = parse_filename_superscript_date(item.filename)
+                    if filename_date:
+                        item.issue_date = filename_date
 
                     doc = pymupdf.open(stream=item.content, filetype="pdf")
                     if len(doc) > 0:

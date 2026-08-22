@@ -58,8 +58,8 @@ class ReadingOrderResolver:
     """Resolves spatial 2D newspaper blocks into 1D human reading sequences."""
 
     def __init__(self, page_width: float = 2480.0, page_height: float = 3508.0) -> None:
-        self.page_width = page_width
-        self.page_height = page_height
+        self.page_width = max(page_width, 100.0)
+        self.page_height = max(page_height, 100.0)
 
     def resolve_reading_order(
         self,
@@ -73,17 +73,17 @@ class ReadingOrderResolver:
         headlines: list[LayoutElement] = [
             el for el in elements
             if el.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
-            or el.font_size > 14.0
         ]
 
         # Sort headlines primarily top-to-bottom by y0, then left-to-right by x0
-        headlines.sort(key=lambda h: (round(h.bbox[1] / 30.0), h.bbox[0]))
+        quant_y = max(self.page_height * 0.01, 15.0)
+        headlines.sort(key=lambda h: (round(h.bbox[1] / quant_y), h.bbox[0]))
 
         assigned_ids: set[str | int] = set()
         ordered_blocks: list[OrderedReadingBlock] = []
         current_index = 1
 
-        # Step 2: For each headline, bind underlying multi-column text blocks
+        # Step 2: For each headline, bind underlying multi-column body blocks
         for h in headlines:
             if h.element_id in assigned_ids:
                 continue
@@ -102,15 +102,16 @@ class ReadingOrderResolver:
             current_index += 1
 
             h_x0, h_y0, h_x1, h_y1 = h.bbox
-            span_x0 = h_x0 - 25.0
-            span_x1 = h_x1 + 25.0
+            span_tol_x = max(self.page_width * 0.015, 20.0)
+            span_x0 = max(0.0, h_x0 - span_tol_x)
+            span_x1 = min(self.page_width, h_x1 + span_tol_x)
 
-            # Find lower vertical bound: the next headline directly below within this span
-            y_limit = self.page_height * 0.99
+            # Find lower vertical bound: next headline below intersecting this horizontal span
+            y_limit = self.page_height * 0.94
             for other_h in headlines:
                 if other_h.element_id == h.element_id:
                     continue
-                oh_x0, oh_y0, oh_x1, oh_y1 = other_h.bbox
+                oh_x0, oh_y0, oh_x1, _ = other_h.bbox
                 h_overlap = min(oh_x1, span_x1) - max(oh_x0, span_x0)
                 if (
                     oh_y0 > h_y1
@@ -119,7 +120,7 @@ class ReadingOrderResolver:
                 ):
                     y_limit = oh_y0
 
-            # Find all unassigned body elements strictly beneath this headline
+            # Collect candidate body blocks whose centroid or top falls inside 2D container
             candidate_body: list[LayoutElement] = []
             for el in elements:
                 if el.element_id in assigned_ids:
@@ -128,13 +129,22 @@ class ReadingOrderResolver:
                     continue
 
                 el_x0, el_y0, el_x1, el_y1 = el.bbox
+                el_mid_x = (el_x0 + el_x1) / 2.0
+                el_mid_y = (el_y0 + el_y1) / 2.0
+
                 b_overlap = min(el_x1, span_x1) - max(el_x0, span_x0)
-                # Must start at or below headline, above lower limit, and overlap horizontally
-                if (
-                    el_y0 >= (h_y1 - 15.0)
-                    and el_y0 < y_limit
-                    and b_overlap > 10.0
-                ):
+                min_el_w = max(el_x1 - el_x0, 1.0)
+                overlap_ratio = b_overlap / min_el_w if min_el_w > 0 else 0.0
+
+                is_inside_container = (
+                    (span_x0 <= el_mid_x <= span_x1 or overlap_ratio >= 0.40)
+                    and (
+                        (h_y1 - (self.page_height * 0.008) <= el_y0 < y_limit)
+                        or (h_y1 <= el_mid_y <= y_limit)
+                    )
+                )
+
+                if is_inside_container:
                     candidate_body.append(el)
 
             if not candidate_body:
@@ -143,7 +153,7 @@ class ReadingOrderResolver:
             # Cluster candidate body blocks into column lanes (left-to-right)
             sorted_candidates = sorted(candidate_body, key=lambda e: e.bbox[0])
             column_lanes: list[list[LayoutElement]] = []
-            lane_tolerance = max(self.page_width * 0.05, 30.0)
+            lane_tolerance = max(self.page_width * 0.045, 30.0)
 
             for cand in sorted_candidates:
                 assigned_to_lane = False
@@ -176,12 +186,12 @@ class ReadingOrderResolver:
                     )
                     current_index += 1
 
-        # Step 3: Append any remaining unassigned elements (e.g. footers, orphan sidebars)
+        # Step 3: Zero-Drop Guarantee — Append all remaining unassigned elements
         remaining = [el for el in elements if el.element_id not in assigned_ids]
         if remaining:
             remaining_sorted = sorted(remaining, key=lambda e: e.bbox[0])
             rem_lanes: list[list[LayoutElement]] = []
-            lane_tol = max(self.page_width * 0.06, 35.0)
+            lane_tol = max(self.page_width * 0.05, 35.0)
 
             for rem in remaining_sorted:
                 assigned_to_rem = False

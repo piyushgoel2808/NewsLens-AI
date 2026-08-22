@@ -145,18 +145,30 @@ class PageType(StrEnum):
     ADVERTISEMENT = "advertisement"
 
 
+GUTTER_MIN_WIDTH = 0.012  # ~33px on 2800px broadsheet
+VERTICAL_PARA_GAP_MAX = 0.015  # ~65px on 4399px broadsheet
+MASTHEAD_TOP_ZONE = 0.06  # top 6% strip
+FOOTER_BOTTOM_ZONE = 0.94  # bottom 6% strip
+
 AD_KEYWORDS_REGEX = re.compile(
     r"(?i)(?:\b(?:advertisement|advertorial|special\s*promotional\s*feature|sponsored\s*feature|"
     r"promotional\s*feature|t&c\s*apply|terms\s*(?:and|&)\s*conditions\s*apply|"
-    r"call\s*now|visit\s*us\s*at|toll\s*free|showroom|mrp\s*rs|flat\s*\d+%\s*off|"
+    r"call\s*now|visit\s*us\s*at|toll\s*free|showroom|mrp\s*(?:rs|\b)|flat\s*\d+%\s*off|"
     r"exclusive\s*offer|limited\s*period\s*offer|book\s*now\s*at|for\s*bookings\s*call|"
+    # Consumer Tech & Commercial Product Displays
+    r"pre-order|pre\s*order|starting\s*at\s*(?:₹|rs\b)|down\s*payment|exchange\s*bonus|"
+    r"no\s*cost\s*emi|zero\s*down\s*payment|buyback|care\+|samsung\.com|galaxy\s*z\s*fold|"
+    r"galaxy\s*z\s*flip|arcelormittal|am/ns\s*india|banaunga\s*main|banega\s*bharat|"
+    r"manipal\s*health|manipalhospitals|life's\s*on|de\s*beers\s*group|calling\s*all\s*besties|"
+    r"whatawaitsyou|the\s*bff\s*contract|har\s*pal\s*aapke\s*saath|pnb\s*metlife|"
     # Financial IPO Notices & Application Forms
     r"initial\s*public\s*offering|red\s*herring\s*prospectus|draft\s*red\s*herring\s*prospectus|"
     r"book\s*running\s*lead\s*manager|registrar\s*to\s*the\s*issue|bid/issue\s*opens\s*on|"
     r"bid\s*opens\s*on|issue\s*opens\s*on|anchor\s*investor|price\s*band|floor\s*price|"
     r"promoters\s*of\s*our\s*company|equity\s*shares|face\s*value|to\s*be\s*listed|"
     r"asba|apply\s*through\s*upi|kfintech|link\s*intime|icici\s*securities|kotak\s*mahindra|"
-    r"green\s*energy\s*limited|theissue|priceband|oearningsratio|"
+    r"axis\s*capital|goldman\s*sachs|jefferies|j\.?p\.?\s*morgan|green\s*energy\s*limited|"
+    r"theissue|priceband|oearningsratio|"
     # Mutual Funds & Commercials
     r"mutual\s*fund\s*investments\s*are\s*subject|scheme\s*related\s*documents|taj\s*hotels|"
     # Statutory & Legal Notices
@@ -185,6 +197,46 @@ def check_is_advertisement_text(text: str, word_count: int | None = None) -> boo
         or upper_text.startswith("INITIAL PUBLIC OFFERING")
         or (ad_matches >= 2)
         or (ad_matches >= 1 and (w_count < 250))
+    )
+
+
+def is_page_advertisement(
+    page_blocks_text: str,
+    page_number: int,
+    total_pages: int,
+    word_count: int | None = None,
+    image_area_ratio: float = 0.0,
+) -> bool:
+    """Multi-signal evaluation for full-page advertisements, jacket wraps, and IPO notices."""
+    if not page_blocks_text or not page_blocks_text.strip():
+        return False
+
+    norm_text = re.sub(r"\s+", " ", page_blocks_text).strip()
+    w_count = word_count if word_count is not None else len(norm_text.split())
+    ad_matches = len(AD_KEYWORDS_REGEX.findall(norm_text))
+
+    # Signal 1: Explicit high ad match count
+    if check_is_advertisement_text(norm_text, w_count):
+        return True
+
+    # Signal 2: Low body text (< 120 words) with commercial trigger on Cover/Wrap pages
+    if page_number in (1, 2, 3, 4, total_pages) and w_count < 120 and ad_matches >= 1:
+        return True
+
+    # Signal 3: Image-dominant page or low text density with commercial triggers
+    if (image_area_ratio >= 0.40 or w_count < 100) and ad_matches >= 1:
+        return True
+
+    # Signal 4: Known large corporate display ads / IPO notices
+    upper = norm_text.upper()
+    commercial_brands = [
+        "ARCELORMITTAL", "AM/NS", "MANIPAL HEALTH", "MANIPALHOSPITALS",
+        "SAMSUNG.COM", "GALAXY Z", "PRE-ORDER", "NO COST EMI", "DOWN PAYMENT",
+        "INITIAL PUBLIC OFFERING", "RED HERRING PROSPECTUS", "KFINTECH", "LINK INTIME",
+        "DE BEERS GROUP", "HAR PAL AAPKE SAATH", "PNB METLIFE",
+    ]
+    return bool(
+        any(k in upper for k in commercial_brands) and (w_count < 200 or ad_matches >= 1)
     )
 
 
