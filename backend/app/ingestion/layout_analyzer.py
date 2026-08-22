@@ -78,6 +78,76 @@ STANDALONE_NOISE_TOKENS = frozenset(
 )
 
 
+NUMERIC_STAT_PATTERN = re.compile(
+    r"\b(?:\d+[\d,\.]*\s*(?:cr|crore|mn|million|bn|billion|lakh|%|pts|bps|usd|inr)?|"
+    r"[\$₹€£]\s*\d+[\d,\.]*)\b",
+    re.IGNORECASE,
+)
+
+OCR_HEADLINE_REPAIRS = [
+    (re.compile(r"\bOl\s+estimates\b", re.IGNORECASE), "Q1 estimates"),
+    (re.compile(r"\bQl\s+estimates\b", re.IGNORECASE), "Q1 estimates"),
+    (re.compile(r"\bofGlasgow\b"), "of Glasgow"),
+    (re.compile(r"\bcourtcases\b"), "court cases"),
+    (re.compile(r"\btheworld\b"), "the world"),
+    (re.compile(r"\bdocudramahastheworld\b"), "docudrama has the world"),
+    (re.compile(r"\bcaseofoTT\b"), "case of OTT"),
+    (re.compile(r"\bofaiding\b"), "of aiding"),
+    (re.compile(r"\byourfamilybe\b"), "your family be"),
+    (re.compile(r"\babletoaccess\b"), "able to access"),
+    (re.compile(r"\briskforpharma\b"), "risk for pharma"),
+    (re.compile(r"\btoChatGPT\b"), "to ChatGPT"),
+]
+
+CONTINUATION_END_TOKENS = frozenset(
+    {
+        "says", "warns", "sees", "eyes", "seeks", "aims", "cuts", "beats",
+        "posts", "plans", "gets", "hits", "leads", "backs", "signs", "finds",
+        "moots", "targets", "buys", "hires", "urges", "tells", "drops", "rises",
+        "to", "in", "on", "at", "by", "for", "with", "from", "about", "into",
+        "over", "after", "and", "or", "of", "as", "against", "despite", "under",
+        "near", "up", "down", "out", "a", "an", "the",
+    }
+)
+
+
+def clean_ocr_text_artifacts(text: str) -> str:
+    """Repair unspaced tokens and font ligature bugs in OCR text."""
+    res = text
+    for pattern, repl in OCR_HEADLINE_REPAIRS:
+        res = pattern.sub(repl, res)
+    return res
+
+
+def is_numeric_stat_box(text: str) -> bool:
+    """Detect if text is an infographic/stat/table box rather than a textual headline."""
+    tokens = text.strip().split()
+    if not tokens:
+        return False
+    stat_matches = NUMERIC_STAT_PATTERN.findall(text)
+    if len(stat_matches) >= 3 or (len(stat_matches) >= 2 and len(tokens) <= 6):
+        return True
+    numeric_tokens = sum(
+        1 for t in tokens
+        if any(c.isdigit() or c in "$₹€£%" for c in t)
+        or t.lower() in ("cr", "crore", "mn", "bn", "lakh", "pts", "bps")
+    )
+    return (numeric_tokens / len(tokens)) >= 0.40
+
+
+def is_grammatically_open_headline_fragment(text: str) -> bool:
+    """Check if text ends in a grammatical continuation word or punctuation."""
+    words = text.strip().split()
+    if not words:
+        return False
+    last_word = words[-1].lower().strip(" \t\n\r.:;,")
+    if last_word in CONTINUATION_END_TOKENS:
+        return True
+    if text.rstrip().endswith((",", "-", "—", ":", "...")):
+        return True
+    return bool(len(words) <= 3 and not text.rstrip().endswith((".", "!", "?")))
+
+
 def is_noise_or_boilerplate_block(
     elem: LayoutElement,
     page_height: float,
@@ -275,20 +345,28 @@ class LayoutAnalyzer:
             max_x = max((d.bbox[2] for d in digital_blocks), default=float(width_px))
             ref_width = max_x if max_x > 0 else float(width_px)
             for d_blk in digital_blocks:
-                is_wide_heading = (
-                    d_blk.is_heading_candidate
-                    and (d_blk.bbox[2] - d_blk.bbox[0]) >= ref_width * 0.40
-                )
-                b_type = (
-                    BlockType.BANNER_HEADLINE
-                    if is_wide_heading
-                    else (BlockType.HEADLINE if d_blk.is_heading_candidate else BlockType.BODY_TEXT)
-                )
+                cleaned_text = clean_ocr_text_artifacts(d_blk.text)
+                if is_numeric_stat_box(cleaned_text):
+                    b_type = BlockType.TABLE
+                else:
+                    is_wide_heading = (
+                        d_blk.is_heading_candidate
+                        and (d_blk.bbox[2] - d_blk.bbox[0]) >= ref_width * 0.40
+                    )
+                    b_type = (
+                        BlockType.BANNER_HEADLINE
+                        if is_wide_heading
+                        else (
+                            BlockType.HEADLINE
+                            if d_blk.is_heading_candidate
+                            else BlockType.BODY_TEXT
+                        )
+                    )
                 elements.append(
                     LayoutElement(
                         element_id=element_id,
                         bbox=d_blk.bbox,
-                        text=d_blk.text,
+                        text=cleaned_text,
                         block_type=b_type,
                         font_size=d_blk.mean_font_size,
                     )
@@ -314,40 +392,44 @@ class LayoutAnalyzer:
             }
 
             for o_blk, lh in zip(ocr_blocks, line_heights, strict=False):
+                cleaned_text = clean_ocr_text_artifacts(o_blk.text)
                 box_width = o_blk.bbox[2] - o_blk.bbox[0]
-                words_blk = o_blk.text.strip().split()
+                words_blk = cleaned_text.strip().split()
                 is_single_boilerplate = (
                     len(words_blk) == 1
                     and words_blk[0].lower().rstrip(",.:;") in boilerplate_stopwords
                 )
 
-                is_banner = (
-                    box_width >= float(width_px) * 0.60
-                    and lh >= median_lh * 1.30
-                    and not is_single_boilerplate
-                )
-                is_headline = (
-                    not is_single_boilerplate
-                    and (
-                        is_banner
-                        or (lh >= median_lh * 1.35 and len(words_blk) >= 2)
-                        or (
-                            o_blk.text.isupper()
-                            and 2 <= len(words_blk) < 15
-                            and lh >= median_lh * 1.10
+                if is_numeric_stat_box(cleaned_text):
+                    b_type = BlockType.TABLE
+                else:
+                    is_banner = (
+                        box_width >= float(width_px) * 0.60
+                        and lh >= median_lh * 1.30
+                        and not is_single_boilerplate
+                    )
+                    is_headline = (
+                        not is_single_boilerplate
+                        and (
+                            is_banner
+                            or (lh >= median_lh * 1.35 and len(words_blk) >= 2)
+                            or (
+                                cleaned_text.isupper()
+                                and 2 <= len(words_blk) < 15
+                                and lh >= median_lh * 1.10
+                            )
                         )
                     )
-                )
-                b_type = (
-                    BlockType.BANNER_HEADLINE
-                    if is_banner
-                    else (BlockType.HEADLINE if is_headline else BlockType.BODY_TEXT)
-                )
+                    b_type = (
+                        BlockType.BANNER_HEADLINE
+                        if is_banner
+                        else (BlockType.HEADLINE if is_headline else BlockType.BODY_TEXT)
+                    )
                 elements.append(
                     LayoutElement(
                         element_id=element_id,
                         bbox=o_blk.bbox,
-                        text=o_blk.text,
+                        text=cleaned_text,
                         block_type=b_type,
                         confidence=o_blk.confidence,
                     )
@@ -439,11 +521,35 @@ class LayoutAnalyzer:
                         elem_a.font_size, elem_b.font_size, 1.0
                     )
 
+                    # Anti-collision check:
+                    # Only merge if elem_a is a grammatically open fragment (e.g. "OpenAI says")
+                    # OR if elem_b begins with lowercase / continuation token
+                    words_a = elem_a.text.strip().split()
+                    words_b = elem_b.text.strip().split()
+                    is_open_a = is_grammatically_open_headline_fragment(elem_a.text)
+                    is_open_b = bool(
+                        words_b
+                        and (
+                            words_b[0][0].islower()
+                            or words_b[0].lower() in CONTINUATION_END_TOKENS
+                        )
+                    )
+
+                    # If both are complete independent headlines (>= 4 words), do not merge
+                    if (
+                        len(words_a) >= 4
+                        and len(words_b) >= 4
+                        and not is_open_a
+                        and not is_open_b
+                    ):
+                        continue
+
                     if (
                         baseline_diff <= 0.25 * max_h
                         and v_overlap_ratio >= 0.60
                         and -10.0 <= gap_x <= max_gap_x
                         and font_diff <= 0.25
+                        and (is_open_a or is_open_b or len(words_a) <= 3 or len(words_b) <= 3)
                     ):
                         # Merge A and B
                         elem_a.text = f"{elem_a.text} {elem_b.text}".strip()

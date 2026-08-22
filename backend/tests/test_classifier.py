@@ -114,3 +114,38 @@ class TestArticleClassifier:
 
         res = classifier.classify_and_score(article, total_issue_pages=12)
         assert res.article_type == "sidebar"
+
+    def test_classify_kicker_subheadline_sections(self) -> None:
+        """Verify subheadline kickers route to appropriate sections."""
+        classifier = ArticleClassifier()
+
+        art_edit = AssembledArticle(
+            headline="Calm student anxiety by addressing job scarcity",
+            subheadline="OUR VIEW",
+            full_text="Educational reforms and youth career paths are vital.",
+            primary_page_number=14,
+            word_count=60,
+        )
+        res_edit = classifier.classify_and_score(art_edit, total_issue_pages=16)
+        assert res_edit.article_type == "editorial"
+        assert res_edit.section == "Opinion & Editorial"
+
+        art_mkt = AssembledArticle(
+            headline="Why L&T faces a valuation test",
+            subheadline="MARK TO MARKET",
+            full_text="Infrastructure capital expenditure trends remain positive.",
+            primary_page_number=6,
+            word_count=80,
+        )
+        res_mkt = classifier.classify_and_score(art_mkt, total_issue_pages=16)
+        assert res_mkt.section == "Markets & Data"
+
+        art_tech = AssembledArticle(
+            headline="Grant Thornton US to acquire rival accountant CBIZ in $5 billion deal",
+            subheadline="DEALS, TECH & STARTUPS",
+            full_text="The merger will create one of the largest advisory networks.",
+            primary_page_number=3,
+            word_count=90,
+        )
+        res_tech = classifier.classify_and_score(art_tech, total_issue_pages=16)
+        assert res_tech.section == "Deals, Tech & Startups"

@@ -679,7 +679,36 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.12 — Ground-Truth Ingestion Overhaul: Anti-Collision, Kickers & Stat Filters
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+1. **Anti-Collision Headline Isolation (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Refined `_merge_horizontal_headline_slices()` with strict grammatical continuity checks (`is_grammatically_open_headline_fragment`).
+   - Prevents side-by-side independent complete headlines (e.g. `"ChrysCapital buys controlling stake in Novartis India"` and `"E-bus makers may seek new localization waiver"`, or `"Flipkart's Ekart..."` and `"The curious case of OTT..."`) from being mistakenly merged across column tracks.
+   - Only merges if the left block ends with an open continuation token (`"says"`, `"beats"`, `"to"`, `"in"`, etc.) or the right block begins with a lowercase continuation clause.
+
+2. **Kicker & Category Slug Extraction (`backend/app/ingestion/segmenter.py`, `backend/app/ingestion/classifier.py`)**:
+   - Implemented `extract_kicker_and_clean_headline()`: parses editorial and section kickers (`"OUR VIEW"`, `"MY VIEW"`, `"THEIR VIEW"`, `"PLAIN FACTS"`, `"QUICK EDIT"`, `"MYTHS AND MANTRAS"`, `"MARK TO MARKET"`, `"DEALS, TECH & STARTUPS"`, `"ECONOMY & POLICY"`).
+   - Extracts clean, authentic article titles in `headline` while preserving the kicker in `subheadline`.
+   - Updated `classifier.py` to route kickers directly to standardized sections (`Opinion & Editorial`, `Markets & Data`, `Personal Finance`, `Deals, Tech & Startups`).
+
+3. **Numeric Stat-Box & Tabular Filter (`backend/app/ingestion/layout_analyzer.py`, `backend/app/ingestion/segmenter.py`)**:
+   - Implemented `is_numeric_stat_box()`: detects financial number lists and currency strings (e.g. `"75 cr 3,620.40 cr 4,167 cr $250 mn"`), classifying them as `BlockType.TABLE` and preventing them from becoming fake article headlines.
+
+4. **Discrete Article Preservation on Dense Multi-Story Pages (`backend/app/ingestion/segmenter.py`)**:
+   - Maintained all titled news stories with distinct bodies as independent `SegmentedArticle` units, capturing all 67+ editorial stories across Pages 1–16.
+
+### Verification & QA
+- `make lint && make test`: **159/159 tests passing 100% GREEN in 2.74s**.
+- Added unit tests in `test_layout_analyzer.py`, `test_segmenter.py`, and `test_classifier.py`.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

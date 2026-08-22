@@ -386,3 +386,101 @@ class TestArticleSegmenter:
 
         # Verify strictly partitioned, non-overlapping Y bounds
         assert 90.0 <= b1[1] < b1[3] <= b2[1] < b2[3] <= b3[1] < b3[3] <= 690.0
+
+    def test_kicker_extraction_and_clean_headline(self) -> None:
+        """Verify kicker slugs are extracted to subheadline and headline is cleaned."""
+        segmenter = ArticleSegmenter()
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.HEADLINE,
+                text="OUR VIEW: Calm student anxiety by addressing job scarcity",
+                bbox=(50.0, 50.0, 950.0, 90.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "The education ministry must reform testing procedures and focus "
+                    "on employment generation across manufacturing sectors."
+                ),
+                bbox=(50.0, 100.0, 450.0, 250.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=2,
+                element_id=3,
+                block_type=BlockType.HEADLINE,
+                text="PLAIN FACTS: June macro softens on rising inflation",
+                bbox=(500.0, 50.0, 950.0, 90.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=3,
+                element_id=4,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "Macroeconomic indicators weakened slightly as consumer food prices "
+                    "ticked up."
+                ),
+                bbox=(500.0, 100.0, 950.0, 250.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=14, ordered_blocks=blocks)
+        assert len(articles) == 2
+
+        assert articles[0].headline == "Calm student anxiety by addressing job scarcity"
+        assert articles[0].subheadline == "OUR VIEW"
+        assert "education ministry" in articles[0].body_text
+
+        assert articles[1].headline == "June macro softens on rising inflation"
+        assert articles[1].subheadline == "PLAIN FACTS"
+        assert "Macroeconomic indicators" in articles[1].body_text
+
+    def test_dense_page_preserves_discrete_titled_articles(self) -> None:
+        """Verify concise titled articles on dense pages are preserved individually."""
+        segmenter = ArticleSegmenter()
+        blocks = [
+            # Story 1
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.HEADLINE,
+                text="At UNSC, India condemns attacks on vessels in Hormuz",
+                bbox=(50.0, 50.0, 450.0, 90.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "India on Thursday condemned recent drone and missile strikes "
+                    "targeting merchant vessels in international shipping corridors."
+                ),
+                bbox=(50.0, 100.0, 450.0, 200.0),
+            ),
+            # Story 2
+            OrderedReadingBlock(
+                reading_order_index=2,
+                element_id=3,
+                block_type=BlockType.HEADLINE,
+                text="Private labs may get to test power meters",
+                bbox=(50.0, 220.0, 450.0, 260.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=3,
+                element_id=4,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "The power ministry is considering accrediting private testing "
+                    "laboratories to expedite roll-out of smart electric meters."
+                ),
+                bbox=(50.0, 270.0, 450.0, 360.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=2, ordered_blocks=blocks)
+        assert len(articles) == 2
+        assert articles[0].headline == "At UNSC, India condemns attacks on vessels in Hormuz"
+        assert articles[1].headline == "Private labs may get to test power meters"

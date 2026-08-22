@@ -396,3 +396,88 @@ class TestLayoutAnalyzer:
         assert res.elements[0].text == expected_full_hl
         assert res.elements[0].bbox[0] == 50.0
         assert res.elements[0].bbox[2] == 950.0
+
+    def test_side_by_side_independent_headlines_not_merged(self) -> None:
+        """Verify independent complete headlines across column tracks are not merged."""
+        analyzer = LayoutAnalyzer()
+        blocks = [
+            # Story 1 Headline (Left column track: x=50..450, y=100..140)
+            DigitalTextBlock(
+                block_id=0,
+                text="ChrysCapital buys controlling stake in Novartis India",
+                bbox=(50.0, 100.0, 450.0, 140.0),
+                mean_font_size=22.0,
+                is_heading_candidate=True,
+            ),
+            # Story 2 Headline (Right column track: x=480..950, y=100..140)
+            DigitalTextBlock(
+                block_id=1,
+                text="E-bus makers may seek new localization waiver",
+                bbox=(480.0, 100.0, 950.0, 140.0),
+                mean_font_size=22.0,
+                is_heading_candidate=True,
+            ),
+            # Story 1 Body (Left column: x=50..450, y=150..300)
+            DigitalTextBlock(
+                block_id=2,
+                text="Private equity major ChrysCapital is set to acquire the pharmaceutical unit.",
+                bbox=(50.0, 150.0, 450.0, 300.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+            # Story 2 Body (Right column: x=480..950, y=150..300)
+            DigitalTextBlock(
+                block_id=3,
+                text="Electric bus manufacturers are preparing a joint petition to the ministry.",
+                bbox=(480.0, 150.0, 950.0, 300.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=7,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        # Must remain 4 distinct elements (2 separate headlines, 2 separate body blocks)
+        assert len(res.elements) == 4
+        headlines = [
+            e.text for e in res.elements
+            if e.block_type in (BlockType.HEADLINE, BlockType.BANNER_HEADLINE)
+        ]
+        assert "ChrysCapital buys controlling stake in Novartis India" in headlines
+        assert "E-bus makers may seek new localization waiver" in headlines
+
+    def test_numeric_stat_box_classified_as_table_not_headline(self) -> None:
+        """Verify numeric figures/currency stat boxes are tagged as TABLE, never HEADLINE."""
+        analyzer = LayoutAnalyzer()
+        blocks = [
+            DigitalTextBlock(
+                block_id=0,
+                text="75 cr 3,620.40 cr 4,167 cr $250 mn",
+                bbox=(50.0, 100.0, 450.0, 140.0),
+                mean_font_size=24.0,  # Large font but pure numbers/currency
+                is_heading_candidate=True,
+            ),
+            DigitalTextBlock(
+                block_id=1,
+                text="The key financial metrics reported across public sector undertakings.",
+                bbox=(50.0, 150.0, 450.0, 250.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=1,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        assert len(res.elements) == 2
+        assert res.elements[0].block_type == BlockType.TABLE
+        assert res.elements[1].block_type == BlockType.BODY_TEXT

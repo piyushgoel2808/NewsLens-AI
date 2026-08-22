@@ -54,6 +54,34 @@ BOILERPLATE_TOKENS = {
 MIN_ARTICLE_WORD_COUNT = 40
 
 
+NUMERIC_STAT_PATTERN = re.compile(
+    r"\b(?:\d+[\d,\.]*\s*(?:cr|crore|mn|million|bn|billion|lakh|%|pts|bps|usd|inr)?|"
+    r"[\$₹€£]\s*\d+[\d,\.]*)\b",
+    re.IGNORECASE,
+)
+
+KICKER_REGEX = re.compile(
+    r"(?i)^(?:OUR\s+VIEW|MY\s+VIEW|THEIR\s+VIEW|QUICK\s+EDIT|PLAIN\s+FACTS|MINT\s+PRIMER|"
+    r"MARK\s+TO\s+MARKET|MINT\s+CURATOR|COLUMN|ASK\s+MINT|POWER\s+POINT|"
+    r"ECONOMY\s+&\s+POLICY|DEALS,\s+TECH\s+&\s+STARTUPS|MYTHS\s+AND\s+MANTRAS|"
+    r"IN\s+BRIEF|ROUNDUP|NEWS\s+IN\s+BRIEF|LONG\s+STORY|MINT\s+MONEY|"
+    r"VIEWS\s+&\s+OPINIONS|BUSINESS\s+OF\s+LIFE|CORPORATE|GLOBAL|COMPANIES)"
+    r"[:\s\|\-]+(.*)$"
+)
+
+
+def extract_kicker_and_clean_headline(raw_text: str) -> tuple[str, str | None]:
+    """Extract kicker/category prefix and return (clean_headline, kicker_text)."""
+    clean_lines = " ".join(line.strip() for line in raw_text.split("\n") if line.strip())
+    match = KICKER_REGEX.match(clean_lines.strip())
+    if match:
+        kicker_part = clean_lines[:match.start(1)].strip(" :|-")
+        clean_hl = match.group(1).strip()
+        if is_valid_headline_candidate(clean_hl):
+            return clean_hl, kicker_part
+    return clean_lines.strip(), None
+
+
 def is_valid_headline_candidate(text: str) -> bool:
     """Ensure a block text is substantial enough to define an article headline."""
     cleaned = re.sub(r"[^\w\s]", "", text).strip()
@@ -66,8 +94,12 @@ def is_valid_headline_candidate(text: str) -> bool:
     # Filter out pure boilerplate token combinations
     if all(w.lower() in BOILERPLATE_TOKENS for w in words):
         return False
+    # Numeric stat boxes are never headlines
+    stat_matches = NUMERIC_STAT_PATTERN.findall(text)
+    if len(stat_matches) >= 3 or (len(stat_matches) >= 2 and len(words) <= 6):
+        return False
     # Require at least 2 words and substantial character length
-    return not (len(words) < 2 or len(cleaned) < 12)
+    return not (len(words) < 2 or len(cleaned) < 8)
 
 
 @dataclass
@@ -165,16 +197,19 @@ class ArticleSegmenter:
                         jump_from = int(pages[0])
 
                 # Extract headline and initial body
+                subhead_text: str | None = None
                 if is_headline:
                     # Preserve entire headline string (do not truncate multi-line headlines)
-                    headline_text = " ".join(
-                        line.strip() for line in text.split("\n") if line.strip()
-                    )
+                    clean_hl, kicker = extract_kicker_and_clean_headline(text)
+                    headline_text = clean_hl
+                    subhead_text = kicker
                     initial_body = ""
                 else:
                     # First block on page without detected headline
                     lines = [line.strip() for line in text.split("\n") if line.strip()]
-                    headline_text = lines[0][:200] if lines else f"Page {page_number} News"
+                    clean_hl, kicker = extract_kicker_and_clean_headline(lines[0] if lines else "")
+                    headline_text = clean_hl if clean_hl else f"Page {page_number} News"
+                    subhead_text = kicker
                     initial_body = text
 
                 is_teaser_candidate = bool(
@@ -185,6 +220,7 @@ class ArticleSegmenter:
                 current_article = SegmentedArticle(
                     article_temp_id=f"p{page_number}_art_{article_counter}",
                     headline=headline_text,
+                    subheadline=subhead_text,
                     body_text=initial_body,
                     bbox_list=[block.bbox],
                     jump_from_page=jump_from,
@@ -260,10 +296,12 @@ class ArticleSegmenter:
             if text_blocks:
                 combined_text = "\n\n".join(b.text.strip() for b in text_blocks)
                 first_line = combined_text.split("\n")[0][:200].strip()
-                fallback_hl = first_line if first_line else f"Page {page_number} News"
+                clean_hl, kicker = extract_kicker_and_clean_headline(first_line)
+                fallback_hl = clean_hl if clean_hl else f"Page {page_number} News"
                 fallback_art = SegmentedArticle(
                     article_temp_id=f"p{page_number}_art_fallback_1",
                     headline=fallback_hl,
+                    subheadline=kicker,
                     body_text=combined_text,
                     word_count=len(combined_text.split()),
                     bbox_list=[b.bbox for b in text_blocks],
@@ -295,7 +333,7 @@ class ArticleSegmenter:
             has_distinct_body = bool(
                 art.body_text
                 and art.body_text != art.headline
-                and len(art.body_text.split()) >= 5
+                and len(art.body_text.split()) >= 4
             )
             is_shorts = art.headline.startswith("[Shorts]") and w_count >= 15
             is_ad = (
@@ -307,7 +345,8 @@ class ArticleSegmenter:
                 is_valid_teaser
                 or is_shorts
                 or is_ad
-                or (has_valid_hl and has_distinct_body and w_count >= 12)
+                or (has_valid_hl and has_distinct_body and w_count >= 10)
+                or (has_valid_hl and w_count >= 15)
                 or (w_count >= MIN_ARTICLE_WORD_COUNT)
             )
 
@@ -335,13 +374,14 @@ class ArticleSegmenter:
                 first_has_body = bool(
                     first.body_text
                     and first.body_text != first.headline
-                    and len(first.body_text.split()) >= 5
+                    and len(first.body_text.split()) >= 4
                 )
                 first_is_valid = (
                     (first.is_teaser and first.jump_to_page is not None)
                     or (first.headline.startswith("[Shorts]") and first.word_count >= 15)
                     or (first.headline.startswith("[Advertisement]"))
-                    or (first_has_valid_hl and first_has_body and first.word_count >= 12)
+                    or (first_has_valid_hl and first_has_body and first.word_count >= 10)
+                    or (first_has_valid_hl and first.word_count >= 15)
                     or (first.word_count >= MIN_ARTICLE_WORD_COUNT)
                 )
 

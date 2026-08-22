@@ -104,7 +104,27 @@ class ArticleClassifier:
             section = "News Briefs"
         else:
             article_type = "news"
-            section = "General News" if article.primary_page_number == 1 else "Inside News"
+            sub = (article.subheadline or "").lower()
+            editorial_kws = ("our view", "my view", "their view", "column", "curator", "quick edit")
+            if any(k in sub for k in editorial_kws):
+                article_type = "editorial"
+                section = "Opinion & Editorial"
+            elif any(k in sub for k in ("mark to market", "plain facts")):
+                section = "Markets & Data"
+            elif "economy" in sub or "policy" in sub:
+                section = "Economy & Policy"
+            elif "deal" in sub or "tech" in sub or "startup" in sub:
+                section = "Deals, Tech & Startups"
+            elif "corporate" in sub or "company" in sub or "companies" in sub:
+                section = "Corporate"
+            elif "global" in sub or "world" in sub:
+                section = "Global"
+            elif "money" in sub or "ask mint" in sub or "power point" in sub:
+                section = "Personal Finance"
+            elif "life" in sub or "culture" in sub:
+                section = "Life & Culture"
+            else:
+                section = "General News" if article.primary_page_number == 1 else "Inside News"
 
         # 2. Compute Prominence Score (0.0 to 1.0)
         # Factor A: Page Placement (Page 1 is most prominent)
