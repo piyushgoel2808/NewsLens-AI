@@ -1095,7 +1095,107 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.24 — Multi-Category Universal Ad Detection Engine & Vector Suppression
+
+**Date**: 2026-08-22
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+1. **Commercial Jacket Wraps & Retail Spreads Inadvertently Indexed**: Commercial cover wraps, smartphone launch spreads, real estate matrices, and retail display ads were slipping past single-keyword checks and being indexed into Qdrant as general news.
+2. **Fragile Brand-Specific Rules**: Hardcoded brand strings failed on new campaigns and retail promotions.
+3. **Docling Ingestion Latency (24s $\to$ <0.3s/page)**: Running full vision OCR per-page on 12-megapixel broadsheets was resolved with issue-wide vectorized pre-parsing.
+
+### Architectural Solutions & Implementations
+
+1. **Modular Functional Regex Patterns (`backend/app/ingestion/detector.py`)**:
+   - `EXPLICIT_AD_HEADER_REGEX`: Masthead/banner markers (`advertisement`, `advertorial`, `sponsored feature`, `brand connect`, `special marketing feature`, `consumer connect`, `media marketing`).
+   - `CTA_REGEX`: Calls to action (`book now`, `pre-order`, `buy now`, `call toll free`, `visit us at`, `apply now`, `scan to know more`, `download the app`, `toll free no`).
+   - `PRICING_FINANCE_REGEX`: Pricing and purchase incentives (`starting at`, `special offer`, `limited period offer`, `flat \d+% off`, `down payment`, `no cost emi`, `zero processing fee`, `exchange bonus`, `t&c apply`).
+   - `REAL_ESTATE_AUTO_REGEX`: Real estate/auto markers (`ready to move`, `possession soon`, `\d+\s*bhk`, `rera reg`, `ex-showroom price`, `test drive today`, `authorized dealership`).
+   - `STATUTORY_TENDERS_REGEX`: Legal disclosures/tenders (`public notice`, `statutory notice`, `before the hon'ble`, `nclt`, `auction sale notice`, `tender notice`, `corrigendum`).
+   - `IPO_FINANCIAL_REGEX`: Capital market notices (`initial public offering`, `price band`, `equity shares of face value`, `bid/issue opens`, `retail individual bidders`, `book running lead managers`, `red herring prospectus`, `asba`).
+
+2. **Digital Discovery & Contact Footprint Scoring (`detector.py`)**:
+   - `CONTACT_FOOTPRINT_REGEX`: Toll-free numbers (`1800|1860`), URLs (`https?://`, `www.`), and email addresses (+1.5 score).
+
+3. **Editorial Contrast & Safety Guardrail (`detector.py`)**:
+   - `EDITORIAL_MARKERS_REGEX`: Editorial markers (`bureau`, `correspondent`, `special correspondent`, `express news service`, `edited by`, `opinion`, `editorial`, `columns?`, `continued on page \d+`, `from page \d+`).
+   - Protected threshold: Articles with $\ge 3$ editorial markers and $\ge 350$ words require a high commercial confidence threshold (`ad_score >= 6.0`) to avoid false positives on corporate M&A / finance news.
+
+4. **Multi-Signal Scoring Heuristic (`is_page_advertisement()`, `check_is_advertisement_text()`)**:
+   - Immediate match on top explicit ad header $\rightarrow$ `True`.
+   - Distinct functional category matches $\rightarrow$ $+2.0$ per category.
+   - Contact / URL footprint $\rightarrow$ $+1.5$.
+   - Position weighting: Page 1 and back page $\rightarrow$ $+1.0$.
+   - Decision logic:
+     - `ad_score >= 4.5` $\rightarrow$ `True`.
+     - `word_count < 250` and `ad_score >= 3.0` $\rightarrow$ `True`.
+     - Editorial hits $\ge 3$ and `word_count >= 350` $\rightarrow$ require `ad_score >= 6.0`.
+
+5. **Single-Unit Enveloping & Vector Suppression (`segmenter.py`, `tasks.py`)**:
+   - Single-unit grouping into `SegmentedArticle` with `article_type = "advertisement"` and `section = "advertisement"`.
+   - Complete bypass of Qdrant dense vector upsert (`is_indexed = False`).
+   - Persisted into `identified_advertisements.json` debug artifact and MySQL.
+
+### Verification & QA
+- `make lint`: **0 errors across 67 source files**.
+- `make test`: **192/192 tests passing 100% GREEN in 12.77s**.
+- Added test cases in `test_detector.py`:
+  - `test_retail_tech_launch_spread_detected_as_ad`
+  - `test_real_estate_and_auto_ad_detected`
+  - `test_statutory_and_ipo_financial_notices`
+  - `test_editorial_contrast_safety_guardrail`
+  - `test_corporate_news_article_never_flagged_as_advertisement`
+
+---
+
+## Phase 6.1.25 — Layout Semantics Redesign for Cross-Newspaper Compatibility (*The Hindu* & *Mint*)
+
+**Date**: 2026-08-22
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+1. **Dense Commercial T&C Traps**: Tech and automotive cover wraps (e.g. Samsung Galaxy Z Fold8 cover wrap with 212 words) were bypassing static word ceilings due to extensive terms & conditions, pricing matrices, and legal disclaimers.
+2. **Table of Contents / Front-Page Index Teaser Hallucinations**: Pipe-delimited index pointers (`"Global | Trump approves... >P14"`) were being stitched into fake news stories.
+3. **Quote Attribution Headline Pollution**: ALL CAPS speaker designations (`"PENNY WONG AUSTRALIAN FOREIGN MINISTER"`, `"PENNYWONG AUSTRALIANFOREIGN MINISTER"`) were passing font heuristics and getting misclassified as standalone headlines.
+4. **Vector Retrieval Preservation**: Ensuring ads are indexed into Qdrant with `section = "Advertisements & Notices"` and `article_type = "advertisement"` rather than being dropped, enabling retriever filtering.
+
+### Architectural Solutions & Implementations
+
+1. **The T&C Trapdoor Rule & Lexicon Density Scoring (`backend/app/ingestion/detector.py`)**:
+   - `TC_LEGAL_PHRASES_PATTERNS`: Target commercial/legal strings (`t&c apply`, `terms and conditions apply`, `inclusive of all taxes`, `sole discretion`, `no cost emi`, `easy emi`, `cashback`, `damage protection`, `buyback`, `images simulated`, `screen simulated`, `optional accessories`, `emi options`, `exchange bonus`, `down payment`, `zero processing fee`, `annual percentage rate`).
+   - `count_distinct_tc_phrases()` & `calculate_commercial_lexicon_density()`: Evaluates functional commercial density.
+   - **The T&C Trapdoor Rule**: If a page or major block contains $\ge 3$ distinct commercial/legal phrases, it triggers `is_advertisement_page = True` **regardless of word count**.
+   - Deprecated static `< 120 word` ceiling.
+
+2. **Vector Inclusion Rule (`backend/app/ingestion/tasks.py`)**:
+   - Routed advertisements explicitly to `section = "Advertisements & Notices"` and `article_type = "advertisement"`.
+   - Enabled standard Qdrant vector indexing and chunking for advertisements (skipping only trivial sub-10-word fragments), allowing retriever payloads to filter `article_type` dynamically.
+
+3. **Table of Contents (ToC) / Index Isolation (`backend/app/ingestion/reading_order.py`, `layout_analyzer.py`, `segmenter.py`)**:
+   - Added `BlockType.TOC_INDEX = "toc_index"` to `BlockType` enum.
+   - Implemented `is_toc_index_block(text)`: Scans for delimiter patterns (`|`), chevron/arrow page pointers (`>P14`, `-> P8`), and section slugs (`Global |`, `Money |`, `Views |`, etc.).
+   - Updated `build_layout_from_parsed_nodes()` to classify ToC blocks as `BlockType.TOC_INDEX`.
+   - In `ArticleSegmenter`, severed reading chains for `TOC_INDEX` blocks, isolating them from body text merging and article creation.
+
+4. **Quote Attribution vs. Headline Discrimination (`layout_analyzer.py`, `segmenter.py`)**:
+   - Added `BlockType.PULLQUOTE_AUTHOR = "pullquote_author"` to `BlockType` enum.
+   - Implemented `is_pullquote_author_block(text, surrounding_text)` with `PULLQUOTE_TITLE_REGEX` and `HEADLINE_ACTION_VERBS` guardrail.
+   - Rejects pullquote author attributions from `is_valid_headline_candidate()`, preventing speaker tags like `"PENNYWONG AUSTRALIANFOREIGN MINISTER"` from starting hallucinated articles.
+
+### Verification & QA
+- `make lint`: **0 errors across 67 source files**.
+- `make test`: **195/195 tests passing 100% GREEN in 12.13s**.
+- Added unit tests:
+  - `test_tc_trapdoor_dense_ad_spread_flagged_regardless_of_word_count` in `test_detector.py`
+  - `test_toc_index_block_isolated_and_severed` in `test_segmenter.py`
+  - `test_pullquote_author_attribution_rejected_as_headline` in `test_segmenter.py`
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
+
 
 
 

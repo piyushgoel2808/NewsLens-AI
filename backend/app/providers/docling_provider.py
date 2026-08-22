@@ -109,14 +109,15 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
     def __init__(
         self,
         lang: str = "en",
-        do_ocr: bool = True,
+        do_ocr: bool = False,
         do_table_structure: bool = True,
     ) -> None:
         self.lang = lang
         self.do_ocr = do_ocr
         self.do_table_structure = do_table_structure
         self.device = detect_device_mode()
-        self._converter: Any = None
+        self._digital_converter: Any = None
+        self._ocr_converter: Any = None
         self._converter_lock = asyncio.Lock()
 
     @property
@@ -131,10 +132,12 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
     def provider_name(self) -> str:
         return "docling"
 
-    def _get_converter(self) -> Any:
+    def _get_converter(self, need_ocr: bool = False) -> Any:
         """Initialize or return the cached Docling DocumentConverter instance."""
-        if self._converter is not None:
-            return self._converter
+        if need_ocr and self._ocr_converter is not None:
+            return self._ocr_converter
+        if not need_ocr and self._digital_converter is not None:
+            return self._digital_converter
 
         try:
             from docling.datamodel.base_models import InputFormat
@@ -142,17 +145,18 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
             from docling.document_converter import DocumentConverter, PdfFormatOption
 
             pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = self.do_ocr
+            pipeline_options.do_ocr = need_ocr
             pipeline_options.do_table_structure = self.do_table_structure
 
-            # Configure OCR language hints
-            if hasattr(pipeline_options, "ocr_options") and pipeline_options.ocr_options:
+            # Configure OCR language hints if OCR is requested
+            ocr_opt = getattr(pipeline_options, "ocr_options", None)
+            if need_ocr and ocr_opt:
                 if self.lang == "hi":
-                    pipeline_options.ocr_options.lang = ["hi", "en"]
+                    ocr_opt.lang = ["hi", "en"]
                 else:
-                    pipeline_options.ocr_options.lang = ["en"]
+                    ocr_opt.lang = ["en"]
 
-            self._converter = DocumentConverter(
+            converter = DocumentConverter(
                 format_options={
                     InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
                 }
@@ -161,25 +165,29 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
                 "Docling DocumentConverter initialized successfully",
                 extra={
                     "device": self.device,
-                    "do_ocr": self.do_ocr,
+                    "need_ocr": need_ocr,
                     "do_table_structure": self.do_table_structure,
                 },
             )
+            if need_ocr:
+                self._ocr_converter = converter
+            else:
+                self._digital_converter = converter
+            return converter
         except Exception as e:
             logger.warning(
                 "Could not initialize neural Docling DocumentConverter (will use fallback)",
                 extra={"error": str(e)},
             )
-            self._converter = None
-
-        return self._converter
+            return None
 
     def _convert_docling_document(
         self,
         pdf_bytes: bytes,
+        need_ocr: bool = False,
     ) -> Any:
         """Synchronously convert PDF bytes to DoclingDocument."""
-        converter = self._get_converter()
+        converter = self._get_converter(need_ocr=need_ocr)
         if converter is None:
             return None
 
@@ -224,11 +232,15 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
                 raw_html = ""
                 if hasattr(item, "export_to_markdown"):
                     try:
+                        raw_md = item.export_to_markdown(doc=doc)
+                    except TypeError:
                         raw_md = item.export_to_markdown()
                     except Exception:
                         raw_md = ""
                 if hasattr(item, "export_to_html"):
                     try:
+                        raw_html = item.export_to_html(doc=doc)
+                    except TypeError:
                         raw_html = item.export_to_html()
                     except Exception:
                         raw_html = ""
@@ -422,10 +434,13 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
         pdf_bytes: bytes,
         lang: str = "en",
         extract_tables: bool = True,
+        need_ocr: bool = False,
     ) -> list[MinerUParseResult]:
         """Parse complete PDF document using Docling neural layout and reading order."""
         try:
-            docling_doc = await asyncio.to_thread(self._convert_docling_document, pdf_bytes)
+            docling_doc = await asyncio.to_thread(
+                self._convert_docling_document, pdf_bytes, need_ocr=need_ocr
+            )
             if docling_doc is None or not getattr(docling_doc, "pages", {}):
                 return self._fallback_parse_pdf_bytes(pdf_bytes)
 
@@ -437,7 +452,7 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
                         page_number=p_num,
                         nodes=nodes,
                         markdown_content=page_md,
-                        is_ocr_fallback=False,
+                        is_ocr_fallback=need_ocr,
                         ocr_confidence=1.0,
                     )
                 )
@@ -469,7 +484,7 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
             single_pdf_bytes = pdf_doc.tobytes()
             pdf_doc.close()
 
-            doc_results = await self.parse_pdf_document(single_pdf_bytes, lang=lang)
+            doc_results = await self.parse_pdf_document(single_pdf_bytes, lang=lang, need_ocr=True)
             if doc_results:
                 res = doc_results[0]
                 res.page_number = page_number

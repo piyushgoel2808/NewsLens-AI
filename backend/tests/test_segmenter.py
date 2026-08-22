@@ -638,3 +638,78 @@ class TestArticleSegmenter:
         assert art.headline == "INDIA RETAINS EM LEAD IN JUNE AS RUPEE RISES"
         assert art.subheadline == "PLAIN FACTS"
         assert "macroeconomic performance outpaced emerging market peers" in art.body_text
+
+    def test_toc_index_block_isolated_and_severed(self) -> None:
+        """Verify Table of Contents / Index teasers are isolated and severed from news articles."""
+        from app.ingestion.layout_analyzer import is_toc_index_block
+        from app.ingestion.segmenter import is_valid_headline_candidate
+
+        toc_text = "Global | Trump approves tariff roadmap... >P14\nMoney | Markets rise... >P8"
+        assert is_toc_index_block(toc_text) is True
+        assert is_valid_headline_candidate(toc_text) is False
+
+        segmenter = ArticleSegmenter()
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.TOC_INDEX,
+                text=toc_text,
+                bbox=(50.0, 50.0, 250.0, 150.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BANNER_HEADLINE,
+                text="CENTRAL BANK HOLDS POLICY RATES UNCHANGED",
+                bbox=(50.0, 160.0, 950.0, 200.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=2,
+                element_id=3,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "The Monetary Policy Committee decided unanimously to keep the policy "
+                    "repo rate unchanged at 6.50% while maintaining an active focus."
+                ) * 3,
+                bbox=(50.0, 210.0, 950.0, 380.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=1, ordered_blocks=blocks)
+        assert len(articles) == 1
+        art = articles[0]
+        assert art.headline == "CENTRAL BANK HOLDS POLICY RATES UNCHANGED"
+        assert "Trump approves tariff roadmap" not in art.body_text
+        assert "Global |" not in art.body_text
+
+    def test_pullquote_author_attribution_rejected_as_headline(self) -> None:
+        """Verify ALL CAPS pullquote author designations are rejected as article headlines."""
+        from app.ingestion.layout_analyzer import is_pullquote_author_block
+        from app.ingestion.segmenter import is_valid_headline_candidate
+
+        attr_text = "PENNYWONG AUSTRALIANFOREIGN MINISTER"
+        assert is_pullquote_author_block(attr_text) is True
+        assert is_valid_headline_candidate(attr_text) is False
+
+        segmenter = ArticleSegmenter()
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.PULLQUOTE_AUTHOR,
+                text=attr_text,
+                bbox=(50.0, 50.0, 250.0, 80.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.TOC_INDEX,
+                text="Global | Trade pacts signed >P14",
+                bbox=(50.0, 90.0, 250.0, 140.0),
+            ),
+        ]
+
+        # Standalone attribution and ToC block should never form an article
+        articles = segmenter.segment_page(page_number=1, ordered_blocks=blocks)
+        assert len(articles) == 0

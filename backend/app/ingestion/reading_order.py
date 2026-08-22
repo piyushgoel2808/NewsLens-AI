@@ -29,6 +29,8 @@ class BlockType(StrEnum):
     TABLE = "table"
     SIDEBAR = "sidebar"
     TEASER = "teaser"
+    TOC_INDEX = "toc_index"
+    PULLQUOTE_AUTHOR = "pullquote_author"
     UNKNOWN = "unknown"
 
 

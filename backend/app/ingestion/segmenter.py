@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 
 from app.core.logging import get_logger
 from app.ingestion.detector import is_noise_or_promo_text
+from app.ingestion.layout_analyzer import (
+    is_pullquote_author_block,
+    is_toc_index_block,
+)
 from app.ingestion.reading_order import BlockType, OrderedReadingBlock
 
 logger = get_logger(__name__)
@@ -218,6 +222,11 @@ def is_valid_headline_candidate(text: str) -> bool:
         return False
     if is_numbered_feature_subhead(text):
         return False
+    # Filter out Table of Contents (ToC) / index teasers and pullquote author attributions
+    if is_toc_index_block(text):
+        return False
+    if is_pullquote_author_block(text):
+        return False
     if is_garbled_ocr_noise(text) or is_noise_or_promo_text(text):
         return False
     # Filter out section headers and recurring layout tags
@@ -376,6 +385,30 @@ class ArticleSegmenter:
         for idx, block in enumerate(ordered_blocks):
             text = block.text.strip()
             if not text or is_noise_or_promo_text(text):
+                continue
+
+            # Table of Contents (ToC) Index isolation (Step 2 & Step 4)
+            if block.block_type == BlockType.TOC_INDEX or is_toc_index_block(text):
+                logger.info(
+                    "Isolated Table of Contents / Index block from article formation",
+                    extra={"page_number": page_number, "text": text[:60]},
+                )
+                # Sever reading order chain: never merge into article or form hallucinated story
+                continue
+
+            # Pullquote author / speaker attribution isolation (Step 3)
+            if (
+                block.block_type in (BlockType.PULLQUOTE_AUTHOR, BlockType.METADATA)
+                or is_pullquote_author_block(text)
+            ):
+                logger.info(
+                    "Isolated Pullquote Author / Attribution from headline formation",
+                    extra={"page_number": page_number, "text": text[:60]},
+                )
+                if current_article and len(current_article.body_text.split()) > 0:
+                    current_article.body_text = f"{current_article.body_text}\n\n{text}".strip()
+                    current_article.bbox_list.append(block.bbox)
+                    current_article.raw_blocks.append(block)
                 continue
 
             # 1. Multi-part feature kicker check (e.g. standalone MINT PRIMER, PLAIN FACTS) (Task C)

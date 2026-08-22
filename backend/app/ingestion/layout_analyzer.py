@@ -20,6 +20,7 @@ from app.core.logging import get_logger
 from app.ingestion.detector import (
     DigitalTextBlock,
     is_noise_or_promo_text,
+    is_title_case_or_uppercase,
     sanitize_block_text,
 )
 from app.ingestion.reading_order import (
@@ -30,6 +31,7 @@ from app.ingestion.reading_order import (
 )
 from app.providers.base import (
     DocumentLayoutProvider,
+    ExtractedDocumentNode,
     ExtractedPhotoData,
     ExtractedTableData,
     OCRBlock,
@@ -145,6 +147,96 @@ def is_numbered_feature_subhead(text: str) -> bool:
     if not t:
         return False
     return bool(NUMBERED_QUESTION_REGEX.match(t))
+
+
+TOC_SECTION_SLUGS_REGEX = re.compile(
+    r"(?i)\b(?:Global|World|National|International|Business|Money|Economy|Views|"
+    r"Editorial|Sport|Sports|Life|Metro|City|News|Focus|State|States|Showcase|"
+    r"Inside|Features)\s*\|"
+)
+
+TOC_PAGE_POINTER_REGEX = re.compile(
+    r"(?i)(?:>\s*P\s*\d+|>\s*Page\s*\d+|->\s*P\s*\d+|\bP\d{1,2}\b)"
+)
+
+
+def is_toc_index_block(text: str) -> bool:
+    """Check for high densities of delimiter patterns common in front-page indexes."""
+    if not text or not text.strip():
+        return False
+    t = text.strip()
+
+    has_slug = bool(TOC_SECTION_SLUGS_REGEX.search(t))
+    has_pointer = bool(TOC_PAGE_POINTER_REGEX.search(t))
+    pipe_count = t.count("|")
+
+    if has_slug and has_pointer:
+        return True
+    if has_slug and pipe_count >= 1 and (">" in t or "P" in t):
+        return True
+    if pipe_count >= 2 and has_pointer:
+        return True
+
+    lines = [line_item.strip() for line_item in t.split("\n") if line_item.strip()]
+    if len(lines) >= 2:
+        toc_line_matches = sum(
+            1
+            for line_item in lines
+            if (
+                TOC_SECTION_SLUGS_REGEX.search(line_item)
+                or TOC_PAGE_POINTER_REGEX.search(line_item)
+                or "|" in line_item
+            )
+        )
+        if toc_line_matches >= 2:
+            return True
+
+    return False
+
+
+PULLQUOTE_TITLE_REGEX = re.compile(
+    r"(?i)\b(?:FOREIGN\s*MINISTER|PRIME\s*MINISTER|CHIEF\s*MINISTER|FINANCE\s*MINISTER|"
+    r"HOME\s*MINISTER|DEFENCE\s*MINISTER|EXTERNAL\s*AFFAIRS\s*MINISTER|SECRETARY\s*GENERAL|"
+    r"SPOKESPERSON|MANAGING\s*DIRECTOR|CHIEF\s*EXECUTIVE\s*OFFICER|EXECUTIVE\s*DIRECTOR|"
+    r"FED\s*CHAIR(?:MAN)?|CENTRAL\s*BANK\s*GOVERNOR|CHIEF\s*JUSTICE|"
+    r"AUSTRALIAN\s*FOREIGN\s*MINISTER|AUSTRALIANFOREIGN\s*MINISTER|PENNY\s*WONG|"
+    r"PENNYWONG)\b"
+)
+
+HEADLINE_ACTION_VERBS = frozenset(
+    {
+        "holds", "cuts", "hikes", "raises", "drops", "rises", "falls", "soars",
+        "plans", "buys", "sells", "warns", "sees", "eyes", "urges", "tells",
+        "signs", "clears", "approves", "rejects", "posts", "hits", "leads",
+        "mops", "caps", "curbs", "eases", "nods",
+    }
+)
+
+
+def is_pullquote_author_block(text: str, surrounding_text: str = "") -> bool:
+    """The Attribution Rule: Detect speaker/author attribution in pull quotes and sidebars."""
+    t = text.strip()
+    if not t:
+        return False
+    words = t.split()
+    if len(words) > 8:
+        return False
+
+    words_clean = [w.lower().strip(".:;,!?'\"-–—") for w in words]
+    if any(w in HEADLINE_ACTION_VERBS for w in words_clean):
+        return False
+
+    # 1. Matches specific author/minister/diplomat attribution names or titles
+    if PULLQUOTE_TITLE_REGEX.search(t):
+        return True
+
+    # 2. Text is <= 6 words and surrounding/preceding block contains quotation marks
+    has_quotes = bool(
+        re.search(r'["“”‘’\']', surrounding_text) or re.search(r'["“”‘’\']', t)
+    )
+    clean = re.sub(r"[^\w\s]", "", t).strip()
+    is_cased = clean.isupper() or is_title_case_or_uppercase(t)
+    return bool(len(words) <= 6 and has_quotes and is_cased)
 
 
 NUMERIC_STAT_PATTERN = re.compile(
@@ -844,6 +936,94 @@ class LayoutAnalyzer:
 
         return consolidated
 
+    def build_layout_from_parsed_nodes(
+        self,
+        page_number: int,
+        width_px: int,
+        height_px: int,
+        nodes: list[ExtractedDocumentNode],
+        markdown_content: str = "",
+        source: str = "docling",
+    ) -> PageLayoutResult:
+        """Construct PageLayoutResult from pre-extracted neural document nodes."""
+        elements: list[LayoutElement] = []
+        tables: list[ExtractedTableData] = []
+        photos: list[ExtractedPhotoData] = []
+
+        for idx, node in enumerate(nodes):
+            cleaned_t = clean_ocr_text_artifacts(node.text)
+
+            # Check surrounding text for quotation context
+            prev_t = nodes[idx - 1].text if idx > 0 else ""
+            next_t = nodes[idx + 1].text if idx + 1 < len(nodes) else ""
+            surrounding_context = f"{prev_t}\n{next_t}"
+
+            b_type = BlockType.BODY_TEXT
+            if is_toc_index_block(cleaned_t):
+                b_type = BlockType.TOC_INDEX
+            elif is_pullquote_author_block(cleaned_t, surrounding_context):
+                b_type = BlockType.PULLQUOTE_AUTHOR
+            elif is_syndication_or_agency_slug(cleaned_t):
+                b_type = BlockType.BYLINE
+            elif is_numeric_stat_box(cleaned_t):
+                b_type = BlockType.TABLE
+            elif node.node_type == "title":
+                if not (is_toc_index_block(cleaned_t) or is_pullquote_author_block(cleaned_t)):
+                    b_type = (
+                        BlockType.BANNER_HEADLINE if node.level == 1 else BlockType.HEADLINE
+                    )
+                else:
+                    b_type = BlockType.BODY_TEXT
+            elif node.node_type == "table":
+                b_type = BlockType.TABLE
+                if node.table_data:
+                    tables.append(node.table_data)
+            elif node.node_type in ("image", "photo"):
+                b_type = BlockType.PHOTO
+                if node.photo_data:
+                    photos.append(node.photo_data)
+            elif node.node_type == "caption":
+                b_type = BlockType.CAPTION
+
+            elem = LayoutElement(
+                element_id=idx + 1,
+                bbox=node.bbox,
+                text=cleaned_t,
+                block_type=b_type,
+            )
+            elements.append(elem)
+
+        # Filter out mastheads and running headers from elements
+        non_masthead_elements = [
+            e for e in elements
+            if not is_masthead_or_running_header(e, float(height_px), float(width_px))
+        ]
+        elements = non_masthead_elements if non_masthead_elements else elements
+
+        # For neural Docling layout, use Docling's pre-linearized reading order directly
+        reading_order = [
+            OrderedReadingBlock(
+                reading_order_index=i + 1,
+                element_id=elem.element_id,
+                block_type=elem.block_type,
+                text=elem.text,
+                bbox=elem.bbox,
+            )
+            for i, elem in enumerate(elements)
+        ]
+
+        return PageLayoutResult(
+            page_number=page_number,
+            width_px=width_px,
+            height_px=height_px,
+            elements=elements,
+            reading_order=reading_order,
+            tables=tables,
+            photos=photos,
+            markdown_content=markdown_content,
+            source=source,
+        )
+
     async def analyze_page(
         self,
         page_number: int,
@@ -892,69 +1072,12 @@ class LayoutAnalyzer:
                         ocr_blocks=ocr_blocks,
                     )
 
-                elements: list[LayoutElement] = []
-                tables: list[ExtractedTableData] = []
-                photos: list[ExtractedPhotoData] = []
-
-                for idx, node in enumerate(parsed_res.nodes):
-                    b_type = BlockType.BODY_TEXT
-                    if node.node_type == "title":
-                        b_type = (
-                            BlockType.BANNER_HEADLINE if node.level == 1 else BlockType.HEADLINE
-                        )
-                    elif node.node_type == "table":
-                        b_type = BlockType.TABLE
-                        if node.table_data:
-                            tables.append(node.table_data)
-                    elif node.node_type in ("image", "photo"):
-                        b_type = BlockType.PHOTO
-                        if node.photo_data:
-                            photos.append(node.photo_data)
-                    elif node.node_type == "caption":
-                        b_type = BlockType.CAPTION
-
-                    cleaned_t = clean_ocr_text_artifacts(node.text)
-                    if is_syndication_or_agency_slug(cleaned_t):
-                        b_type = BlockType.BYLINE
-                    elif is_numeric_stat_box(cleaned_t):
-                        b_type = BlockType.TABLE
-
-                    elem = LayoutElement(
-                        element_id=idx + 1,
-                        bbox=node.bbox,
-                        text=cleaned_t,
-                        block_type=b_type,
-                    )
-                    elements.append(elem)
-
-                # Filter out mastheads and running headers from elements
-                non_masthead_elements = [
-                    e for e in elements
-                    if not is_masthead_or_running_header(e, float(height_px), float(width_px))
-                ]
-                elements = non_masthead_elements if non_masthead_elements else elements
-
-                # For neural Docling layout, use Docling's pre-linearized reading order directly
-                reading_order = [
-                    OrderedReadingBlock(
-                        reading_order_index=i + 1,
-                        element_id=elem.element_id,
-                        block_type=elem.block_type,
-                        text=elem.text,
-                        bbox=elem.bbox,
-                    )
-                    for i, elem in enumerate(elements)
-                ]
-
                 provider_source = getattr(provider, "provider_name", "docling")
-                return PageLayoutResult(
+                return self.build_layout_from_parsed_nodes(
                     page_number=page_number,
                     width_px=width_px,
                     height_px=height_px,
-                    elements=elements,
-                    reading_order=reading_order,
-                    tables=tables,
-                    photos=photos,
+                    nodes=parsed_res.nodes,
                     markdown_content=parsed_res.markdown_content,
                     source=provider_source,
                 )

@@ -24,7 +24,7 @@ from app.ingestion.detector import (
 )
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.folio_detector import FolioDetector
-from app.ingestion.layout_analyzer import LayoutAnalyzer
+from app.ingestion.layout_analyzer import LayoutAnalyzer, PageLayoutResult
 from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.ocr_service import OCRService
 from app.ingestion.rasterizer import PDFRasterizer
@@ -224,6 +224,55 @@ async def run_ingestion_pipeline(
         issue = issue_res.scalar_one_or_none()
         issue_lang = issue.language if issue else "en"
 
+        # Step 2.5: High-Performance Issue-Wide Docling Layout Extraction (Fast Native Mode)
+        docling_parsed_pages_map: dict[int, PageLayoutResult] = {}
+        try:
+            from app.providers.base import DocumentLayoutProvider
+            from app.providers.registry import get_registry
+
+            registry = get_registry()
+            doc_provider = registry.get_provider("document_parser")
+            if isinstance(doc_provider, DocumentLayoutProvider):
+                logger.info(
+                    "Running issue-wide native PDF layout extraction with Docling",
+                    extra={"issue_id": issue_id, "pages_count": len(rendered_pages)},
+                )
+                doc_results = await doc_provider.parse_pdf_document(
+                    pdf_bytes=pdf_bytes,
+                    lang=issue_lang or "en",
+                )
+                for doc_res in doc_results:
+                    p_idx = doc_res.page_number - 1
+                    w_px = (
+                        rendered_pages[p_idx].width_px
+                        if 0 <= p_idx < len(rendered_pages)
+                        else 2480
+                    )
+                    h_px = (
+                        rendered_pages[p_idx].height_px
+                        if 0 <= p_idx < len(rendered_pages)
+                        else 3508
+                    )
+                    docling_parsed_pages_map[doc_res.page_number] = (
+                        layout_analyzer.build_layout_from_parsed_nodes(
+                            page_number=doc_res.page_number,
+                            width_px=w_px,
+                            height_px=h_px,
+                            nodes=doc_res.nodes,
+                            markdown_content=doc_res.markdown_content,
+                            source=getattr(doc_provider, "provider_name", "docling"),
+                        )
+                    )
+                logger.info(
+                    "Issue-wide Docling layout extraction completed",
+                    extra={"issue_id": issue_id, "parsed_pages": len(docling_parsed_pages_map)},
+                )
+        except Exception as e:
+            logger.warning(
+                "Issue-wide Docling pre-parsing skipped or failed (will use per-page pipeline)",
+                extra={"issue_id": issue_id, "error": str(e)},
+            )
+
         # Step 3 & 4: OCR and Layout Analysis per page
         folio_detector = FolioDetector()
         last_known_folio: int | None = None
@@ -365,15 +414,18 @@ async def run_ingestion_pipeline(
                 }
             )
 
-            # Run layout analysis
-            layout_res = await layout_analyzer.analyze_page(
-                page_number=page_num,
-                width_px=rendered.width_px,
-                height_px=rendered.height_px,
-                image_bytes=rendered.image_bytes,
-                digital_blocks=analysis.blocks if not analysis.requires_ocr else None,
-                ocr_blocks=extracted_ocr_blocks if analysis.requires_ocr else None,
-            )
+            # Run layout analysis (reuse pre-parsed Docling result if digital and available)
+            if page_num in docling_parsed_pages_map and not analysis.requires_ocr:
+                layout_res = docling_parsed_pages_map[page_num]
+            else:
+                layout_res = await layout_analyzer.analyze_page(
+                    page_number=page_num,
+                    width_px=rendered.width_px,
+                    height_px=rendered.height_px,
+                    image_bytes=rendered.image_bytes,
+                    digital_blocks=analysis.blocks if not analysis.requires_ocr else None,
+                    ocr_blocks=extracted_ocr_blocks if analysis.requires_ocr else None,
+                )
 
             # Store page layout reading blocks for segmentation
             segmenter = ArticleSegmenter()
@@ -552,16 +604,26 @@ async def run_ingestion_pipeline(
             primary_page_id = page_id_map.get(assembled.primary_page_number)
 
             clean_hl = (assembled.headline or "")[:1024]
+            if is_ad and not clean_hl.startswith(("[Advertisement]", "[Public Notice]")):
+                clean_hl = f"[Advertisement] {clean_hl}"[:1024]
+
+            final_art_type = "advertisement" if is_ad else class_res.article_type
+            final_section = (
+                "Advertisements & Notices"
+                if is_ad
+                else (class_res.section[:255] if class_res.section else None)
+            )
+
             article_record = Article(
                 issue_id=issue_id,
                 primary_page_id=primary_page_id,
                 headline=clean_hl if clean_hl else "Untitled Article",
                 subheadline=assembled.subheadline[:1024] if assembled.subheadline else None,
                 byline_author=assembled.byline_author[:512] if assembled.byline_author else None,
-                section=class_res.section[:255] if class_res.section else None,
-                article_type=class_res.article_type,
+                section=final_section,
+                article_type=final_art_type,
                 language=issue_lang,
-                prominence_score=class_res.prominence_score,
+                prominence_score=0.0 if is_ad else class_res.prominence_score,
                 word_count=assembled.word_count,
                 full_text=assembled.full_text,
             )
@@ -607,15 +669,16 @@ async def run_ingestion_pipeline(
                 printed_pages=printed_pages_list,
             )
 
-            # Vector Embedding: Skip ads and trivial fragments from Qdrant vector index
+            # Vector Embedding: Ads ARE indexed into Qdrant (with article_type in payload),
+            # only trivial fragments (< 10 words) are skipped!
             is_trivial_fragment = (
                 article_record.word_count < 10 or len(art_text.strip().split()) < 8
             )
-            is_indexed = not (article_record.article_type == "advertisement" or is_trivial_fragment)
+            is_indexed = not is_trivial_fragment
 
             if not is_indexed:
                 logger.info(
-                    "Skipping Qdrant vector indexing for advertisement or trivial fragment",
+                    "Skipping Qdrant vector indexing for trivial fragment",
                     extra={
                         "article_id": article_record.id,
                         "headline": art_hl[:60],

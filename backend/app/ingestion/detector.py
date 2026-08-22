@@ -302,54 +302,214 @@ VERTICAL_PARA_GAP_MAX = 0.015  # ~65px on 4399px broadsheet
 MASTHEAD_TOP_ZONE = 0.06  # top 6% strip
 FOOTER_BOTTOM_ZONE = 0.94  # bottom 6% strip
 
-AD_KEYWORDS_REGEX = re.compile(
-    r"(?i)(?:\b(?:advertisement|advertorial|special\s*promotional\s*feature|sponsored\s*feature|"
-    r"promotional\s*feature|t&c\s*apply|terms\s*(?:and|&)\s*conditions\s*apply|"
-    r"call\s*now|visit\s*us\s*at|toll\s*free|showroom|mrp\s*(?:rs|\b)|flat\s*\d+%\s*off|"
-    r"exclusive\s*offer|limited\s*period\s*offer|book\s*now\s*at|for\s*bookings\s*call|"
-    # Consumer Tech & Commercial Product Displays
-    r"pre-order|pre\s*order|starting\s*at\s*(?:₹|rs\b)|down\s*payment|exchange\s*bonus|"
-    r"no\s*cost\s*emi|zero\s*down\s*payment|buyback|care\+|samsung\.com|galaxy\s*z\s*fold|"
-    r"galaxy\s*z\s*flip|arcelormittal|am/ns\s*india|banaunga\s*main|banega\s*bharat|"
-    r"manipal\s*health|manipalhospitals|life's\s*on|de\s*beers\s*group|calling\s*all\s*besties|"
-    r"whatawaitsyou|the\s*bff\s*contract|har\s*pal\s*aapke\s*saath|pnb\s*metlife|"
-    # Financial IPO Notices & Application Forms
-    r"initial\s*public\s*offering|red\s*herring\s*prospectus|draft\s*red\s*herring\s*prospectus|"
-    r"book\s*running\s*lead\s*manager|registrar\s*to\s*the\s*issue|bid/issue\s*opens\s*on|"
-    r"bid\s*opens\s*on|issue\s*opens\s*on|anchor\s*investor|price\s*band|floor\s*price|"
-    r"promoters\s*of\s*our\s*company|equity\s*shares|face\s*value|to\s*be\s*listed|"
-    r"asba|apply\s*through\s*upi|kfintech|link\s*intime|icici\s*securities|kotak\s*mahindra|"
-    r"axis\s*capital|goldman\s*sachs|jefferies|j\.?p\.?\s*morgan|green\s*energy\s*limited|"
-    r"theissue|priceband|oearningsratio|"
-    # Mutual Funds & Commercials
-    r"mutual\s*fund\s*investments\s*are\s*subject|scheme\s*related\s*documents|taj\s*hotels|"
-    # Statutory & Legal Notices
-    r"public\s*notice|statutory\s*notice|notice\s*is\s*hereby\s*given|in\s*the\s*matter\s*of|"
-    r"national\s*company\s*law\s*tribunal|\bnclt\b|insolvency\s*and\s*bankruptcy\s*code|"
-    r"auction\s*sale\s*notice|tender\s*notice|e-auction|corrigendum|possession\s*notice)\b)"
+# =============================================================================
+# Multi-Category Universal Advertisement & Statutory Notice Detection Engine
+# =============================================================================
+
+# 1. Modular Functional Regex Patterns across commercial and statutory verticals
+EXPLICIT_AD_HEADER_REGEX = re.compile(
+    r"(?i)\b(?:advertisement|advertorial|sponsored\s*feature|promotional\s*feature|"
+    r"brand\s*connect|special\s*marketing\s*feature|consumer\s*connect|media\s*marketing|"
+    r"special\s*promotional\s*feature)\b"
 )
+
+CTA_REGEX = re.compile(
+    r"(?i)\b(?:book\s*now|order\s*now|pre-order|pre\s*order|pre-book|pre\s*book|buy\s*now|"
+    r"call\s*toll\s*free|visit\s*us\s*at|apply\s*now|register\s*now|scan\s*to\s*know\s*more|"
+    r"scan\s*(?:the\s*)?qr|download\s*(?:the\s*)?app|toll\s*free\s*(?:no|number)?)\b"
+)
+
+PRICING_FINANCE_REGEX = re.compile(
+    r"(?i)\b(?:starting\s*at|starts\s*at|special\s*offer|limited\s*period\s*offer|"
+    r"inaugural\s*offer|flat\s*\d+%\s*off|save\s*up\s*to|price\s*inclusive\s*of|"
+    r"down\s*payment|no\s*cost\s*emi|easy\s*emi|zero\s*processing\s*fee|exchange\s*bonus|"
+    r"exchange\s*value|cashback\s*up\s*to|t&c\s*apply|terms\s*(?:and|&)\s*conditions\s*apply)\b"
+)
+
+REAL_ESTATE_AUTO_REGEX = re.compile(
+    r"(?i)\b(?:ready\s*to\s*move|possession\s*soon|\d+\s*bhk|rera\s*reg|rera\s*registration|"
+    r"ex-showroom\s*price|test\s*drive\s*today|authorized\s*dealership|super\s*built-up\s*area)\b"
+)
+
+STATUTORY_TENDERS_REGEX = re.compile(
+    r"(?i)\b(?:public\s*notice|statutory\s*notice|notice\s*is\s*hereby\s*given|"
+    r"before\s*the\s*hon'ble|national\s*company\s*law\s*tribunal|\bnclt\b|"
+    r"auction\s*sale\s*notice|possession\s*notice|tender\s*notice|notice\s*inviting\s*tender|"
+    r"corrigendum|addendum)\b"
+)
+
+IPO_FINANCIAL_REGEX = re.compile(
+    r"(?i)\b(?:initial\s*public\s*offering|price\s*band|equity\s*shares\s*of\s*face\s*value|"
+    r"bid/issue\s*opens|bid/issue\s*period|retail\s*individual\s*bidders|"
+    r"qualified\s*institutional\s*buyers|book\s*running\s*lead\s*managers?|"
+    r"registrars?\s*to\s*the\s*issue|red\s*herring\s*prospectus|\basba\b)\b"
+)
+
+# 2. Digital Discovery & Contact Footprint Scoring
+CONTACT_FOOTPRINT_REGEX = re.compile(
+    r"(?i)(?:\b(?:1800|1860)[-\s]?\d{3}[-\s]?\d{3,4}\b|"
+    r"https?://\S+|www\.[a-z0-9\-]+\.[a-z]{2,}|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})"
+)
+
+# 3. Editorial Contrast & Safety Safeguards
+EDITORIAL_MARKERS_REGEX = re.compile(
+    r"(?i)\b(?:bureau|correspondent|special\s*correspondent|express\s*news\s*service|"
+    r"edited\s*by|opinion|editorial|columns?|continued\s*on\s*page\s*\d+|from\s*page\s*\d+)\b"
+)
+
+# Backward-compatibility alias
+AD_KEYWORDS_REGEX = re.compile(
+    r"(?i)(?:"
+    + "|".join([
+        EXPLICIT_AD_HEADER_REGEX.pattern[6:-2],
+        CTA_REGEX.pattern[6:-2],
+        PRICING_FINANCE_REGEX.pattern[6:-2],
+        REAL_ESTATE_AUTO_REGEX.pattern[6:-2],
+        STATUTORY_TENDERS_REGEX.pattern[6:-2],
+        IPO_FINANCIAL_REGEX.pattern[6:-2],
+    ])
+    + ")"
+)
+
+
+TC_LEGAL_PHRASES_PATTERNS = [
+    r"t&c\s*apply",
+    r"terms\s*(?:and|&)\s*conditions\s*apply",
+    r"inclusive\s*of\s*(?:all\s*)?taxes",
+    r"sole\s*discretion",
+    r"no\s*cost\s*emi",
+    r"easy\s*emi",
+    r"cashback",
+    r"damage\s*protection",
+    r"buyback",
+    r"images?\s*simulated",
+    r"screen\s*simulated",
+    r"optional\s*accessories",
+    r"emi\s*options?",
+    r"exchange\s*bonus",
+    r"down\s*payment",
+    r"zero\s*processing\s*fee",
+    r"annual\s*percentage\s*rate",
+    r"prices?\s*subject\s*to\s*change",
+]
+TC_LEGAL_PHRASES_REGEX = re.compile(
+    r"(?i)\b(?:" + "|".join(TC_LEGAL_PHRASES_PATTERNS) + r")\b"
+)
+
+
+def count_distinct_tc_phrases(text: str) -> int:
+    """Count how many distinct T&C / legal / commercial phrases appear in the text."""
+    norm = text.lower()
+    matches = 0
+    for pattern in TC_LEGAL_PHRASES_PATTERNS:
+        if re.search(r"(?i)\b" + pattern + r"\b", norm):
+            matches += 1
+    return matches
+
+
+def calculate_commercial_lexicon_density(text: str) -> float:
+    """Calculate the ratio of commercial/legal tokens to total words."""
+    words = [w for w in text.split() if w.strip()]
+    if not words:
+        return 0.0
+    all_commercial_matches = len(AD_KEYWORDS_REGEX.findall(text)) + len(
+        TC_LEGAL_PHRASES_REGEX.findall(text)
+    )
+    return all_commercial_matches / len(words)
+
+
+def calculate_ad_score(
+    text: str,
+    page_number: int | None = None,
+    total_pages: int | None = None,
+) -> tuple[float, int, bool, int, float]:
+    """Calculate multi-category ad score, editorial hits, header presence, TC count, and density."""
+    if not text or not text.strip():
+        return 0.0, 0, False, 0, 0.0
+
+    norm_text = re.sub(r"\s+", " ", text).strip()
+
+    # 1. Immediate match on explicit ad header in top masthead area (first 400 chars)
+    first_chunk = norm_text[:400]
+    has_explicit_header = bool(EXPLICIT_AD_HEADER_REGEX.search(first_chunk))
+    if not has_explicit_header:
+        has_explicit_header = bool(
+            re.search(
+                r"(?i)^[^\w]*(?:advertisement|advertorial|special\s*promotional\s*feature|"
+                r"sponsored\s*feature|public\s*notice|statutory\s*notice)\b",
+                norm_text,
+            )
+        )
+
+    distinct_tc_count = count_distinct_tc_phrases(norm_text)
+    commercial_density = calculate_commercial_lexicon_density(norm_text)
+
+    ad_score = 0.0
+
+    # 2. Distinct functional commercial category hits (+2.0 per category)
+    if CTA_REGEX.search(norm_text):
+        ad_score += 2.0
+    if PRICING_FINANCE_REGEX.search(norm_text):
+        ad_score += 2.0
+    if REAL_ESTATE_AUTO_REGEX.search(norm_text):
+        ad_score += 2.0
+    if STATUTORY_TENDERS_REGEX.search(norm_text):
+        ad_score += 2.0
+    if IPO_FINANCIAL_REGEX.search(norm_text):
+        ad_score += 2.0
+
+    # 3. Contact / URL footprint (+1.5)
+    if CONTACT_FOOTPRINT_REGEX.search(norm_text):
+        ad_score += 1.5
+
+    # 4. Positional weighting: Page 1 and final back page (+1.0)
+    if (
+        page_number is not None
+        and total_pages is not None
+        and (page_number == 1 or page_number == total_pages)
+    ):
+        ad_score += 1.0
+
+    # 5. Editorial markers count
+    editorial_hits = len(EDITORIAL_MARKERS_REGEX.findall(norm_text))
+
+    return ad_score, editorial_hits, has_explicit_header, distinct_tc_count, commercial_density
 
 
 def check_is_advertisement_text(text: str, word_count: int | None = None) -> bool:
     """Evaluate whether extracted digital or OCR text represents an advertisement/notice."""
     if not text or not text.strip():
         return False
+
     norm_text = re.sub(r"\s+", " ", text).strip()
-    upper_text = norm_text.upper()
     w_count = word_count if word_count is not None else len(norm_text.split())
 
-    ad_matches = len(AD_KEYWORDS_REGEX.findall(norm_text))
-
-    return bool(
-        upper_text.startswith("ADVERTISEMENT")
-        or upper_text.startswith("ADVERTORIAL")
-        or upper_text.startswith("SPECIAL PROMOTIONAL FEATURE")
-        or upper_text.startswith("SPONSORED FEATURE")
-        or upper_text.startswith("PUBLIC NOTICE")
-        or upper_text.startswith("INITIAL PUBLIC OFFERING")
-        or (ad_matches >= 2)
-        or (ad_matches >= 1 and (w_count < 250))
+    ad_score, editorial_hits, has_explicit_header, distinct_tc_count, commercial_density = (
+        calculate_ad_score(norm_text)
     )
+
+    # 1. Immediate match on explicit ad header
+    if has_explicit_header:
+        return True
+
+    # 2. The T&C Trapdoor Rule: >= 3 distinct legal/commercial phrases triggers True
+    if distinct_tc_count >= 3:
+        return True
+
+    # 3. High commercial density trigger
+    if commercial_density >= 0.04 and ad_score >= 3.5:
+        return True
+
+    # 4. Editorial Contrast & Safety Guardrail (>= 3 editorial markers & >= 350 words)
+    if editorial_hits >= 3 and w_count >= 350:
+        return ad_score >= 6.0
+
+    # 5. Short marketing / retail pages (< 250 words)
+    if w_count < 250 and ad_score >= 3.0:
+        return True
+
+    # 6. Standard commercial confidence threshold
+    return ad_score >= 4.5
 
 
 def is_page_advertisement(
@@ -359,37 +519,40 @@ def is_page_advertisement(
     word_count: int | None = None,
     image_area_ratio: float = 0.0,
 ) -> bool:
-    """Multi-signal evaluation for full-page advertisements, jacket wraps, and IPO notices."""
+    """Multi-signal evaluation for full-page advertisements, jacket wraps, and marketing spreads."""
     if not page_blocks_text or not page_blocks_text.strip():
         return False
 
     norm_text = re.sub(r"\s+", " ", page_blocks_text).strip()
     w_count = word_count if word_count is not None else len(norm_text.split())
-    ad_matches = len(AD_KEYWORDS_REGEX.findall(norm_text))
 
-    # Signal 1: Explicit high ad match count
-    if check_is_advertisement_text(norm_text, w_count):
-        return True
-
-    # Signal 2: Low body text (< 120 words) with commercial trigger on Cover/Wrap pages
-    if page_number in (1, 2, 3, 4, total_pages) and w_count < 120 and ad_matches >= 1:
-        return True
-
-    # Signal 3: Image-dominant page or low text density with commercial triggers
-    if (image_area_ratio >= 0.40 or w_count < 100) and ad_matches >= 1:
-        return True
-
-    # Signal 4: Known large corporate display ads / IPO notices
-    upper = norm_text.upper()
-    commercial_brands = [
-        "ARCELORMITTAL", "AM/NS", "MANIPAL HEALTH", "MANIPALHOSPITALS",
-        "SAMSUNG.COM", "GALAXY Z", "PRE-ORDER", "NO COST EMI", "DOWN PAYMENT",
-        "INITIAL PUBLIC OFFERING", "RED HERRING PROSPECTUS", "KFINTECH", "LINK INTIME",
-        "DE BEERS GROUP", "HAR PAL AAPKE SAATH", "PNB METLIFE",
-    ]
-    return bool(
-        any(k in upper for k in commercial_brands) and (w_count < 200 or ad_matches >= 1)
+    ad_score, editorial_hits, has_explicit_header, distinct_tc_count, commercial_density = (
+        calculate_ad_score(norm_text, page_number=page_number, total_pages=total_pages)
     )
+
+    # 1. Immediate match on explicit ad header in top masthead area
+    if has_explicit_header:
+        return True
+
+    # 2. The T&C Trapdoor Rule: >= 3 distinct legal/commercial phrases triggers True
+    # regardless of word count (e.g. dense retail wraps with full specs & T&Cs)
+    if distinct_tc_count >= 3:
+        return True
+
+    # 3. High commercial density trigger
+    if commercial_density >= 0.04 and ad_score >= 3.5:
+        return True
+
+    # 4. Editorial Contrast & Safety Guardrail (>= 3 editorial markers & >= 350 words)
+    if editorial_hits >= 3 and w_count >= 350:
+        return ad_score >= 6.0
+
+    # 5. Short marketing / retail pages (< 250 words)
+    if w_count < 250 and ad_score >= 3.0:
+        return True
+
+    # 6. Standard commercial confidence threshold
+    return ad_score >= 4.5
 
 
 @dataclass
@@ -580,18 +743,13 @@ class PDFPageDetector:
             else:
                 blk.is_heading_candidate = False
 
-        # Advertisement & Legal Notice detection heuristics
-        upper_text = raw_text.strip().upper()
-        ad_matches = len(AD_KEYWORDS_REGEX.findall(raw_text))
-        is_ad = (
-            upper_text.startswith("ADVERTISEMENT")
-            or upper_text.startswith("ADVERTORIAL")
-            or upper_text.startswith("SPECIAL PROMOTIONAL FEATURE")
-            or upper_text.startswith("SPONSORED FEATURE")
-            or upper_text.startswith("PUBLIC NOTICE")
-            or upper_text.startswith("INITIAL PUBLIC OFFERING")
-            or (ad_matches >= 2)
-            or (ad_matches >= 1 and (word_count < 250 or image_count >= 1))
+        # Multi-Category Universal Advertisement & Statutory Notice detection
+        is_ad = is_page_advertisement(
+            page_blocks_text=raw_text,
+            page_number=page_num,
+            total_pages=len(doc),
+            word_count=word_count,
+            image_area_ratio=float(image_count > 0),
         )
 
         # Classification heuristics
