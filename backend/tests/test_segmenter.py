@@ -337,3 +337,52 @@ class TestArticleSegmenter:
         assert len(articles) == 1
         assert articles[0].headline == "QUARTERLY EARNINGS BEAT ANALYST ESTIMATES"
         assert "Stock index rose two hundred points" in articles[0].body_text
+
+    def test_debundle_mint_shorts_column_with_accurate_bbox_slicing(self) -> None:
+        """Verify 'Mint Shorts' column debundles with non-overlapping bboxes."""
+        segmenter = ArticleSegmenter()
+        shorts_text = (
+            "• ADANI PORTS: Adani Ports has completed the strategic acquisition of eighty percent "
+            "equity stake in the terminal operator for over two thousand crore rupees.\n\n"
+            "• GOVT INCENTIVE: The central government approved a new capital subsidy framework "
+            "to accelerate green hydrogen manufacturing plants across industrial corridors.\n\n"
+            "• SEBI NOTICE: The market regulator issued fresh disclosure guidelines for "
+            "algorithmic trading firms operating in high frequency equity derivatives markets."
+        )
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.BANNER_HEADLINE,
+                text="MINT SHORTS",
+                bbox=(50.0, 50.0, 300.0, 80.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BODY_TEXT,
+                text=shorts_text,
+                bbox=(50.0, 90.0, 300.0, 690.0),  # 600px tall column
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=2, ordered_blocks=blocks)
+        assert len(articles) == 3
+
+        art1, art2, art3 = articles[0], articles[1], articles[2]
+        assert "ADANI PORTS" in art1.headline
+        assert "GOVT INCENTIVE" in art2.headline
+        assert "SEBI NOTICE" in art3.headline
+
+        # Verify accurate non-overlapping bounding box vertical slicing
+        b1 = art1.bbox_list[0]
+        b2 = art2.bbox_list[0]
+        b3 = art3.bbox_list[0]
+
+        # Verify X coordinates match column
+        assert b1[0] == 50.0 and b1[2] == 300.0
+        assert b2[0] == 50.0 and b2[2] == 300.0
+        assert b3[0] == 50.0 and b3[2] == 300.0
+
+        # Verify strictly partitioned, non-overlapping Y bounds
+        assert 90.0 <= b1[1] < b1[3] <= b2[1] < b2[3] <= b3[1] < b3[3] <= 690.0

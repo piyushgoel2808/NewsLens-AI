@@ -40,17 +40,34 @@ class AssembledArticle:
     pages_mapping: list[PageBBoxMapping] = field(default_factory=list)
 
 
-def _headline_similarity(h1: str, h2: str) -> float:
-    """Calculate token overlap Jaccard similarity between two headlines."""
+def _headline_overlap_metrics(h1: str, h2: str) -> tuple[float, float, int]:
+    """Calculate token overlap metrics (Jaccard, asymmetric containment, min token length)."""
     tokens1 = set(re.findall(r"\w+", h1.lower()))
     tokens2 = set(re.findall(r"\w+", h2.lower()))
     # Remove common stop words and continuation markers
-    ignore = {"continued", "from", "page", "cont", "see", "to", "the", "a", "an", "in", "on", "of"}
+    ignore = {
+        "continued", "from", "page", "cont", "see", "to", "the", "a", "an",
+        "in", "on", "of", "and", "or", "for", "with", "at", "by", "as", "is",
+    }
     t1 = tokens1 - ignore
     t2 = tokens2 - ignore
     if not t1 or not t2:
-        return 0.0
-    return len(t1 & t2) / len(t1 | t2)
+        return 0.0, 0.0, 0
+    intersection = len(t1 & t2)
+    jaccard = intersection / len(t1 | t2)
+    min_len = min(len(t1), len(t2))
+    containment = intersection / min_len if min_len > 0 else 0.0
+    return jaccard, containment, min_len
+
+
+def _has_continuation_marker(cand: SegmentedArticle) -> bool:
+    """Check if candidate segment has physical continuation markers (jump-in or ellipsis)."""
+    if cand.jump_from_page is not None:
+        return True
+    text_sample = f"{cand.headline} {cand.body_text[:200]}".lower()
+    return bool(
+        re.search(r"\b(?:continued\s+from|from\s+page|cont['’]d|turn\s+to|\.{3}|…)\b", text_sample)
+    )
 
 
 class CrossPageAssembler:
@@ -115,16 +132,39 @@ class CrossPageAssembler:
                         if cand.article_temp_id in absorbed_ids:
                             continue
 
+                        jaccard, containment, min_len = _headline_overlap_metrics(
+                            current.headline, cand.headline
+                        )
+
                         # Case 1: Explicit jump target match
                         if target_page == next_page and (
                             cand.jump_from_page == current_source_page
-                            or _headline_similarity(current.headline, cand.headline) >= 0.3
+                            or containment >= 0.40
+                            or jaccard >= 0.25
                         ):
                             matched_continuation = cand
                             break
 
-                        # Case 2: Headline continuation without explicit target
-                        if _headline_similarity(current.headline, cand.headline) >= 0.6:
+                        # Case 2: Asymmetric subset-containment with Anti-Collision Safety
+                        if containment >= 0.80 or jaccard >= 0.60:
+                            # Anti-collision check for short jump headlines (< 4 words)
+                            if min_len < 4:
+                                byline_match = bool(
+                                    current.byline_author
+                                    and cand.byline_author
+                                    and current.byline_author.lower() in cand.byline_author.lower()
+                                )
+                                cont_marker = _has_continuation_marker(cand)
+                                explicit_jump = cand.jump_from_page == current_source_page
+                                safe_short_match = (
+                                    byline_match
+                                    or cont_marker
+                                    or explicit_jump
+                                    or jaccard >= 0.60
+                                )
+                                if not safe_short_match:
+                                    continue
+
                             matched_continuation = cand
                             break
 

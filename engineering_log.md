@@ -586,6 +586,37 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.9 — Robust Folio Parsing ('Page M' Fix), News Briefs Debundling & Anti-Collision Jump Matching
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+1. **Brand Initial Rejection & Strict Roman Numerals (`backend/app/ingestion/folio_detector.py`)**:
+   - Replaced permissive `[IVXLCDM]{1,6}` matching with strict Roman numeral regex `(?:I{1,3}|IV|V|VI{1,3}|IX|X{1,3}|XI{1,3}|XIV|XV|XVI{1,3}|XIX|XX)`.
+   - Explicitly rejects brand initials (`"M"`, `"BS"`, `"ET"`, `"TH"`, `"TOI"`) from standalone folio detection, eliminating the false positive `"Page M"` on OCR pages 19 and 20.
+   - Enforced **Section Boundary Safety**: sequential integer extrapolation (`last_known_folio + delta`) only applies if `last_known_folio` is an integer and within a 5-page window, preventing runaway increments across section supplements (e.g. `Page B-1`).
+   - Cleaned date and year strings before running header line regexes to prevent years like `2026` from extracting trailing `26` as a page number.
+
+2. **News Briefs & "Shorts" Debundling with Accurate Bounding Box Slicing (`backend/app/ingestion/segmenter.py`)**:
+   - Implemented `_debundle_shorts_cluster()` in `ArticleSegmenter`:
+     - Detects brief clusters in columns titled `"MINT SHORTS"`, `"NEWS IN BRIEF"`, `"IN BRIEF"`, `"BRIEFS"`, `"ROUNDUP"`, or containing bullet points (`•`, `▪`, `►`, `■`, `\d+\.`, or bold lead-in slugs).
+     - Debundles each brief into its own `SegmentedArticle` with an extracted slug headline (`[Shorts] Slug...`) and $\ge 15$ words.
+     - **Accurate Bounding Box Slicing**: Vertically partitions the column bounding box proportionally based on character spans (`y0 + (start / total_len) * h_span`), guaranteeing that each debundled short gets a dedicated, non-overlapping bounding box without UI overlay collisions.
+
+3. **Asymmetric Subset-Containment Jump Matching & Anti-Collision Safety (`backend/app/ingestion/cross_page_assembler.py`)**:
+   - Upgraded `CrossPageAssembler` to use asymmetric subset-containment token overlap:
+     $$\text{containment} = \frac{|\text{tokens}_1 \cap \text{tokens}_2|}{\min(|\text{tokens}_1|, |\text{tokens}_2|)}$$
+   - Allows shortened jump headlines (e.g. Page 11 `"COGNIZANT BEATS PEERS"` vs Page 1 lead `"Cognizant beats IT peers with 5.6% jump in Q2 constant currency revenues"`) to stitch seamlessly.
+   - Enforced **Anti-Collision Safety**: if the candidate jump headline is $< 4$ words, requires an author match, jump tag (`continued from page X`, `...`), or explicit jump link to prevent accidental collisions.
+
+### Verification & QA
+- `make lint && make test`: **146/146 tests passing 100% GREEN in 2.86s**.
+- Added unit tests in `test_folio_detector.py`, `test_segmenter.py`, and `test_cross_page.py`.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 

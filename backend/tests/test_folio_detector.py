@@ -349,3 +349,43 @@ class TestFolioDetector:
         )
         # Should not extract "181" from body text
         assert folio == "Unnumbered (PDF p.5)"
+
+    def test_rejects_single_brand_chars_such_as_m_and_extrapolates(self) -> None:
+        """Verify brand letter 'M' is rejected as Roman numeral and extrapolates cleanly."""
+        detector = FolioDetector()
+        ocr_blocks = [
+            OCRBlock(
+                text="M",
+                bbox=(50.0, 20.0, 80.0, 50.0),
+                confidence=0.98,
+            ),
+            OCRBlock(
+                text="MINT.COM | THURSDAY, JULY 30 2026",
+                bbox=(100.0, 20.0, 900.0, 50.0),
+                confidence=0.95,
+            ),
+        ]
+        # PDF page 19, with last known folio 18 on PDF page 18
+        folio = detector.extract_printed_page_number(
+            page_number=19,
+            height_px=4399.0,
+            width_px=2800.0,
+            ocr_blocks=ocr_blocks,
+            last_known_folio_num=18,
+            last_known_pdf_page=18,
+        )
+        # Must extrapolate to 19 instead of extracting 'M'
+        assert folio == "19"
+
+    def test_section_boundary_safety_does_not_increment_non_integer(self) -> None:
+        """Verify non-integer section folio does not blindly increment."""
+        detector = FolioDetector()
+        folio = detector.extract_printed_page_number(
+            page_number=20,
+            height_px=1400.0,
+            width_px=1000.0,
+            digital_blocks=[],
+            last_known_folio_num=None,  # Section folio e.g. "B-1"
+            last_known_pdf_page=19,
+        )
+        assert folio == "Unnumbered (PDF p.20)"

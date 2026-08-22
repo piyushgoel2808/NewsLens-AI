@@ -10,17 +10,26 @@ from app.providers.base import OCRBlock
 
 logger = get_logger(__name__)
 
+# Strict Roman numerals for printed folios (I through XX)
+# Rejects single brand characters like 'M', 'C', 'D'
+_ROMAN_FOLIO_PATTERN = r"(?:I{1,3}|IV|V|VI{1,3}|IX|X{1,3}|XI{1,3}|XIV|XV|XVI{1,3}|XIX|XX)"
+
 # Primary regex for printed folio in header/footer with explicit keyword prefix
 FOLIO_PAGE_REGEX = re.compile(
-    r"(?i)\b(?:PAGE|PG|P\.)\s*([A-Z]\s*[-–]\s*\d{1,2}|\d{1,3}|[IVXLCDM]{1,6})\b"
+    rf"(?i)\b(?:PAGE|PG|P\.)\s*([A-Z]\s*[-–]\s*\d{{1,2}}|\d{{1,3}}|{_ROMAN_FOLIO_PATTERN})\b"
 )
 FOLIO_HEADER_LINE_REGEX = re.compile(
-    r"(?i)(?:DELHI|MUMBAI|KOLKATA|CHENNAI|BANGALORE|BENGALURU|HYDERABAD|AHMEDABAD|PUNE|"
+    rf"(?i)(?:DELHI|MUMBAI|KOLKATA|CHENNAI|BANGALORE|BENGALURU|HYDERABAD|AHMEDABAD|PUNE|"
     r"BUSINESS STANDARD|THE HINDU|TIMES|RECORD|CHRONICLE|TRIBUNE|EXPRESS|MINT|LIVE MINT|LIVEMINT)"
-    r"\s*[\|•·\-]?\s*.*?\s*[\|•·\-]?\s*(?:PAGE\s*)?([A-Z]\s*[-–]\s*\d{1,2}|\d{1,3}|[IVXLCDM]{1,6})\s*$"
+    rf"\s*[\|•·\-]?\s*.*?\s*[\|•·\-]?\s*(?:PAGE\s*)?([A-Z]\s*[-–]\s*\d{{1,2}}|\d{{1,3}}|{_ROMAN_FOLIO_PATTERN})\s*$"
 )
 FOLIO_CORNER_DIGIT_REGEX = re.compile(r"^\s*(\d{1,3})\s*$")
 SECTION_FOLIO_REGEX = re.compile(r"\b([A-Z]\s*[-–]\s*\d{1,2})\b")
+
+# Common brand initials / logos to reject from standalone folio matching
+DISALLOWED_BRAND_FOLIOS = {
+    "M", "BS", "ET", "TH", "HT", "TOI", "BL", "FE", "IE", "MINT", "LIVEMINT", "HINDU"
+}
 
 # Regexes for dates, years, and metadata removal
 _MONTHS_PATTERN = (
@@ -56,14 +65,39 @@ _DATE_PATTERNS: list[re.Pattern[str]] = [
 
 # Edge-based isolated folio regex (e.g. "13" or "B-3" at string boundaries)
 _TRAILING_FOLIO_REGEX = re.compile(
-    r"(?:^|[\s|•·\-,])([A-Z]\s*[-–]\s*\d{1,2}|\d{1,3}|[IVXLCDM]{1,6})\s*$"
+    r"(?:^|[\s|•·\-,])([A-Z]\s*[-–]\s*\d{1,2}|\d{1,3})\s*$"
 )
 _LEADING_FOLIO_REGEX = re.compile(
-    r"^\s*([A-Z]\s*[-–]\s*\d{1,2}|\d{1,3}|[IVXLCDM]{1,6})(?:[\s|•·\-,]|$)"
+    r"^\s*([A-Z]\s*[-–]\s*\d{1,2}|\d{1,3})(?:[\s|•·\-,]|$)"
 )
 _ISOLATED_FOLIO_REGEX = re.compile(
     r"(?:^|\s)([A-Z]\s*[-–]\s*\d{1,2}|\d{1,3})(?:\s|$)"
 )
+
+
+def _validate_folio_candidate(cand: str | None) -> str | None:
+    """Validate that candidate string is a genuine printed folio and not brand text."""
+    if not cand:
+        return None
+    val = cand.strip().upper()
+    if val in DISALLOWED_BRAND_FOLIOS:
+        return None
+    # Reject single alpha characters that are not digits or valid Roman 'I', 'V', 'X'
+    if len(val) == 1 and not val.isdigit() and val not in {"I", "V", "X"}:
+        return None
+    # If digits, validate reasonable newspaper page range
+    if val.isdigit():
+        num = int(val)
+        if 1 <= num <= 200:
+            return str(num)
+        return None
+    # If section code e.g. B-3 or A-12
+    if re.match(r"^[A-Z]\s*[-–]\s*\d{1,2}$", val):
+        return re.sub(r"\s+", "", val)
+    # If Roman numeral (I through XX)
+    if re.match(rf"^{_ROMAN_FOLIO_PATTERN}$", val):
+        return val
+    return None
 
 
 def strip_dates_and_metadata(text: str) -> str:
@@ -111,71 +145,59 @@ class FolioDetector:
 
     def _extract_folio_from_text(self, text: str) -> str | None:
         """Scan a candidate text string for an explicit or boundary-positioned folio."""
-        # Step 1a: Check for explicit PAGE 7 / PAGE B-2 format
+        # Step 1: Check for explicit PAGE 7 / PAGE B-2 format
         pg_match = FOLIO_PAGE_REGEX.search(text)
         if pg_match:
-            raw_val = pg_match.group(1).replace(" ", "").upper()
-            if raw_val.isdigit():
-                return str(int(raw_val))
-            return raw_val
-
-        # Step 1b: Check for explicit section folio: "B-4"
-        sec_match = SECTION_FOLIO_REGEX.search(text)
-        if sec_match:
-            return sec_match.group(1).replace(" ", "").upper()
-
-        # Step 1c: Check header line with pipes/delimiters
-        hl_match = FOLIO_HEADER_LINE_REGEX.search(text)
-        if hl_match:
-            raw_val = hl_match.group(1).replace(" ", "").upper()
-            if raw_val.isdigit():
-                return str(int(raw_val))
-            return raw_val
+            cand = _validate_folio_candidate(pg_match.group(1))
+            if cand is not None:
+                return cand
 
         # Step 2: Strip date strings, days of week, 4-digit years, and issue metadata
         cleaned = strip_dates_and_metadata(text)
         if not cleaned:
             return None
 
-        # Step 3: Check for standalone corner digit (e.g. single number line "13")
+        # Step 3: Check header line with pipes/delimiters on cleaned text
+        hl_match = FOLIO_HEADER_LINE_REGEX.search(cleaned)
+        if hl_match:
+            cand = _validate_folio_candidate(hl_match.group(1))
+            if cand is not None:
+                return cand
+
+        # Step 4: Check for explicit section folio: "B-4"
+        sec_match = SECTION_FOLIO_REGEX.search(cleaned)
+        if sec_match:
+            cand = _validate_folio_candidate(sec_match.group(1))
+            if cand is not None:
+                return cand
+
+        # Step 5: Check for standalone corner digit (e.g. single number line "13")
         corner_match = FOLIO_CORNER_DIGIT_REGEX.match(cleaned)
         if corner_match:
-            num_val = int(corner_match.group(1))
-            if 1 <= num_val <= 200:
-                return str(num_val)
+            cand = _validate_folio_candidate(corner_match.group(1))
+            if cand is not None:
+                return cand
 
-        # Step 4: Positional Priority - Trailing edge (e.g. "BENGALURU 13" -> "13")
+        # Step 6: Positional Priority - Trailing edge (e.g. "BENGALURU 13" -> "13")
         trail_match = _TRAILING_FOLIO_REGEX.search(cleaned)
         if trail_match:
-            raw_val = trail_match.group(1).replace(" ", "").upper()
-            if raw_val.isdigit():
-                num_val = int(raw_val)
-                if 1 <= num_val <= 200:
-                    return str(num_val)
-            elif re.match(r"^[A-Z]-\d{1,2}$", raw_val):
-                return raw_val
+            cand = _validate_folio_candidate(trail_match.group(1))
+            if cand is not None:
+                return cand
 
-        # Step 5: Positional Priority - Leading edge (e.g. "13 BENGALURU" -> "13")
+        # Step 7: Positional Priority - Leading edge (e.g. "13 BENGALURU" -> "13")
         lead_match = _LEADING_FOLIO_REGEX.search(cleaned)
         if lead_match:
-            raw_val = lead_match.group(1).replace(" ", "").upper()
-            if raw_val.isdigit():
-                num_val = int(raw_val)
-                if 1 <= num_val <= 200:
-                    return str(num_val)
-            elif re.match(r"^[A-Z]-\d{1,2}$", raw_val):
-                return raw_val
+            cand = _validate_folio_candidate(lead_match.group(1))
+            if cand is not None:
+                return cand
 
-        # Step 6: Isolated number or section code within cleaned string
+        # Step 8: Isolated number or section code within cleaned string
         isolated_matches = _ISOLATED_FOLIO_REGEX.findall(cleaned)
         if isolated_matches:
-            cand_str = str(isolated_matches[-1]).replace(" ", "").upper()
-            if cand_str.isdigit():
-                num_val = int(cand_str)
-                if 1 <= num_val <= 200:
-                    return str(num_val)
-            elif re.match(r"^[A-Z]-\d{1,2}$", cand_str):
-                return str(cand_str)
+            cand = _validate_folio_candidate(str(isolated_matches[-1]))
+            if cand is not None:
+                return cand
 
         return None
 
@@ -315,23 +337,26 @@ class FolioDetector:
         if is_advertisement_page:
             return "Cover/Ad Wrap"
 
-        # Sequential offset extrapolation if previous page had a valid integer folio
+        # Section Boundary Safety: Sequential offset extrapolation only applies
+        # if last_known_folio_num is a genuine integer and within a 5-page window.
+        # Supplements crossing section boundaries (e.g. Page B-1) do not increment numerically.
         if (
-            last_known_folio_num is not None
+            isinstance(last_known_folio_num, int)
             and last_known_pdf_page is not None
             and page_number > last_known_pdf_page
         ):
             delta = page_number - last_known_pdf_page
-            inferred = last_known_folio_num + delta
-            logger.debug(
-                "Extrapolated folio from last known page",
-                extra={
-                    "page_number": page_number,
-                    "inferred_folio": inferred,
-                    "last_known": last_known_folio_num,
-                },
-            )
-            return str(inferred)
+            if 1 <= delta <= 5:
+                inferred = last_known_folio_num + delta
+                logger.debug(
+                    "Extrapolated folio from last known page",
+                    extra={
+                        "page_number": page_number,
+                        "inferred_folio": inferred,
+                        "last_known": last_known_folio_num,
+                    },
+                )
+                return str(inferred)
 
         return f"Unnumbered (PDF p.{page_number})"
 

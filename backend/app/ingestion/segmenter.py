@@ -226,6 +226,15 @@ class ArticleSegmenter:
                 )
                 articles.append(fallback_art)
 
+        # Debundle News Briefs / Shorts clusters before consolidation
+        debundled_articles: list[SegmentedArticle] = []
+        counter = 1
+        for art in articles:
+            briefs = self._debundle_shorts_cluster(art, page_number, counter)
+            debundled_articles.extend(briefs)
+            counter += len(briefs)
+        articles = debundled_articles
+
         # Pillar 3: Minimum Structural Thresholds & Orphan Snippet Absorption Pass
         consolidated: list[SegmentedArticle] = []
         for art in articles:
@@ -243,9 +252,12 @@ class ArticleSegmenter:
                 and art.body_text != art.headline
                 and len(art.body_text.split()) >= 5
             )
+            is_shorts = art.headline.startswith("[Shorts]") and w_count >= 15
             is_valid_structured_article = (
-                has_valid_hl and has_distinct_body and w_count >= 12
-            ) or (w_count >= MIN_ARTICLE_WORD_COUNT)
+                is_shorts
+                or (has_valid_hl and has_distinct_body and w_count >= 12)
+                or (w_count >= MIN_ARTICLE_WORD_COUNT)
+            )
 
             if not is_valid_structured_article and consolidated:
                 prev = consolidated[-1]
@@ -302,3 +314,132 @@ class ArticleSegmenter:
         )
 
         return articles
+
+    def _debundle_shorts_cluster(
+        self,
+        art: SegmentedArticle,
+        page_number: int,
+        start_idx: int,
+    ) -> list[SegmentedArticle]:
+        """Debundle a 'Shorts' or 'News in Brief' column cluster into distinct child articles.
+
+        Performs vertical bounding box slicing based on line/character span so that
+        each debundled short gets a dedicated, non-overlapping bounding box.
+        """
+        full_text = (
+            f"{art.headline}\n\n{art.body_text}".strip()
+            if art.headline != art.body_text
+            else art.body_text
+        ).strip()
+        if not full_text:
+            return [art]
+
+        is_shorts_hl = bool(
+            re.search(
+                r"(?i)\b(?:SHORTS|IN BRIEF|BRIEFS|ROUNDUP|NEWS IN BRIEF|"
+                r"PLAIN FACTS|MARKET BRIEFS|QUICK READS|CHART OF THE DAY)\b",
+                art.headline,
+            )
+        )
+
+        # Look for bullet/slug split markers: •, ▪, ►, ■, bold slugs (e.g. SLUG:), or numbered items
+        marker_pattern = re.compile(
+            r"(?:^|\n\s*)(?:[•▪►■\*\–]|\d+\.|\b[A-Z\s]{3,30}:)\s*"
+        )
+        matches = list(marker_pattern.finditer(full_text))
+
+        if not is_shorts_hl and len(matches) < 2:
+            return [art]
+
+        # Extract split chunks
+        spans: list[tuple[int, int]] = []
+        if matches:
+            for i in range(len(matches)):
+                start = matches[i].start()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(full_text)
+                spans.append((start, end))
+        else:
+            paras = [p.strip() for p in full_text.split("\n\n") if p.strip()]
+            if is_shorts_hl and len(paras) >= 2:
+                cur_pos = 0
+                for p in paras:
+                    pos = full_text.find(p, cur_pos)
+                    if pos >= 0:
+                        spans.append((pos, pos + len(p)))
+                        cur_pos = pos + len(p)
+
+        if len(spans) < 2:
+            return [art]
+
+        total_len = max(len(full_text), 1)
+        if len(art.bbox_list) > 1:
+            body_boxes = art.bbox_list[1:]
+            bx0 = min(b[0] for b in body_boxes)
+            by0 = min(b[1] for b in body_boxes)
+            bx1 = max(b[2] for b in body_boxes)
+            by1 = max(b[3] for b in body_boxes)
+            base_bbox = (bx0, by0, bx1, by1)
+        elif art.bbox_list:
+            base_bbox = art.bbox_list[0]
+        else:
+            base_bbox = (0.0, 0.0, 100.0, 100.0)
+
+        x0, y0, x1, y1 = base_bbox
+        h_span = max(y1 - y0, 1.0)
+
+        debundled: list[SegmentedArticle] = []
+        counter = 0
+
+        for start, end in spans:
+            chunk_raw = full_text[start:end].strip()
+            clean_chunk = re.sub(r"^[•▪►■\*\–\d\.\:\s]+", "", chunk_raw).strip()
+            if not clean_chunk:
+                continue
+
+            words = clean_chunk.split()
+            if len(words) < 15:
+                if debundled:
+                    debundled[-1].body_text += f"\n\n{clean_chunk}"
+                    debundled[-1].word_count = len(debundled[-1].body_text.split())
+                    slice_y1 = y0 + (end / total_len) * h_span
+                    prev_b = debundled[-1].bbox_list[0]
+                    debundled[-1].bbox_list = [
+                        (prev_b[0], prev_b[1], prev_b[2], max(prev_b[3], slice_y1))
+                    ]
+                continue
+
+            colon_match = re.search(r"^([A-Z\s]{3,35})\s*[:–-]\s*(.*)", clean_chunk)
+            if colon_match:
+                slug_hl = f"[Shorts] {colon_match.group(1).strip()}"
+                brief_body = clean_chunk
+            else:
+                first_sent = clean_chunk.split(".")[0][:90].strip()
+                slug_hl = (
+                    f"[Shorts] {first_sent}"
+                    if first_sent
+                    else f"[Shorts] News Brief {counter + 1}"
+                )
+                brief_body = clean_chunk
+
+            slice_y0 = y0 + (start / total_len) * h_span
+            slice_y1 = y0 + (end / total_len) * h_span
+            sliced_bbox = (x0, round(slice_y0, 2), x1, round(slice_y1, 2))
+
+            short_art = SegmentedArticle(
+                article_temp_id=f"p{page_number}_short_{start_idx + counter}",
+                headline=slug_hl,
+                body_text=brief_body,
+                word_count=len(words),
+                bbox_list=[sliced_bbox],
+            )
+            debundled.append(short_art)
+            counter += 1
+
+        if len(debundled) >= 2:
+            logger.info(
+                "Debundled shorts cluster into distinct articles",
+                extra={"page_number": page_number, "briefs_count": len(debundled)},
+            )
+            return debundled
+
+        return [art]
