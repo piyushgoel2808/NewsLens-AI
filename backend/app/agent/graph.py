@@ -8,6 +8,11 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.condenser import (
+    CLEAN_SESSION_CLARIFICATION_MESSAGE,
+    condense_conversational_query,
+    is_ambiguous_standalone_query,
+)
 from app.agent.planner import QueryPlanner
 from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.synthesizer import AnswerSynthesizer
@@ -58,7 +63,29 @@ class AgentWorkflow:
     async def _classify_and_plan_node(self, state: AgentState) -> dict[str, Any]:
         """Classify archetype and produce multi-step tool execution plan."""
         query = state["query"]
-        plan_res = self._planner.plan_query(query)
+        chat_history = state.get("chat_history", [])
+        original_query = state.get("original_query") or query
+
+        # Ambiguity Guardrail for Clean Sessions (e.g. 'summarize it' on turn 1)
+        if is_ambiguous_standalone_query(query, chat_history):
+            return {
+                "query": query,
+                "original_query": original_query,
+                "archetype": "clarification_needed",
+                "plan": [],
+                "synthesized_answer": CLEAN_SESSION_CLARIFICATION_MESSAGE,
+                "evidence_items": [],
+                "citations": [],
+            }
+
+        # Coreference Resolution & Query Condensation for follow-up turns
+        condensed_query = await condense_conversational_query(
+            query=query,
+            chat_history=chat_history,
+            model_override=state.get("model_override"),
+        )
+
+        plan_res = self._planner.plan_query(condensed_query)
 
         planned_calls = [
             {
@@ -70,12 +97,20 @@ class AgentWorkflow:
         ]
 
         return {
+            "query": condensed_query,
+            "original_query": original_query,
             "archetype": plan_res.archetype,
             "plan": planned_calls,
         }
 
     async def _execute_tools_node(self, state: AgentState) -> dict[str, Any]:
         """Execute scheduled tools and collect evidence items."""
+        if state.get("archetype") == "clarification_needed" or not state.get("plan"):
+            return {
+                "evidence_items": [],
+                "tool_executions": [],
+            }
+
         plan = state.get("plan", [])
         evidence_items: list[dict[str, Any]] = []
         tool_records: list[ToolExecutionRecord] = []
@@ -307,6 +342,13 @@ class AgentWorkflow:
 
     async def _synthesize_answer_node(self, state: AgentState) -> dict[str, Any]:
         """Formulate grounded answer with source citations."""
+        if state.get("archetype") == "clarification_needed" and state.get("synthesized_answer"):
+            return {
+                "synthesized_answer": state["synthesized_answer"],
+                "citations": [],
+                "cost_usd": 0.0,
+            }
+
         query = state["query"]
         archetype = state.get("archetype", "factual_lookup")
         evidence = state.get("evidence_items", [])
@@ -347,11 +389,13 @@ class AgentWorkflow:
     async def run(
         self,
         query: str,
+        chat_history: list[dict[str, Any]] | None = None,
         user_id: str | None = None,
         model_override: str | None = None,
     ) -> AgentState:
         """Execute the complete agentic query cycle with caching and metrics."""
         t0 = time.monotonic()
+        history = chat_history or []
 
         # 1. Deterministic Redis Cache Check
         cache_key = compute_query_cache_key(
@@ -372,6 +416,8 @@ class AgentWorkflow:
 
         initial_state: AgentState = {
             "query": query,
+            "original_query": query,
+            "chat_history": history,
             "archetype": "factual_lookup",
             "plan": [],
             "tool_executions": [],

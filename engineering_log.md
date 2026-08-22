@@ -1287,6 +1287,40 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Critical Hotfix — Conversational Query Condensation & Coreference Resolution
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Problem Solved
+Follow-up conversational questions containing pronouns and deictic references (e.g. `"can you summarize it"`, `"tell me more about this"`, `"who was involved?"`) previously failed vector search because the literal query lacked named entities and semantic keywords. In addition, generic prompts submitted on turn 1 of clean sessions generated irrelevant searches.
+
+### Key Changes
+1. **Query Condenser Engine (`backend/app/agent/condenser.py`)**:
+   - `needs_condensation(query, chat_history)`: Identifies pronouns and short follow-up phrases in multi-turn dialogues.
+   - `is_ambiguous_standalone_query(query, chat_history)`: Detects ambiguous prompts on clean sessions (turn 1) with $< 6$ words and no context.
+   - `condense_conversational_query(query, chat_history, provider)`: Rewrites follow-up questions into self-contained, entity-dense search queries using fast LLM completion without generating direct answers.
+2. **LangGraph State Machine & Guardrails (`backend/app/agent/state.py`, `backend/app/agent/graph.py`)**:
+   - Added `chat_history` and `original_query` to `AgentState`.
+   - Integrated ambiguity guardrail into `_classify_and_plan_node`: Clean session ambiguous queries short-circuit immediately to return `"Please specify which article, topic, or newspaper issue you would like me to summarize."` without invoking vector or SQL tools.
+   - Integrated query condensation before `QueryPlanner.plan_query` to ground tool scheduling in the rewritten context.
+3. **API & Streaming Real-Time Events (`backend/app/api/routers/query.py`)**:
+   - Added `chat_history` to `QueryRequest` schema.
+   - Emitted `event: query_condensed` with `data: {"condensed_query": "..."}` and stage `'condensing_query'` in SSE stream.
+4. **Frontend Context Sync & UI (`frontend/src/components/AgentAssistant.jsx`)**:
+   - Wired `handleSend` to include recent conversational turns (`chat_history`) in the request body.
+   - Rendered subtle `Resolved Context` pill indicating the reformulated search query.
+   - Added stage indicator for coreference resolution.
+5. **Comprehensive Unit & Integration Test Suite (`backend/tests/test_query_condenser.py`)**:
+   - 9 test cases verifying pronoun detection, clean session guardrail short-circuiting, LLM query rewriting, state machine execution, and `/api/query` response handling.
+
+### Verification
+- `make lint`: **0 errors across 72 source files** (`ruff` + `mypy` strict).
+- `make test`: **217/217 tests passing 100% GREEN in 22.27s**.
+- `npm run build`: **Vite build succeeded with 0 errors**.
+
+---
+
 *Next phase: Phase 8 — Hosted Deployment & Production Orchestration (Multi-stage Dockerfiles, Docker Compose Prod, Helm/K8s)*
 
 

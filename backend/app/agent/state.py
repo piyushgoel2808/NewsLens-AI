@@ -29,6 +29,8 @@ class AgentState(TypedDict):
     """Complete state container for the LangGraph agentic workflow."""
 
     query: str
+    original_query: str | None
+    chat_history: list[dict[str, Any]]
     archetype: str  # e.g. 'factual_lookup', 'thematic_timeline', 'entity_deep_dive'
     plan: list[dict[str, Any]]
     tool_executions: list[ToolExecutionRecord]

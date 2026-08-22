@@ -62,6 +62,7 @@ export default function AgentAssistant() {
       role: 'assistant',
       content: '',
       stage: 'planning',
+      condensedQuery: null,
       archetype: null,
       plan: [],
       toolExecutions: [],
@@ -70,6 +71,11 @@ export default function AgentAssistant() {
       isStreaming: true,
       isTelemetryOpen: false,
     };
+
+    const historyPayload = messages
+      .filter((m) => !m.isStreaming && m.content)
+      .slice(-8)
+      .map((m) => ({ role: m.role, content: m.content }));
 
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
     setQuery('');
@@ -81,6 +87,7 @@ export default function AgentAssistant() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: queryText,
+          chat_history: historyPayload,
           model_override: selectedModel || undefined,
         }),
       });
@@ -127,6 +134,8 @@ export default function AgentAssistant() {
 
               if (eventType === 'stage') {
                 current.stage = data.stage;
+              } else if (eventType === 'query_condensed') {
+                current.condensedQuery = data.condensed_query;
               } else if (eventType === 'plan') {
                 current.archetype = data.archetype;
                 current.plan = data.plan || [];
@@ -272,11 +281,23 @@ export default function AgentAssistant() {
                 <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-800 text-xs text-emerald-400 font-medium">
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                   <span className="capitalize">
-                    {msg.stage === 'planning'
+                    {msg.stage === 'condensing_query'
+                      ? 'Resolving conversational coreference...'
+                      : msg.stage === 'planning'
                       ? 'Formulating multi-step investigation plan...'
                       : msg.stage === 'tool_execution'
                       ? 'Executing hybrid vector & SQL retrieval tools...'
                       : 'Synthesizing evidence-grounded response...'}
+                  </span>
+                </div>
+              )}
+
+              {/* Condensed Query Pill */}
+              {msg.role === 'assistant' && msg.condensedQuery && (
+                <div className="flex items-center gap-1.5 text-[11px] text-emerald-300 font-mono bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 rounded-md mb-2.5">
+                  <Search className="w-3 h-3 text-emerald-400 shrink-0" />
+                  <span className="truncate">
+                    Resolved Context: <strong className="text-emerald-200">"{msg.condensedQuery}"</strong>
                   </span>
                 </div>
               )}

@@ -9,6 +9,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.condenser import (
+    CLEAN_SESSION_CLARIFICATION_MESSAGE,
+    condense_conversational_query,
+    is_ambiguous_standalone_query,
+    needs_condensation,
+)
 from app.agent.graph import AgentWorkflow
 from app.agent.planner import QueryPlanner
 from app.models.base import get_db, get_session_factory
@@ -22,6 +28,10 @@ class QueryRequest(BaseModel):
 
     query: str = Field(..., description="The user's research query", min_length=2)
     user_id: str | None = Field(None, description="Optional identifier of the user")
+    chat_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Recent turns for coreference resolution and follow-up condensation",
+    )
     model_override: str | None = Field(
         None,
         description="Optional model provider override (e.g. groq_llama, ollama_chat)",
@@ -51,6 +61,7 @@ async def execute_query(
     workflow = AgentWorkflow(session_factory=factory)
     result = await workflow.run(
         query=request.query,
+        chat_history=request.chat_history,
         user_id=request.user_id,
         model_override=request.model_override,
     )
@@ -85,8 +96,36 @@ async def stream_query(
     async def event_generator() -> AsyncIterator[str]:
         t0 = time.monotonic()
         query = request.query
+        chat_history = request.chat_history or []
 
-        # 1. Planning Stage
+        # 0. Ambiguity Guardrail for Clean Sessions
+        if is_ambiguous_standalone_query(query, chat_history):
+            yield f"event: stage\ndata: {json.dumps({'stage': 'completed'})}\n\n"
+            token_payload = json.dumps({"delta": CLEAN_SESSION_CLARIFICATION_MESSAGE})
+            yield f"event: token\ndata: {token_payload}\n\n"
+            yield f"event: citations\ndata: {json.dumps({'citations': []})}\n\n"
+            done_payload = json.dumps(
+                {
+                    "latency_ms": round((time.monotonic() - t0) * 1000),
+                    "cost_usd": 0.0,
+                    "evidence_count": 0,
+                }
+            )
+            yield f"event: done\ndata: {done_payload}\n\n"
+            return
+
+        # 1. Query Condensation & Coreference Resolution
+        if chat_history and needs_condensation(query, chat_history):
+            yield f"event: stage\ndata: {json.dumps({'stage': 'condensing_query'})}\n\n"
+            condensed = await condense_conversational_query(
+                query=query,
+                chat_history=chat_history,
+                model_override=request.model_override,
+            )
+            query = condensed
+            yield f"event: query_condensed\ndata: {json.dumps({'condensed_query': condensed})}\n\n"
+
+        # 2. Planning Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
         plan_res = workflow._planner.plan_query(query)
         planned_calls = [
@@ -96,11 +135,13 @@ async def stream_query(
         plan_data = json.dumps({"archetype": plan_res.archetype, "plan": planned_calls})
         yield f"event: plan\ndata: {plan_data}\n\n"
 
-        # 2. Tool Execution Stage
+        # 3. Tool Execution Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'tool_execution'})}\n\n"
         tool_state = await workflow._execute_tools_node(
             {
                 "query": query,
+                "original_query": request.query,
+                "chat_history": chat_history,
                 "archetype": plan_res.archetype,
                 "plan": planned_calls,
                 "tool_executions": [],
@@ -119,7 +160,7 @@ async def stream_query(
         tool_data = json.dumps({"evidence_count": len(evidence), "tools": tool_records})
         yield f"event: tool_results\ndata: {tool_data}\n\n"
 
-        # 3. Synthesis Stage
+        # 4. Synthesis Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
         full_text_chunks: list[str] = []
         async for chunk in workflow._synthesizer.synthesize_stream(
