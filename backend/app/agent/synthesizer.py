@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -155,6 +156,10 @@ class AnswerSynthesizer:
                     temperature=0.1,
                 )
                 answer_text = response.text
+                if "<think>" in answer_text:
+                    answer_text = re.sub(
+                        r"<think>.*?</think>", "", answer_text, flags=re.DOTALL
+                    ).strip()
                 p_name = getattr(provider, "provider_name", "llm")
                 m_name = getattr(provider, "model_name", "default")
                 calc_cost = record_usage_and_cost(

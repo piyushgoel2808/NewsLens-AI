@@ -61,6 +61,9 @@ export default function AgentAssistant() {
     const assistantMessage = {
       role: 'assistant',
       content: '',
+      thought: '',
+      thoughtDurationSec: null,
+      isThoughtOpen: false,
       stage: 'planning',
       condensedQuery: null,
       archetype: null,
@@ -75,7 +78,7 @@ export default function AgentAssistant() {
     const historyPayload = messages
       .filter((m) => !m.isStreaming && m.content)
       .slice(-8)
-      .map((m) => ({ role: m.role, content: m.content }));
+      .map((m) => ({ role: m.role, content: sanitizeAnswerText(m.content) }));
 
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
     setQuery('');
@@ -136,6 +139,11 @@ export default function AgentAssistant() {
                 current.stage = data.stage;
               } else if (eventType === 'query_condensed') {
                 current.condensedQuery = data.condensed_query;
+              } else if (eventType === 'thought') {
+                current.thought = (current.thought || '') + (data.delta || '');
+              } else if (eventType === 'thought_done') {
+                current.thought = data.thought || current.thought;
+                current.thoughtDurationSec = data.duration_sec;
               } else if (eventType === 'plan') {
                 current.archetype = data.archetype;
                 current.plan = data.plan || [];
@@ -187,6 +195,17 @@ export default function AgentAssistant() {
       updated[index] = {
         ...updated[index],
         isTelemetryOpen: !updated[index].isTelemetryOpen,
+      };
+      return updated;
+    });
+  };
+
+  const toggleThought = (index) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      updated[index] = {
+        ...updated[index],
+        isThoughtOpen: !updated[index].isThoughtOpen,
       };
       return updated;
     });
@@ -287,6 +306,8 @@ export default function AgentAssistant() {
                       ? 'Formulating multi-step investigation plan...'
                       : msg.stage === 'tool_execution'
                       ? 'Executing hybrid vector & SQL retrieval tools...'
+                      : msg.stage === 'thinking'
+                      ? 'Reasoning and analyzing evidence...'
                       : 'Synthesizing evidence-grounded response...'}
                   </span>
                 </div>
@@ -301,6 +322,39 @@ export default function AgentAssistant() {
                   </span>
                 </div>
               )}
+
+              {/* Collapsible Thought Process (Reasoning block kept outside the output chat) */}
+              {msg.role === 'assistant' &&
+              (msg.thought || extractFallbackThought(msg.content)) ? (
+                <div className="mb-3">
+                  <button
+                    type="button"
+                    onClick={() => toggleThought(idx)}
+                    className="flex items-center gap-2 text-xs font-mono text-slate-400 hover:text-slate-200 transition-colors py-1 px-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80 hover:border-slate-700"
+                  >
+                    <ChevronRight
+                      className={`w-3.5 h-3.5 text-purple-400 transition-transform duration-200 ${
+                        msg.isThoughtOpen ? 'rotate-90' : ''
+                      }`}
+                    />
+                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                    <span className="text-slate-300 font-medium">
+                      {msg.thoughtDurationSec
+                        ? `Thought for ${msg.thoughtDurationSec}s`
+                        : 'Thought Process'}
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      {msg.isThoughtOpen ? '(click to collapse)' : '(click to view)'}
+                    </span>
+                  </button>
+
+                  {msg.isThoughtOpen && (
+                    <div className="mt-2 p-3 bg-slate-950/90 border border-purple-500/20 rounded-lg text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto shadow-inner">
+                      {msg.thought || extractFallbackThought(msg.content)}
+                    </div>
+                  )}
+                </div>
+              ) : null}
 
               {/* Execution Plan & Tool Telemetry Disclosure */}
               {msg.role === 'assistant' &&
@@ -369,7 +423,7 @@ export default function AgentAssistant() {
 
               {/* Message Content */}
               <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans text-slate-200">
-                {msg.content || (msg.isStreaming ? 'Thinking...' : '')}
+                {sanitizeAnswerText(msg.content) || (msg.isStreaming ? (msg.stage === 'thinking' ? 'Reasoning through evidence...' : 'Synthesizing response...') : '')}
               </div>
 
               {/* Clickable Citations Grounding */}

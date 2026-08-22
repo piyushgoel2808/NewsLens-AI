@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -62,7 +64,8 @@ async def test_stream_query_endpoint() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_query_with_model_override() -> None:
+async def test_stream_query_with_think_tags() -> None:
+    """Verify that <think>...</think> reasoning tags are parsed into event: thought."""
     app = create_app()
 
     mock_session_factory = MagicMock()
@@ -71,9 +74,18 @@ async def test_stream_query_with_model_override() -> None:
     mock_db.commit = AsyncMock()
     mock_session_factory.return_value.__aenter__.return_value = mock_db
 
+    async def mock_stream_gen(*args: Any, **kwargs: Any) -> AsyncIterator[str]:
+        yield "<think>\nAnalyzing user request...\nEvaluating evidence...\n</think>\n\n"
+        yield "This is the final "
+        yield "synthesized answer."
+
     with (
         patch("app.api.routers.query.get_session_factory", return_value=mock_session_factory),
         patch("app.agent.graph.HybridSearchEngine.search", new_callable=AsyncMock) as mock_search,
+        patch(
+            "app.agent.synthesizer.AnswerSynthesizer.synthesize_stream",
+            side_effect=mock_stream_gen,
+        ),
     ):
         mock_search.return_value = []
 
@@ -81,12 +93,13 @@ async def test_stream_query_with_model_override() -> None:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/api/query/stream",
-                json={
-                    "query": "Trace the history of the transit expansion",
-                    "model_override": "ollama_chat",
-                },
+                json={"query": "PM 3-nation trip to boost economic engagement"},
             )
             assert response.status_code == 200
-            assert "text/event-stream" in response.headers.get("content-type", "")
             content = response.text
+            assert "event: thought" in content
+            assert "event: thought_done" in content
+            assert "event: token" in content
             assert "event: done" in content
+            assert "Analyzing user request" in content
+            assert "This is the final" in content

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,7 +16,6 @@ from app.agent.condenser import (
 )
 from app.agent.graph import AgentWorkflow
 from app.api.main import create_app
-from app.models.base import get_db
 from app.providers.base import ModelResponse
 
 

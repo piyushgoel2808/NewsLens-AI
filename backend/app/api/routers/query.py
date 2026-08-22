@@ -160,19 +160,82 @@ async def stream_query(
         tool_data = json.dumps({"evidence_count": len(evidence), "tools": tool_records})
         yield f"event: tool_results\ndata: {tool_data}\n\n"
 
-        # 4. Synthesis Stage
+        # 4. Synthesis & Reasoning Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
-        full_text_chunks: list[str] = []
+        in_think = False
+        raw_buffer = ""
+        think_chunks: list[str] = []
+        answer_chunks: list[str] = []
+        think_start_time: float | None = None
+
         async for chunk in workflow._synthesizer.synthesize_stream(
             query=query,
             archetype=plan_res.archetype,
             evidence_items=evidence,
             model_override=request.model_override,
         ):
-            full_text_chunks.append(chunk)
-            yield f"event: token\ndata: {json.dumps({'delta': chunk})}\n\n"
+            raw_buffer += chunk
 
-        full_answer = "".join(full_text_chunks)
+            while raw_buffer:
+                if not in_think:
+                    if "<think>" in raw_buffer:
+                        pre, post = raw_buffer.split("<think>", 1)
+                        if pre:
+                            answer_chunks.append(pre)
+                            yield f"event: token\ndata: {json.dumps({'delta': pre})}\n\n"
+                        in_think = True
+                        think_start_time = time.monotonic()
+                        yield f"event: stage\ndata: {json.dumps({'stage': 'thinking'})}\n\n"
+                        raw_buffer = post
+                    else:
+                        is_partial = any(
+                            raw_buffer.endswith("<think>"[:i])
+                            for i in range(1, len("<think>"))
+                        )
+                        if is_partial:
+                            break
+                        answer_chunks.append(raw_buffer)
+                        yield f"event: token\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
+                        raw_buffer = ""
+                else:
+                    if "</think>" in raw_buffer:
+                        thought_piece, post = raw_buffer.split("</think>", 1)
+                        if thought_piece:
+                            think_chunks.append(thought_piece)
+                            th_payload = json.dumps({"delta": thought_piece})
+                            yield f"event: thought\ndata: {th_payload}\n\n"
+                        in_think = False
+                        t_dur = round(time.monotonic() - (think_start_time or time.monotonic()), 1)
+                        full_th = "".join(think_chunks).strip()
+                        done_th = json.dumps({"thought": full_th, "duration_sec": t_dur})
+                        yield f"event: thought_done\ndata: {done_th}\n\n"
+                        yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
+                        raw_buffer = post.lstrip("\n ")
+                    else:
+                        is_partial = any(
+                            raw_buffer.endswith("</think>"[:i])
+                            for i in range(1, len("</think>"))
+                        )
+                        if is_partial:
+                            break
+                        think_chunks.append(raw_buffer)
+                        yield f"event: thought\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
+                        raw_buffer = ""
+
+        # Flush any remaining buffer
+        if raw_buffer:
+            if in_think:
+                think_chunks.append(raw_buffer)
+                yield f"event: thought\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
+                t_dur = round(time.monotonic() - (think_start_time or time.monotonic()), 1)
+                full_th = "".join(think_chunks).strip()
+                done_th = json.dumps({"thought": full_th, "duration_sec": t_dur})
+                yield f"event: thought_done\ndata: {done_th}\n\n"
+            else:
+                answer_chunks.append(raw_buffer)
+                yield f"event: token\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
+
+        full_answer = "".join(answer_chunks).strip()
         citations = workflow._synthesizer.extract_citations(full_answer, evidence)
         citations_list = [dict(c) for c in citations]
         yield f"event: citations\ndata: {json.dumps({'citations': citations_list})}\n\n"

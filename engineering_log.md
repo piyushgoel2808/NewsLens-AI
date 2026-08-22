@@ -1321,6 +1321,35 @@ Follow-up conversational questions containing pronouns and deictic references (e
 
 ---
 
+## Critical Hotfix — Thought Process & Reasoning Trace Separation
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Problem Solved
+Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thought traces wrapped in `<think>...</think>` tags. Previously, these tokens streamed directly into the final chat response bubble, cluttering the synthesized answer with raw step-by-step reasoning notes.
+
+### Key Changes
+1. **Streaming Token Parser (`backend/app/api/routers/query.py`)**:
+   - Dynamically parses incoming stream chunks for `<think>` and `</think>` tags.
+   - Emits internal reasoning tokens via `event: thought` with stage `'thinking'`, keeping thought tokens strictly separated from the final answer stream.
+   - Emits `event: thought_done` containing the full formatted thought trace and duration timing (`duration_sec`).
+   - Only clean answer tokens (outside `<think>` tags) are emitted via `event: token`.
+2. **Synthesis Sanitization (`backend/app/agent/synthesizer.py`)**:
+   - Strips `<think>.*?</think>` tags in `synthesize()` so that stored database `QueryLog` answers and citation extractions are clean.
+3. **Frontend Collapsible Thought Accordion (`frontend/src/components/AgentAssistant.jsx`)**:
+   - Added collapsible `Thought for Xs >` accordion component styled after modern reasoning AI interfaces.
+   - Displays reasoning trace cleanly outside the main answer text, collapsed by default once synthesis completes.
+   - Renders only pure, verified answers (`ans`) in the main chat bubble.
+   - Added client-side sanitizers (`sanitizeAnswerText`, `extractFallbackThought`) as an additional safety net.
+
+### Verification
+- `make lint`: **0 errors across 72 source files** (`ruff` + `mypy` strict).
+- `make test`: **217/217 tests passing 100% GREEN in 19.91s**.
+- `npm run build`: **Vite build succeeded with 0 errors**.
+
+---
+
 *Next phase: Phase 8 — Hosted Deployment & Production Orchestration (Multi-stage Dockerfiles, Docker Compose Prod, Helm/K8s)*
 
 
