@@ -734,6 +734,35 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.14 — Page Number Normalization & Vertical-First Headline Stitching
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+1. **Masthead Date Contamination & Page Range Normalization (`backend/app/ingestion/folio_detector.py`, `backend/app/ingestion/tasks.py`)**:
+   - Resolved folio drift where broadsheet header date lines (`"MINT | THURSDAY, 30 JULY 2026"` / `"31 JULY"`) were leaking `30`/`31` as false printed page folios.
+   - Enforced total document physical page upper-bound constraint in `_validate_folio_candidate()`: numeric page folios must strictly satisfy `1 <= num <= max(total_issue_pages + 2, page_number + 2)`.
+   - Purged double-nested `"Page Unnumbered (PDF p.1) (PDF p.1)"` formatting in `graph.py`.
+
+2. **Vertical-First Multi-Line Headline Stitching within Column Tracks (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Re-ordered layout consolidation pipeline so that **Vertical Multi-Line Headline Stitching** within column tracks executes **prior** to horizontal lookahead.
+   - Implemented reverse-search column track consolidation across vertically stacked elements, eliminating interleaving column interference (`Col 1 Line 1 -> Col 2 Line 1 -> Col 1 Line 2 -> Col 2 Line 2`).
+   - Slices like *"How artificial intelligence could / reinforce the dollar's dominance"* and *"Boeing's runway looks clear as / makers of jet engines struggle"* now stitch vertically into their respective complete articles ($\ge 8$ words each).
+
+3. **Horizontal Anti-Collision Safeguard (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Enforced strict anti-collision: if both left and right headlines have $\ge 6$ words or terminal punctuation, horizontal bridging across column gutters is prohibited.
+   - Preserves horizontal wide banner stitching for open fragments (e.g. *"OpenAI says"* + *"rogue AI agent attack hit other companies"*).
+
+### Verification & QA
+- `make lint && make test`: **162/162 tests passing 100% GREEN in 2.69s**.
+- Added unit tests:
+  - `test_masthead_date_30_31_july_not_extracted_as_page_number` in `test_folio_detector.py`
+  - `test_total_pages_upper_bound_rejects_out_of_range_folios` in `test_folio_detector.py`
+  - `test_vertical_multiline_headlines_stitched_before_horizontal_lookahead` in `test_layout_analyzer.py`
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
 
 

@@ -535,7 +535,15 @@ class LayoutAnalyzer:
                         )
                     )
 
-                    # If both are complete independent headlines (>= 4 words), do not merge
+                    # If BOTH are complete long headlines (>= 6 words each), never merge
+                    if len(words_a) >= 6 and len(words_b) >= 6:
+                        continue
+
+                    # If elem_a ends with terminal punctuation (. ? ! : " ' ”)
+                    if elem_a.text.rstrip().endswith((".", "?", "!", ":", '"', "'", "”")):
+                        continue
+
+                    # If neither is open and both are independent (>= 4 words each), do not merge
                     if (
                         len(words_a) >= 4
                         and len(words_b) >= 4
@@ -580,12 +588,9 @@ class LayoutAnalyzer:
         page_width: float,
         page_height: float,
     ) -> list[LayoutElement]:
-        """Consolidate spatially adjacent text boxes and multi-line headlines."""
+        """Consolidate adjacent text boxes & headlines using Vertical-First column tracking."""
         if len(elements) <= 1:
             return elements
-
-        # Step 1: Merge multi-column sliced headlines horizontally across X-axis
-        elements = self._merge_horizontal_headline_slices(elements, page_width)
 
         # Sort elements primarily by top-Y, then left-X
         sorted_elements = sorted(elements, key=lambda e: (round(e.bbox[1] / 20.0), e.bbox[0]))
@@ -599,67 +604,80 @@ class LayoutAnalyzer:
         median_lh = float(sorted(body_heights)[len(body_heights) // 2]) if body_heights else 20.0
         max_v_gap = max(median_lh * 1.8, 15.0)
 
+        # Pass 1: Vertical Multi-Line Headline & Paragraph Stitching within Column Tracks
         consolidated: list[LayoutElement] = []
         for elem in sorted_elements:
             if not consolidated:
                 consolidated.append(elem)
                 continue
 
-            prev = consolidated[-1]
-
-            # Case A: Font-Aware Multi-Line Headline Stitching
-            if (
-                prev.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
-                and elem.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
-            ):
-                overlap_x = max(
-                    0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
-                )
-                min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
+            merged_vertically = False
+            for prev in reversed(consolidated):
                 gap_y = elem.bbox[1] - prev.bbox[3]
-                font_diff = (
-                    abs(prev.font_size - elem.font_size) / max(prev.font_size, elem.font_size, 1.0)
-                )
+                if gap_y > max_v_gap * 2.5:
+                    break
 
+                # Case A: Font-Aware Multi-Line Headline Stitching in same column track
                 if (
-                    min_w > 0
-                    and (overlap_x / min_w) >= 0.35
-                    and -5.0 <= gap_y <= max_v_gap * 2.0
-                    and font_diff <= 0.35
+                    prev.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                    and elem.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
                 ):
-                    prev.text = f"{prev.text} {elem.text}".strip()
-                    prev.bbox = (
-                        min(prev.bbox[0], elem.bbox[0]),
-                        min(prev.bbox[1], elem.bbox[1]),
-                        max(prev.bbox[2], elem.bbox[2]),
-                        max(prev.bbox[3], elem.bbox[3]),
+                    overlap_x = max(
+                        0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
                     )
-                    prev.font_size = max(prev.font_size, elem.font_size)
-                    continue
-
-            # Case B: Merge adjacent body paragraphs in the same column
-            if prev.block_type == BlockType.BODY_TEXT and elem.block_type == BlockType.BODY_TEXT:
-                overlap_x = max(
-                    0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
-                )
-                min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
-                gap_y = elem.bbox[1] - prev.bbox[3]
-                if min_w > 0 and (overlap_x / min_w) >= 0.65 and 0.0 <= gap_y <= max_v_gap:
-                    if prev.text.endswith("-"):
-                        prev.text = prev.text[:-1] + elem.text
-                    elif prev.text.endswith((".", "!", "?", ":")):
-                        prev.text = f"{prev.text}\n\n{elem.text}"
-                    else:
-                        prev.text = f"{prev.text} {elem.text}"
-                    prev.bbox = (
-                        min(prev.bbox[0], elem.bbox[0]),
-                        min(prev.bbox[1], elem.bbox[1]),
-                        max(prev.bbox[2], elem.bbox[2]),
-                        max(prev.bbox[3], elem.bbox[3]),
+                    min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
+                    font_diff = (
+                        abs(prev.font_size - elem.font_size)
+                        / max(prev.font_size, elem.font_size, 1.0)
                     )
-                    continue
 
-            consolidated.append(elem)
+                    if (
+                        min_w > 0
+                        and (overlap_x / min_w) >= 0.35
+                        and -5.0 <= gap_y <= max_v_gap * 2.0
+                        and font_diff <= 0.35
+                    ):
+                        prev.text = f"{prev.text} {elem.text}".strip()
+                        prev.bbox = (
+                            min(prev.bbox[0], elem.bbox[0]),
+                            min(prev.bbox[1], elem.bbox[1]),
+                            max(prev.bbox[2], elem.bbox[2]),
+                            max(prev.bbox[3], elem.bbox[3]),
+                        )
+                        prev.font_size = max(prev.font_size, elem.font_size)
+                        merged_vertically = True
+                        break
+
+                # Case B: Merge adjacent body paragraphs in the same column track
+                if (
+                    prev.block_type == BlockType.BODY_TEXT
+                    and elem.block_type == BlockType.BODY_TEXT
+                ):
+                    overlap_x = max(
+                        0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
+                    )
+                    min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
+                    if min_w > 0 and (overlap_x / min_w) >= 0.65 and 0.0 <= gap_y <= max_v_gap:
+                        if prev.text.endswith("-"):
+                            prev.text = prev.text[:-1] + elem.text
+                        elif prev.text.endswith((".", "!", "?", ":")):
+                            prev.text = f"{prev.text}\n\n{elem.text}"
+                        else:
+                            prev.text = f"{prev.text} {elem.text}"
+                        prev.bbox = (
+                            min(prev.bbox[0], elem.bbox[0]),
+                            min(prev.bbox[1], elem.bbox[1]),
+                            max(prev.bbox[2], elem.bbox[2]),
+                            max(prev.bbox[3], elem.bbox[3]),
+                        )
+                        merged_vertically = True
+                        break
+
+            if not merged_vertically:
+                consolidated.append(elem)
+
+        # Pass 2: Merge multi-column sliced headlines horizontally across X-axis
+        consolidated = self._merge_horizontal_headline_slices(consolidated, page_width)
 
         # Re-index element IDs
         for idx, elem in enumerate(consolidated):

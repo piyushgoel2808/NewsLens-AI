@@ -141,6 +141,7 @@ async def run_ingestion_pipeline(
                 is_advertisement_page=analysis.is_advertisement,
                 last_known_folio_num=last_known_folio,
                 last_known_pdf_page=last_known_pdf_page,
+                total_issue_pages=len(rendered_pages),
             )
             page.printed_page_number = printed_folio
             page.is_advertisement_page = analysis.is_advertisement

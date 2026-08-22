@@ -481,3 +481,75 @@ class TestLayoutAnalyzer:
         assert len(res.elements) == 2
         assert res.elements[0].block_type == BlockType.TABLE
         assert res.elements[1].block_type == BlockType.BODY_TEXT
+
+    def test_vertical_multiline_headlines_stitched_before_horizontal_lookahead(self) -> None:
+        """Verify side-by-side headlines stitch vertically into columns and do not collide."""
+        analyzer = LayoutAnalyzer()
+        blocks = [
+            # Column 1 - Line 1 (ends with auxiliary verb 'could')
+            DigitalTextBlock(
+                block_id=0,
+                text="How artificial intelligence could",
+                bbox=(50.0, 100.0, 450.0, 130.0),
+                mean_font_size=20.0,
+                is_heading_candidate=True,
+            ),
+            # Column 2 - Line 1 (ends with 'as')
+            DigitalTextBlock(
+                block_id=1,
+                text="Boeing's runway looks clear as",
+                bbox=(480.0, 100.0, 950.0, 130.0),
+                mean_font_size=20.0,
+                is_heading_candidate=True,
+            ),
+            # Column 1 - Line 2
+            DigitalTextBlock(
+                block_id=2,
+                text="reinforce the dollar's dominance",
+                bbox=(50.0, 135.0, 450.0, 165.0),
+                mean_font_size=20.0,
+                is_heading_candidate=True,
+            ),
+            # Column 2 - Line 2
+            DigitalTextBlock(
+                block_id=3,
+                text="makers of jet engines struggle",
+                bbox=(480.0, 135.0, 950.0, 165.0),
+                mean_font_size=20.0,
+                is_heading_candidate=True,
+            ),
+            # Column 1 - Body
+            DigitalTextBlock(
+                block_id=4,
+                text="Research notes explain the rising currency dynamic across markets.",
+                bbox=(50.0, 175.0, 450.0, 400.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+            # Column 2 - Body
+            DigitalTextBlock(
+                block_id=5,
+                text="Commercial aircraft deliveries are expected to surge as backlogs clear.",
+                bbox=(480.0, 175.0, 950.0, 400.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=15,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        headlines = [
+            e.text for e in res.elements
+            if e.block_type in (BlockType.HEADLINE, BlockType.BANNER_HEADLINE)
+        ]
+        # Must have 2 clean, discrete vertical headlines
+        assert len(headlines) == 2
+        assert "How artificial intelligence could reinforce the dollar's dominance" in headlines
+        assert "Boeing's runway looks clear as makers of jet engines struggle" in headlines
+        # Must never have the cross-column corrupted collision
+        assert not any("could Boeing's runway" in h for h in headlines)

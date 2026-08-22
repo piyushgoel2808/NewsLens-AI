@@ -222,11 +222,17 @@ class AgentWorkflow:
 
                             manifest_lines = []
                             for idx, a in enumerate(articles_list[:50], 1):
-                                folio_info = (
-                                    f"Page {a['printed_page']} (PDF p.{a['page_number']})"
-                                    if a.get("printed_page")
-                                    else f"PDF p.{a['page_number']}"
-                                )
+                                pr_page = str(a.get("printed_page") or "").strip()
+                                pg_num = a.get("page_number", 1)
+                                if (
+                                    pr_page
+                                    and not pr_page.startswith("Unnumbered")
+                                    and not pr_page.startswith("PDF p.")
+                                    and pr_page != str(pg_num)
+                                ):
+                                    folio_info = f"Page {pr_page} (PDF p.{pg_num})"
+                                else:
+                                    folio_info = f"Page {pg_num}"
                                 author_info = (
                                     f" by {a['byline_author']}" if a.get("byline_author") else ""
                                 )

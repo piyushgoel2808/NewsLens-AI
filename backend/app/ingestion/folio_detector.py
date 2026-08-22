@@ -43,20 +43,24 @@ _DAYS_OF_WEEK_PATTERN = (
 
 # Date and metadata stripping patterns
 _DATE_PATTERNS: list[re.Pattern[str]] = [
-    # Day Month Year (e.g. "30 JULY 2026", "30th July, 2026", "30 JULY")
+    # Day Month Year (e.g. "30 JULY 2026", "30th July, 2026", "30 JULY", "THURSDAY. 30 JULY")
     re.compile(
-        rf"(?i)\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTHS_PATTERN}\b(?:\s*,?\s*\d{{2,4}})?",
+        rf"(?i)\b\d{{1,2}}(?:st|nd|rd|th)?[\s\.\,\-\/]+{_MONTHS_PATTERN}\b(?:\s*[\.\,\-\/]*\s*\d{{2,4}})?",
     ),
     # Month Day Year (e.g. "JULY 30, 2026", "July 30th 2026", "July 30")
     re.compile(
-        rf"(?i)\b{_MONTHS_PATTERN}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:\s*,?\s*\d{{2,4}})?\b",
+        rf"(?i)\b{_MONTHS_PATTERN}[\s\.\,\-\/]+\d{{1,2}}(?:st|nd|rd|th)?(?:\s*[\.\,\-\/]*\s*\d{{2,4}})?\b",
     ),
+    # Day-of-week with day number e.g. "THURSDAY. 30", "FRIDAY, 31"
+    re.compile(rf"(?i)\b{_DAYS_OF_WEEK_PATTERN}[\s\.\,\-\/]+\d{{1,2}}\b"),
     # Full numeric dates (e.g. "30/07/2026", "30-07-2026", "30.07.2026")
-    re.compile(r"\b\d{1,2}[/\.-]\d{1,2}[/\.-]\d{2,4}\b"),
+    re.compile(r"\b\d{1,2}[\s\.\,\-\/]+\d{1,2}[\s\.\,\-\/]+\d{2,4}\b"),
     # Standalone 4-digit years (e.g. 1920..2099)
     re.compile(r"\b(?:19|20)\d{2}\b"),
     # Day names
     re.compile(rf"(?i)\b{_DAYS_OF_WEEK_PATTERN}\b"),
+    # Month names alone
+    re.compile(rf"(?i)\b{_MONTHS_PATTERN}\b"),
     # Volume / Issue / Edition identifiers (e.g. "VOL. 18 NO. 145", "VOL. LXVIII NO. 22,415")
     re.compile(r"(?i)\b(?:VOL(?:UME)?\.?|NO\.?|ISSUE|EDITION)\s*[\w\d,\.-]+"),
     # Currency / Price tags (e.g. "Rs. 10", "Rs 10.00", "₹10")
@@ -75,8 +79,12 @@ _ISOLATED_FOLIO_REGEX = re.compile(
 )
 
 
-def _validate_folio_candidate(cand: str | None) -> str | None:
-    """Validate that candidate string is a genuine printed folio and not brand text."""
+def _validate_folio_candidate(
+    cand: str | None,
+    total_issue_pages: int | None = None,
+    current_pdf_page: int | None = None,
+) -> str | None:
+    """Validate that candidate string is a valid printed folio and within bounds."""
     if not cand:
         return None
     val = cand.strip().upper()
@@ -85,10 +93,15 @@ def _validate_folio_candidate(cand: str | None) -> str | None:
     # Reject single alpha characters that are not digits or valid Roman 'I', 'V', 'X'
     if len(val) == 1 and not val.isdigit() and val not in {"I", "V", "X"}:
         return None
-    # If digits, validate reasonable newspaper page range
+    # If digits, validate within physical document bounds
     if val.isdigit():
         num = int(val)
-        if 1 <= num <= 200:
+        max_allowed = 200
+        if total_issue_pages is not None:
+            max_allowed = max(total_issue_pages + 2, (current_pdf_page or 1) + 2)
+        elif current_pdf_page is not None:
+            max_allowed = current_pdf_page + 4
+        if 1 <= num <= max_allowed:
             return str(num)
         return None
     # If section code e.g. B-3 or A-12
@@ -143,12 +156,21 @@ class FolioDetector:
         except (ValueError, TypeError):
             return None
 
-    def _extract_folio_from_text(self, text: str) -> str | None:
+    def _extract_folio_from_text(
+        self,
+        text: str,
+        total_issue_pages: int | None = None,
+        current_pdf_page: int | None = None,
+    ) -> str | None:
         """Scan a candidate text string for an explicit or boundary-positioned folio."""
         # Step 1: Check for explicit PAGE 7 / PAGE B-2 format
         pg_match = FOLIO_PAGE_REGEX.search(text)
         if pg_match:
-            cand = _validate_folio_candidate(pg_match.group(1))
+            cand = _validate_folio_candidate(
+                pg_match.group(1),
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=current_pdf_page,
+            )
             if cand is not None:
                 return cand
 
@@ -160,42 +182,66 @@ class FolioDetector:
         # Step 3: Check header line with pipes/delimiters on cleaned text
         hl_match = FOLIO_HEADER_LINE_REGEX.search(cleaned)
         if hl_match:
-            cand = _validate_folio_candidate(hl_match.group(1))
+            cand = _validate_folio_candidate(
+                hl_match.group(1),
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=current_pdf_page,
+            )
             if cand is not None:
                 return cand
 
         # Step 4: Check for explicit section folio: "B-4"
         sec_match = SECTION_FOLIO_REGEX.search(cleaned)
         if sec_match:
-            cand = _validate_folio_candidate(sec_match.group(1))
+            cand = _validate_folio_candidate(
+                sec_match.group(1),
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=current_pdf_page,
+            )
             if cand is not None:
                 return cand
 
         # Step 5: Check for standalone corner digit (e.g. single number line "13")
         corner_match = FOLIO_CORNER_DIGIT_REGEX.match(cleaned)
         if corner_match:
-            cand = _validate_folio_candidate(corner_match.group(1))
+            cand = _validate_folio_candidate(
+                corner_match.group(1),
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=current_pdf_page,
+            )
             if cand is not None:
                 return cand
 
         # Step 6: Positional Priority - Trailing edge (e.g. "BENGALURU 13" -> "13")
         trail_match = _TRAILING_FOLIO_REGEX.search(cleaned)
         if trail_match:
-            cand = _validate_folio_candidate(trail_match.group(1))
+            cand = _validate_folio_candidate(
+                trail_match.group(1),
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=current_pdf_page,
+            )
             if cand is not None:
                 return cand
 
         # Step 7: Positional Priority - Leading edge (e.g. "13 BENGALURU" -> "13")
         lead_match = _LEADING_FOLIO_REGEX.search(cleaned)
         if lead_match:
-            cand = _validate_folio_candidate(lead_match.group(1))
+            cand = _validate_folio_candidate(
+                lead_match.group(1),
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=current_pdf_page,
+            )
             if cand is not None:
                 return cand
 
         # Step 8: Isolated number or section code within cleaned string
         isolated_matches = _ISOLATED_FOLIO_REGEX.findall(cleaned)
         if isolated_matches:
-            cand = _validate_folio_candidate(str(isolated_matches[-1]))
+            cand = _validate_folio_candidate(
+                str(isolated_matches[-1]),
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=current_pdf_page,
+            )
             if cand is not None:
                 return cand
 
@@ -210,6 +256,7 @@ class FolioDetector:
         is_advertisement_page: bool = False,
         last_known_folio_num: int | None = None,
         last_known_pdf_page: int | None = None,
+        total_issue_pages: int | None = None,
     ) -> str:
         """Extract printed folio using relative Y-axis coordinate zone filtering.
 
@@ -236,7 +283,9 @@ class FolioDetector:
                 and page_number > last_known_pdf_page
             ):
                 delta = page_number - last_known_pdf_page
-                return str(last_known_folio_num + delta)
+                inferred = last_known_folio_num + delta
+                if total_issue_pages is None or inferred <= total_issue_pages + 2:
+                    return str(inferred)
             return f"Unnumbered (PDF p.{page_number})"
 
         # Auto-detect coordinate scale (DPI Sync)
@@ -279,7 +328,11 @@ class FolioDetector:
         if header_blocks:
             # First check individual header blocks
             for _, h_text in header_blocks:
-                folio = self._extract_folio_from_text(h_text)
+                folio = self._extract_folio_from_text(
+                    h_text,
+                    total_issue_pages=total_issue_pages,
+                    current_pdf_page=page_number,
+                )
                 if folio is not None:
                     logger.debug(
                         "Detected folio from header block",
@@ -293,7 +346,11 @@ class FolioDetector:
 
             # Next check concatenated header string
             combined_header = " | ".join(t for _, t in header_blocks)
-            folio = self._extract_folio_from_text(combined_header)
+            folio = self._extract_folio_from_text(
+                combined_header,
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=page_number,
+            )
             if folio is not None:
                 logger.debug(
                     "Detected folio from concatenated header text",
@@ -308,7 +365,11 @@ class FolioDetector:
         # Step 2: Scan isolated footer zone
         if footer_blocks:
             for _, f_text in footer_blocks:
-                folio = self._extract_folio_from_text(f_text)
+                folio = self._extract_folio_from_text(
+                    f_text,
+                    total_issue_pages=total_issue_pages,
+                    current_pdf_page=page_number,
+                )
                 if folio is not None:
                     logger.debug(
                         "Detected folio from footer block",
@@ -321,7 +382,11 @@ class FolioDetector:
                     return folio
 
             combined_footer = " | ".join(t for _, t in footer_blocks)
-            folio = self._extract_folio_from_text(combined_footer)
+            folio = self._extract_folio_from_text(
+                combined_footer,
+                total_issue_pages=total_issue_pages,
+                current_pdf_page=page_number,
+            )
             if folio is not None:
                 logger.debug(
                     "Detected folio from concatenated footer text",
@@ -339,7 +404,6 @@ class FolioDetector:
 
         # Section Boundary Safety: Sequential offset extrapolation only applies
         # if last_known_folio_num is a genuine integer and within a 5-page window.
-        # Supplements crossing section boundaries (e.g. Page B-1) do not increment numerically.
         if (
             isinstance(last_known_folio_num, int)
             and last_known_pdf_page is not None
@@ -348,15 +412,16 @@ class FolioDetector:
             delta = page_number - last_known_pdf_page
             if 1 <= delta <= 5:
                 inferred = last_known_folio_num + delta
-                logger.debug(
-                    "Extrapolated folio from last known page",
-                    extra={
-                        "page_number": page_number,
-                        "inferred_folio": inferred,
-                        "last_known": last_known_folio_num,
-                    },
-                )
-                return str(inferred)
+                if total_issue_pages is None or inferred <= total_issue_pages + 2:
+                    logger.debug(
+                        "Extrapolated folio from last known page",
+                        extra={
+                            "page_number": page_number,
+                            "inferred_folio": inferred,
+                            "last_known": last_known_folio_num,
+                        },
+                    )
+                    return str(inferred)
 
         return f"Unnumbered (PDF p.{page_number})"
 
@@ -371,6 +436,7 @@ class FolioDetector:
         last_known_folio_num: int | None = None,
         last_known_pdf_page: int | None = None,
         blocks: Sequence[Any] | None = None,
+        total_issue_pages: int | None = None,
     ) -> str:
         """Determine the printed folio string for a page with spatial coordinate filtering."""
         all_blocks: list[Any] = []
@@ -389,5 +455,6 @@ class FolioDetector:
             is_advertisement_page=is_advertisement_page,
             last_known_folio_num=last_known_folio_num,
             last_known_pdf_page=last_known_pdf_page,
+            total_issue_pages=total_issue_pages,
         )
 

@@ -389,3 +389,48 @@ class TestFolioDetector:
             last_known_pdf_page=19,
         )
         assert folio == "Unnumbered (PDF p.20)"
+
+    def test_masthead_date_30_31_july_not_extracted_as_page_number(self) -> None:
+        """Verify date stamps like '30 JULY 2026' are not extracted as page 30."""
+        detector = FolioDetector()
+        ocr_blocks = [
+            OCRBlock(
+                text="MINT | THURSDAY, 30 JULY 2026",
+                bbox=(50.0, 20.0, 950.0, 50.0),
+                confidence=0.98,
+            ),
+            OCRBlock(
+                text="Opinion column on artificial intelligence...",
+                bbox=(50.0, 100.0, 450.0, 600.0),
+                confidence=0.95,
+            ),
+        ]
+        folio = detector.extract_printed_page_number(
+            page_number=15,
+            height_px=1400.0,
+            width_px=1000.0,
+            ocr_blocks=ocr_blocks,
+            total_issue_pages=16,
+        )
+        assert folio != "30"
+        assert folio == "Unnumbered (PDF p.15)"
+
+    def test_total_pages_upper_bound_rejects_out_of_range_folios(self) -> None:
+        """Verify out-of-range folios (e.g. 42 on 16-page issue) are rejected."""
+        detector = FolioDetector()
+        blocks = [
+            DigitalTextBlock(
+                block_id=0,
+                text="PAGE 42",
+                bbox=(50.0, 20.0, 150.0, 50.0),
+            )
+        ]
+        folio = detector.extract_printed_page_number(
+            page_number=10,
+            height_px=1400.0,
+            width_px=1000.0,
+            digital_blocks=blocks,
+            total_issue_pages=16,
+        )
+        assert folio != "42"
+        assert folio == "Unnumbered (PDF p.10)"
