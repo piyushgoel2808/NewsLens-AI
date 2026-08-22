@@ -22,6 +22,7 @@ class TestAgentWorkflow:
         mock_session_factory.return_value.__aenter__.return_value = mock_db
 
         workflow = AgentWorkflow(session_factory=mock_session_factory)
+        workflow._cache.get_query = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
         # Mock hybrid search return
         workflow._hybrid_search.search = AsyncMock(  # type: ignore[method-assign]

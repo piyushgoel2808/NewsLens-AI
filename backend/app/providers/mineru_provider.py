@@ -639,7 +639,18 @@ class MinerUProvider(DocumentLayoutProvider, OCREngine):
             )
             return neural_res
 
-        # If neural OCR returned empty or failed, return empty result with valid structure
+        # Fallback to Docling OCR if neural OCR is unavailable or fails
+        try:
+            from app.providers.docling_provider import DoclingProvider
+
+            docling_p = DoclingProvider(lang=lang)
+            return await docling_p.ocr(image_bytes, lang_hint=lang)
+        except Exception as e:
+            logger.warning(
+                "Docling OCR fallback in MinerUProvider failed",
+                extra={"error": str(e)},
+            )
+
         return OCRResult(
             blocks=[],
             full_text="",

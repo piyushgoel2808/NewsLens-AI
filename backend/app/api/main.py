@@ -91,6 +91,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Prometheus Metrics Middleware
+    from app.core.metrics import PrometheusMiddleware, generate_prometheus_metrics
+
+    app.add_middleware(PrometheusMiddleware)
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        """Prometheus metrics exposition endpoint."""
+        metrics_data, content_type = generate_prometheus_metrics()
+        return Response(content=metrics_data, media_type=content_type)
+
     # Request ID middleware
     @app.middleware("http")
     async def add_request_id(request: Request, call_next: Any) -> Response:

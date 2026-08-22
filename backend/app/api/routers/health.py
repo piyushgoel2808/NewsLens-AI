@@ -82,6 +82,25 @@ async def _check_redis() -> dict[str, Any]:
         return {"status": "down", "error": str(e)[:200]}
 
 
+async def _check_celery() -> dict[str, Any]:
+    t0 = time.monotonic()
+    try:
+        from app.ingestion.celery_app import celery_app
+
+        loop = asyncio.get_running_loop()
+        ping_res = await loop.run_in_executor(
+            None, lambda: celery_app.control.ping(timeout=0.5)
+        )
+        active_workers = len(ping_res) if ping_res else 0
+        return {
+            "status": "up" if active_workers > 0 else "idle",
+            "active_workers": active_workers,
+            "latency_ms": round((time.monotonic() - t0) * 1000),
+        }
+    except Exception as e:
+        return {"status": "down", "error": str(e)[:200]}
+
+
 @router.get("/health", summary="Health check", tags=["health"])
 async def health_check() -> dict[str, Any]:
     """Check the health of all NewsLens-AI downstream dependencies.
@@ -90,22 +109,29 @@ async def health_check() -> dict[str, Any]:
         JSON object with overall status and per-dependency details.
         Status values: 'healthy' (all up) | 'degraded' (some down).
     """
-    mysql_result, qdrant_result, minio_result, redis_result = await asyncio.gather(
-        _check_mysql(),
-        _check_qdrant(),
-        _check_minio(),
-        _check_redis(),
-        return_exceptions=False,
+    mysql_result, qdrant_result, minio_result, redis_result, celery_result = (
+        await asyncio.gather(
+            _check_mysql(),
+            _check_qdrant(),
+            _check_minio(),
+            _check_redis(),
+            _check_celery(),
+            return_exceptions=False,
+        )
     )
     deps = {
         "mysql": mysql_result,
         "qdrant": qdrant_result,
         "minio": minio_result,
         "redis": redis_result,
+        "celery": celery_result,
     }
-    all_up = all(isinstance(d, dict) and d.get("status") == "up" for d in deps.values())
+    critical_deps = [mysql_result, qdrant_result, minio_result, redis_result]
+    all_critical_up = all(
+        isinstance(d, dict) and d.get("status") == "up" for d in critical_deps
+    )
     return {
-        "status": "healthy" if all_up else "degraded",
+        "status": "healthy" if all_critical_up else "degraded",
         "dependencies": deps,
         "version": "0.1.0",
     }

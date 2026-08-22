@@ -1238,7 +1238,57 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
-*Next phase: Phase 7 — Observability, Performance & Cost Control (OpenTelemetry, Prometheus metrics, Token Accounting)*
+## Phase 7 — Observability, Performance, Cost Control & Resilience
+
+**Date**: 2026-08-22
+**Status**: Completed ✅
+
+### What was built
+
+1. **Prometheus Metrics Engine & Middleware (`app/core/metrics.py`, `app/api/main.py`)**:
+   - Integrated non-blocking Prometheus metrics tracking:
+     - `newslens_http_requests_total(method, endpoint, status_code)`
+     - `newslens_http_request_duration_seconds(method, endpoint)`
+     - `newslens_agent_queries_total(archetype, status, model)`
+     - `newslens_agent_query_duration_seconds(archetype)`
+     - `newslens_llm_tokens_total(provider, model, direction)`
+     - `newslens_llm_cost_usd_total(provider, model)`
+     - `newslens_cache_events_total(cache_type, event)`
+     - `newslens_cascade_fallbacks_total(primary_provider, fallback_provider, reason)`
+     - `newslens_ingestion_pages_total(newspaper, extraction_mode)`
+     - `newslens_ingestion_stage_duration_seconds(stage)`
+     - `newslens_celery_active_tasks`
+   - Mounted `GET /metrics` exposition endpoint and registered `PrometheusMiddleware` in FastAPI.
+
+2. **Resilient Redis Cache Store with Graceful Degradation (`app/storage/cache_store.py`)**:
+   - Deterministic SHA-256 query caching computed from normalized composite tuples: `compute_query_cache_key(query, model_id, date_filters, issue_ids)`.
+   - Text embedding vector caching with `compute_embedding_cache_key(text, model)`.
+   - Safe exception handling wrapping all Redis interactions — if Redis is down, unreachable, or times out, queries pass through seamlessly to underlying providers without raising unhandled exceptions.
+
+3. **Token Cost Accountant & Budget Guardrails (`app/core/cost_tracker.py`)**:
+   - Official pricing catalog across Anthropic (`claude-3-5-sonnet`, `claude-3-7-sonnet`, `claude-3-5-haiku`), OpenAI (`gpt-4o`, `gpt-4o-mini`, `text-embedding-3-large`), Groq (`llama-3.3-70b-versatile`), and \$0.00 local engines.
+   - `calculate_cost_usd()`, `record_usage_and_cost()`, and `validate_query_budget(estimated_cost_usd, max_budget_usd)`.
+
+4. **Fault-Tolerant Provider Cascade Manager (`app/providers/cascade.py`)**:
+   - `CascadeChatProvider`: Prioritized fallback chains with automatic recovery from HTTP 429 rate limits, connection timeouts, and provider errors.
+   - Structured JSON audit logging (`logger.warning("Provider cascade triggered", extra={...})`) and Prometheus fallback counter tracking.
+
+5. **Extended Health Checks & Celery Telemetry (`app/api/routers/health.py`)**:
+   - Added asynchronous worker ping inspection `_check_celery()` reporting active worker nodes and queue latency.
+
+### Verification & QA
+- `make lint`: **0 errors across 71 backend source files** (`ruff` + `mypy` strict).
+- `make test`: **208/208 tests passing 100% GREEN in 17.75s**.
+- Added unit & integration tests:
+  - `tests/test_metrics.py`: Verifies `/metrics` endpoint and non-blocking metric collection.
+  - `tests/test_cache_store.py`: Verifies deterministic key normalization and graceful degradation on Redis downtime.
+  - `tests/test_cost_tracker.py`: Verifies pricing resolution, cost calculation, and budget guardrails.
+  - `tests/test_cascade.py`: Verifies fallback chains, structured logging, and all-failed exceptions.
+
+---
+
+*Next phase: Phase 8 — Hosted Deployment & Production Orchestration (Multi-stage Dockerfiles, Docker Compose Prod, Helm/K8s)*
+
 
 
 

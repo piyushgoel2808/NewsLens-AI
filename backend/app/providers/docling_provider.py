@@ -141,20 +141,20 @@ class DoclingProvider(DocumentLayoutProvider, OCREngine):
 
         try:
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
             from docling.document_converter import DocumentConverter, PdfFormatOption
 
             pipeline_options = PdfPipelineOptions()
             pipeline_options.do_ocr = need_ocr
             pipeline_options.do_table_structure = self.do_table_structure
 
-            # Configure OCR language hints if OCR is requested
-            ocr_opt = getattr(pipeline_options, "ocr_options", None)
-            if need_ocr and ocr_opt:
+            # Configure OCR options if OCR is requested
+            if need_ocr:
+                pipeline_options.ocr_options = RapidOcrOptions()
                 if self.lang == "hi":
-                    ocr_opt.lang = ["hi", "en"]
+                    pipeline_options.ocr_options.lang = ["hi", "en"]
                 else:
-                    ocr_opt.lang = ["en"]
+                    pipeline_options.ocr_options.lang = ["en"]
 
             converter = DocumentConverter(
                 format_options={

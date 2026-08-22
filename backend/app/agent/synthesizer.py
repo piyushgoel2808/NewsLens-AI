@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from app.agent.state import AgentCitation
+from app.core.cost_tracker import record_usage_and_cost
 from app.core.logging import get_logger
 from app.providers.base import ChatModelProvider, Message
 from app.providers.registry import get_registry
@@ -154,7 +155,15 @@ class AnswerSynthesizer:
                     temperature=0.1,
                 )
                 answer_text = response.text
-                cost_usd = response.cost_usd
+                p_name = getattr(provider, "provider_name", "llm")
+                m_name = getattr(provider, "model_name", "default")
+                calc_cost = record_usage_and_cost(
+                    provider=p_name,
+                    model=m_name,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                )
+                cost_usd = max(calc_cost, response.cost_usd)
             except Exception as e:
                 logger.warning(
                     "LLM synthesis failed, generating rule-based grounded summary",

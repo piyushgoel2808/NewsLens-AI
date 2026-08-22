@@ -12,11 +12,13 @@ from app.agent.planner import QueryPlanner
 from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.synthesizer import AnswerSynthesizer
 from app.core.logging import get_logger
+from app.core.metrics import record_agent_query
 from app.models.query import QueryLog
 from app.retrieval.entity_filter import EntitySearchEngine
 from app.retrieval.hybrid_search import HybridSearchEngine, SearchFilter
 from app.retrieval.sql_analytics import SQLAnalyticsEngine
 from app.retrieval.timeline_builder import TimelineBuilder
+from app.storage.cache_store import CacheStore, compute_query_cache_key
 
 logger = get_logger(__name__)
 
@@ -32,6 +34,7 @@ class AgentWorkflow:
         self._entity_search = EntitySearchEngine(session_factory=session_factory)
         self._timeline_builder = TimelineBuilder(session_factory=session_factory)
         self._sql_analytics = SQLAnalyticsEngine(session_factory=session_factory)
+        self._cache = CacheStore()
 
         # Build Graph
         self._graph = self._build_graph()
@@ -347,8 +350,26 @@ class AgentWorkflow:
         user_id: str | None = None,
         model_override: str | None = None,
     ) -> AgentState:
-        """Execute the complete agentic query cycle."""
+        """Execute the complete agentic query cycle with caching and metrics."""
         t0 = time.monotonic()
+
+        # 1. Deterministic Redis Cache Check
+        cache_key = compute_query_cache_key(
+            query=query,
+            model_id=model_override or "",
+        )
+        cached_result = await self._cache.get_query(cache_key)
+        if cached_result:
+            dur = time.monotonic() - t0
+            record_agent_query(
+                archetype=cached_result.get("archetype", "cached"),
+                status="cached",
+                model=model_override or "default",
+                duration_seconds=dur,
+            )
+            # Reconstruct typed AgentState from cached dict
+            return cached_result  # type: ignore[return-value]
+
         initial_state: AgentState = {
             "query": query,
             "archetype": "factual_lookup",
@@ -364,7 +385,29 @@ class AgentWorkflow:
             "error": None,
         }
 
-        final_state: AgentState = await self._graph.ainvoke(initial_state)
-        final_state["latency_ms"] = round((time.monotonic() - t0) * 1000)
+        try:
+            final_state: AgentState = await self._graph.ainvoke(initial_state)
+            dur = time.monotonic() - t0
+            final_state["latency_ms"] = round(dur * 1000)
 
-        return final_state
+            # Record Prometheus Metrics
+            record_agent_query(
+                archetype=final_state.get("archetype", "factual_lookup"),
+                status="success",
+                model=model_override or "default",
+                duration_seconds=dur,
+            )
+
+            # 2. Store in Redis Cache
+            await self._cache.set_query(cache_key, dict(final_state), ttl_seconds=3600)
+
+            return final_state
+        except Exception as e:
+            dur = time.monotonic() - t0
+            record_agent_query(
+                archetype="unknown",
+                status="error",
+                model=model_override or "default",
+                duration_seconds=dur,
+            )
+            raise e
