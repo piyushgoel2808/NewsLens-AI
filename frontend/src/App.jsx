@@ -77,13 +77,23 @@ function MainApp() {
         </div>
       </nav>
 
-      {/* Main View Container */}
+      {/* Main View Container (Preserves tab state across switching) */}
       <main className="flex-1 overflow-hidden relative">
-        {activeTab === 'reader' && <BroadsheetReader />}
-        {activeTab === 'agent' && <AgentAssistant />}
-        {activeTab === 'archive' && <ArchiveExplorer />}
-        {activeTab === 'ingest' && <UploadTrigger />}
-        {activeTab === 'settings' && <RawDataViewer />}
+        <div className={activeTab === 'reader' ? 'h-full w-full' : 'hidden'}>
+          <BroadsheetReader />
+        </div>
+        <div className={activeTab === 'agent' ? 'h-full w-full' : 'hidden'}>
+          <AgentAssistant />
+        </div>
+        <div className={activeTab === 'archive' ? 'h-full w-full' : 'hidden'}>
+          <ArchiveExplorer />
+        </div>
+        <div className={activeTab === 'ingest' ? 'h-full w-full' : 'hidden'}>
+          <UploadTrigger />
+        </div>
+        <div className={activeTab === 'settings' ? 'h-full w-full' : 'hidden'}>
+          <RawDataViewer />
+        </div>
       </main>
     </div>
   );

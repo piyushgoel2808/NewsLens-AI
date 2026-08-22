@@ -11,6 +11,46 @@ export function ActiveHighlightProvider({ children }) {
   const [isPulsing, setIsPulsing] = useState(false);
   const [hoveredArticleId, setHoveredArticleId] = useState(null);
 
+  // Persistent Selected LLM Model (Default: groq_qwen)
+  const [selectedModel, setSelectedModelState] = useState(() => {
+    return localStorage.getItem('newslens_selected_model') || 'groq_qwen';
+  });
+
+  const setSelectedModel = useCallback((model) => {
+    setSelectedModelState(model);
+    localStorage.setItem('newslens_selected_model', model);
+  }, []);
+
+  // Persistent Chat Messages across tab switches and reloads
+  const [chatMessages, setChatMessagesState] = useState(() => {
+    try {
+      const saved = localStorage.getItem('newslens_chat_messages');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return [
+      {
+        role: 'assistant',
+        content:
+          'Hello! I am your **NewsLens-AI Research Assistant**. I can perform multi-step newspaper intelligence investigations, cross-newspaper comparative analysis, quantitative trend tracking, and temporal timeline reconstruction with verifiable spatial citations.',
+        isStreaming: false,
+      },
+    ];
+  });
+
+  const setChatMessages = useCallback((updater) => {
+    setChatMessagesState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      try {
+        localStorage.setItem('newslens_chat_messages', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
   const highlightArticle = useCallback((issueId, pageNumber, articleId, bboxes = []) => {
     if (issueId) setSelectedIssueId(issueId);
     if (pageNumber) setSelectedPageNumber(pageNumber);
@@ -49,6 +89,10 @@ export function ActiveHighlightProvider({ children }) {
         setIsPulsing,
         hoveredArticleId,
         setHoveredArticleId,
+        selectedModel,
+        setSelectedModel,
+        chatMessages,
+        setChatMessages,
         highlightArticle,
         openIssueInReader,
       }}

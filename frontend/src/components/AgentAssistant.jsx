@@ -19,18 +19,15 @@ import {
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
 
 export default function AgentAssistant() {
-  const { highlightArticle } = useActiveHighlight();
+  const {
+    highlightArticle,
+    selectedModel,
+    setSelectedModel,
+    chatMessages: messages,
+    setChatMessages: setMessages,
+  } = useActiveHighlight();
 
   const [query, setQuery] = useState('');
-  const [modelOverride, setModelOverride] = useState('');
-  const [messages, setMessages] = useState([
-    {
-      role: 'assistant',
-      content:
-        'Hello! I am your **NewsLens-AI Research Assistant**. I can perform multi-step newspaper intelligence investigations, cross-newspaper comparative analysis, quantitative trend tracking, and temporal timeline reconstruction with verifiable spatial citations.',
-      isStreaming: false,
-    },
-  ]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
 
@@ -84,7 +81,7 @@ export default function AgentAssistant() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: queryText,
-          model_override: modelOverride || undefined,
+          model_override: selectedModel || undefined,
         }),
       });
 
@@ -186,30 +183,65 @@ export default function AgentAssistant() {
     });
   };
 
+  const handleClearChat = () => {
+    setMessages([
+      {
+        role: 'assistant',
+        content:
+          'Hello! I am your **NewsLens-AI Research Assistant**. I can perform multi-step newspaper intelligence investigations, cross-newspaper comparative analysis, quantitative trend tracking, and temporal timeline reconstruction with verifiable spatial citations.',
+        isStreaming: false,
+      },
+    ]);
+  };
+
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 max-w-5xl mx-auto p-4">
-      {/* Top Controls & Model Override */}
-      <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-800 text-xs">
+      {/* Top Controls & Model Selector */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-800 text-xs">
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-emerald-400" />
           <span className="font-semibold text-slate-200">Agentic Research Planner & Answerer</span>
         </div>
 
         <div className="flex items-center gap-2">
-          <Cpu className="w-3.5 h-3.5 text-slate-400" />
-          <span className="text-slate-400">LLM Provider:</span>
+          <Cpu className="w-3.5 h-3.5 text-emerald-400" />
+          <span className="text-slate-400 font-medium">LLM Model:</span>
           <select
-            value={modelOverride}
-            onChange={(e) => setModelOverride(e.target.value)}
-            className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs outline-none cursor-pointer"
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            className="bg-slate-900 border border-emerald-500/50 rounded-lg px-2.5 py-1 text-emerald-300 font-medium text-xs outline-none cursor-pointer hover:border-emerald-400 focus:border-emerald-400 transition-colors"
           >
-            <option value="">Default Configured Model</option>
-            {availableModels.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name} ({m.provider})
-              </option>
-            ))}
+            <option value="groq_qwen">⚡ Groq / Qwen 3.6 (Fastest)</option>
+            <option value="groq_llama">⚡ Groq / Llama 3.3 70B</option>
+            <option value="groq_gpt_oss">⚡ Groq / GPT-OSS 120B</option>
+            <option value="ollama_chat">💻 Ollama / Llama 3.2 (Local)</option>
+            <option value="anthropic_sonnet">☁️ Anthropic / Claude 3.5 Sonnet</option>
+            <option value="openai_gpt4o">☁️ OpenAI / GPT-4o</option>
+            {availableModels
+              .filter(
+                (m) =>
+                  ![
+                    'groq_qwen',
+                    'groq_llama',
+                    'groq_gpt_oss',
+                    'ollama_chat',
+                    'anthropic_sonnet',
+                    'openai_gpt4o',
+                  ].includes(m.name)
+              )
+              .map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name} ({m.provider})
+                </option>
+              ))}
           </select>
+          <button
+            onClick={handleClearChat}
+            className="text-slate-400 hover:text-slate-200 text-xs px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-800 transition-colors ml-1"
+            title="Reset Chat History"
+          >
+            Clear History
+          </button>
         </div>
       </div>
 

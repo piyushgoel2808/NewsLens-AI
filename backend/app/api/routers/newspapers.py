@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -68,19 +68,26 @@ async def list_newspapers(
     ]
 
 
-@router.get("/api/issues", summary="List issues with optional filtering")
+@router.get("/api/issues", summary="List issues matching filters with article and chunk counts")
 async def list_issues(
-    newspaper_id: int | None = Query(None),
-    date_from: str | None = Query(None),
-    date_to: str | None = Query(None),
-    status: str | None = Query(None),
-    limit: int = Query(50, ge=1, le=200),
+    newspaper_id: int | None = Query(None, description="Filter by newspaper ID"),
+    date_from: str | None = Query(None, description="Filter issues from date (YYYY-MM-DD)"),
+    date_to: str | None = Query(None, description="Filter issues up to date (YYYY-MM-DD)"),
+    status: str | None = Query(None, description="Filter by status (pending|parsed|failed)"),
+    limit: int = Query(50, ge=1, le=200, description="Max issues to return"),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """List issues matching date, newspaper, and status criteria."""
     stmt = (
-        select(Issue)
+        select(
+            Issue,
+            func.count(distinct(Article.id)).label("article_count"),
+            func.count(distinct(ArticleChunk.id)).label("chunk_count"),
+        )
+        .outerjoin(Article, Article.issue_id == Issue.id)
+        .outerjoin(ArticleChunk, ArticleChunk.article_id == Article.id)
         .options(selectinload(Issue.newspaper), selectinload(Issue.pages))
+        .group_by(Issue.id)
         .order_by(desc(Issue.issue_date))
     )
 
@@ -95,7 +102,7 @@ async def list_issues(
 
     stmt = stmt.limit(limit)
     res = await db.execute(stmt)
-    issues = res.scalars().all()
+    rows = res.all()
 
     return [
         {
@@ -106,10 +113,12 @@ async def list_issues(
             "edition": iss.edition,
             "language": iss.language,
             "total_pages": iss.total_pages or len(iss.pages),
+            "article_count": art_cnt,
+            "chunk_count": chk_cnt,
             "ingestion_status": iss.ingestion_status,
             "created_at": iss.created_at.isoformat() if iss.created_at else None,
         }
-        for iss in issues
+        for iss, art_cnt, chk_cnt in rows
     ]
 
 
@@ -170,6 +179,7 @@ async def get_issue_details(
         "edition": issue.edition,
         "language": issue.language,
         "total_pages": len(pages_data),
+        "article_count": len(articles_data),
         "ingestion_status": issue.ingestion_status,
         "pages": pages_data,
         "articles": articles_data,

@@ -246,6 +246,8 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     google_api_key: str | None = None
     voyage_api_key: str | None = None
+    hf_token: str | None = None
+    huggingface_token: str | None = None
 
     @field_validator(
         "groq_api_key",
@@ -254,6 +256,8 @@ class Settings(BaseSettings):
         "google_api_key",
         "voyage_api_key",
         "qdrant_api_key",
+        "hf_token",
+        "huggingface_token",
         mode="before",
     )
     @classmethod
@@ -353,4 +357,12 @@ class Settings(BaseSettings):
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Return the singleton Settings instance (cached after first call)."""
-    return Settings()
+    s = Settings()
+    token = s.hf_token or s.huggingface_token
+    if token:
+        import os
+
+        os.environ["HF_TOKEN"] = token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = token
+        os.environ["HUGGINGFACE_HUB_TOKEN"] = token
+    return s

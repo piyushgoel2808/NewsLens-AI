@@ -67,6 +67,13 @@ providers:
     supports_vision: false
     supports_tool_use: true
 
+  groq_llama:
+    provider: groq
+    model: llama-3.3-70b-versatile
+    context_window: 128000
+    supports_vision: false
+    supports_tool_use: true
+
   groq_gpt_oss:
     provider: groq
     model: openai/gpt-oss-120b
@@ -108,8 +115,8 @@ providers:
 
 task_bindings:
   # --- Query pipeline ---
-  query_planner: ollama_chat      # Classifies queries + generates retrieval plans
-  answerer: ollama_chat           # Synthesizes final answer with citations
+  query_planner: groq_qwen        # Classifies queries + generates retrieval plans
+  answerer: groq_qwen             # Synthesizes final answer with citations
 
   # --- Ingestion pipeline ---
   layout_analysis: docling_parser  # Docling neural layout, table structure, and multi-column reading order

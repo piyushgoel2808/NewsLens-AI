@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 
 export default function CanvasOverlay({
   pageWidth = 2800,
@@ -12,6 +12,43 @@ export default function CanvasOverlay({
   onHoverArticle,
 }) {
   const [tooltip, setTooltip] = useState(null);
+
+  // Auto-detect coordinate domain: scale viewBox if bboxes are in PDF points (72 DPI) vs 300 DPI raster
+  const { vbWidth, vbHeight } = useMemo(() => {
+    let maxBx = 0;
+    let maxBy = 0;
+
+    articles.forEach((art) => {
+      (art.bboxes || []).forEach((b) => {
+        if (Array.isArray(b) && b.length >= 4) {
+          if (b[2] > maxBx) maxBx = b[2];
+          if (b[3] > maxBy) maxBy = b[3];
+        }
+      });
+    });
+
+    customHighlightBboxes.forEach((b) => {
+      if (Array.isArray(b) && b.length >= 4) {
+        if (b[2] > maxBx) maxBx = b[2];
+        if (b[3] > maxBy) maxBy = b[3];
+      }
+    });
+
+    // If coordinates are in 72 DPI PDF point space (< 1500) but raster is 300 DPI (> 1800)
+    if (maxBx > 0 && maxBx < pageWidth * 0.65 && pageWidth > 1500) {
+      const ptWidth = (pageWidth * 72) / 300;
+      const ptHeight = (pageHeight * 72) / 300;
+      return {
+        vbWidth: ptWidth > maxBx ? ptWidth : maxBx * 1.05,
+        vbHeight: ptHeight > maxBy ? ptHeight : maxBy * 1.05,
+      };
+    }
+
+    return {
+      vbWidth: pageWidth,
+      vbHeight: pageHeight,
+    };
+  }, [articles, customHighlightBboxes, pageWidth, pageHeight]);
 
   const getColorStyles = (articleType, isSelected, isHovered, isPulse) => {
     const type = (articleType || '').toLowerCase();
@@ -73,7 +110,7 @@ export default function CanvasOverlay({
   return (
     <div className="absolute inset-0 w-full h-full pointer-events-none">
       <svg
-        viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+        viewBox={`0 0 ${vbWidth} ${vbHeight}`}
         className="w-full h-full pointer-events-auto select-none"
         preserveAspectRatio="none"
       >
@@ -103,7 +140,14 @@ export default function CanvasOverlay({
               }}
               onMouseEnter={(e) => {
                 if (onHoverArticle) onHoverArticle(art.id);
-                const rect = e.currentTarget.getBoundingClientRect();
+                setTooltip({
+                  headline: art.headline,
+                  type: art.article_type || 'News',
+                  x: e.clientX,
+                  y: e.clientY - 40,
+                });
+              }}
+              onMouseMove={(e) => {
                 setTooltip({
                   headline: art.headline,
                   type: art.article_type || 'News',

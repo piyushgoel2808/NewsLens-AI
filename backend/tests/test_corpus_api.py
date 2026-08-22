@@ -88,20 +88,20 @@ async def test_list_issues_endpoint() -> None:
     created = MagicMock()
     created.isoformat.return_value = "2026-08-21T00:00:00"
 
-    mock_res.scalars.return_value.all.return_value = [
-        _MockIssue(
-            id=1,
-            newspaper_id=1,
-            newspaper=mock_np,
-            issue_date="2026-08-21",
-            edition="morning",
-            language="en",
-            total_pages=4,
-            pages=[MagicMock(), MagicMock()],
-            ingestion_status="completed",
-            created_at=created,
-        )
-    ]
+    mock_issue = _MockIssue(
+        id=1,
+        newspaper_id=1,
+        newspaper=mock_np,
+        issue_date="2026-08-21",
+        edition="morning",
+        language="en",
+        total_pages=4,
+        pages=[MagicMock(), MagicMock()],
+        ingestion_status="completed",
+        created_at=created,
+    )
+    mock_res.all.return_value = [(mock_issue, 5, 12)]
+    mock_res.scalars.return_value.all.return_value = [mock_issue]
     mock_db.execute = AsyncMock(return_value=mock_res)
 
     async def override_get_db() -> AsyncGenerator[MagicMock, None]:
