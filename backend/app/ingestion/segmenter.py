@@ -23,13 +23,19 @@ logger = get_logger(__name__)
 
 # Regular expressions to detect jump lines / continuation markers
 JUMP_OUT_REGEX = re.compile(
-    r"(?:continued\s+on\s+page\s+(\d+)|see\s+page\s+(\d+)|cont['’]d\s+p\.?\s*(\d+)|turn\s+to\s+page\s+(\d+))",
+    r"(?:continued\s+on\s+page\s+(\d+)|see\s+page\s+(\d+)|cont['’]d\s+p\.?\s*(\d+)|turn\s+to\s+page\s+(\d+)|details\s+on\s+page\s+(\d+)|report\s+on\s+page\s+(\d+))",
     re.IGNORECASE,
 )
 
 JUMP_IN_REGEX = re.compile(
     r"(?:continued\s+from\s+page\s+(\d+)|from\s+page\s+(\d+)|cont['’]d\s+from\s+p\.?\s*(\d+))",
     re.IGNORECASE,
+)
+
+TEASER_REGEX = re.compile(
+    r"(?i)\b(?:turn\s+to\s+page\s*(\d+)|see\s+page\s*(\d+)|details\s+on\s+page\s*(\d+)|"
+    r"report\s+on\s+page\s*(\d+)|full\s+report\s+on\s+page\s*(\d+)|page\s*(\d+)|"
+    r"continued\s+on\s+page\s*(\d+)|\.{3}|…)\b"
 )
 
 BYLINE_REGEX = re.compile(
@@ -77,6 +83,7 @@ class SegmentedArticle:
     bbox_list: list[tuple[float, float, float, float]] = field(default_factory=list)
     jump_to_page: int | None = None
     jump_from_page: int | None = None
+    is_teaser: bool = False
     raw_blocks: list[OrderedReadingBlock] = field(default_factory=list)
 
 
@@ -170,12 +177,18 @@ class ArticleSegmenter:
                     headline_text = lines[0][:200] if lines else f"Page {page_number} News"
                     initial_body = text
 
+                is_teaser_candidate = bool(
+                    block.block_type == BlockType.TEASER
+                    or (page_number in (1, 2) and TEASER_REGEX.search(text))
+                )
+
                 current_article = SegmentedArticle(
                     article_temp_id=f"p{page_number}_art_{article_counter}",
                     headline=headline_text,
                     body_text=initial_body,
                     bbox_list=[block.bbox],
                     jump_from_page=jump_from,
+                    is_teaser=is_teaser_candidate,
                     raw_blocks=[block],
                 )
                 article_counter += 1
@@ -192,9 +205,18 @@ class ArticleSegmenter:
             # Check if this block contains a jump-to destination
             jump_out_match = JUMP_OUT_REGEX.search(text)
             if jump_out_match:
-                pages = [p for p in jump_out_match.groups() if p is not None]
+                pages = [p for p in jump_out_match.groups() if p is not None and p.isdigit()]
                 if pages:
                     current_article.jump_to_page = int(pages[0])
+
+            # Check teaser regex if jump not yet set
+            if current_article.jump_to_page is None:
+                teaser_match = TEASER_REGEX.search(text)
+                if teaser_match:
+                    pages = [p for p in teaser_match.groups() if p is not None and p.isdigit()]
+                    if pages:
+                        current_article.jump_to_page = int(pages[0])
+                        current_article.is_teaser = True
 
             # Append to body text
             if current_article.body_text:
@@ -215,6 +237,21 @@ class ArticleSegmenter:
                 else current_article.body_text
             )
             current_article.word_count = len(full_content.split())
+            if (
+                page_number in (1, 2)
+                and current_article.word_count < 45
+                and (
+                    current_article.jump_to_page is not None
+                    or TEASER_REGEX.search(full_content)
+                )
+            ):
+                current_article.is_teaser = True
+                if current_article.jump_to_page is None:
+                    t_match = TEASER_REGEX.search(full_content)
+                    if t_match:
+                        t_pages = [p for p in t_match.groups() if p is not None and p.isdigit()]
+                        if t_pages:
+                            current_article.jump_to_page = int(t_pages[0])
             articles.append(current_article)
 
         # Fallback for OCR/scanned pages with blocks but 0 articles detected
@@ -265,8 +302,10 @@ class ArticleSegmenter:
                 art.headline.startswith("[Advertisement]")
                 or art.headline.startswith("[Public Notice]")
             )
+            is_valid_teaser = bool(art.is_teaser and art.jump_to_page is not None)
             is_valid_structured_article = (
-                is_shorts
+                is_valid_teaser
+                or is_shorts
                 or is_ad
                 or (has_valid_hl and has_distinct_body and w_count >= 12)
                 or (w_count >= MIN_ARTICLE_WORD_COUNT)
@@ -299,12 +338,12 @@ class ArticleSegmenter:
                     and len(first.body_text.split()) >= 5
                 )
                 first_is_valid = (
-                    first.headline.startswith("[Shorts]") and first.word_count >= 15
-                ) or (
-                    first.headline.startswith("[Advertisement]")
-                ) or (
-                    first_has_valid_hl and first_has_body and first.word_count >= 12
-                ) or (first.word_count >= MIN_ARTICLE_WORD_COUNT)
+                    (first.is_teaser and first.jump_to_page is not None)
+                    or (first.headline.startswith("[Shorts]") and first.word_count >= 15)
+                    or (first.headline.startswith("[Advertisement]"))
+                    or (first_has_valid_hl and first_has_body and first.word_count >= 12)
+                    or (first.word_count >= MIN_ARTICLE_WORD_COUNT)
+                )
 
                 if not first_is_valid:
                     first = consolidated.pop(0)

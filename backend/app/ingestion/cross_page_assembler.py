@@ -136,11 +136,12 @@ class CrossPageAssembler:
                             current.headline, cand.headline
                         )
 
-                        # Case 1: Explicit jump target match
-                        if target_page == next_page and (
+                        # Case 1: Explicit jump target match (or teaser target match)
+                        is_teaser_target = bool(art.is_teaser and target_page == next_page)
+                        if (target_page == next_page or is_teaser_target) and (
                             cand.jump_from_page == current_source_page
-                            or containment >= 0.40
-                            or jaccard >= 0.25
+                            or containment >= 0.30
+                            or jaccard >= 0.20
                         ):
                             matched_continuation = cand
                             break
@@ -170,6 +171,14 @@ class CrossPageAssembler:
 
                     if matched_continuation:
                         absorbed_ids.add(matched_continuation.article_temp_id)
+                        # If continuation has a more complete headline or author, adopt it
+                        if len(matched_continuation.headline) > len(current.headline):
+                            current.headline = matched_continuation.headline
+                        if matched_continuation.byline_author and not current.byline_author:
+                            current.byline_author = matched_continuation.byline_author
+                        if matched_continuation.subheadline and not current.subheadline:
+                            current.subheadline = matched_continuation.subheadline
+
                         current.full_text += "\n\n" + matched_continuation.body_text
                         current.pages_mapping.append(
                             PageBBoxMapping(
@@ -185,6 +194,16 @@ class CrossPageAssembler:
                             break
 
                 current.word_count = len(current.full_text.split())
+
+                # If unmatched teaser has < 35 words, absorb into previous article
+                if art.is_teaser and block_order_counter == 1 and current.word_count < 35:
+                    if assembled:
+                        prev_art = assembled[-1]
+                        prev_art.full_text += f"\n\n{current.full_text}"
+                        prev_art.word_count = len(prev_art.full_text.split())
+                        prev_art.pages_mapping[0].bbox_list.extend(art.bbox_list)
+                    continue
+
                 assembled.append(current)
 
         logger.info(

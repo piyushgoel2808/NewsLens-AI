@@ -292,3 +292,107 @@ class TestLayoutAnalyzer:
         assert len(res.elements) == 2
         assert not any("THURSDAY, 30 JULY 2026" in e.text for e in res.elements)
         assert res.elements[0].text == "CENTRAL BANK MAINTAINS REPO RATE STABILITY"
+
+    def test_noise_and_boilerplate_blocks_purged(self) -> None:
+        """Verify brand logos, sponsor boilerplate (JM Financial, ASBA), and dates are purged."""
+        analyzer = LayoutAnalyzer()
+        blocks = [
+            # Top 5% isolated brand logo
+            DigitalTextBlock(
+                block_id=0,
+                text="mint",
+                bbox=(50.0, 10.0, 150.0, 40.0),
+                mean_font_size=14.0,
+                is_heading_candidate=False,
+            ),
+            # Financial sponsor box
+            DigitalTextBlock(
+                block_id=1,
+                text="BOOK RUNNING LEAD MANAGERS: JM FINANCIAL | AXIS CAPITAL",
+                bbox=(50.0, 800.0, 950.0, 840.0),
+                mean_font_size=9.0,
+                is_heading_candidate=False,
+            ),
+            # ASBA stamp
+            DigitalTextBlock(
+                block_id=2,
+                text="ASBA: Applications Supported by Blocked Amount",
+                bbox=(50.0, 850.0, 450.0, 880.0),
+                mean_font_size=8.0,
+                is_heading_candidate=False,
+            ),
+            # Actual article headline and body
+            DigitalTextBlock(
+                block_id=3,
+                text="PHARMA EXPORTS GROW 12 PERCENT IN FIRST QUARTER",
+                bbox=(50.0, 100.0, 950.0, 140.0),
+                mean_font_size=20.0,
+                is_heading_candidate=True,
+            ),
+            DigitalTextBlock(
+                block_id=4,
+                text="Indian generic pharmaceutical shipments to the US and Europe rose sharply.",
+                bbox=(50.0, 150.0, 450.0, 250.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=1,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        assert len(res.elements) == 2
+        element_texts = [e.text for e in res.elements]
+        assert not any(t.lower() == "mint" for t in element_texts)
+        assert not any("JM FINANCIAL" in t for t in element_texts)
+        assert not any("ASBA" in t for t in element_texts)
+        assert res.elements[0].text == "PHARMA EXPORTS GROW 12 PERCENT IN FIRST QUARTER"
+
+    def test_horizontal_headline_stitching_across_columns(self) -> None:
+        """Verify multi-column sliced headlines are merged horizontally into a banner headline."""
+        analyzer = LayoutAnalyzer()
+        blocks = [
+            # Headline Slice 1 (Left column track: x=50..450, y=100..140)
+            DigitalTextBlock(
+                block_id=0,
+                text="OpenAI says",
+                bbox=(50.0, 100.0, 450.0, 140.0),
+                mean_font_size=24.0,
+                is_heading_candidate=True,
+            ),
+            # Headline Slice 2 (Right column track: x=480..950, y=100..140)
+            DigitalTextBlock(
+                block_id=1,
+                text="rogue AI agent attack hit other companies",
+                bbox=(480.0, 100.0, 950.0, 140.0),
+                mean_font_size=24.0,
+                is_heading_candidate=True,
+            ),
+            # Underlying body text
+            DigitalTextBlock(
+                block_id=2,
+                text="A state-sponsored group attempted to exploit developer toolchains.",
+                bbox=(50.0, 160.0, 450.0, 250.0),
+                mean_font_size=10.0,
+                is_heading_candidate=False,
+            ),
+        ]
+
+        res = analyzer.analyze_from_text_blocks(
+            page_number=1,
+            width_px=1000,
+            height_px=1400,
+            digital_blocks=blocks,
+        )
+
+        # The two headline slices must be merged horizontally into 1 banner headline
+        assert len(res.elements) == 2
+        assert res.elements[0].block_type == BlockType.BANNER_HEADLINE
+        expected_full_hl = "OpenAI says rogue AI agent attack hit other companies"
+        assert res.elements[0].text == expected_full_hl
+        assert res.elements[0].bbox[0] == 50.0
+        assert res.elements[0].bbox[2] == 950.0

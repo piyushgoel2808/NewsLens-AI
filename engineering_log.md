@@ -649,7 +649,38 @@ In heavy OCR and dense broadsheet newspaper issues (such as full-page IPO advert
 
 ---
 
+## Phase 6.1.11 — Noise Purging, Horizontal Lookahead Headline Stitching & Teaser Routing
+
+**Date**: 2026-08-22  
+**Status**: Completed ✅
+
+### Architectural Enhancements & Fixes
+1. **Global Noise & Boilerplate Blacklist (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Implemented `is_noise_or_boilerplate_block()`:
+     - Top 5% coordinate exclusion zone for isolated brand logos and slogans (`"mint"`, `"Livemint"`, `"ThinkAhead"`).
+     - Financial sponsor, banker, and legal stamp blacklist (`"JM Financial"`, `"Axis Capital"`, `"ICICI Securities"`, `"ASBA"`, `"Book Running Lead Managers"`, `"Registrar to the Issue"`, `"CIN:"`, `"SEBI Registration"`).
+     - Full regex matching for standard date strings (`Monday, 30 July 2026`).
+     - Prevents noise boxes from entering the layout element and article segmentation queues.
+
+2. **Font-Aware Horizontal Multi-Column Headline Stitching (`backend/app/ingestion/layout_analyzer.py`)**:
+   - Implemented `_merge_horizontal_headline_slices()`:
+     - Detects heading slices sitting on the same horizontal baseline ($|y_{0,A} - y_{0,B}| \le 0.25 \times \text{height}$ with $\ge 60\%$ vertical overlap).
+     - Checks X-axis adjacency across column gutters ($\text{gap\_x} \le 60\text{px}$) and font size similarity ($\le 25\%$).
+     - Merges horizontal multi-column headline slices (e.g. `"OpenAI says"` + `"rogue AI agent attack hit other companies"` $\to$ `"OpenAI says rogue AI agent attack hit other companies"`) into single spanning banner headline elements before column vertical binding.
+
+3. **Teaser Classification & Parent Continuation Stitching (`backend/app/ingestion/segmenter.py`, `backend/app/ingestion/cross_page_assembler.py`)**:
+   - Added `BlockType.TEASER` and `is_teaser` flag for front-page lead pointers (`"Cognizant beats IT peers, Page 11"`).
+   - In `CrossPageAssembler`: matches Page 1 teasers against target interior continuation articles, attributing `primary_page_number = 1`, preserving the full story text, and recording multi-page spatial mappings.
+   - Absorbs unmatched teasers into preceding Page 1 articles, guaranteeing 0 orphan 10-word teaser stubs in the database.
+
+### Verification & QA
+- `make lint && make test`: **154/154 tests passing 100% GREEN in 2.76s**.
+- Added unit tests in `test_layout_analyzer.py` and `test_cross_page.py`.
+
+---
+
 *Next phase: Phase 6.2 — Frontend UI Polish (Tailwind CSS, Radix UI, Reader UI, Visual Bounding-Box Overlays)*
+
 
 
 

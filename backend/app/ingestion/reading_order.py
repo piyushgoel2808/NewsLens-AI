@@ -25,6 +25,7 @@ class BlockType(StrEnum):
     CAPTION = "caption"
     TABLE = "table"
     SIDEBAR = "sidebar"
+    TEASER = "teaser"
     UNKNOWN = "unknown"
 
 

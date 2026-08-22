@@ -158,3 +158,79 @@ class TestCrossPageAssembler:
         assembled = assembler.assemble_issue_articles({1: [p1_art], 4: [p4_art]})
         # Must stay as 2 distinct independent articles
         assert len(assembled) == 2
+
+    def test_front_page_teaser_stitches_to_interior_parent_article(self) -> None:
+        """Verify front-page teaser pointer links to interior full parent article."""
+        assembler = CrossPageAssembler()
+
+        # Page 1 Teaser (short headline + pointer "Page 11")
+        p1_teaser = SegmentedArticle(
+            article_temp_id="p1_teaser_cognizant",
+            headline="Cognizant beats IT peers,",
+            body_text="Page 11",
+            jump_to_page=11,
+            is_teaser=True,
+            word_count=5,
+            bbox_list=[(50.0, 50.0, 300.0, 90.0)],
+        )
+
+        # Page 11 Full Article
+        p11_article = SegmentedArticle(
+            article_temp_id="p11_full_cognizant",
+            headline="Cognizant beats IT peers with 5.6% revenue jump in Q2",
+            byline_author="By Tech Desk",
+            body_text=(
+                "Cognizant Technology Solutions Corp. on Wednesday beat second-quarter "
+                "revenue expectations and raised its full-year guidance as demand for "
+                "AI engineering services rebounded across North America and Europe."
+            ),
+            word_count=35,
+            bbox_list=[(50.0, 100.0, 450.0, 600.0)],
+        )
+
+        assembled = assembler.assemble_issue_articles({1: [p1_teaser], 11: [p11_article]})
+
+        # Exactly 1 stitched article with Page 1 primary attribution
+        assert len(assembled) == 1
+        art = assembled[0]
+        assert art.primary_page_number == 1
+        assert art.headline == "Cognizant beats IT peers with 5.6% revenue jump in Q2"
+        assert art.byline_author == "By Tech Desk"
+        assert "revenue expectations" in art.full_text
+        assert len(art.pages_mapping) == 2
+        assert art.pages_mapping[0].page_number == 1
+        assert art.pages_mapping[1].page_number == 11
+
+    def test_unmatched_teaser_absorbed_without_stub_article(self) -> None:
+        """Verify unmatched front-page teaser is absorbed rather than creating a stub."""
+        assembler = CrossPageAssembler()
+
+        # Normal Page 1 lead article
+        p1_lead = SegmentedArticle(
+            article_temp_id="p1_lead",
+            headline="UNION BUDGET ANNOUNCES MAJOR INFRASTRUCTURE OUTLAY",
+            body_text=(
+                "The Finance Minister presented the annual budget focusing on "
+                "railways and solar power."
+            ),
+            word_count=20,
+            bbox_list=[(50.0, 100.0, 950.0, 500.0)],
+        )
+
+        # Unmatched Page 1 teaser pointing to Page 15 (which is missing from PDF)
+        p1_orphan_teaser = SegmentedArticle(
+            article_temp_id="p1_orphan_teaser",
+            headline="SpaceX launches new satellite cluster,",
+            body_text="Details on Page 15",
+            jump_to_page=15,
+            is_teaser=True,
+            word_count=8,
+            bbox_list=[(50.0, 520.0, 300.0, 560.0)],
+        )
+
+        assembled = assembler.assemble_issue_articles({1: [p1_lead, p1_orphan_teaser]})
+
+        # Exactly 1 article (orphan teaser absorbed, no 8-word stub created)
+        assert len(assembled) == 1
+        assert assembled[0].headline == "UNION BUDGET ANNOUNCES MAJOR INFRASTRUCTURE OUTLAY"
+        assert "SpaceX launches" in assembled[0].full_text

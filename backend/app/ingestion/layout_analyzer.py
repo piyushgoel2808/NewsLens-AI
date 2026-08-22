@@ -35,6 +35,32 @@ from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
 
+SPONSOR_AND_BOILERPLATE_PATTERNS = re.compile(
+    r"(?i)\b(?:jm\s+financial|axis\s+capital|icici\s+securities|kfin\s+technologies|"
+    r"link\s+intime|kotak\s+mahindra\s+capital|sbi\s+capital\s+markets|dam\s+capital|"
+    r"equirus|motilal\s+oswal|nomura\s+financial|jefferies|citigroup\s+global|"
+    r"morgan\s+stanley|goldman\s+sachs|hdfc\s+bank\s+limited|asba|"
+    r"applications\s+supported\s+by\s+blocked\s+amount|book\s+running\s+lead\s+managers|"
+    r"registrar\s+to\s+the\s+issue|cin\s*:\s*[l|u]\d+|sebi\s+registration|"
+    r"corporate\s+identity\s+number|registered\s+office|compliance\s+officer|"
+    r"company\s+secretary|statutory\s+auditor|red\s+herring\s+prospectus|"
+    r"initial\s+public\s+offering|equity\s+shares\s+of\s+face\s+value)\b"
+)
+
+DATE_LINE_PATTERN = re.compile(
+    r"(?i)\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+    r"[,\.\s]+\d{1,2}[\s\.\-]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+    r"[\s\.\-]+\d{2,4}\b|"
+    r"\b\d{1,2}[\s\.\-]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+    r"[\s\.\-]+\d{2,4}\b"
+)
+
+BRAND_EXCLUSION_KEYWORDS = re.compile(
+    r"(?i)\b(?:mint|livemint|thinkahead|think\s+ahead|think\s+growth|the\s+hindu|"
+    r"the\s+times\s+of\s+india|times\s+of\s+india|economic\s+times|business\s+standard|"
+    r"indian\s+express|hindustan\s+times|dainik\s+bhaskar|epaper|edition)\b"
+)
+
 MASTHEAD_KEYWORDS = re.compile(
     r"(?i)\b(?:mint|livemint|hindu|the\s+hindu|times\s+of\s+india|economic\s+times|"
     r"business\s+standard|indian\s+express|hindustan\s+times|dainik\s+bhaskar|"
@@ -44,29 +70,69 @@ MASTHEAD_KEYWORDS = re.compile(
     r"page\s*\d+|pg\s*\d+|p\.\s*\d+)\b"
 )
 
+STANDALONE_NOISE_TOKENS = frozenset(
+    {
+        "mint", "livemint", "thinkahead", "think ahead", "asba",
+        "jm financial", "axis capital", "kfin", "nse", "bse",
+    }
+)
+
+
+def is_noise_or_boilerplate_block(
+    elem: LayoutElement,
+    page_height: float,
+    page_width: float,
+) -> bool:
+    """Filter out isolated brand logos, sponsor boilerplate, dates, and noise blocks."""
+    text = elem.text.strip()
+    if not text:
+        return True
+
+    text_lower = text.lower().strip(".:;, -")
+    if text_lower in STANDALONE_NOISE_TOKENS:
+        return True
+
+    words = text.split()
+    x0, y0, x1, y1 = elem.bbox
+
+    # 1. Top 5% Coordinate Exclusion (Brand text / Mastheads in absolute header zone)
+    if y1 <= page_height * 0.05:
+        if (
+            BRAND_EXCLUSION_KEYWORDS.search(text)
+            or MASTHEAD_KEYWORDS.search(text)
+            or DATE_LINE_PATTERN.search(text)
+        ):
+            return True
+        if len(words) <= 2 and (len(text) < 10 or re.match(r"^\d{1,3}$", text)):
+            return True
+
+    # 2. Top 8% Masthead / Date / Slogan check
+    if y1 <= page_height * 0.08 and len(words) <= 15 and MASTHEAD_KEYWORDS.search(text):
+        return True
+
+    # 3. Pure Date Strings
+    if len(words) <= 8 and DATE_LINE_PATTERN.search(text):
+        return True
+
+    # 4. Financial Sponsor / Legal Boilerplate Boxes
+    if len(words) <= 15 and SPONSOR_AND_BOILERPLATE_PATTERNS.search(text):
+        return True
+
+    # 5. Short standalone numbers or tokens in header zone
+    return bool(
+        y1 <= page_height * 0.08
+        and len(words) <= 2
+        and (len(text) < 10 or re.match(r"^\d{1,3}$", text))
+    )
+
 
 def is_masthead_or_running_header(
     elem: LayoutElement,
     page_height: float,
     page_width: float,
 ) -> bool:
-    """Detect if a layout element is a running header, date line, or masthead in top 8% of page."""
-    x0, y0, x1, y1 = elem.bbox
-    # Must be located in the top 8% of the page
-    if y1 > page_height * 0.08 and y0 > page_height * 0.06:
-        return False
-
-    text = elem.text.strip()
-    if not text:
-        return False
-
-    words = text.split()
-    # Check for keywords matching date lines, newspaper branding, volume info, or folios
-    if len(words) <= 15 and MASTHEAD_KEYWORDS.search(text):
-        return True
-
-    # Standalone numbers or very short strings in header band
-    return bool(len(words) <= 3 and (len(text) < 15 or re.match(r"^\d{1,3}$", text)))
+    """Compatibility alias for is_noise_or_boilerplate_block."""
+    return is_noise_or_boilerplate_block(elem, page_height, page_width)
 
 
 LAYOUT_EXTRACTION_SCHEMA: dict[str, Any] = {
@@ -314,6 +380,94 @@ class LayoutAnalyzer:
             source="spatial_rule_based",
         )
 
+    def _merge_horizontal_headline_slices(
+        self,
+        elements: list[LayoutElement],
+        page_width: float,
+    ) -> list[LayoutElement]:
+        """Merge multi-column sliced headlines that lie on the same horizontal plane."""
+        if len(elements) <= 1:
+            return elements
+
+        elems = list(elements)
+        merged = True
+
+        while merged:
+            merged = False
+            for i in range(len(elems)):
+                elem_a = elems[i]
+                is_heading_a = (
+                    elem_a.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                    or elem_a.font_size > 13.0
+                )
+                if not is_heading_a:
+                    continue
+
+                for j in range(len(elems)):
+                    if i == j:
+                        continue
+                    elem_b = elems[j]
+                    is_heading_b = (
+                        elem_b.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                        or elem_b.font_size > 13.0
+                    )
+                    if not is_heading_b:
+                        continue
+
+                    # Require A to be physically left of B
+                    ax0, ay0, ax1, ay1 = elem_a.bbox
+                    bx0, by0, bx1, by1 = elem_b.bbox
+                    if bx0 < ax0:
+                        continue
+
+                    ha = max(ay1 - ay0, 1.0)
+                    hb = max(by1 - by0, 1.0)
+                    min_h = min(ha, hb)
+                    max_h = max(ha, hb)
+
+                    # 1. Horizontal Baseline and Vertical Overlap Alignment
+                    baseline_diff = abs(ay0 - by0)
+                    v_overlap = max(0.0, min(ay1, by1) - max(ay0, by0))
+                    v_overlap_ratio = v_overlap / min_h
+
+                    # 2. X-axis gap (must be adjacent across columns)
+                    gap_x = bx0 - ax1
+                    max_gap_x = max(page_width * 0.08, 60.0)
+
+                    # 3. Font similarity
+                    font_diff = abs(elem_a.font_size - elem_b.font_size) / max(
+                        elem_a.font_size, elem_b.font_size, 1.0
+                    )
+
+                    if (
+                        baseline_diff <= 0.25 * max_h
+                        and v_overlap_ratio >= 0.60
+                        and -10.0 <= gap_x <= max_gap_x
+                        and font_diff <= 0.25
+                    ):
+                        # Merge A and B
+                        elem_a.text = f"{elem_a.text} {elem_b.text}".strip()
+                        elem_a.bbox = (
+                            min(ax0, bx0),
+                            min(ay0, by0),
+                            max(ax1, bx1),
+                            max(ay1, by1),
+                        )
+                        elem_a.font_size = max(elem_a.font_size, elem_b.font_size)
+                        total_width = elem_a.bbox[2] - elem_a.bbox[0]
+                        if total_width >= page_width * 0.40:
+                            elem_a.block_type = BlockType.BANNER_HEADLINE
+                        else:
+                            elem_a.block_type = BlockType.HEADLINE
+
+                        elems.pop(j)
+                        merged = True
+                        break
+                if merged:
+                    break
+
+        return elems
+
     def _consolidate_elements(
         self,
         elements: list[LayoutElement],
@@ -323,6 +477,9 @@ class LayoutAnalyzer:
         """Consolidate spatially adjacent text boxes and multi-line headlines."""
         if len(elements) <= 1:
             return elements
+
+        # Step 1: Merge multi-column sliced headlines horizontally across X-axis
+        elements = self._merge_horizontal_headline_slices(elements, page_width)
 
         # Sort elements primarily by top-Y, then left-X
         sorted_elements = sorted(elements, key=lambda e: (round(e.bbox[1] / 20.0), e.bbox[0]))
