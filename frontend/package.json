@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",
+    "@tanstack/react-virtual": "^3.14.10",
     "autoprefixer": "^10.5.4",
     "clsx": "^2.1.1",
     "lucide-react": "^1.33.0",

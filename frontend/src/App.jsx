@@ -6,6 +6,7 @@ import {
   Sliders,
   UploadCloud,
   Sparkles,
+  GitMerge,
 } from 'lucide-react';
 import {
   ActiveHighlightProvider,
@@ -14,6 +15,7 @@ import {
 import BroadsheetReader from './components/BroadsheetReader';
 import AgentAssistant from './components/AgentAssistant';
 import ArchiveExplorer from './components/ArchiveExplorer';
+import TimelineWorkspace from './components/TimelineWorkspace';
 import UploadTrigger from './components/UploadTrigger';
 import RawDataViewer from './components/RawDataViewer';
 
@@ -23,6 +25,7 @@ function MainApp() {
   const navigationTabs = [
     { id: 'reader', label: 'Broadsheet Reader', icon: Newspaper },
     { id: 'agent', label: 'Agent Assistant', icon: Bot },
+    { id: 'timeline', label: 'Storyline Trajectory', icon: GitMerge },
     { id: 'archive', label: 'Archive Explorer', icon: Layers },
     { id: 'ingest', label: 'Ingestion Console', icon: UploadCloud },
     { id: 'settings', label: 'Model Settings & API', icon: Sliders },
@@ -84,6 +87,9 @@ function MainApp() {
         </div>
         <div className={activeTab === 'agent' ? 'h-full w-full' : 'hidden'}>
           <AgentAssistant />
+        </div>
+        <div className={activeTab === 'timeline' ? 'h-full w-full' : 'hidden'}>
+          <TimelineWorkspace />
         </div>
         <div className={activeTab === 'archive' ? 'h-full w-full' : 'hidden'}>
           <ArchiveExplorer />

@@ -16,6 +16,7 @@ import {
   RefreshCw,
   AlertCircle,
   Globe,
+  GitMerge,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -177,6 +178,7 @@ export default function AgentAssistant() {
     setSelectedModel,
     chatMessages: messages,
     setChatMessages: setMessages,
+    openTimeline,
   } = useActiveHighlight();
 
   const [query, setQuery] = useState('');
@@ -711,14 +713,31 @@ export default function AgentAssistant() {
                 </div>
               )}
 
-              {/* Telemetry Summary Footer */}
-              {msg.telemetry && (
-                <div className="flex items-center gap-3 mt-3 pt-2 text-[10px] text-slate-500 font-mono border-t border-slate-800">
-                  <span>Latency: {msg.telemetry.latency_ms}ms</span>
-                  <span>•</span>
-                  <span>Evidence: {msg.telemetry.evidence_count} chunks</span>
-                  <span>•</span>
-                  <span>Cost: ${msg.telemetry.cost_usd.toFixed(4)}</span>
+              {/* Storyline Trajectory Quick Action */}
+              {msg.role === 'assistant' && !msg.isStreaming && (
+                <div className="mt-3 pt-2 flex items-center justify-between border-t border-slate-800/80">
+                  <button
+                    onClick={() => {
+                      const userQuery =
+                        idx > 0 && messages[idx - 1]?.role === 'user'
+                          ? messages[idx - 1].content
+                          : query || 'Tata Power clean energy';
+                      openTimeline(userQuery);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 transition-all hover:scale-105"
+                  >
+                    <GitMerge className="w-3.5 h-3.5" />
+                    <span>Explore in Storyline Trajectory Canvas</span>
+                  </button>
+
+                  {/* Telemetry Summary Footer */}
+                  {msg.telemetry && (
+                    <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono">
+                      <span>{msg.telemetry.latency_ms}ms</span>
+                      <span>•</span>
+                      <span>${msg.telemetry.cost_usd.toFixed(4)}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

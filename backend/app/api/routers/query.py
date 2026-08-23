@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
@@ -20,6 +21,7 @@ from app.agent.planner import QueryPlanner
 from app.agent.synthesizer import parse_thought_and_answer
 from app.models.base import get_db, get_session_factory
 from app.models.query import QueryLog
+from app.retrieval.timeline_builder import NarrativeTrajectoryResponse, TimelineBuilder
 
 router = APIRouter(prefix="/api/query", tags=["query"])
 
@@ -373,3 +375,102 @@ async def get_query_history(
         )
 
     return history_items
+
+
+class TimelineQueryRequest(BaseModel):
+    """Request payload for narrative trajectory timeline generation."""
+
+    query: str = Field(
+        ...,
+        min_length=2,
+        description="Storyline topic to trace chronologically across broadsheets",
+    )
+    issue_ids: list[int] | None = Field(None, description="Optional issue IDs filter")
+    model: str | None = Field(None, description="Optional model provider selection")
+    model_override: str | None = Field(None, description="Optional model override")
+    use_cache: bool = Field(True, description="Enable Redis response caching")
+
+    @property
+    def effective_model(self) -> str | None:
+        """Return user-selected model identifier."""
+        return self.model or self.model_override
+
+
+@router.post(
+    "/timeline",
+    response_model=NarrativeTrajectoryResponse,
+    summary="Generate cross-newspaper narrative trajectory and discrepancy analysis",
+)
+async def generate_timeline(
+    request: TimelineQueryRequest,
+) -> NarrativeTrajectoryResponse:
+    """Construct a multi-perspective chronological story trajectory."""
+    factory = get_session_factory()
+    builder = TimelineBuilder(session_factory=factory)
+    return await builder.build_narrative_trajectory(
+        query=request.query,
+        issue_ids=request.issue_ids,
+        model_override=request.effective_model,
+        use_cache=request.use_cache,
+    )
+
+
+@router.post(
+    "/timeline/stream",
+    summary="Stream timeline generation progress, milestones, and audit discrepancies via SSE",
+)
+async def stream_timeline(
+    request: TimelineQueryRequest,
+) -> StreamingResponse:
+    """Stream real-time progress events and synthesized narrative milestones."""
+    factory = get_session_factory()
+    builder = TimelineBuilder(session_factory=factory)
+
+    async def event_generator() -> AsyncIterator[str]:
+        queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+
+        async def progress_hook(stage: str, data: dict[str, Any]) -> None:
+            await queue.put((stage, data))
+
+        async def run_builder() -> None:
+            try:
+                res = await builder.build_narrative_trajectory(
+                    query=request.query,
+                    issue_ids=request.issue_ids,
+                    model_override=request.effective_model,
+                    use_cache=request.use_cache,
+                    on_progress=progress_hook,
+                )
+                await queue.put(("result", res.model_dump()))
+            except Exception as err:
+                await queue.put(("error", {"error": str(err)}))
+            finally:
+                await queue.put(("__DONE__", {}))
+
+        task = asyncio.create_task(run_builder())
+
+        while True:
+            event_type, payload = await queue.get()
+            if event_type == "__DONE__":
+                break
+            if event_type == "error":
+                yield f"event: error\ndata: {json.dumps(payload)}\n\n"
+                break
+            elif event_type == "result":
+                yield f"event: result\ndata: {json.dumps(payload)}\n\n"
+                yield f"event: done\ndata: {json.dumps({'status': 'completed'})}\n\n"
+            else:
+                yield f"event: stage\ndata: {json.dumps({'stage': event_type, **payload})}\n\n"
+
+        await task
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+

@@ -70,6 +70,13 @@ export function ActiveHighlightProvider({ children }) {
     }, 4000);
   }, []);
 
+  const [timelineQuery, setTimelineQuery] = useState('');
+
+  const openTimeline = useCallback((query = '') => {
+    if (query) setTimelineQuery(query);
+    setActiveTab('timeline');
+  }, []);
+
   const openIssueInReader = useCallback((issueId, pageNumber = 1) => {
     const pageNum = Number(pageNumber) || 1;
     if (issueId) setSelectedIssueId(Number(issueId));
@@ -100,6 +107,9 @@ export function ActiveHighlightProvider({ children }) {
         setSelectedModel,
         chatMessages,
         setChatMessages,
+        timelineQuery,
+        setTimelineQuery,
+        openTimeline,
         highlightArticle,
         openIssueInReader,
       }}
