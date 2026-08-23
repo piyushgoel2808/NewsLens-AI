@@ -260,6 +260,61 @@ class TestProviderSwap:
 
 
 # ---------------------------------------------------------------------------
+# Gemini provider
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiProvider:
+    """Test Google Gemini Provider."""
+
+    def test_gemini_is_chat_provider(self) -> None:
+        from app.providers.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider(model="gemini-3.7-flash", api_key="test-key")
+        assert isinstance(provider, ChatModelProvider)
+        assert provider.provider_name == "gemini"
+        assert provider.capability.supports_vision is True
+
+    def test_raises_without_api_key(self) -> None:
+        from app.providers.gemini_provider import GeminiProvider
+
+        with pytest.raises(ProviderError, match="API key is required"):
+            GeminiProvider(model="gemini-3.7-flash", api_key=None)
+
+    @pytest.mark.asyncio
+    async def test_complete_returns_model_response(self) -> None:
+        from app.providers.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider(model="gemini-3.7-flash", api_key="test-key")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Hello from Gemini"}]
+                    }
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 15,
+                "candidatesTokenCount": 8,
+            },
+        }
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+            messages = [Message(role="user", content="Hello")]
+            response = await provider.complete(messages)
+
+            assert isinstance(response, ModelResponse)
+            assert response.text == "Hello from Gemini"
+            assert response.provider == "gemini"
+            assert response.input_tokens == 15
+            assert response.output_tokens == 8
+
+
+# ---------------------------------------------------------------------------
 # ModelRegistry
 # ---------------------------------------------------------------------------
 

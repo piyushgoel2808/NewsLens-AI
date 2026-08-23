@@ -81,6 +81,20 @@ providers:
     supports_vision: false
     supports_tool_use: true
 
+  gemini_flash:
+    provider: gemini
+    model: gemini-3.7-flash
+    context_window: 1000000
+    supports_vision: true
+    supports_tool_use: true
+
+  gemini_pro:
+    provider: gemini
+    model: gemini-pro-latest
+    context_window: 1000000
+    supports_vision: true
+    supports_tool_use: true
+
   # anthropic_sonnet:
   #   provider: anthropic
   #   model: claude-3-5-sonnet-20241022

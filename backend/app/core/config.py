@@ -242,6 +242,7 @@ class Settings(BaseSettings):
 
     # --- API Keys (hosted providers — optional) ---
     groq_api_key: str | None = None
+    gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     google_api_key: str | None = None
@@ -251,6 +252,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "groq_api_key",
+        "gemini_api_key",
         "anthropic_api_key",
         "openai_api_key",
         "google_api_key",

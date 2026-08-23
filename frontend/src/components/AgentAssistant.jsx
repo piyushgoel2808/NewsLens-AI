@@ -301,6 +301,8 @@ export default function AgentAssistant() {
             <option value="groq_qwen">⚡ Groq / Qwen 3.6 (Fastest)</option>
             <option value="groq_llama">⚡ Groq / Llama 3.3 70B</option>
             <option value="groq_gpt_oss">⚡ Groq / GPT-OSS 120B</option>
+            <option value="gemini_flash">✨ Google / Gemini 3.7 Flash</option>
+            <option value="gemini_pro">✨ Google / Gemini Pro Latest</option>
             <option value="ollama_chat">💻 Ollama / Llama 3.2 (Local)</option>
             <option value="anthropic_sonnet">☁️ Anthropic / Claude 3.5 Sonnet</option>
             <option value="openai_gpt4o">☁️ OpenAI / GPT-4o</option>
@@ -311,6 +313,8 @@ export default function AgentAssistant() {
                     'groq_qwen',
                     'groq_llama',
                     'groq_gpt_oss',
+                    'gemini_flash',
+                    'gemini_pro',
                     'ollama_chat',
                     'anthropic_sonnet',
                     'openai_gpt4o',

@@ -48,6 +48,7 @@ class ModelRegistry:
     def _instantiate(self, provider_id: str) -> AnyProvider:
         """Instantiate a concrete provider from its ProviderConfig."""
         from app.providers.anthropic_provider import AnthropicProvider
+        from app.providers.gemini_provider import GeminiProvider
         from app.providers.groq_provider import GroqProvider
         from app.providers.local_embedding_provider import LocalEmbeddingProvider
         from app.providers.ollama_provider import OllamaProvider
@@ -69,6 +70,11 @@ class ModelRegistry:
             return GroqProvider(
                 model=model or "llama-3.3-70b-versatile",
                 api_key=self._settings.groq_api_key,
+            )
+        elif provider_type == "gemini":
+            return GeminiProvider(
+                model=model or "gemini-flash-latest",
+                api_key=self._settings.gemini_api_key or self._settings.google_api_key,
             )
         elif provider_type == "anthropic":
             return AnthropicProvider(
@@ -93,7 +99,7 @@ class ModelRegistry:
         else:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
-                "Supported: ollama, groq, anthropic, openai, "
+                "Supported: ollama, groq, gemini, anthropic, openai, "
                 "local_sentence_transformers, docling, mineru"
             )
 

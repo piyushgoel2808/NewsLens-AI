@@ -35,6 +35,7 @@ class ProviderError(Exception):
 class ProviderType(StrEnum):
     OLLAMA = "ollama"
     GROQ = "groq"
+    GEMINI = "gemini"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     LOCAL_SENTENCE_TRANSFORMERS = "local_sentence_transformers"

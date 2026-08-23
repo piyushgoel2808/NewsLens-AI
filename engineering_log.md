@@ -1384,6 +1384,30 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 
 ---
 
+## Google Gemini Provider Integration
+
+**Date**: 2026-08-23  
+**Status**: Completed ✅
+
+### What was built
+1. **`GeminiProvider` ([`backend/app/providers/gemini_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/gemini_provider.py))**:
+   - Implemented `ChatModelProvider` and `VisionModelProvider` for Google Gemini models via Google Generative Language REST API (`https://generativelanguage.googleapis.com/v1beta/models`).
+   - Supports text generation, multimodal vision inputs (`analyze_image`), structured output parsing (`responseMimeType: application/json`), and real-time SSE token streaming (`streamGenerateContent`).
+2. **Model Registry & Config Binding ([`backend/app/providers/registry.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/registry.py) & [`model_config.yaml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/model_config.yaml))**:
+   - Added `gemini_flash` (`gemini-3.7-flash`) and `gemini_pro` (`gemini-pro-latest`) configs.
+   - Added `GEMINI_API_KEY` and `GOOGLE_API_KEY` to `Settings` in `backend/app/core/config.py` and `.env.example`.
+3. **Frontend Selector ([`frontend/src/components/AgentAssistant.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/AgentAssistant.jsx))**:
+   - Added `✨ Google / Gemini 3.7 Flash` and `✨ Google / Gemini Pro Latest` options to the LLM model selector.
+4. **Unit Tests ([`backend/tests/test_providers.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_providers.py))**:
+   - Added `TestGeminiProvider` suite verifying protocol conformance, API key validation, and chat completions.
+
+### Verification
+- `make lint`: **0 errors across 73 source files** (`ruff` + `mypy` strict).
+- `make test`: **220/220 tests passing 100% GREEN in 69.18s**.
+- `npm run build`: **Vite build completed with 0 errors in 701ms**.
+
+---
+
 *Next phase: Phase 8 — Hosted Deployment & Production Orchestration (Multi-stage Dockerfiles, Docker Compose Prod, Helm/K8s)*
 
 
