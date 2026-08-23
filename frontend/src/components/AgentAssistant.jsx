@@ -17,7 +17,111 @@ import {
   AlertCircle,
   Globe,
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
+
+// Custom dark-mode theme components for ReactMarkdown
+const markdownComponents = {
+  h1: ({ children, ...props }) => (
+    <h1 className="text-base font-bold text-emerald-300 mt-3 mb-1.5 pb-1 border-b border-slate-800" {...props}>
+      {children}
+    </h1>
+  ),
+  h2: ({ children, ...props }) => (
+    <h2 className="text-sm font-bold text-emerald-400 mt-3 mb-1" {...props}>
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...props }) => (
+    <h3 className="text-xs uppercase font-bold tracking-wider text-emerald-300 mt-2.5 mb-1" {...props}>
+      {children}
+    </h3>
+  ),
+  h4: ({ children, ...props }) => (
+    <h4 className="text-xs font-semibold text-cyan-300 mt-2 mb-1" {...props}>
+      {children}
+    </h4>
+  ),
+  p: ({ children, ...props }) => (
+    <p className="mb-2 leading-relaxed text-slate-200" {...props}>
+      {children}
+    </p>
+  ),
+  ul: ({ children, ...props }) => (
+    <ul className="list-disc list-outside ml-4 space-y-1 mb-2.5 text-slate-300 text-xs" {...props}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }) => (
+    <ol className="list-decimal list-outside ml-4 space-y-1 mb-2.5 text-slate-300 text-xs" {...props}>
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }) => (
+    <li className="leading-relaxed pl-0.5" {...props}>
+      {children}
+    </li>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong className="font-semibold text-emerald-300" {...props}>
+      {children}
+    </strong>
+  ),
+  em: ({ children, ...props }) => (
+    <em className="text-cyan-200 not-italic font-medium" {...props}>
+      {children}
+    </em>
+  ),
+  blockquote: ({ children, ...props }) => (
+    <blockquote className="border-l-2 border-emerald-500/50 pl-3 italic text-slate-400 my-2 bg-slate-900/40 py-1 rounded-r" {...props}>
+      {children}
+    </blockquote>
+  ),
+  code: ({ inline, className, children, ...props }) =>
+    inline ? (
+      <code className="bg-slate-900 text-emerald-300 px-1 py-0.5 rounded font-mono text-[11px] border border-slate-800" {...props}>
+        {children}
+      </code>
+    ) : (
+      <pre className="bg-slate-900/90 border border-slate-800 p-2.5 rounded-lg overflow-x-auto my-2 text-xs font-mono text-emerald-300">
+        <code {...props}>{children}</code>
+      </pre>
+    ),
+  table: ({ children, ...props }) => (
+    <div className="overflow-x-auto my-2.5 rounded border border-slate-800">
+      <table className="min-w-full text-xs text-left border-collapse" {...props}>
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children, ...props }) => (
+    <thead className="bg-slate-900/90 text-emerald-300 font-semibold border-b border-slate-800" {...props}>
+      {children}
+    </thead>
+  ),
+  th: ({ children, ...props }) => (
+    <th className="p-2 border-r border-slate-800 last:border-r-0" {...props}>
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }) => (
+    <td className="p-2 border-t border-slate-800/60 border-r border-slate-800/60 last:border-r-0 text-slate-300" {...props}>
+      {children}
+    </td>
+  ),
+  a: ({ href, children, ...props }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 transition-colors"
+      {...props}
+    >
+      {children}
+    </a>
+  ),
+};
 
 // Robust separation of reasoning trace vs answer
 const splitThoughtAndAnswer = (text) => {
@@ -140,6 +244,7 @@ export default function AgentAssistant() {
         body: JSON.stringify({
           query: queryText,
           chat_history: historyPayload,
+          model: selectedModel || undefined,
           model_override: selectedModel || undefined,
           enable_web_search: enableWebSearch,
         }),
@@ -517,23 +622,50 @@ export default function AgentAssistant() {
                 )}
 
               {/* Message Content */}
-              <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans text-slate-200">
-                {sanitizeAnswerText(msg.content, msg.thought) ||
-                  (msg.isStreaming
-                    ? msg.stage === 'thinking'
-                      ? 'Reasoning through evidence...'
-                      : 'Synthesizing response...'
-                    : '')}
+              <div className="text-sm leading-relaxed font-sans text-slate-200">
+                {msg.role === 'user' ? (
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                ) : (
+                  (() => {
+                    const sanitized = sanitizeAnswerText(msg.content, msg.thought);
+                    if (sanitized) {
+                      return (
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={markdownComponents}
+                        >
+                          {sanitized}
+                        </ReactMarkdown>
+                      );
+                    }
+                    if (msg.isStreaming) {
+                      return (
+                        <span className="text-slate-400 italic flex items-center gap-2">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                          <span>
+                            {msg.stage === 'thinking'
+                              ? 'Reasoning through evidence...'
+                              : msg.stage === 'web_search'
+                              ? 'Gathering web context...'
+                              : 'Synthesizing response...'}
+                          </span>
+                        </span>
+                      );
+                    }
+                    return <span className="text-slate-500 italic">No response generated.</span>;
+                  })()
+                )}
               </div>
 
               {/* Clickable Citations Grounding */}
-              {msg.citations && msg.citations.length > 0 && (
+              {Array.isArray(msg.citations) && msg.citations.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-slate-800">
                   <span className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold block mb-2">
                     Verified Sources & Citations:
                   </span>
                   <div className="flex flex-wrap gap-2">
                     {msg.citations.map((cit, cIdx) => {
+                      if (!cit) return null;
                       const isWeb = cit.is_web || cit.source_type === 'web' || !!cit.url;
                       if (isWeb && cit.url) {
                         return (
@@ -561,7 +693,7 @@ export default function AgentAssistant() {
                               cit.issue_id,
                               cit.page_number || 1,
                               cit.article_id,
-                              cit.bboxes || []
+                              Array.isArray(cit.bboxes) ? cit.bboxes : []
                             )
                           }
                           className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105"

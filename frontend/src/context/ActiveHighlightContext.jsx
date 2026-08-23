@@ -56,7 +56,12 @@ export function ActiveHighlightProvider({ children }) {
     if (issueId) setSelectedIssueId(Number(issueId));
     setSelectedPageNumber(pageNum);
     if (articleId) setSelectedArticleId(Number(articleId));
-    setHighlightedBboxes(Array.isArray(bboxes) ? bboxes : []);
+    const safeBboxes = Array.isArray(bboxes)
+      ? bboxes
+      : bboxes && typeof bboxes === 'object'
+      ? Object.values(bboxes)
+      : [];
+    setHighlightedBboxes(safeBboxes);
     setIsPulsing(true);
     setActiveTab('reader');
 

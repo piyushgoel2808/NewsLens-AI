@@ -148,6 +148,78 @@ class ModelRegistry:
         self._instances[provider_id] = instance
         return instance
 
+    def get_chat_provider(self, model_name_or_id: str | None = None) -> ChatModelProvider:
+        """Return a ChatModelProvider instance by name, ID, alias, or bound default."""
+        if not model_name_or_id:
+            provider = self.get_provider("answerer")
+            if isinstance(provider, ChatModelProvider):
+                return provider
+            raise ProviderError("Bound 'answerer' provider does not implement ChatModelProvider")
+
+        target_id = model_name_or_id.strip()
+
+        # 1. Exact match in configured providers
+        if target_id in self._model_config.providers:
+            provider = self.get_provider_by_id(target_id)
+            if isinstance(provider, ChatModelProvider):
+                return provider
+
+        # 2. Alias resolution
+        alias_map = {
+            "gemini": "gemini_flash",
+            "gemini_flash": "gemini_flash",
+            "gemini_pro": "gemini_pro",
+            "groq": "groq_qwen",
+            "groq_qwen": "groq_qwen",
+            "groq_llama": "groq_llama",
+            "groq_gpt_oss": "groq_gpt_oss",
+            "ollama": "ollama_chat",
+            "ollama_chat": "ollama_chat",
+            "anthropic": "anthropic_sonnet",
+            "openai": "openai_gpt4o",
+        }
+        if target_id.lower() in alias_map:
+            resolved_id = alias_map[target_id.lower()]
+            if resolved_id in self._model_config.providers:
+                provider = self.get_provider_by_id(resolved_id)
+                if isinstance(provider, ChatModelProvider):
+                    return provider
+
+        # 3. Dynamic provider instantiation based on prefix/content
+        if "gemini" in target_id.lower():
+            from app.providers.gemini_provider import GeminiProvider
+
+            return GeminiProvider(
+                model=target_id if target_id.startswith("gemini-") else "gemini-3.7-flash",
+                api_key=self._settings.gemini_api_key or self._settings.google_api_key,
+            )
+        elif (
+            "groq" in target_id.lower()
+            or "qwen" in target_id.lower()
+            or "llama" in target_id.lower()
+        ):
+            from app.providers.groq_provider import GroqProvider
+
+            is_full_model_name = "/" in target_id or "-" in target_id
+            m_name = target_id if is_full_model_name else "llama-3.3-70b-versatile"
+            return GroqProvider(
+                model=m_name,
+                api_key=self._settings.groq_api_key,
+            )
+        elif "ollama" in target_id.lower():
+            from app.providers.ollama_provider import OllamaProvider
+
+            return OllamaProvider(
+                model=target_id,
+                base_url=self._settings.ollama_base_url,
+            )
+
+        # Fallback to bound answerer
+        fallback = self.get_provider("answerer")
+        if isinstance(fallback, ChatModelProvider):
+            return fallback
+        raise ProviderError(f"Could not resolve chat provider for {model_name_or_id!r}")
+
     def invalidate_task(self, task: str) -> None:
         """Reload configuration for the specified task."""
         self._model_config = self._settings.load_model_config()

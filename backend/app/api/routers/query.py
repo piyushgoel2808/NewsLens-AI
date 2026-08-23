@@ -33,6 +33,10 @@ class QueryRequest(BaseModel):
         default_factory=list,
         description="Recent turns for coreference resolution and follow-up condensation",
     )
+    model: str | None = Field(
+        None,
+        description="Optional model provider selection (e.g. gemini_flash, groq_llama)",
+    )
     model_override: str | None = Field(
         None,
         description="Optional model provider override (e.g. groq_llama, ollama_chat)",
@@ -41,6 +45,11 @@ class QueryRequest(BaseModel):
         False,
         description="Enable live internet search to complement newspaper archives",
     )
+
+    @property
+    def effective_model(self) -> str | None:
+        """Return the user-selected model identifier."""
+        return self.model or self.model_override
 
 
 class QueryResponse(BaseModel):
@@ -68,7 +77,7 @@ async def execute_query(
         query=request.query,
         chat_history=request.chat_history,
         user_id=request.user_id,
-        model_override=request.model_override,
+        model_override=request.effective_model,
         enable_web_search=request.enable_web_search,
     )
 
@@ -103,6 +112,7 @@ async def stream_query(
         t0 = time.monotonic()
         query = request.query
         chat_history = request.chat_history or []
+        effective_model = request.effective_model
 
         # 0. Ambiguity Guardrail for Clean Sessions
         if is_ambiguous_standalone_query(query, chat_history):
@@ -126,7 +136,7 @@ async def stream_query(
             condensed = await condense_conversational_query(
                 query=query,
                 chat_history=chat_history,
-                model_override=request.model_override,
+                model_override=effective_model,
             )
             query = condensed
             yield f"event: query_condensed\ndata: {json.dumps({'condensed_query': condensed})}\n\n"
@@ -164,7 +174,7 @@ async def stream_query(
                 "cost_usd": 0.0,
                 "latency_ms": 0,
                 "user_id": request.user_id,
-                "model_override": request.model_override,
+                "model_override": effective_model,
                 "enable_web_search": request.enable_web_search,
                 "web_search_results": [],
                 "error": None,
@@ -187,7 +197,7 @@ async def stream_query(
             query=query,
             archetype=plan_res.archetype,
             evidence_items=evidence,
-            model_override=request.model_override,
+            model_override=effective_model,
         ):
             raw_buffer += chunk
 

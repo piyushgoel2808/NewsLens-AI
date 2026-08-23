@@ -1,5 +1,34 @@
 import React, { useState, useMemo } from 'react';
 
+export const normalizeBbox = (b) => {
+  if (!b) return null;
+  if (Array.isArray(b) && b.length >= 4) {
+    const x0 = Number(b[0]) || 0;
+    const y0 = Number(b[1]) || 0;
+    const x1 = Number(b[2]) || 0;
+    const y1 = Number(b[3]) || 0;
+    return [x0, y0, x1, y1];
+  }
+  if (typeof b === 'object') {
+    const x0 = Number(b.x0 ?? b.xmin ?? b.left ?? 0);
+    const y0 = Number(b.y0 ?? b.ymin ?? b.top ?? 0);
+    const x1 = Number(b.x1 ?? b.xmax ?? b.right ?? 0);
+    const y1 = Number(b.y1 ?? b.ymax ?? b.bottom ?? 0);
+    return [x0, y0, x1, y1];
+  }
+  return null;
+};
+
+export const toSafeBboxList = (bboxes) => {
+  if (!bboxes) return [];
+  const list = Array.isArray(bboxes)
+    ? bboxes
+    : typeof bboxes === 'object'
+    ? Object.values(bboxes)
+    : [];
+  return list.map(normalizeBbox).filter(Boolean);
+};
+
 export default function CanvasOverlay({
   pageWidth = 2800,
   pageHeight = 4399,
@@ -18,20 +47,17 @@ export default function CanvasOverlay({
     let maxBx = 0;
     let maxBy = 0;
 
-    articles.forEach((art) => {
-      (art.bboxes || []).forEach((b) => {
-        if (Array.isArray(b) && b.length >= 4) {
-          if (b[2] > maxBx) maxBx = b[2];
-          if (b[3] > maxBy) maxBy = b[3];
-        }
+    const safeArticles = Array.isArray(articles) ? articles : [];
+    safeArticles.forEach((art) => {
+      toSafeBboxList(art?.bboxes).forEach((b) => {
+        if (b[2] > maxBx) maxBx = b[2];
+        if (b[3] > maxBy) maxBy = b[3];
       });
     });
 
-    customHighlightBboxes.forEach((b) => {
-      if (Array.isArray(b) && b.length >= 4) {
-        if (b[2] > maxBx) maxBx = b[2];
-        if (b[3] > maxBy) maxBy = b[3];
-      }
+    toSafeBboxList(customHighlightBboxes).forEach((b) => {
+      if (b[2] > maxBx) maxBx = b[2];
+      if (b[3] > maxBy) maxBy = b[3];
     });
 
     // If coordinates are in 72 DPI PDF point space (< 1500) but raster is 300 DPI (> 1800)
@@ -122,13 +148,14 @@ export default function CanvasOverlay({
         </defs>
 
         {/* Render Article Bounding Boxes */}
-        {articles.map((art) => {
+        {(Array.isArray(articles) ? articles : []).map((art) => {
+          if (!art) return null;
           const isSelected = selectedArticleId === art.id;
           const isHovered = hoveredArticleId === art.id;
           const isPulse = pulsingArticleId === art.id;
           const styles = getColorStyles(art.article_type, isSelected, isHovered, isPulse);
 
-          const bboxes = art.bboxes || [];
+          const bboxes = toSafeBboxList(art.bboxes);
 
           return (
             <g
@@ -160,8 +187,7 @@ export default function CanvasOverlay({
                 setTooltip(null);
               }}
             >
-              {bboxes.map((bbox, idx) => {
-                const [x0, y0, x1, y1] = bbox;
+              {bboxes.map(([x0, y0, x1, y1], idx) => {
                 const width = Math.max(x1 - x0, 10);
                 const height = Math.max(y1 - y0, 10);
 
@@ -189,8 +215,7 @@ export default function CanvasOverlay({
         })}
 
         {/* Render Custom Highlight Bboxes (e.g. from citation badge clicks) */}
-        {customHighlightBboxes.map((bbox, idx) => {
-          const [x0, y0, x1, y1] = bbox;
+        {toSafeBboxList(customHighlightBboxes).map(([x0, y0, x1, y1], idx) => {
           const width = Math.max(x1 - x0, 10);
           const height = Math.max(y1 - y0, 10);
 

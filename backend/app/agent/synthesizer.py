@@ -14,27 +14,34 @@ from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
 
-SYNTHESIZER_SYSTEM_PROMPT = """You are NewsLens-AI, an expert newspaper and open-source intelligence
-research assistant. Answer the user's research question thoroughly, objectively, and
-accurately based on the provided evidence excerpts.
+SYNTHESIZER_SYSTEM_PROMPT = """You are NewsLens-AI, an expert intelligence research assistant
+specializing in broadsheet newspaper analysis and open-source intelligence.
+Answer the user's research question thoroughly, objectively, and accurately based ONLY
+on the provided evidence excerpts.
 
-CRITICAL CITATION & SOURCE ATTRIBUTION RULES:
+REQUIRED RESPONSE STRUCTURE:
+1. ### Executive Summary
+   - 2 to 3 concise, high-impact sentences directly answering the user's prompt.
+2. ### Key Developments & Findings
+   - Synthesized bullet points with specific facts, figures, dates, and mandatory inline citations.
+3. ### Context & Analysis (if applicable)
+   - Synthesis across multiple reports, contrasting editorial perspectives, or background context.
+
+CRITICAL CITATION RULES:
 1. Local Newspaper Archive Citations:
-   - For claims backed by primary newspaper broadsheets, format strictly as:
+   - For facts backed by primary broadsheets, cite strictly as:
      [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page_Number}, "{Headline}"]
      Example: [Mint, 2026-08-01, Page 3, "Telecom AGR Dues Ruling"]
 2. Live Web Search Citations:
-   - For claims backed by live internet search results, format strictly as:
+   - For facts backed by live internet search results, cite strictly as:
      [Web: {Source Title}]({URL})
      Example: [Web: Reuters Telecom Update](https://www.reuters.com/business/telecom)
 3. Use the physical PDF page number specified in newspaper evidence excerpts.
 4. If multiple sources corroborate a claim, cite them together.
-5. For aggregate archive questions (e.g. "How many articles?", "List all articles",
-   "Overview of the issue"), use the structured relational archive manifest
-   to provide exact, authoritative numbers.
-6. Do NOT make up any dates, figures, quotes, or events not present in the evidence.
-7. If evidence is insufficient, explicitly state what is missing.
-8. Structure your response clearly with headings, bullet points, and distinct sections.
+5. STRICT NEGATIVE CONSTRAINTS:
+   - NEVER dump raw chunk headers (e.g. `--- ARCHIVE EVIDENCE EXCERPT ---` or `[Evidence: ...]`).
+   - NEVER output advertisement boilerplate, statutory IPO notices, or unrelated news briefs.
+   - Do NOT invent any dates, figures, quotes, or events not supported by the evidence.
 """
 
 
@@ -79,12 +86,7 @@ class AnswerSynthesizer:
             return self._provider
         try:
             registry = get_registry()
-            if model_override:
-                provider = registry.get_provider_by_id(model_override)
-            else:
-                provider = registry.get_provider("answerer")
-            if isinstance(provider, ChatModelProvider):
-                return provider
+            return registry.get_chat_provider(model_override)
         except Exception as e:
             logger.warning(
                 "Could not load LLM answerer provider, using deterministic fallback",
@@ -140,17 +142,108 @@ class AnswerSynthesizer:
         """Extract and structure verified citations mentioned in the text or used from evidence."""
         citations: list[AgentCitation] = []
         seen_keys: set[str] = set()
+        text_lower = (text or "").lower()
 
         for item in evidence_items:
             is_web = item.get("is_web") or item.get("source_tool") == "web_search"
+            hl = item.get("headline", "")
+            hl_clean = hl.strip().lower()
+
             if is_web:
                 url = item.get("url") or ""
-                hl = item.get("headline", "Web Article")
                 snip = item.get("snippet") or ""
                 src = item.get("newspaper_name", "Web")
-                key = f"web_{url}_{hl}"
-                if key not in seen_keys:
-                    seen_keys.add(key)
+
+                # Filter condition for web results: cited in text or key headline words appear
+                is_cited = False
+                if (
+                    not text
+                    or (url and url.lower() in text_lower)
+                    or (hl_clean and len(hl_clean) > 8 and hl_clean in text_lower)
+                ):
+                    is_cited = True
+                elif src.lower() in text_lower:
+                    words = [w for w in hl_clean.split() if len(w) > 4]
+                    matched_cnt = sum(1 for w in words if w in text_lower)
+                    if words and matched_cnt >= max(1, len(words) // 2):
+                        is_cited = True
+
+                if is_cited:
+                    key = f"web_{url}_{hl}"
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        citations.append(
+                            AgentCitation(
+                                newspaper_name=src,
+                                issue_date=item.get("issue_date", "Live Web"),
+                                page_number=1,
+                                headline=hl or "Web Source",
+                                article_id=0,
+                                snippet=snip[:300],
+                                issue_id=0,
+                                bboxes=[],
+                                url=url,
+                                source_type="web",
+                                is_web=True,
+                            )
+                        )
+            else:
+                np_name = item.get("newspaper_name", "Daily News")
+                dt = item.get("issue_date", "")
+                pages = item.get("pages", [1])
+                page_num = int(pages[0]) if pages and pages[0] else 1
+                art_id = item.get("article_id", 0)
+                snip = item.get("snippet") or item.get("summary") or ""
+                issue_id = item.get("issue_id", 0)
+                bboxes = item.get("bboxes", [])
+
+                # Filter condition for newspaper items
+                is_cited = False
+                if (
+                    not text
+                    or (hl_clean and len(hl_clean) > 6 and hl_clean in text_lower)
+                    or (f"page {page_num}" in text_lower and np_name.lower() in text_lower)
+                ):
+                    is_cited = True
+                elif f"page {page_num}" in text_lower:
+                    words = [w for w in hl_clean.split() if len(w) > 4]
+                    if words and any(w in text_lower for w in words):
+                        is_cited = True
+                elif hl_clean:
+                    words = [w for w in hl_clean.split() if len(w) > 4]
+                    matched_cnt = sum(1 for w in words if w in text_lower)
+                    if words and matched_cnt >= max(2, len(words) // 2):
+                        is_cited = True
+
+                if is_cited:
+                    key = f"np_{np_name}_{dt}_{page_num}_{hl}"
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        citations.append(
+                            AgentCitation(
+                                newspaper_name=np_name,
+                                issue_date=dt,
+                                page_number=page_num,
+                                headline=hl or "Untitled",
+                                article_id=art_id,
+                                snippet=snip[:300],
+                                issue_id=issue_id,
+                                bboxes=bboxes,
+                                url=None,
+                                source_type="newspaper",
+                                is_web=False,
+                            )
+                        )
+
+        # Fallback: if text was provided but strict parsing yielded no citations,
+        # retain only the top 2 highest prominence items rather than dumping all candidate chunks
+        if not citations and evidence_items:
+            for item in evidence_items[:2]:
+                is_web = item.get("is_web") or item.get("source_tool") == "web_search"
+                if is_web:
+                    url = item.get("url") or ""
+                    hl = item.get("headline", "Web Article")
+                    src = item.get("newspaper_name", "Web")
                     citations.append(
                         AgentCitation(
                             newspaper_name=src,
@@ -158,7 +251,7 @@ class AnswerSynthesizer:
                             page_number=1,
                             headline=hl,
                             article_id=0,
-                            snippet=snip[:300],
+                            snippet=item.get("snippet", "")[:300],
                             issue_id=0,
                             bboxes=[],
                             url=url,
@@ -166,30 +259,19 @@ class AnswerSynthesizer:
                             is_web=True,
                         )
                     )
-            else:
-                np_name = item.get("newspaper_name", "Daily News")
-                dt = item.get("issue_date", "")
-                pages = item.get("pages", [1])
-                page_num = int(pages[0]) if pages and pages[0] else 1
-                hl = item.get("headline", "Untitled")
-                art_id = item.get("article_id", 0)
-                snip = item.get("snippet") or item.get("summary") or ""
-                issue_id = item.get("issue_id", 0)
-                bboxes = item.get("bboxes", [])
-
-                key = f"np_{np_name}_{dt}_{page_num}_{hl}"
-                if key not in seen_keys:
-                    seen_keys.add(key)
+                else:
+                    pages = item.get("pages", [1])
+                    page_num = int(pages[0]) if pages and pages[0] else 1
                     citations.append(
                         AgentCitation(
-                            newspaper_name=np_name,
-                            issue_date=dt,
+                            newspaper_name=item.get("newspaper_name", "Daily News"),
+                            issue_date=item.get("issue_date", ""),
                             page_number=page_num,
-                            headline=hl,
-                            article_id=art_id,
-                            snippet=snip[:300],
-                            issue_id=issue_id,
-                            bboxes=bboxes,
+                            headline=item.get("headline", "Untitled"),
+                            article_id=item.get("article_id", 0),
+                            snippet=(item.get("snippet") or "")[:300],
+                            issue_id=item.get("issue_id", 0),
+                            bboxes=item.get("bboxes", []),
                             url=None,
                             source_type="newspaper",
                             is_web=False,

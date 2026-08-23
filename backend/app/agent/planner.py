@@ -67,6 +67,27 @@ class PlanResult:
     tool_calls: list[PlannedToolCall]
 
 
+def _build_targeted_web_query(query: str) -> str:
+    """Transform conversational prompts into high-precision entity-anchored search queries."""
+    if not query:
+        return ""
+    cleaned = query.strip()
+    prefix_patterns = [
+        r"^(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+)+",
+        r"^(?:tell\s+me\s+(?:about|more\s+about)?|summarize|explain|what\s+is|what\s+are|what\s+happened\s+(?:to|with)?|who\s+is|who\s+was|search\s+for|find\s+(?:news\s+about|information\s+on)?|give\s+me\s+(?:a\s+summary\s+of|details\s+about)?|overview\s+of)\s+(?:the\s+|a\s+|an\s+)?",
+    ]
+    for _ in range(3):
+        prev = cleaned
+        for pattern in prefix_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+        if cleaned == prev:
+            break
+
+    # Remove trailing question marks and punctuation
+    cleaned = re.sub(r"[\?\.\!]+$", "", cleaned).strip()
+    return cleaned if len(cleaned) >= 3 else query.strip()
+
+
 class QueryPlanner:
     """Classifies user queries into 5 archetypes and creates targeted retrieval plans."""
 
@@ -267,10 +288,11 @@ class QueryPlanner:
                 )
 
         if enable_web_search:
+            web_query = _build_targeted_web_query(query)
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="web_search",
-                    arguments={"query": query, "num_results": 5},
+                    arguments={"query": web_query, "num_results": 5},
                     purpose="Retrieve corroborating current news and live internet search results",
                 )
             )

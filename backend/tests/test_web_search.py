@@ -175,3 +175,78 @@ class TestDualModePlannerAndSynthesizer:
         assert web_cit["url"] == "https://reuters.com/story"
         assert web_cit["source_type"] == "web"
         assert web_cit["is_web"] is True
+
+    def test_synthesizer_citation_pruning_excludes_unreferenced_sources(self) -> None:
+        synthesizer = AnswerSynthesizer()
+        evidence_items = [
+            {
+                "newspaper_name": "Mint",
+                "issue_date": "2026-08-01",
+                "pages": [3],
+                "headline": "Tata Power Nuclear Deal",
+                "article_id": 101,
+                "issue_id": 1,
+                "bboxes": [],
+                "is_web": False,
+            },
+            {
+                "newspaper_name": "Daily Commercial",
+                "issue_date": "2026-08-01",
+                "pages": [8],
+                "headline": "Classified Ad Mattress Sale",
+                "article_id": 999,
+                "issue_id": 1,
+                "bboxes": [],
+                "is_web": False,
+            },
+            {
+                "newspaper_name": "Reuters",
+                "headline": "Global Energy Transition",
+                "url": "https://reuters.com/energy",
+                "is_web": True,
+                "source_tool": "web_search",
+            },
+        ]
+
+        # Text only cites Mint and Reuters, ignores the classified ad
+        synthesized_text = (
+            "### Executive Summary\n"
+            "Tata Power signed an agreement with the state government "
+            "[Mint, 2026-08-01, Page 3, \"Tata Power Nuclear Deal\"].\n"
+            "Further analysis on clean energy can be found at "
+            "[Web: Global Energy Transition](https://reuters.com/energy)."
+        )
+
+        citations = synthesizer.extract_citations(synthesized_text, evidence_items)
+        assert len(citations) == 2
+        headlines = [c["headline"] for c in citations]
+        assert "Tata Power Nuclear Deal" in headlines
+        assert "Global Energy Transition" in headlines
+        assert "Classified Ad Mattress Sale" not in headlines
+
+    def test_planner_targeted_web_query_builder(self) -> None:
+        from app.agent.planner import _build_targeted_web_query
+
+        q1 = "Can you please tell me about the latest Telecom AGR Dues ruling?"
+        assert _build_targeted_web_query(q1) == "latest Telecom AGR Dues ruling"
+
+        q2 = "What happened with Tata Power in Odisha?"
+        assert _build_targeted_web_query(q2) == "Tata Power in Odisha"
+
+        q3 = "Find news about Supreme Court judgment"
+        assert _build_targeted_web_query(q3) == "Supreme Court judgment"
+
+    def test_model_registry_get_chat_provider_resolution(self) -> None:
+        from app.providers.registry import get_registry
+
+        registry = get_registry()
+        # Default answerer
+        provider = registry.get_chat_provider()
+        assert provider is not None
+
+        # Alias resolution
+        gemini_provider = registry.get_chat_provider("gemini_flash")
+        assert gemini_provider is not None
+        p_name = gemini_provider.provider_name.lower()
+        assert "gemini" in p_name or "ollama" in p_name
+
