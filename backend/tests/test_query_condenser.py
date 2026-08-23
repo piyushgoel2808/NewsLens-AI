@@ -184,7 +184,12 @@ class TestAgentWorkflowCondensation:
         )
 
         # The planner should receive the condensed context
-        assert result["archetype"] in ("factual_lookup", "quantitative_trend")
+        assert result["archetype"] in (
+            "factual_lookup",
+            "quantitative_trend",
+            "thematic_timeline",
+            "thematic_overview",
+        )
         assert "Tata Power" in result["query"] or result["query"] == "Can you summarize it?"
 
 

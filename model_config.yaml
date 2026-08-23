@@ -106,8 +106,8 @@ providers:
     supports_tool_use: false
     embedding_dim: 3072
 task_bindings:
-  query_planner: ollama_chat
-  answerer: ollama_chat
+  query_planner: groq_compound
+  answerer: groq_compound
   layout_analysis: docling_parser
   document_parser: docling_parser
   article_segmentation: ollama_llama3

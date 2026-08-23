@@ -15,21 +15,32 @@ from app.providers.registry import get_registry
 logger = get_logger(__name__)
 
 SYNTHESIZER_SYSTEM_PROMPT = """You are NewsLens-AI, an elite broadsheet intelligence assistant.
-Your goal is to synthesize newspaper coverage into a crisp, unified, structured brief.
+Your goal is to analyze, explain, and synthesize coverage into a structured brief.
 
-DO NOT write massive paragraphs combining all articles together. Distill the information:
+CRITICAL ANALYTICAL GUIDELINES:
+1. DEEP EXPLANATION & MARKET INTELLIGENCE:
+   - Do NOT just copy raw snippets or state vague headlines.
+   - Deeply analyze the news story: what happened, why it happened, and what it means.
+   - When discussing economic or market news, explicitly extract and explain:
+     * Market indices and price moves (e.g. Sensex/Nifty point gains and closing levels).
+     * Foreign Portfolio Investor (FPI / FII) net inflows/outflows (in ₹ crore or USD).
+     * Top leading sectors (e.g. Banking, IT, Auto) and specific companies mentioned.
+     * Macroeconomic triggers (e.g. inflation, bond yields, earnings, interest rates).
+2. NOISE & RELEVANCE FILTERING:
+   - Discard irrelevant candidate excerpts (such as book reviews, cinema columns, or
+     unrelated articles) that do not match the research topic. Focus on the main subject.
 
 REQUIRED RESPONSE STRUCTURE:
 1. ### ⚡ Executive Summary
-   - 1 to 2 crisp, high-impact sentences directly giving the core answer/development.
+   - 1 to 2 crisp, authoritative sentences explaining the main development and takeaway.
 
 2. ### 📌 Key Verified Facts & Highlights
-   - Bullet points of specific numbers, financial figures, dates, and official decisions.
+   - Bullet points of specific numbers, figures, dates, index levels, inflows, and quotes.
    - Inline citation on each bullet: [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page}, "{Headline}"]
 
 3. ### 📰 Broadsheet Perspectives & Focus Areas
-   - Group the reporting by publication (e.g. **Mint**, **Business Standard**, **The Hindu**).
-   - 1 concise bullet point per newspaper explaining that paper's specific angle or takeaway.
+   - Group reporting by publication (e.g. **Mint**, **Business Standard**, **The Hindu**).
+   - 1 concise bullet point per newspaper explaining that paper's specific angle/takeaway.
 
 4. ### 🔍 Explore Further
    - 2 to 3 concise follow-up prompts formatted strictly as:
@@ -44,7 +55,7 @@ CONVERSATIONAL & CITATION MEMORY RULES:
 3. Web Citation Format: [Web: {Source Title}]({URL})
 4. STRICT NEGATIVE CONSTRAINTS:
    - NEVER dump raw headers (e.g. `--- ARCHIVE EVIDENCE EXCERPT ---` or `[Evidence: ...]`).
-   - NEVER output advertisement boilerplate, legal notices, or unrelated news briefs.
+   - NEVER output advertisement boilerplate, legal notices, or unrelated book/movie reviews.
 """
 
 
@@ -124,6 +135,48 @@ class AnswerSynthesizer:
                 extra={"error": str(e), "override": model_override},
             )
         return None
+
+    def _get_provider_candidates(
+        self, model_override: str | None = None
+    ) -> list[ChatModelProvider]:
+        """Return an ordered list of viable chat model providers for failover resilience."""
+        if self._provider and not model_override:
+            return [self._provider]
+
+        candidates: list[ChatModelProvider] = []
+        seen_keys: set[str] = set()
+
+        # 1. Primary requested provider
+        primary = self._get_provider(model_override=model_override)
+        if primary:
+            candidates.append(primary)
+            p_ident = f"{getattr(primary, 'provider_name', '')}:{getattr(primary, '_model', '')}"
+            seen_keys.add(p_ident)
+
+        # 2. Resilient failover sequence from active registry
+        failover_keys = [
+            "groq_compound",
+            "gemini_flash",
+            "groq_qwen",
+            "ollama_llama3",
+            "ollama_deepseek",
+        ]
+        try:
+            registry = get_registry()
+            for key in failover_keys:
+                try:
+                    p = registry.get_chat_provider(key)
+                    if p:
+                        ident = f"{getattr(p, 'provider_name', '')}:{getattr(p, '_model', '')}"
+                        if ident not in seen_keys:
+                            seen_keys.add(ident)
+                            candidates.append(p)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return candidates
 
     def _build_evidence_context(self, evidence_items: list[dict[str, Any]]) -> str:
         """Format retrieved evidence documents into structured prompt context."""
@@ -287,12 +340,11 @@ class AnswerSynthesizer:
         model_override: str | None = None,
         chat_history: list[dict[str, Any]] | None = None,
     ) -> tuple[str, list[AgentCitation], float]:
-        """Synthesize answer with citations from evidence and conversation context."""
+        """Synthesize answer with citations from evidence and conversation context with failover."""
         if not evidence_items and not chat_history:
             empty_msg = f"No relevant newspaper articles found for query: '{query}'."
             return empty_msg, [], 0.0
 
-        provider = self._get_provider(model_override=model_override)
         citations = self.extract_citations("", evidence_items)
         context = self._build_evidence_context(evidence_items)
 
@@ -301,22 +353,24 @@ class AnswerSynthesizer:
             f"Query Archetype: {archetype}\n\n"
             f"Available Newspaper Evidence:\n"
             f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
-            f"Synthesize a crisp, highly-structured executive intelligence response."
+            f"Synthesize an insightful, highly-structured executive intelligence response."
         )
 
+        messages = [Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT)]
+        if chat_history:
+            for turn in chat_history[-6:]:
+                r = turn.get("role", "user")
+                c = str(turn.get("content", "")).strip()
+                if c:
+                    messages.append(Message(role=r, content=c))
+        messages.append(Message(role="user", content=user_prompt))
+
         cost_usd = 0.0
+        answer_text = ""
+        providers = self._get_provider_candidates(model_override=model_override)
 
-        if provider:
+        for provider in providers:
             try:
-                messages = [Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT)]
-                if chat_history:
-                    for turn in chat_history[-6:]:
-                        r = turn.get("role", "user")
-                        c = str(turn.get("content", "")).strip()
-                        if c:
-                            messages.append(Message(role=r, content=c))
-                messages.append(Message(role="user", content=user_prompt))
-
                 response = await provider.complete(
                     messages=messages,
                     max_tokens=4096,
@@ -325,7 +379,7 @@ class AnswerSynthesizer:
                 _, cleaned_answer = parse_thought_and_answer(response.text)
                 answer_text = cleaned_answer if cleaned_answer else response.text
                 p_name = getattr(provider, "provider_name", "llm")
-                m_name = getattr(provider, "model_name", "default")
+                m_name = getattr(provider, "_model", getattr(provider, "model_name", "default"))
                 calc_cost = record_usage_and_cost(
                     provider=p_name,
                     model=m_name,
@@ -333,15 +387,16 @@ class AnswerSynthesizer:
                     output_tokens=response.output_tokens,
                 )
                 cost_usd = max(calc_cost, response.cost_usd)
+                if answer_text.strip():
+                    return answer_text, citations, cost_usd
             except Exception as e:
                 logger.warning(
-                    "LLM synthesis failed, generating rule-based grounded summary",
-                    extra={"error": str(e)},
+                    "LLM synthesis failed on provider, trying next candidate",
+                    extra={"provider": getattr(provider, "provider_name", ""), "error": str(e)},
                 )
-                answer_text = self._generate_deterministic_summary(query, evidence_items)
-        else:
-            answer_text = self._generate_deterministic_summary(query, evidence_items)
 
+        # Fallback if all providers fail
+        answer_text = self._generate_deterministic_summary(query, evidence_items)
         return answer_text, citations, cost_usd
 
     async def synthesize_stream(
@@ -352,44 +407,48 @@ class AnswerSynthesizer:
         model_override: str | None = None,
         chat_history: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[str]:
-        """Stream synthesized answer token by token with conversational context."""
+        """Stream synthesized answer token by token with conversational context and failover."""
         if not evidence_items and not chat_history:
             yield f"No relevant newspaper articles found for query: '{query}'."
             return
 
-        provider = self._get_provider(model_override=model_override)
         context = self._build_evidence_context(evidence_items)
         user_prompt = (
             f"User Research Query: {query}\n"
             f"Query Archetype: {archetype}\n\n"
             f"Available Newspaper Evidence:\n"
             f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
-            f"Synthesize a crisp, highly-structured executive intelligence response."
+            f"Synthesize an insightful, highly-structured executive intelligence response."
         )
 
-        if provider:
-            try:
-                messages = [Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT)]
-                if chat_history:
-                    for turn in chat_history[-6:]:
-                        r = turn.get("role", "user")
-                        c = str(turn.get("content", "")).strip()
-                        if c:
-                            messages.append(Message(role=r, content=c))
-                messages.append(Message(role="user", content=user_prompt))
+        messages = [Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT)]
+        if chat_history:
+            for turn in chat_history[-6:]:
+                r = turn.get("role", "user")
+                c = str(turn.get("content", "")).strip()
+                if c:
+                    messages.append(Message(role=r, content=c))
+        messages.append(Message(role="user", content=user_prompt))
 
+        providers = self._get_provider_candidates(model_override=model_override)
+
+        for provider in providers:
+            try:
                 stream_gen = provider.complete_stream(
                     messages=messages,
                     max_tokens=4096,
                     temperature=0.1,
                 )
+                streamed_any = False
                 async for chunk in stream_gen:
+                    streamed_any = True
                     yield chunk
-                return
+                if streamed_any:
+                    return
             except Exception as e:
                 logger.warning(
-                    "Streaming LLM synthesis failed, streaming fallback text",
-                    extra={"error": str(e)},
+                    "Streaming LLM synthesis failed on provider, trying next in failover",
+                    extra={"provider": getattr(provider, "provider_name", ""), "error": str(e)},
                 )
 
         # Fallback text streaming
@@ -402,29 +461,44 @@ class AnswerSynthesizer:
         query: str,
         evidence_items: list[dict[str, Any]],
     ) -> str:
-        """Structured deterministic grounded synthesis when LLM is offline."""
+        """Structured deterministic grounded synthesis when all LLMs are offline."""
         if not evidence_items:
             return (
                 f"### ⚡ Executive Summary\n"
                 f"No specific archive articles were found for '{query}'.\n"
             )
 
-        first = evidence_items[0]
+        # Filter out obvious noise items if other items have keyword overlap
+        query_words = {w.lower() for w in query.split() if len(w) > 3}
+        relevant_items = []
+        for item in evidence_items:
+            text_corpus = (
+                item.get("headline", "")
+                + " "
+                + item.get("snippet", "")
+                + " "
+                + item.get("summary", "")
+            ).lower()
+            if not query_words or any(qw in text_corpus for qw in query_words):
+                relevant_items.append(item)
+
+        filtered_evidence = relevant_items if relevant_items else evidence_items
+        first = filtered_evidence[0]
         first_np = first.get("newspaper_name", "Daily News")
         first_dt = first.get("issue_date", "")
 
         lines = [
             "### ⚡ Executive Summary",
             (
-                f"Key reports regarding **{query}** were documented across regional broadsheets, "
-                f"led by *{first_np}* ({first_dt}).\n"
+                f"Key broadsheet reporting regarding **{query}** was documented across "
+                f"regional archives, led by *{first_np}* ({first_dt}).\n"
             ),
             "### 📌 Key Verified Facts & Highlights",
         ]
 
         # Group by publication
         pub_groups: dict[str, list[dict[str, Any]]] = {}
-        for item in evidence_items[:6]:
+        for item in filtered_evidence[:6]:
             np_name = item.get("newspaper_name", "Archive")
             pub_groups.setdefault(np_name, []).append(item)
             dt = item.get("issue_date", "")
@@ -432,12 +506,19 @@ class AnswerSynthesizer:
             page_str = f"Page {pages[0]}" if pages else "Page 1"
             hl = item.get("headline", "Untitled")
             snip = item.get("snippet") or item.get("summary") or ""
-            lines.append(f'- **{hl}**: {snip[:160]}... [{np_name}, {dt}, {page_str}, "{hl}"]')
+            # Clean indexing metadata tags
+            clean_snip = re.sub(r"\[Newspaper:.*?\]", "", snip).strip()
+            clean_snip = re.sub(r"\[Page\(s\):.*?\]", "", clean_snip).strip()
+            lines.append(
+                f'- **{hl}**: {clean_snip[:180]}... [{np_name}, {dt}, {page_str}, "{hl}"]'
+            )
 
         lines.append("\n### 📰 Broadsheet Perspectives")
         for pub, items in pub_groups.items():
             top_hl = items[0].get("headline", "Reporting")
-            lines.append(f"- **{pub}**: Emphasized '{top_hl}' with {len(items)} related report(s).")
+            lines.append(
+                f"- **{pub}**: Emphasized '{top_hl}' across {len(items)} related report(s)."
+            )
 
         lines.append("\n### 🔍 Explore Further")
         for pub in list(pub_groups.keys())[:2]:

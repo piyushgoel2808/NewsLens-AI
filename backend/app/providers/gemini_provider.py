@@ -291,87 +291,98 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         if tools:
             payload["tools"] = self._to_gemini_tools(tools)
 
-        url = f"{GEMINI_API_BASE}/{self._model}:generateContent?key={self._api_key}"
+        model_candidates = [self._model]
+        for fb in ["gemini-flash-latest", "gemini-3.7-flash"]:
+            if fb not in model_candidates:
+                model_candidates.append(fb)
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            try:
-                res = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
+        last_error: Exception | None = None
+        for m in model_candidates:
+            url = f"{GEMINI_API_BASE}/{m}:generateContent?key={self._api_key}"
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                try:
+                    res = await client.post(
+                        url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                    )
+                except Exception as e:
+                    last_error = e
+                    continue
+
+            if res.status_code == 200:
+                data = res.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return ModelResponse(
+                        text="",
+                        model=m,
+                        provider=self.provider_name,
+                    )
+
+                candidate = candidates[0]
+                content_parts = candidate.get("content", {}).get("parts", [])
+
+                text_pieces: list[str] = []
+                tool_calls: list[ToolCall] = []
+
+                for p in content_parts:
+                    if "text" in p:
+                        text_pieces.append(p["text"])
+                    elif "functionCall" in p:
+                        fc = p["functionCall"]
+                        tool_calls.append(
+                            ToolCall(
+                                tool_name=fc.get("name", ""),
+                                tool_input=fc.get("args", {}),
+                                tool_use_id=f"call_{int(time.time()*1000)}",
+                            )
+                        )
+
+                full_text = "".join(text_pieces)
+
+                parsed_json = None
+                if response_schema and full_text:
+                    with contextlib.suppress(json.JSONDecodeError):
+                        parsed_json = json.loads(full_text)
+
+                usage = data.get("usageMetadata", {})
+                in_tok = usage.get("promptTokenCount", 0)
+                out_tok = usage.get("candidatesTokenCount", 0)
+                lat_ms = int((time.monotonic() - t0) * 1000)
+
+                logger.info(
+                    "Gemini completion",
+                    extra={
+                        "model": m,
+                        "in_tok": in_tok,
+                        "out_tok": out_tok,
+                        "lat_ms": lat_ms,
+                    },
                 )
-            except Exception as e:
-                raise ProviderError(f"HTTP request to Gemini API failed: {e}") from e
 
-        if res.status_code != 200:
+                return ModelResponse(
+                    text=full_text,
+                    tool_calls=tool_calls,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    model=m,
+                    provider=self.provider_name,
+                    parsed=parsed_json,
+                    raw=data,
+                )
+
             err_data = (
                 res.json()
                 if res.headers.get("content-type", "").startswith("application/json")
                 else {}
             )
             err_msg = err_data.get("error", {}).get("message", res.text)
-            raise ProviderError(f"Gemini API returned {res.status_code}: {err_msg}")
+            last_error = ProviderError(f"Gemini API returned {res.status_code}: {err_msg}")
+            if res.status_code not in (429, 503, 404):
+                break
 
-        data = res.json()
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return ModelResponse(
-                text="",
-                model=self._model,
-                provider=self.provider_name,
-            )
-
-        candidate = candidates[0]
-        content_parts = candidate.get("content", {}).get("parts", [])
-
-        text_pieces: list[str] = []
-        tool_calls: list[ToolCall] = []
-
-        for p in content_parts:
-            if "text" in p:
-                text_pieces.append(p["text"])
-            elif "functionCall" in p:
-                fc = p["functionCall"]
-                tool_calls.append(
-                    ToolCall(
-                        tool_name=fc.get("name", ""),
-                        tool_input=fc.get("args", {}),
-                        tool_use_id=f"call_{int(time.time()*1000)}",
-                    )
-                )
-
-        full_text = "".join(text_pieces)
-
-        parsed_json = None
-        if response_schema and full_text:
-            with contextlib.suppress(json.JSONDecodeError):
-                parsed_json = json.loads(full_text)
-
-        usage = data.get("usageMetadata", {})
-        in_tok = usage.get("promptTokenCount", 0)
-        out_tok = usage.get("candidatesTokenCount", 0)
-        lat_ms = int((time.monotonic() - t0) * 1000)
-
-        logger.info(
-            "Gemini completion",
-            extra={
-                "model": self._model,
-                "in_tok": in_tok,
-                "out_tok": out_tok,
-                "lat_ms": lat_ms,
-            },
-        )
-
-        return ModelResponse(
-            text=full_text,
-            tool_calls=tool_calls,
-            input_tokens=in_tok,
-            output_tokens=out_tok,
-            model=self._model,
-            provider=self.provider_name,
-            parsed=parsed_json,
-            raw=data,
-        )
+        raise last_error or ProviderError("Gemini completion failed across all candidate models")
 
     async def complete_stream(
         self,
@@ -379,7 +390,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> AsyncIterator[str]:
-        """Streaming chat completion yielding text deltas."""
+        """Streaming chat completion yielding text deltas with automatic model fallback."""
         system_instruction, contents = self._to_gemini_contents(messages)
 
         payload: dict[str, Any] = {
@@ -392,37 +403,54 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         if system_instruction:
             payload["systemInstruction"] = system_instruction
 
-        url = f"{GEMINI_API_BASE}/{self._model}:streamGenerateContent?key={self._api_key}&alt=sse"
+        model_candidates = [self._model]
+        for fb in ["gemini-flash-latest", "gemini-3.7-flash"]:
+            if fb not in model_candidates:
+                model_candidates.append(fb)
 
-        async with (
-            httpx.AsyncClient(timeout=90.0) as client,
-            client.stream(
-                "POST",
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            ) as response,
-        ):
-            if response.status_code != 200:
-                err_text = await response.aread()
-                msg = f"Gemini streaming error ({response.status_code}): {err_text.decode('utf-8')}"
-                raise ProviderError(msg)
+        last_error: Exception | None = None
+        for m in model_candidates:
+            url = f"{GEMINI_API_BASE}/{m}:streamGenerateContent?key={self._api_key}&alt=sse"
+            try:
+                async with (
+                    httpx.AsyncClient(timeout=90.0) as client,
+                    client.stream(
+                        "POST",
+                        url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                    ) as response,
+                ):
+                    if response.status_code != 200:
+                        err_text = await response.aread()
+                        err_str = err_text.decode("utf-8")
+                        msg = f"Gemini streaming error ({response.status_code}): {err_str}"
+                        last_error = ProviderError(msg)
+                        if response.status_code in (429, 503, 404):
+                            continue
+                        raise ProviderError(msg)
 
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    data_str = line[6:].strip()
-                    if not data_str or data_str == "[DONE]":
-                        continue
-                    try:
-                        chunk_data = json.loads(data_str)
-                        candidates = chunk_data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            for p in parts:
-                                if "text" in p:
-                                    yield p["text"]
-                    except json.JSONDecodeError:
-                        continue
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:].strip()
+                            if not data_str or data_str == "[DONE]":
+                                continue
+                            try:
+                                chunk_data = json.loads(data_str)
+                                candidates = chunk_data.get("candidates", [])
+                                if candidates:
+                                    parts = candidates[0].get("content", {}).get("parts", [])
+                                    for p in parts:
+                                        if "text" in p:
+                                            yield p["text"]
+                            except json.JSONDecodeError:
+                                continue
+                    return
+            except Exception as e:
+                last_error = e
+                continue
+
+        raise last_error or ProviderError("Gemini streaming failed across all candidate models")
 
     async def analyze_image(
         self,
