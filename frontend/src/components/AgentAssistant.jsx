@@ -15,6 +15,7 @@ import {
   Cpu,
   RefreshCw,
   AlertCircle,
+  Globe,
 } from 'lucide-react';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
 
@@ -77,6 +78,7 @@ export default function AgentAssistant() {
   const [query, setQuery] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
+  const [enableWebSearch, setEnableWebSearch] = useState(false);
 
   const messagesEndRef = useRef(null);
 
@@ -139,6 +141,7 @@ export default function AgentAssistant() {
           query: queryText,
           chat_history: historyPayload,
           model_override: selectedModel || undefined,
+          enable_web_search: enableWebSearch,
         }),
       });
 
@@ -326,6 +329,33 @@ export default function AgentAssistant() {
                 </option>
               ))}
           </select>
+
+          {/* Live Web Search Grounding Toggle */}
+          <button
+            type="button"
+            onClick={() => setEnableWebSearch(!enableWebSearch)}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium border transition-all ${
+              enableWebSearch
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 shadow-[0_0_12px_rgba(6,182,212,0.25)] hover:bg-cyan-500/30'
+                : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700 hover:text-slate-300'
+            }`}
+            title="Toggle live internet search to complement primary newspaper archives"
+          >
+            <Globe
+              className={`w-3.5 h-3.5 ${
+                enableWebSearch ? 'text-cyan-400 animate-pulse' : 'text-slate-500'
+              }`}
+            />
+            <span>Web Search:</span>
+            <span
+              className={`font-semibold ${
+                enableWebSearch ? 'text-cyan-300' : 'text-slate-500'
+              }`}
+            >
+              {enableWebSearch ? 'ON' : 'OFF'}
+            </span>
+          </button>
+
           <button
             onClick={handleClearChat}
             className="text-slate-400 hover:text-slate-200 text-xs px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-800 transition-colors ml-1"
@@ -367,6 +397,8 @@ export default function AgentAssistant() {
                       ? 'Resolving conversational coreference...'
                       : msg.stage === 'planning'
                       ? 'Formulating multi-step investigation plan...'
+                      : msg.stage === 'web_search'
+                      ? 'Searching live web and open sources...'
                       : msg.stage === 'tool_execution'
                       ? 'Executing hybrid vector & SQL retrieval tools...'
                       : msg.stage === 'thinking'
@@ -498,30 +530,51 @@ export default function AgentAssistant() {
               {msg.citations && msg.citations.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-slate-800">
                   <span className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold block mb-2">
-                    Verified Newspaper Sources (Click to inspect spatial bboxes):
+                    Verified Sources & Citations:
                   </span>
                   <div className="flex flex-wrap gap-2">
-                    {msg.citations.map((cit, cIdx) => (
-                      <button
-                        key={cIdx}
-                        onClick={() =>
-                          highlightArticle(
-                            cit.issue_id,
-                            cit.page_number || 1,
-                            cit.article_id,
-                            cit.bboxes || []
-                          )
-                        }
-                        className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105"
-                        title="Jump to broadsheet scan and pulse article bounding box"
-                      >
-                        <MapPin className="w-3 h-3 text-emerald-400" />
-                        <span className="font-medium">
-                          {cit.newspaper_name || 'Daily News'}, Page {cit.page_number || 1}
-                        </span>
-                        <ExternalLink className="w-2.5 h-2.5 opacity-60" />
-                      </button>
-                    ))}
+                    {msg.citations.map((cit, cIdx) => {
+                      const isWeb = cit.is_web || cit.source_type === 'web' || !!cit.url;
+                      if (isWeb && cit.url) {
+                        return (
+                          <a
+                            key={cIdx}
+                            href={cit.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105"
+                            title={`Open live web source: ${cit.url}`}
+                          >
+                            <Globe className="w-3 h-3 text-cyan-400 shrink-0" />
+                            <span className="font-medium truncate max-w-[220px]">
+                              {cit.headline || cit.newspaper_name || 'Web Source'}
+                            </span>
+                            <ExternalLink className="w-2.5 h-2.5 opacity-70 shrink-0" />
+                          </a>
+                        );
+                      }
+                      return (
+                        <button
+                          key={cIdx}
+                          onClick={() =>
+                            highlightArticle(
+                              cit.issue_id,
+                              cit.page_number || 1,
+                              cit.article_id,
+                              cit.bboxes || []
+                            )
+                          }
+                          className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105"
+                          title="Jump to broadsheet scan and pulse article bounding box"
+                        >
+                          <MapPin className="w-3 h-3 text-emerald-400" />
+                          <span className="font-medium">
+                            {cit.newspaper_name || 'Daily News'}, Page {cit.page_number || 1}
+                          </span>
+                          <ExternalLink className="w-2.5 h-2.5 opacity-60" />
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}

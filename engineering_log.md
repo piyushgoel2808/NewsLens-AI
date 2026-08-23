@@ -1461,6 +1461,39 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 
 ---
 
+## Dual-Mode Answering & Live Web Search Grounding
+
+**Date**: 2026-08-23  
+**Status**: Completed ✅
+
+### What was built
+1. **Multi-Provider Web Search Engine ([`backend/app/retrieval/web_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/web_search.py))**:
+   - Implemented `WebSearchEngine.search(query: str, num_results: int = 5) -> list[WebSearchResult]`.
+   - Built automatic multi-tier fallback: Google Search via **Serper API** $\rightarrow$ **Tavily AI Search API** $\rightarrow$ Zero-config **DuckDuckGo HTML Scraping** with URL unquoting and redirect cleaning.
+2. **LangGraph Dual-Evidence Retrieval & Synthesis Pipeline ([`backend/app/agent/`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/))**:
+   - **`AgentState` (`state.py`)**: Added `enable_web_search: bool`, `web_search_results: list[dict]`, and extended `AgentCitation` with `url: str | None`, `source_type: str`, `is_web: bool`.
+   - **`QueryPlanner` (`planner.py`)**: Conditionally schedules `PlannedToolCall(tool_name="web_search", arguments={"query": query, "num_results": 5})` only when `enable_web_search=True`. Zero web calls occur when disabled.
+   - **`AgentWorkflow` (`graph.py`)**: Integrated `WebSearchEngine` into `_execute_tools_node`, tagging web results with `is_web: True` and unique URLs.
+   - **`AnswerSynthesizer` (`synthesizer.py`)**: Updated system prompt and evidence partitioning (`--- ARCHIVE EVIDENCE EXCERPT ---` vs `--- LIVE WEB EVIDENCE EXCERPT ---`) to guide the LLM to format dual citations: local broadsheets as `[Newspaper, Date, Page X, "Headline"]` and web results as `[Web: Title](URL)`.
+3. **API & Streaming SSE Protocol ([`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py))**:
+   - Added `enable_web_search: bool = Field(False)` to `QueryRequest`.
+   - Emits real-time SSE event `stage: 'web_search'` when internet retrieval is executing.
+   - Emits structured `citations` payload containing both local newspaper items (`is_web: false`) and external web items (`is_web: true`, `url: ...`).
+4. **Interactive Chat UI with Visual Citation Distinction ([`frontend/src/components/AgentAssistant.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/AgentAssistant.jsx))**:
+   - Added a sleek **`🌐 Web Search: ON / OFF`** toggle button in the header bar with glowing active state indicator.
+   - Visual and functional badge differentiation:
+     - **Emerald Green Badges**: Primary newspaper citations deep-linking to broadsheet scan with bounding-box pulse highlighting.
+     - **Cyan / Blue Badges**: Live web citations with `Globe` icon opening external source URLs in a new browser tab.
+5. **Unit Tests ([`backend/tests/test_web_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_web_search.py))**:
+   - 8 comprehensive test cases verifying empty queries, Serper search, Tavily search, DuckDuckGo scraping, planner tool scheduling, context builder formatting, and citation badge differentiation.
+
+### Verification
+- `make lint`: **0 errors across 74 source files** (`ruff` + `mypy` strict).
+- `make test`: **232/232 tests passing 100% GREEN in 23.48s**.
+- `npm run build`: **Vite build completed with 0 errors in 814ms**.
+
+---
+
 *Next phase: Phase 8 — Hosted Deployment & Production Orchestration (Multi-stage Dockerfiles, Docker Compose Prod, Helm/K8s)*
 
 

@@ -105,7 +105,7 @@ class QueryPlanner:
                 "User requested factual point-in-time information or specific news event details.",
             )
 
-    def plan_query(self, query: str) -> PlanResult:
+    def plan_query(self, query: str, enable_web_search: bool = False) -> PlanResult:
         """Generate ordered tool invocations for the classified archetype."""
         archetype, reasoning = self.classify_archetype(query)
         tool_calls: list[PlannedToolCall] = []
@@ -207,7 +207,8 @@ class QueryPlanner:
                         tool_name="hybrid_search",
                         arguments={"query": query, "top_k": 5},
                         purpose=(
-                            "Retrieve representative qualitative examples for statistical findings"
+                            "Retrieve representative qualitative examples for "
+                            "statistical findings"
                         ),
                     )
                 )
@@ -217,15 +218,19 @@ class QueryPlanner:
                 PlannedToolCall(
                     tool_name="hybrid_search",
                     arguments={"query": query, "top_k": 12},
-                    purpose="Retrieve multi-newspaper coverage across distinct publications",
+                    purpose="Retrieve diverse articles across multiple newspaper editions",
+                )
+            )
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="sql_analytics",
+                    arguments={"analysis_type": "coverage_comparison", "query": query},
+                    purpose="Compare reporting sentiment, volume, and section prominence",
                 )
             )
 
         elif archetype == "entity_deep_dive":
-            # Extract entity name
-            cap_matches = re.findall(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", query)
-            ent_name = cap_matches[0] if cap_matches else query
-
+            ent_name = query.replace("everything about", "").replace("who is", "").strip()
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="entity_search",
@@ -261,12 +266,22 @@ class QueryPlanner:
                     )
                 )
 
+        if enable_web_search:
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="web_search",
+                    arguments={"query": query, "num_results": 5},
+                    purpose="Retrieve corroborating current news and live internet search results",
+                )
+            )
+
         logger.info(
             "Query planned",
             extra={
                 "query": query[:40],
                 "archetype": archetype,
                 "tools_planned": len(tool_calls),
+                "enable_web_search": enable_web_search,
             },
         )
 

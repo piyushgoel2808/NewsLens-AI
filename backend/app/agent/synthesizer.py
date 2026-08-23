@@ -14,23 +14,27 @@ from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
 
-SYNTHESIZER_SYSTEM_PROMPT = """You are NewsLens-AI, an expert newspaper research assistant.
-Answer the user's research question thoroughly, objectively, and accurately based ONLY
-on the evidence excerpts.
+SYNTHESIZER_SYSTEM_PROMPT = """You are NewsLens-AI, an expert newspaper and open-source intelligence
+research assistant. Answer the user's research question thoroughly, objectively, and
+accurately based on the provided evidence excerpts.
 
-CRITICAL CITATION RULES:
-1. Every factual claim MUST include an inline citation formatted strictly as:
-   [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page_Number}, "{Headline}"]
-   Example: [Mint, 2026-08-01, Page 3, "Telecom AGR Dues Ruling"]
-2. Use the physical PDF page number specified in the evidence excerpt (e.g. Page 1, Page 3).
-3. If multiple sources corroborate a claim, cite them together.
-4. For aggregate questions (e.g. "How many articles?", "List all articles",
+CRITICAL CITATION & SOURCE ATTRIBUTION RULES:
+1. Local Newspaper Archive Citations:
+   - For claims backed by primary newspaper broadsheets, format strictly as:
+     [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page_Number}, "{Headline}"]
+     Example: [Mint, 2026-08-01, Page 3, "Telecom AGR Dues Ruling"]
+2. Live Web Search Citations:
+   - For claims backed by live internet search results, format strictly as:
+     [Web: {Source Title}]({URL})
+     Example: [Web: Reuters Telecom Update](https://www.reuters.com/business/telecom)
+3. Use the physical PDF page number specified in newspaper evidence excerpts.
+4. If multiple sources corroborate a claim, cite them together.
+5. For aggregate archive questions (e.g. "How many articles?", "List all articles",
    "Overview of the issue"), use the structured relational archive manifest
-   in the evidence to provide exact, authoritative numbers, section breakdowns,
-   and complete lists.
-5. Do NOT make up any dates, figures, quotes, or events not present in the evidence.
-6. If evidence is insufficient, explicitly state what is missing.
-7. Structure your response clearly with headings or lists where appropriate.
+   to provide exact, authoritative numbers.
+6. Do NOT make up any dates, figures, quotes, or events not present in the evidence.
+7. If evidence is insufficient, explicitly state what is missing.
+8. Structure your response clearly with headings, bullet points, and distinct sections.
 """
 
 
@@ -92,26 +96,40 @@ class AnswerSynthesizer:
         """Format retrieved evidence documents into structured prompt context."""
         context_blocks: list[str] = []
         for i, item in enumerate(evidence_items, start=1):
-            np_name = item.get("newspaper_name", "Unknown Publication")
-            dt = item.get("issue_date", "Unknown Date")
-            pages = item.get("pages", [1])
-            pdf_page = int(pages[0]) if pages and pages[0] else 1
+            is_web = item.get("is_web") or item.get("source_tool") == "web_search"
             hl = item.get("headline", "Untitled Article")
             text = item.get("snippet") or item.get("full_text") or item.get("summary") or ""
 
-            evidence_tag = (
-                f"[Evidence: {np_name}, {dt}, Page {pdf_page} "
-                f"(PDF Page {pdf_page}), Headline: \"{hl}\"]"
-            )
-            context_blocks.append(
-                f"--- EVIDENCE EXCERPT [{i}] ---\n"
-                f"{evidence_tag}\n"
-                f"Publication: {np_name}\n"
-                f"Date: {dt}\n"
-                f"Page(s): Page {pdf_page} (PDF Page {pdf_page})\n"
-                f"Headline: {hl}\n"
-                f"Content:\n{text.strip()}\n"
-            )
+            if is_web:
+                url = item.get("url", "")
+                src = item.get("newspaper_name", "Live Web")
+                dt = item.get("issue_date", "Current")
+                context_blocks.append(
+                    f"--- LIVE WEB EVIDENCE EXCERPT [{i}] ---\n"
+                    f"Source: {src}\n"
+                    f"Title: {hl}\n"
+                    f"URL: {url}\n"
+                    f"Date: {dt}\n"
+                    f"Content:\n{text.strip()}\n"
+                )
+            else:
+                np_name = item.get("newspaper_name", "Unknown Publication")
+                dt = item.get("issue_date", "Unknown Date")
+                pages = item.get("pages", [1])
+                pdf_page = int(pages[0]) if pages and pages[0] else 1
+                evidence_tag = (
+                    f"[Evidence: {np_name}, {dt}, Page {pdf_page} "
+                    f"(PDF Page {pdf_page}), Headline: \"{hl}\"]"
+                )
+                context_blocks.append(
+                    f"--- ARCHIVE EVIDENCE EXCERPT [{i}] ---\n"
+                    f"{evidence_tag}\n"
+                    f"Publication: {np_name}\n"
+                    f"Date: {dt}\n"
+                    f"Page(s): Page {pdf_page} (PDF Page {pdf_page})\n"
+                    f"Headline: {hl}\n"
+                    f"Content:\n{text.strip()}\n"
+                )
         return "\n".join(context_blocks)
 
     def extract_citations(
@@ -121,34 +139,62 @@ class AnswerSynthesizer:
     ) -> list[AgentCitation]:
         """Extract and structure verified citations mentioned in the text or used from evidence."""
         citations: list[AgentCitation] = []
-        seen_keys: set[tuple[str, str, int, str]] = set()
+        seen_keys: set[str] = set()
 
         for item in evidence_items:
-            np_name = item.get("newspaper_name", "Daily News")
-            dt = item.get("issue_date", "")
-            pages = item.get("pages", [1])
-            page_num = int(pages[0]) if pages and pages[0] else 1
-            hl = item.get("headline", "Untitled")
-            art_id = item.get("article_id", 0)
-            snip = item.get("snippet") or item.get("summary") or ""
-            issue_id = item.get("issue_id", 0)
-            bboxes = item.get("bboxes", [])
-
-            key = (np_name, dt, page_num, hl)
-            if key not in seen_keys:
-                seen_keys.add(key)
-                citations.append(
-                    AgentCitation(
-                        newspaper_name=np_name,
-                        issue_date=dt,
-                        page_number=page_num,
-                        headline=hl,
-                        article_id=art_id,
-                        snippet=snip[:300],
-                        issue_id=issue_id,
-                        bboxes=bboxes,
+            is_web = item.get("is_web") or item.get("source_tool") == "web_search"
+            if is_web:
+                url = item.get("url") or ""
+                hl = item.get("headline", "Web Article")
+                snip = item.get("snippet") or ""
+                src = item.get("newspaper_name", "Web")
+                key = f"web_{url}_{hl}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    citations.append(
+                        AgentCitation(
+                            newspaper_name=src,
+                            issue_date=item.get("issue_date", "Live Web"),
+                            page_number=1,
+                            headline=hl,
+                            article_id=0,
+                            snippet=snip[:300],
+                            issue_id=0,
+                            bboxes=[],
+                            url=url,
+                            source_type="web",
+                            is_web=True,
+                        )
                     )
-                )
+            else:
+                np_name = item.get("newspaper_name", "Daily News")
+                dt = item.get("issue_date", "")
+                pages = item.get("pages", [1])
+                page_num = int(pages[0]) if pages and pages[0] else 1
+                hl = item.get("headline", "Untitled")
+                art_id = item.get("article_id", 0)
+                snip = item.get("snippet") or item.get("summary") or ""
+                issue_id = item.get("issue_id", 0)
+                bboxes = item.get("bboxes", [])
+
+                key = f"np_{np_name}_{dt}_{page_num}_{hl}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    citations.append(
+                        AgentCitation(
+                            newspaper_name=np_name,
+                            issue_date=dt,
+                            page_number=page_num,
+                            headline=hl,
+                            article_id=art_id,
+                            snippet=snip[:300],
+                            issue_id=issue_id,
+                            bboxes=bboxes,
+                            url=None,
+                            source_type="newspaper",
+                            is_web=False,
+                        )
+                    )
 
         return citations
 

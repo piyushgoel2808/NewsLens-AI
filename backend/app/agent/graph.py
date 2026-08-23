@@ -23,6 +23,7 @@ from app.retrieval.entity_filter import EntitySearchEngine
 from app.retrieval.hybrid_search import HybridSearchEngine, SearchFilter
 from app.retrieval.sql_analytics import SQLAnalyticsEngine
 from app.retrieval.timeline_builder import TimelineBuilder
+from app.retrieval.web_search import WebSearchEngine
 from app.storage.cache_store import CacheStore, compute_query_cache_key
 
 logger = get_logger(__name__)
@@ -39,6 +40,7 @@ class AgentWorkflow:
         self._entity_search = EntitySearchEngine(session_factory=session_factory)
         self._timeline_builder = TimelineBuilder(session_factory=session_factory)
         self._sql_analytics = SQLAnalyticsEngine(session_factory=session_factory)
+        self._web_search = WebSearchEngine()
         self._cache = CacheStore()
 
         # Build Graph
@@ -85,7 +87,10 @@ class AgentWorkflow:
             model_override=state.get("model_override"),
         )
 
-        plan_res = self._planner.plan_query(condensed_query)
+        plan_res = self._planner.plan_query(
+            condensed_query,
+            enable_web_search=state.get("enable_web_search", False),
+        )
 
         planned_calls = [
             {
@@ -328,6 +333,28 @@ class AgentWorkflow:
                             }
                         )
 
+                elif name == "web_search":
+                    web_results = await self._web_search.search(
+                        query=args.get("query", state["query"]),
+                        num_results=args.get("num_results", 5),
+                    )
+                    hits_count = len(web_results)
+                    for wr in web_results:
+                        evidence_items.append(
+                            {
+                                "article_id": 0,
+                                "headline": wr.title,
+                                "newspaper_name": wr.source,
+                                "issue_date": wr.published_date or "Live Web",
+                                "pages": [1],
+                                "snippet": wr.snippet,
+                                "url": wr.url,
+                                "is_web": True,
+                                "prominence_score": 0.8,
+                                "source_tool": "web_search",
+                            }
+                        )
+
             except Exception as e:
                 logger.error(f"Error executing tool '{name}'", extra={"error": str(e)})
 
@@ -398,6 +425,7 @@ class AgentWorkflow:
         chat_history: list[dict[str, Any]] | None = None,
         user_id: str | None = None,
         model_override: str | None = None,
+        enable_web_search: bool = False,
     ) -> AgentState:
         """Execute the complete agentic query cycle with caching and metrics."""
         t0 = time.monotonic()
@@ -405,7 +433,7 @@ class AgentWorkflow:
 
         # 1. Deterministic Redis Cache Check
         cache_key = compute_query_cache_key(
-            query=query,
+            query=f"{query}__web_{enable_web_search}",
             model_id=model_override or "",
         )
         cached_result = await self._cache.get_query(cache_key)
@@ -434,6 +462,8 @@ class AgentWorkflow:
             "latency_ms": 0,
             "user_id": user_id,
             "model_override": model_override,
+            "enable_web_search": enable_web_search,
+            "web_search_results": [],
             "error": None,
         }
 

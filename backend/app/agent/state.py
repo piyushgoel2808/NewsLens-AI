@@ -16,6 +16,9 @@ class AgentCitation(TypedDict, total=False):
     snippet: str
     issue_id: int
     bboxes: list[dict[str, Any]]
+    url: str | None
+    source_type: str  # "newspaper" or "web"
+    is_web: bool
 
 
 class ToolExecutionRecord(TypedDict):
@@ -43,4 +46,6 @@ class AgentState(TypedDict):
     latency_ms: int
     user_id: str | None
     model_override: str | None
+    enable_web_search: bool
+    web_search_results: list[dict[str, Any]]
     error: str | None

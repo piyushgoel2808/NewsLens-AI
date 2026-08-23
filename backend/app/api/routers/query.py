@@ -37,6 +37,10 @@ class QueryRequest(BaseModel):
         None,
         description="Optional model provider override (e.g. groq_llama, ollama_chat)",
     )
+    enable_web_search: bool = Field(
+        False,
+        description="Enable live internet search to complement newspaper archives",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -65,6 +69,7 @@ async def execute_query(
         chat_history=request.chat_history,
         user_id=request.user_id,
         model_override=request.model_override,
+        enable_web_search=request.enable_web_search,
     )
 
     citations_list: list[dict[str, Any]] = [dict(c) for c in result.get("citations", [])]
@@ -128,7 +133,10 @@ async def stream_query(
 
         # 2. Planning Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
-        plan_res = workflow._planner.plan_query(query)
+        plan_res = workflow._planner.plan_query(
+            query,
+            enable_web_search=request.enable_web_search,
+        )
         planned_calls = [
             {"tool_name": c.tool_name, "arguments": c.arguments, "purpose": c.purpose}
             for c in plan_res.tool_calls
@@ -137,7 +145,11 @@ async def stream_query(
         yield f"event: plan\ndata: {plan_data}\n\n"
 
         # 3. Tool Execution Stage
-        yield f"event: stage\ndata: {json.dumps({'stage': 'tool_execution'})}\n\n"
+        if any(c.get("tool_name") == "web_search" for c in planned_calls):
+            yield f"event: stage\ndata: {json.dumps({'stage': 'web_search'})}\n\n"
+        else:
+            yield f"event: stage\ndata: {json.dumps({'stage': 'tool_execution'})}\n\n"
+
         tool_state = await workflow._execute_tools_node(
             {
                 "query": query,
@@ -153,6 +165,8 @@ async def stream_query(
                 "latency_ms": 0,
                 "user_id": request.user_id,
                 "model_override": request.model_override,
+                "enable_web_search": request.enable_web_search,
+                "web_search_results": [],
                 "error": None,
             }
         )
