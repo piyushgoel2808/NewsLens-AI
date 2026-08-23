@@ -43,10 +43,12 @@ export default function ArchiveExplorer() {
       const newsData = await newsRes.json();
       const issuesData = await issuesRes.json();
 
-      setNewspapers(newsData || []);
-      setIssues(issuesData || []);
+      setNewspapers(Array.isArray(newsData) ? newsData : []);
+      setIssues(Array.isArray(issuesData) ? issuesData : []);
     } catch (err) {
       console.error('Failed to load archive data:', err);
+      setNewspapers([]);
+      setIssues([]);
     } finally {
       setLoading(false);
     }

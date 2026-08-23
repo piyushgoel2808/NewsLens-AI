@@ -1408,6 +1408,35 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 
 ---
 
+## Frontend Resilience Hotfix & Multi-Engine Ingestion Selector
+
+**Date**: 2026-08-23  
+**Status**: Completed ✅
+
+### Problems Solved
+1. **Frontend Blank Black Screen**: When database queries or API endpoints returned non-array error payloads (e.g. `{error: "Internal server error"}` when MySQL is offline), components calling `issues.map(...)` threw unhandled `TypeError` exceptions that crashed the entire React tree on initial mount.
+2. **Ingestion Engine Selection**: The user requested a dropdown in the Ingestion Console to choose between **Docling**, **MinerU**, **Google Gemini Vision**, and **Local VLM + Tesseract** during PDF upload.
+
+### Key Architectural Fixes
+1. **Global React Error Boundary & Defensive Array Checks (`App.jsx`, `BroadsheetReader.jsx`, `ArchiveExplorer.jsx`)**:
+   - Added a top-level `ErrorBoundary` in `App.jsx` with a styled recovery screen and reload action.
+   - Enforced `Array.isArray(data) ? data : []` across all fetch hooks and list state initializers so that transient backend connection errors or non-array payloads never crash the interface.
+2. **Multi-Engine Ingestion Selector (`UploadTrigger.jsx`, `ingest.py`, `tasks.py`)**:
+   - Added **Parsing & Layout Engine** selector in `UploadTrigger.jsx` with options:
+     - `📄 Docling (Neural Layout & OCR) — Recommended`
+     - `📐 MinerU / Magic-PDF (Academic & Tables)`
+     - `✨ Google Gemini Vision (Multimodal Cloud)`
+     - `💻 Local VLM + Tesseract`
+   - Updated `/api/ingest/upload` and `run_ingestion_pipeline(issue_id, pdf_bytes, parser_engine)` to pass and execute the chosen neural layout engine.
+
+### Verification
+- `make lint`: **0 errors across 73 source files** (`ruff` + `mypy` strict).
+- `make test`: **220/220 tests passing 100% GREEN in 19.71s**.
+- `npm run build`: **Vite build succeeded with 0 errors in 688ms**.
+- **Live Browser Verification via Puppeteer**: Successfully loaded `localhost:5173`, confirmed broadsheet viewer, interactive overlays, tab switching, and verified the live **Parsing & Layout Engine** dropdown in the Ingestion Console.
+
+---
+
 *Next phase: Phase 8 — Hosted Deployment & Production Orchestration (Multi-stage Dockerfiles, Docker Compose Prod, Helm/K8s)*
 
 

@@ -34,6 +34,10 @@ async def upload_newspaper_document(
     issue_date: date = Form(..., description="Publication date of the issue (YYYY-MM-DD)"),
     edition: str = Form("morning", description="Edition identifier (e.g. 'morning', 'evening')"),
     language: str = Form("en", description="Primary ISO 639-1 language code (e.g. 'en', 'hi')"),
+    parser_engine: str = Form(
+        "docling",
+        description="Parser engine: docling, mineru, gemini_vision, tesseract_vlm",
+    ),
     force: bool = Form(False, description="Force re-ingestion if duplicate exists"),
     sync_processing: bool = Form(
         True,
@@ -69,7 +73,11 @@ async def upload_newspaper_document(
         for issue_id in intake_res.issues_created:
             if sync_processing:
                 try:
-                    res = await run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=content)
+                    res = await run_ingestion_pipeline(
+                        issue_id=issue_id,
+                        pdf_bytes=content,
+                        parser_engine=parser_engine,
+                    )
                     pipeline_results.append(res)
                 except Exception as e:
                     logger.error(
@@ -80,7 +88,13 @@ async def upload_newspaper_document(
                         {"issue_id": issue_id, "error": str(e), "status": "failed"}
                     )
             else:
-                asyncio.create_task(run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=content))
+                asyncio.create_task(
+                    run_ingestion_pipeline(
+                        issue_id=issue_id,
+                        pdf_bytes=content,
+                        parser_engine=parser_engine,
+                    )
+                )
                 pipeline_results.append(
                     {"issue_id": issue_id, "status": "processing_in_background"}
                 )

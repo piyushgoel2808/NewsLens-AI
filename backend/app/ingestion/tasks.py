@@ -176,6 +176,7 @@ async def run_ingestion_pipeline(
     issue_id: int,
     pdf_bytes: bytes,
     dpi: int = 300,
+    parser_engine: str = "docling",
     minio: MinioStore | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict[str, Any]:
@@ -224,18 +225,33 @@ async def run_ingestion_pipeline(
         issue = issue_res.scalar_one_or_none()
         issue_lang = issue.language if issue else "en"
 
-        # Step 2.5: High-Performance Issue-Wide Docling Layout Extraction (Fast Native Mode)
+        # Step 2.5: High-Performance Issue-Wide Neural Layout Extraction
         docling_parsed_pages_map: dict[int, PageLayoutResult] = {}
         try:
             from app.providers.base import DocumentLayoutProvider
             from app.providers.registry import get_registry
 
             registry = get_registry()
-            doc_provider = registry.get_provider("document_parser")
-            if isinstance(doc_provider, DocumentLayoutProvider):
+            if parser_engine == "mineru":
+                from app.providers.mineru_provider import MinerUProvider
+                doc_provider: Any = MinerUProvider(lang=issue_lang or "en")
+            elif parser_engine in ("gemini", "gemini_vision"):
+                # Use Gemini Vision layout analyzer
+                doc_provider = registry.get_provider("document_parser")
+            elif parser_engine == "tesseract_vlm":
+                doc_provider = None
+            else:
+                from app.providers.docling_provider import DoclingProvider
+                doc_provider = DoclingProvider(lang=issue_lang or "en")
+
+            if doc_provider and isinstance(doc_provider, DocumentLayoutProvider):
                 logger.info(
-                    "Running issue-wide native PDF layout extraction with Docling",
-                    extra={"issue_id": issue_id, "pages_count": len(rendered_pages)},
+                    f"Running issue-wide layout extraction with {parser_engine}",
+                    extra={
+                        "issue_id": issue_id,
+                        "pages_count": len(rendered_pages),
+                        "engine": parser_engine,
+                    },
                 )
                 doc_results = await doc_provider.parse_pdf_document(
                     pdf_bytes=pdf_bytes,

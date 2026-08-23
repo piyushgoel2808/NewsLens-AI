@@ -19,6 +19,7 @@ export default function UploadTrigger() {
   const [newspaperName, setNewspaperName] = useState('Mint');
   const [issueDate, setIssueDate] = useState('2026-08-22');
   const [edition, setEdition] = useState('morning');
+  const [parserEngine, setParserEngine] = useState('docling');
   const [forceReingest, setForceReingest] = useState(false);
   const [uploadQueue, setUploadQueue] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -59,6 +60,7 @@ export default function UploadTrigger() {
         formData.append('newspaper_name', newspaperName);
         formData.append('issue_date', issueDate);
         formData.append('edition', edition);
+        formData.append('parser_engine', parserEngine);
         formData.append('force', forceReingest ? 'true' : 'false');
 
         const response = await fetch('/api/ingest/upload', {
@@ -154,7 +156,7 @@ export default function UploadTrigger() {
         </div>
 
         {/* Configuration Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
           <div>
             <label className="block text-slate-400 font-medium mb-1.5">Newspaper Title</label>
             <select
@@ -188,6 +190,23 @@ export default function UploadTrigger() {
               placeholder="e.g. morning, national"
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 outline-none focus:border-emerald-500"
             />
+          </div>
+
+          <div>
+            <label className="block text-emerald-400 font-semibold mb-1.5 flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-emerald-400" />
+              Parsing & Layout Engine
+            </label>
+            <select
+              value={parserEngine}
+              onChange={(e) => setParserEngine(e.target.value)}
+              className="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-medium outline-none focus:border-emerald-400"
+            >
+              <option value="docling">📄 Docling (Neural Layout & OCR)</option>
+              <option value="mineru">📐 MinerU (Academic & Tables)</option>
+              <option value="gemini_vision">✨ Google Gemini Vision</option>
+              <option value="tesseract_vlm">💻 Local VLM + Tesseract</option>
+            </select>
           </div>
         </div>
 

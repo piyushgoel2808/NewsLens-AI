@@ -53,14 +53,21 @@ export default function BroadsheetReader() {
   // 1. Fetch Issues Catalog
   useEffect(() => {
     fetch('/api/issues?limit=50')
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
       .then((data) => {
-        setIssues(data);
-        if (data.length > 0 && !selectedIssueId) {
-          setSelectedIssueId(data[0].id);
+        const list = Array.isArray(data) ? data : [];
+        setIssues(list);
+        if (list.length > 0 && !selectedIssueId) {
+          setSelectedIssueId(list[0].id);
         }
       })
-      .catch((err) => console.error('Failed to load issues:', err));
+      .catch((err) => {
+        console.error('Failed to load issues:', err);
+        setIssues([]);
+      });
   }, [selectedIssueId, setSelectedIssueId]);
 
   // 2. Fetch Issue Inspection Data (pages, articles, extraction modes)
@@ -73,11 +80,16 @@ export default function BroadsheetReader() {
         return res.json();
       })
       .then((data) => {
-        setIssueData(data);
+        if (data && !data.error && Array.isArray(data.pages)) {
+          setIssueData(data);
+        } else {
+          setIssueData(null);
+        }
         setLoading(false);
       })
       .catch((err) => {
         console.error('Failed to load issue inspection:', err);
+        setIssueData(null);
         setLoading(false);
       });
   }, [selectedIssueId]);
@@ -95,18 +107,23 @@ export default function BroadsheetReader() {
         return res.json();
       })
       .then((data) => {
-        setArticleDetails(data);
+        if (data && !data.error) {
+          setArticleDetails(data);
+        } else {
+          setArticleDetails(null);
+        }
         setArticleLoading(false);
       })
       .catch((err) => {
         console.error('Failed to fetch article details:', err);
+        setArticleDetails(null);
         setArticleLoading(false);
       });
   }, [selectedArticleId]);
 
   // Current Active Page
   const currentPage = useMemo(() => {
-    if (!issueData || !issueData.pages) return null;
+    if (!issueData || !Array.isArray(issueData.pages) || issueData.pages.length === 0) return null;
     return (
       issueData.pages.find((p) => p.page_number === selectedPageNumber) ||
       issueData.pages[0] ||
@@ -116,14 +133,16 @@ export default function BroadsheetReader() {
 
   // Articles on the current page with bounding boxes
   const pageArticles = useMemo(() => {
-    if (!issueData || !issueData.articles || !currentPage) return [];
+    if (!issueData || !Array.isArray(issueData.articles) || !currentPage) return [];
     return issueData.articles
-      .filter((art) => art.pages && art.pages.includes(currentPage.page_number))
+      .filter((art) => {
+        const pages = Array.isArray(art.pages) ? art.pages : [];
+        return pages.includes(currentPage.page_number);
+      })
       .map((art) => {
-        const pageBboxes =
-          (art.page_bboxes && art.page_bboxes[currentPage.page_number]) ||
-          art.bboxes ||
-          [];
+        const pageBboxes = art.bboxes_by_page
+          ? art.bboxes_by_page[currentPage.page_number] || []
+          : [];
         return {
           ...art,
           bboxes: pageBboxes,
@@ -176,11 +195,17 @@ export default function BroadsheetReader() {
               }}
               className="bg-transparent text-sm font-semibold text-slate-100 outline-none cursor-pointer"
             >
-              {issues.map((iss) => (
-                <option key={iss.id} value={iss.id} className="bg-slate-900 text-slate-200">
-                  {iss.newspaper_name} — {iss.issue_date} (Issue #{iss.id})
+              {Array.isArray(issues) && issues.length > 0 ? (
+                issues.map((iss) => (
+                  <option key={iss.id} value={iss.id} className="bg-slate-900 text-slate-200">
+                    {iss.newspaper_name} — {iss.issue_date} (Issue #{iss.id})
+                  </option>
+                ))
+              ) : (
+                <option value="" className="bg-slate-900 text-slate-400">
+                  No issues archived yet
                 </option>
-              ))}
+              )}
             </select>
           </div>
 
