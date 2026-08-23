@@ -211,12 +211,6 @@ async def run_ingestion_pipeline(
         detector = PDFPageDetector()
         analysis_results = detector.analyze_document_bytes(pdf_bytes)
 
-        ocr_service = OCRService(db=db, minio=store)
-        layout_analyzer = LayoutAnalyzer()
-
-        pages_summary: list[dict[str, Any]] = []
-        all_pages_articles: dict[int, list[SegmentedArticle]] = {}
-
         # Fetch issue upfront
         issue_stmt = (
             select(Issue).where(Issue.id == issue_id).options(selectinload(Issue.newspaper))
@@ -225,25 +219,38 @@ async def run_ingestion_pipeline(
         issue = issue_res.scalar_one_or_none()
         issue_lang = issue.language if issue else "en"
 
+        # Resolve DocumentLayoutProvider and OCREngine based on parser_engine
+        from app.providers.base import DocumentLayoutProvider, OCREngine
+        doc_provider: Any = None
+
+        if parser_engine == "mineru":
+            from app.providers.mineru_provider import MinerUProvider
+            doc_provider = MinerUProvider(lang=issue_lang or "en")
+        elif parser_engine in ("gemini", "gemini_vision"):
+            from app.providers.gemini_provider import GeminiProvider
+            doc_provider = GeminiProvider(
+                model="gemini-3.7-flash",
+                api_key=settings.gemini_api_key or settings.google_api_key,
+            )
+        elif parser_engine == "tesseract_vlm":
+            doc_provider = None
+        else:
+            from app.providers.docling_provider import DoclingProvider
+            doc_provider = DoclingProvider(lang=issue_lang or "en")
+
+        ocr_service = OCRService(
+            db=db,
+            ocr_engine=doc_provider if isinstance(doc_provider, OCREngine) else None,
+            minio=store,
+        )
+        layout_analyzer = LayoutAnalyzer()
+
+        pages_summary: list[dict[str, Any]] = []
+        all_pages_articles: dict[int, list[SegmentedArticle]] = {}
+
         # Step 2.5: High-Performance Issue-Wide Neural Layout Extraction
         docling_parsed_pages_map: dict[int, PageLayoutResult] = {}
         try:
-            from app.providers.base import DocumentLayoutProvider
-            from app.providers.registry import get_registry
-
-            registry = get_registry()
-            if parser_engine == "mineru":
-                from app.providers.mineru_provider import MinerUProvider
-                doc_provider: Any = MinerUProvider(lang=issue_lang or "en")
-            elif parser_engine in ("gemini", "gemini_vision"):
-                # Use Gemini Vision layout analyzer
-                doc_provider = registry.get_provider("document_parser")
-            elif parser_engine == "tesseract_vlm":
-                doc_provider = None
-            else:
-                from app.providers.docling_provider import DoclingProvider
-                doc_provider = DoclingProvider(lang=issue_lang or "en")
-
             if doc_provider and isinstance(doc_provider, DocumentLayoutProvider):
                 logger.info(
                     f"Running issue-wide layout extraction with {parser_engine}",

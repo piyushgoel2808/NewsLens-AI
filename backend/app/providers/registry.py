@@ -71,9 +71,15 @@ class ModelRegistry:
                 model=model or "llama-3.3-70b-versatile",
                 api_key=self._settings.groq_api_key,
             )
-        elif provider_type == "gemini":
+        elif provider_type in (
+            "gemini",
+            "gemini_ocr",
+            "gemini_vlm",
+            "gemini_vision",
+            "gemini_layout",
+        ):
             return GeminiProvider(
-                model=model or "gemini-flash-latest",
+                model=model or "gemini-3.7-flash",
                 api_key=self._settings.gemini_api_key or self._settings.google_api_key,
             )
         elif provider_type == "anthropic":

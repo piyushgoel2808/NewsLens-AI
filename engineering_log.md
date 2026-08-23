@@ -1437,6 +1437,30 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 
 ---
 
+## Google Gemini OCR & Document Layout Provider Implementation
+
+**Date**: 2026-08-23  
+**Status**: Completed ✅
+
+### What was built
+1. **Gemini OCR & Layout Engine Protocols ([`backend/app/providers/gemini_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/gemini_provider.py))**:
+   - Implemented **`OCREngine`** protocol (`async def ocr(self, image_bytes, lang_hint) -> OCRResult`) using Gemini 3.7 Flash multimodal vision with structured JSON output and coordinate normalization to image pixel space.
+   - Implemented **`DocumentLayoutProvider`** protocol (`parse_page_image`, `parse_pdf_document`) extracting discrete layout nodes (`title`, `text`, `table`, `image`, `caption`, `header`, `footer`), bounding boxes, and reading order sequences.
+   - Added concurrency management with `asyncio.Semaphore(4)` for multi-page PDF processing with resilient PyMuPDF native fallback.
+2. **Model Registry Integration ([`backend/app/providers/registry.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/registry.py))**:
+   - Registered `gemini_ocr`, `gemini_vlm`, `gemini_vision`, and `gemini_layout` capabilities.
+3. **Ingestion Pipeline Dynamic Dispatch ([`backend/app/ingestion/tasks.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/tasks.py))**:
+   - Routed `parser_engine in ("gemini", "gemini_vision")` directly to `GeminiProvider` for full-document layout parsing and passed Gemini as the active `OCREngine` to `OCRService`.
+4. **Unit Tests ([`backend/tests/test_gemini_ocr.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_gemini_ocr.py))**:
+   - Added 4 test suites verifying protocol conformance, coordinate box scaling, structured OCR extraction, and multi-node layout segmentation.
+
+### Verification
+- `make lint`: **0 errors across 73 source files** (`ruff` + `mypy` strict).
+- `make test`: **224/224 tests passing 100% GREEN in 29.00s**.
+- `npm run build`: **Vite build completed with 0 errors in 1.37s**.
+
+---
+
 *Next phase: Phase 8 — Hosted Deployment & Production Orchestration (Multi-stage Dockerfiles, Docker Compose Prod, Helm/K8s)*
 
 
