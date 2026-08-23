@@ -17,6 +17,7 @@ import {
   AlertCircle,
   Globe,
   GitMerge,
+  Compass,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -35,7 +36,7 @@ const markdownComponents = {
     </h2>
   ),
   h3: ({ children, ...props }) => (
-    <h3 className="text-xs uppercase font-bold tracking-wider text-emerald-300 mt-2.5 mb-1" {...props}>
+    <h3 className="text-xs uppercase font-bold tracking-wider text-emerald-300 mt-2.5 mb-1 flex items-center gap-1.5" {...props}>
       {children}
     </h3>
   ),
@@ -48,6 +49,11 @@ const markdownComponents = {
     <p className="mb-2 leading-relaxed text-slate-200" {...props}>
       {children}
     </p>
+  ),
+  blockquote: ({ children, ...props }) => (
+    <blockquote className="border-l-2 border-emerald-500/60 bg-emerald-500/10 px-3 py-1.5 rounded-r my-2 text-xs font-medium text-emerald-200 shadow-sm" {...props}>
+      {children}
+    </blockquote>
   ),
   ul: ({ children, ...props }) => (
     <ul className="list-disc list-outside ml-4 space-y-1 mb-2.5 text-slate-300 text-xs" {...props}>
@@ -73,11 +79,6 @@ const markdownComponents = {
     <em className="text-cyan-200 not-italic font-medium" {...props}>
       {children}
     </em>
-  ),
-  blockquote: ({ children, ...props }) => (
-    <blockquote className="border-l-2 border-emerald-500/50 pl-3 italic text-slate-400 my-2 bg-slate-900/40 py-1 rounded-r" {...props}>
-      {children}
-    </blockquote>
   ),
   code: ({ inline, className, children, ...props }) =>
     inline ? (
@@ -192,6 +193,25 @@ const extractFallbackThought = (text) => {
   if (!text) return '';
   const match = text.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
   return match ? match[1].trim() : '';
+};
+
+// Helper to extract follow-up exploration questions / angles from the assistant's answer
+const extractExplorationPills = (text) => {
+  if (!text) return [];
+  const pills = [];
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const match = line.match(
+      /^\s*(?:>|-|\*|\d+\.)\s*(?:💡\s*)?(?:Explore|Follow-up|Explore Further|Explore angle):\s*(.+)$/i
+    );
+    if (match && match[1]) {
+      const cleanPrompt = match[1].trim().replace(/^["'`]|["'`]$/g, '');
+      if (cleanPrompt.length > 5 && !pills.includes(cleanPrompt)) {
+        pills.push(cleanPrompt);
+      }
+    }
+  }
+  return pills;
 };
 
 export default function AgentAssistant() {
@@ -740,6 +760,33 @@ export default function AgentAssistant() {
                   </div>
                 </div>
               )}
+
+              {/* Interactive Multi-Newspaper Deep-Dive & Exploration Pills */}
+              {msg.role === 'assistant' && !msg.isStreaming && (() => {
+                const pills = extractExplorationPills(msg.content);
+                if (pills.length === 0) return null;
+                return (
+                  <div className="mt-3 pt-3 border-t border-slate-800/80">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400 uppercase tracking-wider mb-2">
+                      <Compass className="w-3.5 h-3.5" />
+                      <span>Explore Broadsheet Perspectives:</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {pills.map((pill, pIdx) => (
+                        <button
+                          key={pIdx}
+                          type="button"
+                          onClick={() => handleSend(pill)}
+                          className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 hover:text-emerald-200 border border-emerald-500/30 hover:border-emerald-400/50 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:scale-105 shadow-sm text-left group"
+                        >
+                          <Sparkles className="w-3 h-3 text-emerald-400 group-hover:rotate-12 transition-transform shrink-0" />
+                          <span>{pill}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Storyline Trajectory Quick Action */}
               {msg.role === 'assistant' && !msg.isStreaming && (

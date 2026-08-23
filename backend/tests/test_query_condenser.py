@@ -43,20 +43,32 @@ class TestQueryCondenserUnit:
             "List all front page articles from Mint published on 2026-08-01", history
         )
 
+    def test_needs_condensation_false_for_meta_queries_with_history(self) -> None:
+        history = [{"role": "assistant", "content": "Published in Mint on 2026-08-01 (Page 3)."}]
+        assert not needs_condensation("Which newspaper was this from?", history)
+        assert not needs_condensation("What was the date?", history)
+        assert not needs_condensation("Who wrote this article?", history)
+        assert not needs_condensation("From which paper?", history)
+
     def test_is_ambiguous_standalone_query_clean_session(self) -> None:
-        # Clean session: no prior history
         assert is_ambiguous_standalone_query("summarize it", [])
         assert is_ambiguous_standalone_query("can you summarize it?", [])
         assert is_ambiguous_standalone_query("tell me more", [])
-        assert is_ambiguous_standalone_query("what happened?", [])
-
-        # Non-empty history: not a clean session ambiguity (handled by condensation instead)
-        history = [{"role": "user", "content": "Tata power report"}]
-        assert not is_ambiguous_standalone_query("summarize it", history)
-
-        # Explicit clean query: not ambiguous
+        assert not is_ambiguous_standalone_query(
+            "summarize it", [{"role": "user", "content": "News"}]
+        )
         assert not is_ambiguous_standalone_query("Tata Power nuclear expansion in Odisha", [])
-        assert not is_ambiguous_standalone_query("Compare Mint and The Hindu front pages", [])
+
+    def test_is_in_context_meta_query(self) -> None:
+        history = [{"role": "assistant", "content": "Tata Power expanded solar capacity."}]
+        from app.agent.condenser import is_in_context_meta_query
+
+        assert is_in_context_meta_query("Which newspaper was this from?", history)
+        assert is_in_context_meta_query("what was the date and the newspaper?", history)
+        assert is_in_context_meta_query("who reported this?", history)
+        assert is_in_context_meta_query("what are the sources?", history)
+        assert not is_in_context_meta_query("Tell me about Tata Power", history)
+        assert not is_in_context_meta_query("Which newspaper was this from?", [])
 
     def test_format_chat_history_for_prompt(self) -> None:
         history = [

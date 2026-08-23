@@ -14,6 +14,7 @@ from app.agent.condenser import (
     CLEAN_SESSION_CLARIFICATION_MESSAGE,
     condense_conversational_query,
     is_ambiguous_standalone_query,
+    is_in_context_meta_query,
     needs_condensation,
 )
 from app.agent.graph import AgentWorkflow
@@ -132,60 +133,73 @@ async def stream_query(
             yield f"event: done\ndata: {done_payload}\n\n"
             return
 
-        # 1. Query Condensation & Coreference Resolution
-        if chat_history and needs_condensation(query, chat_history):
-            yield f"event: stage\ndata: {json.dumps({'stage': 'condensing_query'})}\n\n"
-            condensed = await condense_conversational_query(
-                query=query,
-                chat_history=chat_history,
-                model_override=effective_model,
-            )
-            query = condensed
-            yield f"event: query_condensed\ndata: {json.dumps({'condensed_query': condensed})}\n\n"
+        # 1. Query Condensation, Coreference Resolution, & In-Context Meta Queries
+        is_meta = is_in_context_meta_query(query, chat_history) if chat_history else False
 
-        # 2. Planning Stage
-        yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
-        plan_res = workflow._planner.plan_query(
-            query,
-            enable_web_search=request.enable_web_search,
-        )
-        planned_calls = [
-            {"tool_name": c.tool_name, "arguments": c.arguments, "purpose": c.purpose}
-            for c in plan_res.tool_calls
-        ]
-        plan_data = json.dumps({"archetype": plan_res.archetype, "plan": planned_calls})
-        yield f"event: plan\ndata: {plan_data}\n\n"
-
-        # 3. Tool Execution Stage
-        if any(c.get("tool_name") == "web_search" for c in planned_calls):
-            yield f"event: stage\ndata: {json.dumps({'stage': 'web_search'})}\n\n"
+        if is_meta:
+            effective_archetype = "conversational_meta_query"
+            planned_calls = []
+            plan_data = json.dumps({"archetype": effective_archetype, "plan": []})
+            yield f"event: plan\ndata: {plan_data}\n\n"
+            evidence: list[dict[str, Any]] = []
+            tool_data = json.dumps({"evidence_count": 0, "tools": []})
+            yield f"event: tool_results\ndata: {tool_data}\n\n"
         else:
-            yield f"event: stage\ndata: {json.dumps({'stage': 'tool_execution'})}\n\n"
+            if chat_history and needs_condensation(query, chat_history):
+                yield f"event: stage\ndata: {json.dumps({'stage': 'condensing_query'})}\n\n"
+                condensed = await condense_conversational_query(
+                    query=query,
+                    chat_history=chat_history,
+                    model_override=effective_model,
+                )
+                query = condensed
+                cond_data = json.dumps({"condensed_query": condensed})
+                yield f"event: query_condensed\ndata: {cond_data}\n\n"
 
-        tool_state = await workflow._execute_tools_node(
-            {
-                "query": query,
-                "original_query": request.query,
-                "chat_history": chat_history,
-                "archetype": plan_res.archetype,
-                "plan": planned_calls,
-                "tool_executions": [],
-                "evidence_items": [],
-                "synthesized_answer": "",
-                "citations": [],
-                "cost_usd": 0.0,
-                "latency_ms": 0,
-                "user_id": request.user_id,
-                "model_override": effective_model,
-                "enable_web_search": request.enable_web_search,
-                "web_search_results": [],
-                "error": None,
-            }
-        )
-        evidence = tool_state.get("evidence_items", [])
-        tool_records = [dict(t) for t in tool_state.get("tool_executions", [])]
-        tool_data = json.dumps({"evidence_count": len(evidence), "tools": tool_records})
-        yield f"event: tool_results\ndata: {tool_data}\n\n"
+            # 2. Planning Stage
+            yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
+            plan_res = workflow._planner.plan_query(
+                query,
+                enable_web_search=request.enable_web_search,
+            )
+            effective_archetype = plan_res.archetype
+            planned_calls = [
+                {"tool_name": c.tool_name, "arguments": c.arguments, "purpose": c.purpose}
+                for c in plan_res.tool_calls
+            ]
+            plan_data = json.dumps({"archetype": effective_archetype, "plan": planned_calls})
+            yield f"event: plan\ndata: {plan_data}\n\n"
+
+            # 3. Tool Execution Stage
+            if any(c.get("tool_name") == "web_search" for c in planned_calls):
+                yield f"event: stage\ndata: {json.dumps({'stage': 'web_search'})}\n\n"
+            else:
+                yield f"event: stage\ndata: {json.dumps({'stage': 'tool_execution'})}\n\n"
+
+            tool_state = await workflow._execute_tools_node(
+                {
+                    "query": query,
+                    "original_query": request.query,
+                    "chat_history": chat_history,
+                    "archetype": effective_archetype,
+                    "plan": planned_calls,
+                    "tool_executions": [],
+                    "evidence_items": [],
+                    "synthesized_answer": "",
+                    "citations": [],
+                    "cost_usd": 0.0,
+                    "latency_ms": 0,
+                    "user_id": request.user_id,
+                    "model_override": effective_model,
+                    "enable_web_search": request.enable_web_search,
+                    "web_search_results": [],
+                    "error": None,
+                }
+            )
+            evidence = tool_state.get("evidence_items", [])
+            tool_records = [dict(t) for t in tool_state.get("tool_executions", [])]
+            tool_data = json.dumps({"evidence_count": len(evidence), "tools": tool_records})
+            yield f"event: tool_results\ndata: {tool_data}\n\n"
 
         # 4. Synthesis & Reasoning Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
@@ -197,9 +211,10 @@ async def stream_query(
 
         async for chunk in workflow._synthesizer.synthesize_stream(
             query=query,
-            archetype=plan_res.archetype,
+            archetype=effective_archetype,
             evidence_items=evidence,
             model_override=effective_model,
+            chat_history=chat_history,
         ):
             raw_buffer += chunk
 

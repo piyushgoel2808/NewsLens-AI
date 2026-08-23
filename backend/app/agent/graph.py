@@ -12,6 +12,7 @@ from app.agent.condenser import (
     CLEAN_SESSION_CLARIFICATION_MESSAGE,
     condense_conversational_query,
     is_ambiguous_standalone_query,
+    is_in_context_meta_query,
 )
 from app.agent.planner import QueryPlanner
 from app.agent.state import AgentState, ToolExecutionRecord
@@ -78,6 +79,16 @@ class AgentWorkflow:
                 "synthesized_answer": CLEAN_SESSION_CLARIFICATION_MESSAGE,
                 "evidence_items": [],
                 "citations": [],
+            }
+
+        # In-Context Meta-Query Detection (e.g. asking for dates, newspapers, citations)
+        if is_in_context_meta_query(query, chat_history):
+            return {
+                "query": query,
+                "original_query": original_query,
+                "archetype": "conversational_meta_query",
+                "plan": [],
+                "evidence_items": [],
             }
 
         # Coreference Resolution & Query Condensation for follow-up turns
@@ -392,6 +403,7 @@ class AgentWorkflow:
             archetype=archetype,
             evidence_items=evidence,
             model_override=model_override,
+            chat_history=state.get("chat_history", []),
         )
 
         return {

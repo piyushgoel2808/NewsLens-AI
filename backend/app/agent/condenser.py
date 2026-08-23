@@ -30,9 +30,30 @@ CLEAN_SESSION_CLARIFICATION_MESSAGE = (
 )
 
 
+IN_CONTEXT_META_QUERY_PATTERN = re.compile(
+    r"\b(which newspaper|what newspaper|what was the date|which date|what date|who wrote|"
+    r"what source|which source|which paper|what paper|who is the author|give me the date|"
+    r"from which news|from which paper|where was this published|when was this published|"
+    r"who reported this|what are the sources|show sources|list the citations|what page was that|"
+    r"which edition|who published this)\b",
+    re.IGNORECASE,
+)
+
+
+def is_in_context_meta_query(query: str, chat_history: list[dict[str, Any]]) -> bool:
+    """Detect if the user is asking directly about previous turn's sources, date, or metadata."""
+    if not chat_history:
+        return False
+    q_clean = query.strip()
+    return bool(IN_CONTEXT_META_QUERY_PATTERN.search(q_clean))
+
+
 def needs_condensation(query: str, chat_history: list[dict[str, Any]]) -> bool:
     """Determine whether the query contains coreferences or follow-up ambiguity."""
     if not chat_history:
+        return False
+
+    if is_in_context_meta_query(query, chat_history):
         return False
 
     q_clean = query.strip()
@@ -77,15 +98,15 @@ def is_ambiguous_standalone_query(query: str, chat_history: list[dict[str, Any]]
 
 
 def format_chat_history_for_prompt(chat_history: list[dict[str, Any]], max_turns: int = 5) -> str:
-    """Format recent turns of chat history into clean dialog text for LLM rewriting."""
+    """Format recent turns of chat history into clean dialog text with citations preserved."""
     recent = chat_history[-max_turns * 2 :]
     lines: list[str] = []
     for turn in recent:
         role = str(turn.get("role", "user")).capitalize()
         content = str(turn.get("content", "")).strip()
-        # Truncate long assistant turns to 400 characters to keep prompt compact and fast
-        if role.lower() == "assistant" and len(content) > 400:
-            content = content[:400] + "..."
+        # Keep up to 1000 chars per assistant turn to preserve citations and source names
+        if role.lower() == "assistant" and len(content) > 1000:
+            content = content[:1000] + "..."
         if content:
             lines.append(f"{role}: {content}")
     return "\n".join(lines)

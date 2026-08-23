@@ -14,34 +14,37 @@ from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
 
-SYNTHESIZER_SYSTEM_PROMPT = """You are NewsLens-AI, an expert intelligence research assistant
-specializing in broadsheet newspaper analysis and open-source intelligence.
-Answer the user's research question thoroughly, objectively, and accurately based ONLY
-on the provided evidence excerpts.
+SYNTHESIZER_SYSTEM_PROMPT = """You are NewsLens-AI, an elite broadsheet intelligence assistant.
+Your goal is to synthesize newspaper coverage into a crisp, unified, structured brief.
+
+DO NOT write massive paragraphs combining all articles together. Distill the information:
 
 REQUIRED RESPONSE STRUCTURE:
-1. ### Executive Summary
-   - 2 to 3 concise, high-impact sentences directly answering the user's prompt.
-2. ### Key Developments & Findings
-   - Synthesized bullet points with specific facts, figures, dates, and mandatory inline citations.
-3. ### Context & Analysis (if applicable)
-   - Synthesis across multiple reports, contrasting editorial perspectives, or background context.
+1. ### ⚡ Executive Summary
+   - 1 to 2 crisp, high-impact sentences directly giving the core answer/development.
 
-CRITICAL CITATION RULES:
-1. Local Newspaper Archive Citations:
-   - For facts backed by primary broadsheets, cite strictly as:
-     [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page_Number}, "{Headline}"]
-     Example: [Mint, 2026-08-01, Page 3, "Telecom AGR Dues Ruling"]
-2. Live Web Search Citations:
-   - For facts backed by live internet search results, cite strictly as:
-     [Web: {Source Title}]({URL})
-     Example: [Web: Reuters Telecom Update](https://www.reuters.com/business/telecom)
-3. Use the physical PDF page number specified in newspaper evidence excerpts.
-4. If multiple sources corroborate a claim, cite them together.
-5. STRICT NEGATIVE CONSTRAINTS:
-   - NEVER dump raw chunk headers (e.g. `--- ARCHIVE EVIDENCE EXCERPT ---` or `[Evidence: ...]`).
-   - NEVER output advertisement boilerplate, statutory IPO notices, or unrelated news briefs.
-   - Do NOT invent any dates, figures, quotes, or events not supported by the evidence.
+2. ### 📌 Key Verified Facts & Highlights
+   - Bullet points of specific numbers, financial figures, dates, and official decisions.
+   - Inline citation on each bullet: [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page}, "{Headline}"]
+
+3. ### 📰 Broadsheet Perspectives & Focus Areas
+   - Group the reporting by publication (e.g. **Mint**, **Business Standard**, **The Hindu**).
+   - 1 concise bullet point per newspaper explaining that paper's specific angle or takeaway.
+
+4. ### 🔍 Explore Further
+   - 2 to 3 concise follow-up prompts formatted strictly as:
+     > 💡 Explore: <Specific follow-up question or angle>
+     (Example: > 💡 Explore: What was Mint's detailed financial breakdown?)
+
+CONVERSATIONAL & CITATION MEMORY RULES:
+1. If the user asks about previous messages, dates, newspapers, citations, or metadata
+   (e.g. "which newspaper was this from?", "what was the date?"), directly and concisely
+   answer using the conversation history and cited sources.
+2. Newspaper Citation Format: [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page_Number}, "{Headline}"]
+3. Web Citation Format: [Web: {Source Title}]({URL})
+4. STRICT NEGATIVE CONSTRAINTS:
+   - NEVER dump raw headers (e.g. `--- ARCHIVE EVIDENCE EXCERPT ---` or `[Evidence: ...]`).
+   - NEVER output advertisement boilerplate, legal notices, or unrelated news briefs.
 """
 
 
@@ -176,38 +179,36 @@ class AnswerSynthesizer:
             is_web = item.get("is_web") or item.get("source_tool") == "web_search"
             hl = item.get("headline", "")
             hl_clean = hl.strip().lower()
+            url = item.get("url") or ""
 
+            is_referenced = False
             if is_web:
-                url = item.get("url") or ""
-                snip = item.get("snippet") or ""
-                src = item.get("newspaper_name", "Web")
-
-                # Filter condition for web results: cited in text or key headline words appear
-                is_cited = False
-                if (
-                    not text
-                    or (url and url.lower() in text_lower)
-                    or (hl_clean and len(hl_clean) > 8 and hl_clean in text_lower)
+                if (url and url.lower() in text_lower) or (
+                    hl_clean and len(hl_clean) > 4 and hl_clean in text_lower
                 ):
-                    is_cited = True
-                elif src.lower() in text_lower:
-                    words = [w for w in hl_clean.split() if len(w) > 4]
-                    matched_cnt = sum(1 for w in words if w in text_lower)
-                    if words and matched_cnt >= max(1, len(words) // 2):
-                        is_cited = True
+                    is_referenced = True
+            else:
+                np_name = str(item.get("newspaper_name", "")).lower()
+                pages = item.get("pages", [1])
+                page_num = int(pages[0]) if pages and pages[0] else 1
+                if (hl_clean and len(hl_clean) > 5 and hl_clean in text_lower) or (
+                    f"page {page_num}" in text_lower and np_name in text_lower
+                ):
+                    is_referenced = True
 
-                if is_cited:
-                    key = f"web_{url}_{hl}"
-                    if key not in seen_keys:
-                        seen_keys.add(key)
+            if is_referenced:
+                dedup_key = f"{item.get('newspaper_name')}_{item.get('issue_date')}_{hl}"
+                if dedup_key not in seen_keys:
+                    seen_keys.add(dedup_key)
+                    if is_web:
                         citations.append(
                             AgentCitation(
-                                newspaper_name=src,
+                                newspaper_name=item.get("newspaper_name", "Live Web"),
                                 issue_date=item.get("issue_date", "Live Web"),
                                 page_number=1,
-                                headline=hl or "Web Source",
+                                headline=hl,
                                 article_id=0,
-                                snippet=snip[:300],
+                                snippet=item.get("snippet", "")[:300],
                                 issue_id=0,
                                 bboxes=[],
                                 url=url,
@@ -215,56 +216,26 @@ class AnswerSynthesizer:
                                 is_web=True,
                             )
                         )
-            else:
-                np_name = item.get("newspaper_name", "Daily News")
-                dt = item.get("issue_date", "")
-                pages = item.get("pages", [1])
-                page_num = int(pages[0]) if pages and pages[0] else 1
-                art_id = item.get("article_id", 0)
-                snip = item.get("snippet") or item.get("summary") or ""
-                issue_id = item.get("issue_id", 0)
-                bboxes = item.get("bboxes", [])
-
-                # Filter condition for newspaper items
-                is_cited = False
-                if (
-                    not text
-                    or (hl_clean and len(hl_clean) > 6 and hl_clean in text_lower)
-                    or (f"page {page_num}" in text_lower and np_name.lower() in text_lower)
-                ):
-                    is_cited = True
-                elif f"page {page_num}" in text_lower:
-                    words = [w for w in hl_clean.split() if len(w) > 4]
-                    if words and any(w in text_lower for w in words):
-                        is_cited = True
-                elif hl_clean:
-                    words = [w for w in hl_clean.split() if len(w) > 4]
-                    matched_cnt = sum(1 for w in words if w in text_lower)
-                    if words and matched_cnt >= max(2, len(words) // 2):
-                        is_cited = True
-
-                if is_cited:
-                    key = f"np_{np_name}_{dt}_{page_num}_{hl}"
-                    if key not in seen_keys:
-                        seen_keys.add(key)
+                    else:
+                        page_digits = item.get("pages", [1])
+                        page_val = int(page_digits[0]) if page_digits else 1
                         citations.append(
                             AgentCitation(
-                                newspaper_name=np_name,
-                                issue_date=dt,
-                                page_number=page_num,
-                                headline=hl or "Untitled",
-                                article_id=art_id,
-                                snippet=snip[:300],
-                                issue_id=issue_id,
-                                bboxes=bboxes,
+                                newspaper_name=item.get("newspaper_name", "Daily News"),
+                                issue_date=item.get("issue_date", ""),
+                                page_number=page_val,
+                                headline=hl,
+                                article_id=item.get("article_id", 0),
+                                snippet=(item.get("snippet") or "")[:300],
+                                issue_id=item.get("issue_id", 0),
+                                bboxes=item.get("bboxes", []),
                                 url=None,
                                 source_type="newspaper",
                                 is_web=False,
                             )
                         )
 
-        # Fallback: if text was provided but strict parsing yielded no citations,
-        # retain only the top 2 highest prominence items rather than dumping all candidate chunks
+        # Fallback if no specific inline references matched
         if not citations and evidence_items:
             for item in evidence_items[:2]:
                 is_web = item.get("is_web") or item.get("source_tool") == "web_search"
@@ -314,9 +285,10 @@ class AnswerSynthesizer:
         archetype: str,
         evidence_items: list[dict[str, Any]],
         model_override: str | None = None,
+        chat_history: list[dict[str, Any]] | None = None,
     ) -> tuple[str, list[AgentCitation], float]:
-        """Synthesize answer with citations from evidence."""
-        if not evidence_items:
+        """Synthesize answer with citations from evidence and conversation context."""
+        if not evidence_items and not chat_history:
             empty_msg = f"No relevant newspaper articles found for query: '{query}'."
             return empty_msg, [], 0.0
 
@@ -328,19 +300,25 @@ class AnswerSynthesizer:
             f"User Research Query: {query}\n"
             f"Query Archetype: {archetype}\n\n"
             f"Available Newspaper Evidence:\n"
-            f"{context}\n\n"
-            f"Synthesize a comprehensive answer citing all relevant sources inline."
+            f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
+            f"Synthesize a crisp, highly-structured executive intelligence response."
         )
 
         cost_usd = 0.0
 
         if provider:
             try:
+                messages = [Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT)]
+                if chat_history:
+                    for turn in chat_history[-6:]:
+                        r = turn.get("role", "user")
+                        c = str(turn.get("content", "")).strip()
+                        if c:
+                            messages.append(Message(role=r, content=c))
+                messages.append(Message(role="user", content=user_prompt))
+
                 response = await provider.complete(
-                    messages=[
-                        Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT),
-                        Message(role="user", content=user_prompt),
-                    ],
+                    messages=messages,
                     max_tokens=4096,
                     temperature=0.1,
                 )
@@ -372,9 +350,10 @@ class AnswerSynthesizer:
         archetype: str,
         evidence_items: list[dict[str, Any]],
         model_override: str | None = None,
+        chat_history: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[str]:
-        """Stream synthesized answer token by token."""
-        if not evidence_items:
+        """Stream synthesized answer token by token with conversational context."""
+        if not evidence_items and not chat_history:
             yield f"No relevant newspaper articles found for query: '{query}'."
             return
 
@@ -384,17 +363,23 @@ class AnswerSynthesizer:
             f"User Research Query: {query}\n"
             f"Query Archetype: {archetype}\n\n"
             f"Available Newspaper Evidence:\n"
-            f"{context}\n\n"
-            f"Synthesize a comprehensive answer citing all relevant sources inline."
+            f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
+            f"Synthesize a crisp, highly-structured executive intelligence response."
         )
 
         if provider:
             try:
+                messages = [Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT)]
+                if chat_history:
+                    for turn in chat_history[-6:]:
+                        r = turn.get("role", "user")
+                        c = str(turn.get("content", "")).strip()
+                        if c:
+                            messages.append(Message(role=r, content=c))
+                messages.append(Message(role="user", content=user_prompt))
+
                 stream_gen = provider.complete_stream(
-                    messages=[
-                        Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT),
-                        Message(role="user", content=user_prompt),
-                    ],
+                    messages=messages,
                     max_tokens=4096,
                     temperature=0.1,
                 )
@@ -417,21 +402,45 @@ class AnswerSynthesizer:
         query: str,
         evidence_items: list[dict[str, Any]],
     ) -> str:
-        """Deterministic grounded synthesis when LLM is offline or unavailable."""
+        """Structured deterministic grounded synthesis when LLM is offline."""
+        if not evidence_items:
+            return (
+                f"### ⚡ Executive Summary\n"
+                f"No specific archive articles were found for '{query}'.\n"
+            )
+
+        first = evidence_items[0]
+        first_np = first.get("newspaper_name", "Daily News")
+        first_dt = first.get("issue_date", "")
+
         lines = [
-            f"### Research Findings for: {query}\n",
-            "Based on the archived newspaper reports retrieved from the repository:\n",
+            "### ⚡ Executive Summary",
+            (
+                f"Key reports regarding **{query}** were documented across regional broadsheets, "
+                f"led by *{first_np}* ({first_dt}).\n"
+            ),
+            "### 📌 Key Verified Facts & Highlights",
         ]
 
-        for item in evidence_items[:5]:
-            np_name = item.get("newspaper_name", "Daily News")
-            dt = item.get("issue_date", "Unknown Date")
+        # Group by publication
+        pub_groups: dict[str, list[dict[str, Any]]] = {}
+        for item in evidence_items[:6]:
+            np_name = item.get("newspaper_name", "Archive")
+            pub_groups.setdefault(np_name, []).append(item)
+            dt = item.get("issue_date", "")
             pages = item.get("pages", [1])
             page_str = f"Page {pages[0]}" if pages else "Page 1"
             hl = item.get("headline", "Untitled")
-            snippet = item.get("snippet") or item.get("summary") or ""
+            snip = item.get("snippet") or item.get("summary") or ""
+            lines.append(f'- **{hl}**: {snip[:160]}... [{np_name}, {dt}, {page_str}, "{hl}"]')
 
-            lines.append(f'- **{hl}**: {snippet} [{np_name}, {dt}, {page_str}, "{hl}"]\n')
+        lines.append("\n### 📰 Broadsheet Perspectives")
+        for pub, items in pub_groups.items():
+            top_hl = items[0].get("headline", "Reporting")
+            lines.append(f"- **{pub}**: Emphasized '{top_hl}' with {len(items)} related report(s).")
 
-        lines.append("\n*All findings verified against primary newspaper source scans.*")
+        lines.append("\n### 🔍 Explore Further")
+        for pub in list(pub_groups.keys())[:2]:
+            lines.append(f"> 💡 Explore: What was {pub}'s detailed coverage on this topic?")
+
         return "\n".join(lines)
