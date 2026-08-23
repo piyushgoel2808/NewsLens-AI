@@ -1492,9 +1492,54 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 - `make test`: **232/232 tests passing 100% GREEN in 23.48s**.
 - `npm run build`: **Vite build completed with 0 errors in 814ms**.
 
+## Cross-Newspaper Narrative Trajectory & Story Timeline Engine
+
+**Date**: 2026-08-23  
+**Status**: Completed ✅
+
+### What was built
+1. **Backend Trajectory Engine ([`backend/app/retrieval/timeline_builder.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/timeline_builder.py))**:
+   - Implemented `TimelineBuilder.build_narrative_trajectory(query: str, issue_ids: list[int] | None = None)`:
+     - Multi-issue evidence aggregation and calendar date clustering.
+     - Structured narrative reconstruction: chronological event checkpoints, phase classification (`Breaking`, `Development`, `Financial Impact`, `Regulatory/Outcome`), and cross-publication perspective synthesis (*Mint*, *Business Standard*, *The Hindu*).
+     - Editorial discrepancy & reporting anomaly detection with specific factual tension analysis.
+2. **Heavy-LLM Redis Query Caching & Performance Optimization**:
+   - Integrated Redis caching (`trajectory:{query_hash}:{issue_ids_hash}`) with 1-hour TTL for instant 0ms cached retrieval.
+3. **SSE Streaming Telemetry & REST API**:
+   - `GET /api/timeline/stream`: Emits real-time progress events (`fetching_articles`, `clustering_dates`, `generating_trajectory`, `detecting_discrepancies`).
+   - `POST /api/timeline/trajectory`: Returns cached or freshly generated `NarrativeTrajectoryResponse`.
+4. **Interactive Timeline & Trajectory UI ([`frontend/src/components/StoryTrajectoryModal.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/StoryTrajectoryModal.jsx))**:
+   - Interactive chronological timeline cards with phase badges, editorial perspective accordion, discrepancy callouts, and one-click deep navigation to scanned newspaper pages with bounding-box highlights.
+
 ---
 
-*Next phase: Phase 8 — Hosted Deployment & Production Orchestration (Multi-stage Dockerfiles, Docker Compose Prod, Helm/K8s)*
+## Structured Multi-Newspaper Synthesis, Resilient Multi-Provider Failover & Conversational Memory
+
+**Date**: 2026-08-23  
+**Status**: Completed ✅
+
+### What was built
+1. **4-Tier Structured Executive Intelligence Brief ([`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py))**:
+   - Replaced verbose unformatted paragraphs with structured 4-tier synthesis:
+     - `### ⚡ Executive Summary` (high-impact answer and market reaction).
+     - `### 📌 Key Verified Facts & Highlights` (price movements, Sensex/Nifty levels, FPI/FII net inflows in ₹ crore, sector winners, and verified citations).
+     - `### 📰 Broadsheet Perspectives` (publication-level angle breakdowns).
+     - `### 🔍 Explore Further` (`> 💡 Explore: <angle>` pills).
+2. **Resilient Multi-Provider Failover & Model Fallback**:
+   - Implemented `_get_provider_candidates()`: When a primary model encounters temporary 503 spikes, 429 rate limits, or timeouts, the engine automatically attempts streaming from the failover sequence (`groq_compound` $\rightarrow$ `gemini_flash` $\rightarrow$ `groq_qwen` $\rightarrow$ `ollama_llama3` $\rightarrow$ `ollama_deepseek`) with zero user-facing degradation.
+   - Built automatic internal candidate failover inside `GeminiProvider` between `gemini-flash-latest` and `gemini-3.7-flash`.
+3. **In-Context Conversational Memory & Meta-Query Routing ([`backend/app/agent/condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py))**:
+   - Added regex and heuristic detection for meta-queries asking about previous turns' sources, dates, newspapers, or citations (e.g. *"which newspaper was this from and what was the date?"*).
+   - Meta-queries bypass vector search and route directly to the synthesizer with full conversation context and citations.
+4. **Interactive Exploration Badges in UI ([`frontend/src/components/AgentAssistant.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/AgentAssistant.jsx))**:
+   - Extracted `> 💡 Explore:` lines into clickable exploration badges that trigger drill-down investigations with a single click.
+5. **Unit Tests ([`backend/tests/test_synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_synthesizer.py))**:
+   - Added unit test suite validating structured generation, fallback filtering, thought recovery, and conversational context memory.
+
+### Verification
+- `make lint`: **0 errors across 74 source files** (`ruff` + `mypy` strict).
+- `make test`: **246/246 tests passing 100% GREEN**.
+- `npm run build`: **Vite build completed with 0 errors in 1.00s**.
 
 
 
