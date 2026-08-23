@@ -284,8 +284,12 @@ async def stream_query(
 
         if answer_chunks:
             full_answer = "".join(answer_chunks).strip()
+        elif not locals().get("full_answer"):
+            full_answer = workflow._synthesizer._generate_deterministic_summary(query, evidence)
+            yield f"event: token\ndata: {json.dumps({'delta': full_answer})}\n\n"
         else:
             full_answer = locals().get("full_answer", "")
+
         citations = workflow._synthesizer.extract_citations(full_answer, evidence)
         citations_list = [dict(c) for c in citations]
         yield f"event: citations\ndata: {json.dumps({'citations': citations_list})}\n\n"

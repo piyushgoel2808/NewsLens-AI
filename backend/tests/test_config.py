@@ -41,9 +41,9 @@ class TestSettings:
         assert settings.redis.url == "redis://myredis:6379/1"
 
     def test_optional_api_keys_default_to_none(self) -> None:
-        settings = Settings()
+        settings = Settings(_env_file=None)
         assert settings.anthropic_api_key is None
-        assert settings.openai_api_key is None
+        assert settings.voyage_api_key is None
 
 
 class TestModelConfig:

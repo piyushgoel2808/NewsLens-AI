@@ -66,7 +66,7 @@ async def get_model_bindings() -> dict[str, Any]:
 async def update_model_bindings(
     request: UpdateBindingsRequest,
 ) -> dict[str, Any]:
-    """Update task bindings dynamically without restarting the server."""
+    """Update task bindings dynamically and persist to model_config.yaml."""
     settings = get_settings()
     model_cfg = settings.load_model_config()
 
@@ -81,17 +81,20 @@ async def update_model_bindings(
     # Update in-memory model config
     model_cfg.task_bindings.update(request.task_bindings)
 
-    # Clear registry cache for updated tasks
+    # Persist to model_config.yaml on disk
+    saved = settings.save_model_config(model_cfg)
+
+    # Clear registry cache and reload fresh configuration
     registry = get_registry()
-    for task in request.task_bindings:
-        registry.invalidate_task(task)
+    registry.invalidate_all()
 
     logger.info(
-        "Updated task model bindings at runtime",
-        extra={"new_bindings": request.task_bindings},
+        "Updated task model bindings at runtime and persisted to disk",
+        extra={"new_bindings": request.task_bindings, "saved_to_disk": saved},
     )
 
     return {
         "status": "updated",
+        "saved_to_disk": saved,
         "task_bindings": model_cfg.task_bindings,
     }

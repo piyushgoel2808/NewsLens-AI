@@ -36,5 +36,6 @@ async def get_available_models() -> dict[str, Any]:
     model_cfg = get_settings().load_model_config()
     return {
         "providers": providers,
+        "models": providers,
         "task_bindings": model_cfg.task_bindings,
     }

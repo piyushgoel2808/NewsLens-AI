@@ -169,14 +169,26 @@ class ModelRegistry:
             "gemini": "gemini_flash",
             "gemini_flash": "gemini_flash",
             "gemini_pro": "gemini_pro",
-            "groq": "groq_qwen",
+            "groq": "groq_compound",
+            "groq_compound": "groq_compound",
             "groq_qwen": "groq_qwen",
-            "groq_llama": "groq_llama",
+            "groq_llama": "groq_compound",
             "groq_gpt_oss": "groq_gpt_oss",
-            "ollama": "ollama_chat",
-            "ollama_chat": "ollama_chat",
-            "anthropic": "anthropic_sonnet",
+            "ollama": "ollama_llama3",
+            "ollama_chat": "ollama_llama3",
+            "ollama_llama": "ollama_llama3",
+            "ollama_llama3": "ollama_llama3",
+            "ollama_nemotron": "ollama_nemotron",
+            "nemotron": "ollama_nemotron",
+            "nvidia": "ollama_nemotron",
+            "ollama_deepseek": "ollama_deepseek",
+            "deepseek": "ollama_deepseek",
             "openai": "openai_gpt4o",
+            "openai_gpt4o": "openai_gpt4o",
+            "openai_gpt4o_mini": "openai_gpt4o_mini",
+            "gpt4o": "openai_gpt4o",
+            "gpt4o_mini": "openai_gpt4o_mini",
+            "anthropic": "anthropic_sonnet",
         }
         if target_id.lower() in alias_map:
             resolved_id = alias_map[target_id.lower()]
@@ -201,10 +213,32 @@ class ModelRegistry:
             from app.providers.groq_provider import GroqProvider
 
             is_full_model_name = "/" in target_id or "-" in target_id
-            m_name = target_id if is_full_model_name else "llama-3.3-70b-versatile"
+            m_name = target_id if is_full_model_name else "groq/compound"
             return GroqProvider(
                 model=m_name,
                 api_key=self._settings.groq_api_key,
+            )
+        elif "nemotron" in target_id.lower():
+            from app.providers.ollama_provider import OllamaProvider
+
+            return OllamaProvider(
+                model="nemotron-3.5-lightning:latest",
+                base_url=self._settings.ollama_base_url,
+            )
+        elif "deepseek" in target_id.lower():
+            from app.providers.ollama_provider import OllamaProvider
+
+            return OllamaProvider(
+                model="deepseek-r1:14b",
+                base_url=self._settings.ollama_base_url,
+            )
+        elif "openai" in target_id.lower() or "gpt" in target_id.lower():
+            from app.providers.openai_provider import OpenAIProvider
+
+            m_name = "gpt-4o-mini" if "mini" in target_id.lower() else "gpt-4o"
+            return OpenAIProvider(
+                model=m_name,
+                api_key=self._settings.openai_api_key,
             )
         elif "ollama" in target_id.lower():
             from app.providers.ollama_provider import OllamaProvider
@@ -222,11 +256,14 @@ class ModelRegistry:
 
     def invalidate_task(self, task: str) -> None:
         """Reload configuration for the specified task."""
+        self._instances.clear()
+        object.__setattr__(self._settings, "_model_config_data", None)
         self._model_config = self._settings.load_model_config()
 
     def invalidate_all(self) -> None:
-        """Clear cached provider instances and reload configuration."""
+        """Clear cached provider instances and reload configuration from disk."""
         self._instances.clear()
+        object.__setattr__(self._settings, "_model_config_data", None)
         self._model_config = self._settings.load_model_config()
 
     def validate_task_capability(self, task: str, required: str) -> None:
@@ -255,17 +292,46 @@ class ModelRegistry:
     async def get_available_providers(self) -> list[dict[str, Any]]:
         """Introspect all configured providers and check reachability.
 
-        Returns a list of dicts suitable for the /api/models/available endpoint.
-        Does not fail if a provider is unreachable — marks is_reachable=False.
+        Returns rich provider metadata with specific names, descriptions, and reachability.
         """
+        display_names = {
+            "gemini_flash": "Google Gemini 3.7 Flash (Grounding)",
+            "gemini_pro": "Google Gemini Pro",
+            "groq_compound": "Groq Compound AI (Ultra-Fast)",
+            "groq_qwen": "Groq Qwen 3.6 27B (Reasoning)",
+            "groq_gpt_oss": "Groq OpenAI GPT-OSS 120B",
+            "ollama_nemotron": "NVIDIA Nemotron 3.5 Lightning (Local 25GB)",
+            "ollama_deepseek": "DeepSeek R1 14B (Local Reasoning)",
+            "ollama_llama3": "Meta Llama 3.1 8B (Local)",
+            "ollama_chat": "Meta Llama 3.1 8B (Local Chat)",
+            "ollama_vlm": "Qwen 2.5 VL 7B (Local Vision)",
+            "openai_gpt4o": "OpenAI GPT-4o (Omni)",
+            "openai_gpt4o_mini": "OpenAI GPT-4o Mini",
+            "docling_parser": "Docling Document Layout Engine",
+            "mineru_parser": "MinerU Magic-PDF Layout Engine",
+            "local_embed_bge": "BAAI BGE-M3 Multilingual Embedding",
+        }
+
+        local_providers = (
+            "ollama",
+            "local_sentence_transformers",
+            "docling",
+            "mineru",
+            "tesseract",
+        )
+
         results: list[dict[str, Any]] = []
         for provider_id, cfg in self._model_config.providers.items():
             is_reachable = await self._check_reachable(provider_id, cfg.provider)
+            fallback_name = f"{cfg.provider.title()} ({cfg.model or provider_id})"
+            name_label = display_names.get(provider_id, fallback_name)
             results.append(
                 {
                     "id": provider_id,
+                    "name": name_label,
                     "provider": cfg.provider,
                     "model": cfg.model,
+                    "is_local": cfg.provider in local_providers,
                     "is_reachable": is_reachable,
                     "capabilities": {
                         "supports_vision": cfg.supports_vision,

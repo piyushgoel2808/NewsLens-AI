@@ -50,19 +50,31 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
     if not text:
         return "", ""
 
+    # 1. Standard <think>...</think> tags
     if "<think>" in text:
         if "</think>" in text:
             match = re.search(r"<think>(.*?)</think>(.*)", text, flags=re.DOTALL)
             if match:
                 thought = match.group(1).strip()
                 ans = match.group(2).strip()
-                return thought, ans
+                if ans:
+                    return thought, ans
+                # If ans is empty but thought contains structured sections or draft
+                pattern = (
+                    r"\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|"
+                    r"In summary|Summary:|Answer:|Draft:|Executive Summary)"
+                )
+                split_match = re.search(pattern, thought, flags=re.IGNORECASE)
+                if split_match:
+                    s_idx = split_match.start()
+                    return thought[:s_idx].strip(), thought[s_idx:].strip()
+                return "", thought
         else:
             # Unclosed <think> tag
             after_think = text.split("<think>", 1)[1]
             pattern = (
                 r"\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|"
-                r"In summary|Summary:|Answer:)"
+                r"In summary|Summary:|Answer:|Draft:|Executive Summary)"
             )
             split_match = re.search(pattern, after_think, flags=re.IGNORECASE)
             if split_match:
@@ -71,6 +83,22 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
                 ans = after_think[split_idx:].strip()
                 return thought, ans
             return "", after_think.strip()
+
+    # 2. Heuristic for reasoning prefixes (e.g. "Thinking Process:" or "Here's a thinking process:")
+    reasoning_prefix_match = re.match(
+        r"^(?:Here'?s a thinking process:?|Thinking Process:?|Thought:?)\s*",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if reasoning_prefix_match:
+        pattern = (
+            r"\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|"
+            r"In summary|Summary:|Answer:|Draft:|Executive Summary)"
+        )
+        split_match = re.search(pattern, text, flags=re.IGNORECASE)
+        if split_match:
+            s_idx = split_match.start()
+            return text[:s_idx].strip(), text[s_idx:].strip()
 
     return "", text.strip()
 
@@ -313,7 +341,7 @@ class AnswerSynthesizer:
                         Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT),
                         Message(role="user", content=user_prompt),
                     ],
-                    max_tokens=2048,
+                    max_tokens=4096,
                     temperature=0.1,
                 )
                 _, cleaned_answer = parse_thought_and_answer(response.text)
@@ -367,7 +395,7 @@ class AnswerSynthesizer:
                         Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT),
                         Message(role="user", content=user_prompt),
                     ],
-                    max_tokens=2048,
+                    max_tokens=4096,
                     temperature=0.1,
                 )
                 async for chunk in stream_gen:

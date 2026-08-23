@@ -14,6 +14,7 @@ import {
   FileText,
   Table,
   Zap,
+  Cpu,
 } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
@@ -79,8 +80,13 @@ const getPublicationStyle = (newspaperName = '') => {
 };
 
 export default function TimelineWorkspace() {
-  const { timelineQuery, setTimelineQuery, highlightArticle, selectedModel } =
-    useActiveHighlight();
+  const {
+    timelineQuery,
+    setTimelineQuery,
+    highlightArticle,
+    selectedModel,
+    setSelectedModel,
+  } = useActiveHighlight();
 
   const [query, setQuery] = useState(timelineQuery || 'Tata Power clean energy expansion');
   const [viewMode, setViewMode] = useState('spine'); // 'spine' | 'swimlane'
@@ -88,6 +94,18 @@ export default function TimelineWorkspace() {
   const [progressStage, setProgressStage] = useState('');
   const [trajectoryData, setTrajectoryData] = useState(null);
   const [error, setError] = useState(null);
+  const [availableModels, setAvailableModels] = useState([]);
+
+  useEffect(() => {
+    fetch('/api/models/available')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.models) {
+          setAvailableModels(data.models);
+        }
+      })
+      .catch((err) => console.error('Failed to load models in Timeline:', err));
+  }, []);
 
   // Sync external timelineQuery from context (e.g. from chat button)
   useEffect(() => {
@@ -258,8 +276,52 @@ export default function TimelineWorkspace() {
             </button>
           </form>
 
-          {/* View Switcher & Actions */}
-          <div className="flex items-center gap-2">
+          {/* View Switcher & Model Selector */}
+          <div className="flex items-center gap-2.5">
+            {/* Model Selector */}
+            <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800 text-xs">
+              <Cpu className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-slate-400 font-medium hidden sm:inline">Model:</span>
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                className="bg-transparent text-emerald-300 font-medium text-xs outline-none cursor-pointer hover:text-emerald-200 transition-colors"
+              >
+                <option value="gemini_flash" className="bg-slate-900 text-slate-200">✨ Google / Gemini 3.7 Flash</option>
+                <option value="gemini_pro" className="bg-slate-900 text-slate-200">✨ Google / Gemini Pro Latest</option>
+                <option value="groq_compound" className="bg-slate-900 text-slate-200">⚡ Groq / Compound AI (Ultra-Fast)</option>
+                <option value="groq_qwen" className="bg-slate-900 text-slate-200">⚡ Groq / Qwen 3.6 27B (Reasoning)</option>
+                <option value="groq_gpt_oss" className="bg-slate-900 text-slate-200">⚡ Groq / GPT-OSS 120B</option>
+                <option value="ollama_nemotron" className="bg-slate-900 text-slate-200">🟢 NVIDIA / Nemotron 3.5 Lightning (Local 25GB)</option>
+                <option value="ollama_deepseek" className="bg-slate-900 text-slate-200">🟢 DeepSeek / R1 14B (Local Reasoning)</option>
+                <option value="ollama_llama3" className="bg-slate-900 text-slate-200">🟢 Meta / Llama 3.1 8B (Local)</option>
+                <option value="openai_gpt4o" className="bg-slate-900 text-slate-200">☁️ OpenAI / GPT-4o (Omni)</option>
+                <option value="openai_gpt4o_mini" className="bg-slate-900 text-slate-200">☁️ OpenAI / GPT-4o Mini</option>
+                {availableModels
+                  .filter(
+                    (m) =>
+                      ![
+                        'gemini_flash',
+                        'gemini_pro',
+                        'groq_compound',
+                        'groq_qwen',
+                        'groq_gpt_oss',
+                        'ollama_nemotron',
+                        'ollama_deepseek',
+                        'ollama_llama3',
+                        'ollama_chat',
+                        'openai_gpt4o',
+                        'openai_gpt4o_mini',
+                      ].includes(m.id || m.name)
+                  )
+                  .map((m) => (
+                    <option key={m.id || m.name} value={m.id || m.name} className="bg-slate-900 text-slate-200">
+                      {m.name || m.id} ({m.provider})
+                    </option>
+                  ))}
+              </select>
+            </div>
+
             <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800">
               <button
                 onClick={() => setViewMode('spine')}

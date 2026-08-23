@@ -355,6 +355,55 @@ class Settings(BaseSettings):
         object.__setattr__(self, "_model_config_data", config)
         return config
 
+    def save_model_config(self, config: ModelConfig) -> bool:
+        """Serialize and persist ModelConfig to model_config.yaml on disk."""
+        candidate_paths: list[Path] = []
+        if self.model_config_path:
+            candidate_paths.append(Path(self.model_config_path))
+
+        root = find_project_root()
+        candidate_paths.extend(
+            [
+                root / "model_config.yaml",
+                Path.cwd() / "model_config.yaml",
+                Path.cwd() / "../model_config.yaml",
+            ]
+        )
+
+        target_path: Path | None = None
+        for p in candidate_paths:
+            try:
+                resolved = p.resolve()
+                if resolved.is_file() and resolved.exists():
+                    target_path = resolved
+                    break
+            except Exception:
+                continue
+
+        if not target_path:
+            target_path = (root / "model_config.yaml").resolve()
+
+        try:
+            raw_providers = {
+                k: {
+                    f: v
+                    for f, v in p_cfg.model_dump().items()
+                    if v is not None
+                }
+                for k, p_cfg in config.providers.items()
+            }
+            dump_data = {
+                "providers": raw_providers,
+                "task_bindings": config.task_bindings,
+            }
+            with target_path.open("w", encoding="utf-8") as f:
+                yaml.safe_dump(dump_data, f, default_flow_style=False, sort_keys=False)
+
+            object.__setattr__(self, "_model_config_data", config)
+            return True
+        except Exception:
+            return False
+
 
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:

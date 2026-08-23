@@ -160,7 +160,7 @@ export default function RawDataViewer() {
             >
               {configuredProviders.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.id} ({p.provider} - {p.model || 'default'})
+                  {p.name || p.id} ({p.provider} - {p.model || 'default'})
                 </option>
               ))}
             </select>
@@ -172,7 +172,7 @@ export default function RawDataViewer() {
               className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors shadow-md"
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>Apply Binding</span>
+              <span>Apply & Persist</span>
             </button>
           </div>
         </form>
@@ -193,6 +193,26 @@ export default function RawDataViewer() {
             <span>{swapMessage.text}</span>
           </div>
         )}
+
+        {/* Live Active Bindings Grid */}
+        <div className="pt-3 border-t border-slate-800">
+          <span className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold block mb-2">
+            Active System Bindings:
+          </span>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {Object.entries(currentBindings).map(([task, prov]) => (
+              <div
+                key={task}
+                className="bg-slate-950/80 border border-slate-800/80 rounded-lg p-2 text-xs"
+              >
+                <div className="text-[10px] text-slate-500 uppercase font-mono">{task}</div>
+                <div className="text-emerald-300 font-semibold truncate" title={prov}>
+                  {prov}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Endpoint Inspector & JSON Console */}

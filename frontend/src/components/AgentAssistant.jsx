@@ -131,13 +131,22 @@ const splitThoughtAndAnswer = (text) => {
     if (text.includes('</think>')) {
       const match = text.match(/<think>([\s\S]*?)<\/think>([\s\S]*)/i);
       if (match) {
-        return [match[1].trim(), match[2].trim()];
+        const thought = match[1].trim();
+        const ans = match[2].trim();
+        if (ans) return [thought, ans];
+        const splitMatch = thought.search(
+          /\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|In summary|Summary:|Answer:|Draft:|Executive Summary)/i
+        );
+        if (splitMatch !== -1) {
+          return [thought.slice(0, splitMatch).trim(), thought.slice(splitMatch).trim()];
+        }
+        return ['', thought];
       }
     } else {
       const parts = text.split('<think>');
       const after = parts.slice(1).join('<think>');
       const splitMatch = after.search(
-        /\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|In summary|Summary:|Answer:)/i
+        /\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|In summary|Summary:|Answer:|Draft:|Executive Summary)/i
       );
       if (splitMatch !== -1) {
         return [
@@ -146,6 +155,15 @@ const splitThoughtAndAnswer = (text) => {
         ];
       }
       return ['', after.trim()];
+    }
+  }
+  const prefixMatch = text.match(/^(?:Here'?s a thinking process:?|Thinking Process:?|Thought:?)\s*/i);
+  if (prefixMatch) {
+    const splitMatch = text.search(
+      /\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|In summary|Summary:|Answer:|Draft:|Executive Summary)/i
+    );
+    if (splitMatch !== -1) {
+      return [text.slice(0, splitMatch).trim(), text.slice(splitMatch).trim()];
     }
   }
   return ['', text.trim()];
@@ -159,10 +177,15 @@ const sanitizeAnswerText = (text, fallbackThought = '') => {
     return fallbackThought;
   }
   if (!text) return '';
-  return text
+  const cleaned = text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<think>[\s\S]*/gi, '')
     .trim();
+  if (!cleaned && text) {
+    const [, recovered] = splitThoughtAndAnswer(text);
+    return recovered || text;
+  }
+  return cleaned;
 };
 
 const extractFallbackThought = (text) => {
@@ -408,31 +431,36 @@ export default function AgentAssistant() {
             onChange={(e) => setSelectedModel(e.target.value)}
             className="bg-slate-900 border border-emerald-500/50 rounded-lg px-2.5 py-1 text-emerald-300 font-medium text-xs outline-none cursor-pointer hover:border-emerald-400 focus:border-emerald-400 transition-colors"
           >
-            <option value="groq_qwen">⚡ Groq / Qwen 3.6 (Fastest)</option>
-            <option value="groq_llama">⚡ Groq / Llama 3.3 70B</option>
-            <option value="groq_gpt_oss">⚡ Groq / GPT-OSS 120B</option>
-            <option value="gemini_flash">✨ Google / Gemini 3.7 Flash</option>
+            <option value="gemini_flash">✨ Google / Gemini 3.7 Flash (Grounding)</option>
             <option value="gemini_pro">✨ Google / Gemini Pro Latest</option>
-            <option value="ollama_chat">💻 Ollama / Llama 3.2 (Local)</option>
-            <option value="anthropic_sonnet">☁️ Anthropic / Claude 3.5 Sonnet</option>
-            <option value="openai_gpt4o">☁️ OpenAI / GPT-4o</option>
+            <option value="groq_compound">⚡ Groq / Compound AI (Ultra-Fast)</option>
+            <option value="groq_qwen">⚡ Groq / Qwen 3.6 27B (Reasoning)</option>
+            <option value="groq_gpt_oss">⚡ Groq / GPT-OSS 120B</option>
+            <option value="ollama_nemotron">🟢 NVIDIA / Nemotron 3.5 Lightning (Local 25GB)</option>
+            <option value="ollama_deepseek">🟢 DeepSeek / R1 14B (Local Reasoning)</option>
+            <option value="ollama_llama3">🟢 Meta / Llama 3.1 8B (Local)</option>
+            <option value="openai_gpt4o">☁️ OpenAI / GPT-4o (Omni)</option>
+            <option value="openai_gpt4o_mini">☁️ OpenAI / GPT-4o Mini</option>
             {availableModels
               .filter(
                 (m) =>
                   ![
-                    'groq_qwen',
-                    'groq_llama',
-                    'groq_gpt_oss',
                     'gemini_flash',
                     'gemini_pro',
+                    'groq_compound',
+                    'groq_qwen',
+                    'groq_gpt_oss',
+                    'ollama_nemotron',
+                    'ollama_deepseek',
+                    'ollama_llama3',
                     'ollama_chat',
-                    'anthropic_sonnet',
                     'openai_gpt4o',
-                  ].includes(m.name)
+                    'openai_gpt4o_mini',
+                  ].includes(m.id || m.name)
               )
               .map((m) => (
-                <option key={m.name} value={m.name}>
-                  {m.name} ({m.provider})
+                <option key={m.id || m.name} value={m.id || m.name}>
+                  {m.name || m.id} ({m.provider})
                 </option>
               ))}
           </select>

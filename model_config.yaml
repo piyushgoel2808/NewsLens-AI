@@ -1,146 +1,117 @@
-# =============================================================================
-# NewsLens-AI — Model Provider Configuration
-# =============================================================================
-# This file controls which LLM/embedding/VLM/OCR provider is used for each
-# pipeline task. Swap providers here without changing any application code.
-#
-# API:
-#   GET  /api/settings/model-bindings  — read current bindings
-#   PUT  /api/settings/model-bindings  — update bindings (admin only)
-#
-# For local-only deployment: use the Ollama providers below.
-# For hosted deployment: uncomment the hosted provider blocks and set
-# the corresponding API key environment variables in .env.
-# =============================================================================
-
 providers:
-  # ---------------------------------------------------------------------------
-  # Local providers — no API key required; run via Ollama
-  # ---------------------------------------------------------------------------
-
-  ollama_chat:
+  ollama_nemotron:
     provider: ollama
-    model: llama3.2:3b          # Smoke-test/dev model. Swap to llama3.1:70b for production.
-    base_url: "http://ollama:11434"  # docker-compose service name; use localhost:11434 outside Docker
+    model: nemotron-3.5-lightning:latest
+    base_url: http://localhost:11434
     context_window: 128000
     supports_vision: false
     supports_tool_use: true
-
+  ollama_deepseek:
+    provider: ollama
+    model: deepseek-r1:14b
+    base_url: http://localhost:11434
+    context_window: 65536
+    supports_vision: false
+    supports_tool_use: true
+  ollama_llama3:
+    provider: ollama
+    model: llama3.1:8b
+    base_url: http://localhost:11434
+    context_window: 128000
+    supports_vision: false
+    supports_tool_use: true
+  ollama_chat:
+    provider: ollama
+    model: llama3.1:8b
+    base_url: http://localhost:11434
+    context_window: 128000
+    supports_vision: false
+    supports_tool_use: true
   ollama_vlm:
     provider: ollama
-    model: qwen2.5vl:7b         # Layout analysis VLM. Swap to qwen2.5vl:32b for better accuracy.
-    base_url: "http://ollama:11434"
+    model: qwen2.5vl:7b
+    base_url: http://localhost:11434
     context_window: 32768
     supports_vision: true
     supports_tool_use: true
-
   ollama_embed:
     provider: ollama
     model: nomic-embed-text
-    base_url: "http://ollama:11434"
+    base_url: http://localhost:11434
+    supports_vision: false
+    supports_tool_use: false
     embedding_dim: 768
-
   local_embed_bge:
     provider: local_sentence_transformers
-    model: BAAI/bge-m3           # Strong multilingual model; ~2GB download on first use.
+    model: BAAI/bge-m3
+    supports_vision: false
+    supports_tool_use: false
     embedding_dim: 1024
-
   docling_parser:
     provider: docling
-    lang: "en+hi"
-    do_ocr: true
-    do_table_structure: true
-
+    supports_vision: false
+    supports_tool_use: false
+    lang: en+hi
   mineru_parser:
     provider: mineru
-    lang: "en+hi"
-    method: "auto"               # 'auto', 'txt', or 'ocr' neural engine
-
-  # ---------------------------------------------------------------------------
-  # Hosted providers — uncomment and set API keys in .env to enable
-  # ---------------------------------------------------------------------------
-
+    supports_vision: false
+    supports_tool_use: false
+    lang: en+hi
+  groq_compound:
+    provider: groq
+    model: groq/compound
+    context_window: 128000
+    supports_vision: false
+    supports_tool_use: true
   groq_qwen:
     provider: groq
     model: qwen/qwen3.6-27b
     context_window: 128000
     supports_vision: false
     supports_tool_use: true
-
-  groq_llama:
-    provider: groq
-    model: llama-3.3-70b-versatile
-    context_window: 128000
-    supports_vision: false
-    supports_tool_use: true
-
   groq_gpt_oss:
     provider: groq
     model: openai/gpt-oss-120b
     context_window: 128000
     supports_vision: false
     supports_tool_use: true
-
   gemini_flash:
     provider: gemini
     model: gemini-3.7-flash
     context_window: 1000000
     supports_vision: true
     supports_tool_use: true
-
   gemini_pro:
     provider: gemini
     model: gemini-pro-latest
     context_window: 1000000
     supports_vision: true
     supports_tool_use: true
-
-  # anthropic_sonnet:
-  #   provider: anthropic
-  #   model: claude-3-5-sonnet-20241022
-  #   context_window: 200000
-  #   supports_vision: true
-  #   supports_tool_use: true
-
-  # anthropic_haiku:
-  #   provider: anthropic
-  #   model: claude-haiku-3-5
-  #   context_window: 200000
-  #   supports_vision: true
-  #   supports_tool_use: true
-
-  # openai_gpt4o:
-  #   provider: openai
-  #   model: gpt-4o
-  #   context_window: 128000
-  #   supports_vision: true
-  #   supports_tool_use: true
-
-  # openai_embed:
-  #   provider: openai
-  #   model: text-embedding-3-large
-  #   embedding_dim: 3072
-
-# =============================================================================
-# Task Bindings
-# Map each pipeline task to a provider key defined above.
-# Change the value to switch providers for that task (no code change needed).
-# =============================================================================
-
+  openai_gpt4o:
+    provider: openai
+    model: gpt-4o
+    context_window: 128000
+    supports_vision: true
+    supports_tool_use: true
+  openai_gpt4o_mini:
+    provider: openai
+    model: gpt-4o-mini
+    context_window: 128000
+    supports_vision: true
+    supports_tool_use: true
+  openai_embed:
+    provider: openai
+    model: text-embedding-3-large
+    supports_vision: false
+    supports_tool_use: false
+    embedding_dim: 3072
 task_bindings:
-  # --- Query pipeline ---
-  query_planner: groq_qwen        # Classifies queries + generates retrieval plans
-  answerer: groq_qwen             # Synthesizes final answer with citations
-
-  # --- Ingestion pipeline ---
-  layout_analysis: docling_parser  # Docling neural layout, table structure, and multi-column reading order
+  query_planner: ollama_chat
+  answerer: ollama_chat
+  layout_analysis: docling_parser
   document_parser: docling_parser
-  article_segmentation: ollama_chat
-  metadata_extraction: ollama_chat
-  classification: ollama_chat
-
-  # --- Embedding ---
-  embedding: local_embed_bge      # Change to ollama_embed for lighter resource use
-
-  # --- OCR ---
+  article_segmentation: ollama_llama3
+  metadata_extraction: ollama_llama3
+  classification: ollama_llama3
+  embedding: local_embed_bge
   ocr: docling_parser
