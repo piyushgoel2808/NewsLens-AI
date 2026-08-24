@@ -71,11 +71,12 @@ async def upload_newspaper_document(
     # Run processing pipeline on newly created issues
     if filename.lower().endswith(".pdf") and intake_res.issues_created:
         for issue_id in intake_res.issues_created:
+            pdf_payload = intake_res.compressed_contents.get(issue_id, content)
             if sync_processing:
                 try:
                     res = await run_ingestion_pipeline(
                         issue_id=issue_id,
-                        pdf_bytes=content,
+                        pdf_bytes=pdf_payload,
                         parser_engine=parser_engine,
                     )
                     pipeline_results.append(res)
@@ -91,7 +92,7 @@ async def upload_newspaper_document(
                 asyncio.create_task(
                     run_ingestion_pipeline(
                         issue_id=issue_id,
-                        pdf_bytes=content,
+                        pdf_bytes=pdf_payload,
                         parser_engine=parser_engine,
                     )
                 )
