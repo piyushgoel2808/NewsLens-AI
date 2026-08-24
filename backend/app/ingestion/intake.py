@@ -16,7 +16,7 @@ import hashlib
 import io
 import os
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
 from sqlalchemy import select
@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.ingestion.compressor import compress_pdf_bytes
 from app.models.ingestion import IngestionJob
 from app.models.newspaper import Issue, Newspaper, Page
 from app.storage.minio_store import MinioStore
@@ -53,6 +54,7 @@ class IntakeResult:
     total_files: int
     issues_created: list[int]
     skipped_duplicates: list[str]
+    compressed_contents: dict[int, bytes] = field(default_factory=dict)
 
 
 def compute_sha256(data: bytes) -> str:
@@ -143,11 +145,22 @@ class IntakeService:
                     if entry_name.lower().endswith(".pdf"):
                         pdf_data = z.read(entry_name)
                         if is_valid_pdf(pdf_data):
-                            item_hash = compute_sha256(pdf_data)
+                            compressed_data, comp_stats = compress_pdf_bytes(pdf_data)
+                            logger.info(
+                                "ZIP entry PDF pre-ingestion compression",
+                                extra={
+                                    "filename": entry_name,
+                                    "original_bytes": comp_stats["original_bytes"],
+                                    "compressed_bytes": comp_stats["compressed_bytes"],
+                                    "reduction_pct": comp_stats["reduction_pct"],
+                                    "status": comp_stats["status"],
+                                },
+                            )
+                            item_hash = compute_sha256(compressed_data)
                             items_to_process.append(
                                 UploadedItem(
                                     filename=os.path.basename(entry_name),
-                                    content=pdf_data,
+                                    content=compressed_data,
                                     sha256=item_hash,
                                     newspaper_name=newspaper_name,
                                     issue_date=issue_date,
@@ -162,11 +175,22 @@ class IntakeService:
                 await self._db.commit()
                 raise ValueError(f"File {filename} is not a valid PDF document.")
 
-            item_hash = compute_sha256(file_bytes)
+            compressed_bytes, comp_stats = compress_pdf_bytes(file_bytes)
+            logger.info(
+                "PDF pre-ingestion compression",
+                extra={
+                    "filename": filename,
+                    "original_bytes": comp_stats["original_bytes"],
+                    "compressed_bytes": comp_stats["compressed_bytes"],
+                    "reduction_pct": comp_stats["reduction_pct"],
+                    "status": comp_stats["status"],
+                },
+            )
+            item_hash = compute_sha256(compressed_bytes)
             items_to_process.append(
                 UploadedItem(
                     filename=filename,
-                    content=file_bytes,
+                    content=compressed_bytes,
                     sha256=item_hash,
                     newspaper_name=newspaper_name,
                     issue_date=issue_date,
@@ -177,6 +201,7 @@ class IntakeService:
 
         job.total_files = len(items_to_process)
         issues_created: list[int] = []
+        compressed_contents: dict[int, bytes] = {}
 
         for item in items_to_process:
             # Dynamic Page 1 Masthead and Date Pre-detection on uploaded PDF
@@ -299,6 +324,7 @@ class IntakeService:
                     issue.id = 1
 
             issues_created.append(issue.id)
+            compressed_contents[issue.id] = item.content
             job.processed_files += 1
 
         if job.failed_files == 0:
@@ -316,4 +342,5 @@ class IntakeService:
             total_files=len(items_to_process),
             issues_created=issues_created,
             skipped_duplicates=skipped_duplicates,
+            compressed_contents=compressed_contents,
         )

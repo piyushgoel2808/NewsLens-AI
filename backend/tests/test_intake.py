@@ -65,7 +65,12 @@ class TestIntakeService:
         assert res.total_files == 1
         assert len(res.issues_created) == 1
         assert len(res.skipped_duplicates) == 0
+        assert 1 in res.compressed_contents
+        assert len(res.compressed_contents[1]) < len(pdf_bytes)
         assert mock_minio.put.called
+        # Verify minio was called with compressed bytes
+        put_kwargs = mock_minio.put.call_args.kwargs
+        assert put_kwargs["data"] == res.compressed_contents[1]
 
     @pytest.mark.asyncio
     async def test_process_upload_invalid_pdf_raises(self) -> None:
