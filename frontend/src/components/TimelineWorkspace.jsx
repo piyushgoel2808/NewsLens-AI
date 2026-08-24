@@ -19,13 +19,6 @@ import {
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
 
-const SAMPLE_QUERIES = [
-  'Indo-Pacific bilateral trade negotiations',
-  'Tata Power clean energy expansion in Odisha',
-  'Telecom AGR dues Supreme Court dispute',
-  'Semiconductor fabrication incentives & foundry rollout',
-];
-
 const PHASE_STYLES = {
   Breaking: {
     badge: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
@@ -88,7 +81,8 @@ export default function TimelineWorkspace() {
     setSelectedModel,
   } = useActiveHighlight();
 
-  const [query, setQuery] = useState(timelineQuery || 'Tata Power clean energy expansion');
+  const [query, setQuery] = useState(timelineQuery || '');
+  const [suggestions, setSuggestions] = useState([]);
   const [viewMode, setViewMode] = useState('spine'); // 'spine' | 'swimlane'
   const [loading, setLoading] = useState(false);
   const [progressStage, setProgressStage] = useState('');
@@ -105,6 +99,15 @@ export default function TimelineWorkspace() {
         }
       })
       .catch((err) => console.error('Failed to load models in Timeline:', err));
+
+    fetch('/api/query/timeline/suggestions')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.suggestions && Array.isArray(data.suggestions)) {
+          setSuggestions(data.suggestions);
+        }
+      })
+      .catch((err) => console.error('Failed to load timeline suggestions:', err));
   }, []);
 
   // Sync external timelineQuery from context (e.g. from chat button)
@@ -115,10 +118,10 @@ export default function TimelineWorkspace() {
     }
   }, [timelineQuery]);
 
-  // Initial load
+  // Initial load if query is provided
   useEffect(() => {
-    if (!trajectoryData && !loading) {
-      fetchTrajectory(query);
+    if (timelineQuery && !trajectoryData && !loading) {
+      fetchTrajectory(timelineQuery);
     }
   }, []);
 
@@ -287,6 +290,8 @@ export default function TimelineWorkspace() {
                 onChange={(e) => setSelectedModel(e.target.value)}
                 className="bg-transparent text-emerald-300 font-medium text-xs outline-none cursor-pointer hover:text-emerald-200 transition-colors"
               >
+                <option value="ollama_gemma4_26b" className="bg-slate-900 text-slate-200">🟢 Gemma 4 / 26B Vision & Layout (Local)</option>
+                <option value="ollama_gemma4_12b" className="bg-slate-900 text-slate-200">🟢 Gemma 4 / 12B Fast (Local)</option>
                 <option value="gemini_flash" className="bg-slate-900 text-slate-200">✨ Google / Gemini 3.7 Flash</option>
                 <option value="gemini_pro" className="bg-slate-900 text-slate-200">✨ Google / Gemini Pro Latest</option>
                 <option value="groq_compound" className="bg-slate-900 text-slate-200">⚡ Groq / Compound AI (Ultra-Fast)</option>
@@ -301,6 +306,8 @@ export default function TimelineWorkspace() {
                   .filter(
                     (m) =>
                       ![
+                        'ollama_gemma4_26b',
+                        'ollama_gemma4_12b',
                         'gemini_flash',
                         'gemini_pro',
                         'groq_compound',
@@ -349,22 +356,25 @@ export default function TimelineWorkspace() {
           </div>
         </div>
 
-        {/* Quick Sample Query Suggestions */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs text-slate-400">
-          <span className="shrink-0 text-slate-500 font-medium">Suggested Topics:</span>
-          {SAMPLE_QUERIES.map((sq, sIdx) => (
-            <button
-              key={sIdx}
-              onClick={() => {
-                setQuery(sq);
-                fetchTrajectory(sq);
-              }}
-              className="shrink-0 bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-emerald-300 px-2.5 py-1 rounded-md border border-slate-700/60 transition-colors"
-            >
-              {sq}
-            </button>
-          ))}
-        </div>
+        {/* Dynamic Storyline Suggestions */}
+        {suggestions.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs text-slate-400">
+            <span className="shrink-0 text-slate-500 font-medium">Recent Headlines:</span>
+            {suggestions.map((sq, sIdx) => (
+              <button
+                key={sIdx}
+                onClick={() => {
+                  setQuery(sq);
+                  fetchTrajectory(sq);
+                }}
+                className="shrink-0 bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-emerald-300 px-2.5 py-1 rounded-md border border-slate-700/60 transition-colors truncate max-w-xs"
+                title={sq}
+              >
+                {sq}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Live SSE Progress Banner */}
         {loading && (

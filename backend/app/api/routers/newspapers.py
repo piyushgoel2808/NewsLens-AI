@@ -1,12 +1,10 @@
-"""FastAPI router for Newspaper Corpus, Issues, Pages, and Image Proxying."""
-
-from __future__ import annotations
-
 import io
+from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,8 +14,30 @@ from app.models.article import Article, ArticleChunk
 from app.models.base import get_db
 from app.models.newspaper import Issue, Newspaper, Page
 from app.storage.minio_store import MinioStore
+from app.storage.qdrant_store import QdrantStore
 
 router = APIRouter(tags=["corpus"])
+
+
+class CreateNewspaperRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255, description="Newspaper title")
+    publisher: str | None = Field(None, max_length=255)
+    default_language: str = Field("en", max_length=10)
+    country: str = Field("IN", max_length=100)
+
+
+class UpdateNewspaperRequest(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=255)
+    publisher: str | None = None
+    default_language: str | None = None
+    country: str | None = None
+
+
+class UpdateIssueRequest(BaseModel):
+    issue_date: str | None = Field(None, description="Updated issue date (YYYY-MM-DD)")
+    edition: str | None = None
+    language: str | None = None
+    newspaper_id: int | None = None
 
 
 @router.get("/api/newspapers", summary="List all newspapers with aggregated metrics")
@@ -376,3 +396,197 @@ async def delete_issue(
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found")
     return result
+
+
+@router.post(
+    "/api/newspapers",
+    summary="Register a new newspaper publication",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_newspaper(
+    request: CreateNewspaperRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Create a new newspaper in the system."""
+    stmt = select(Newspaper).where(Newspaper.name == request.name)
+    res = await db.execute(stmt)
+    if res.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Newspaper '{request.name}' already exists.",
+        )
+
+    newspaper = Newspaper(
+        name=request.name.strip(),
+        publisher=request.publisher.strip() if request.publisher else None,
+        default_language=request.default_language,
+        country=request.country,
+    )
+    db.add(newspaper)
+    await db.commit()
+    await db.refresh(newspaper)
+
+    return {
+        "id": newspaper.id,
+        "name": newspaper.name,
+        "publisher": newspaper.publisher,
+        "default_language": newspaper.default_language,
+        "country": newspaper.country,
+        "created_at": newspaper.created_at.isoformat() if newspaper.created_at else None,
+    }
+
+
+@router.put("/api/newspapers/{newspaper_id}", summary="Update newspaper publication details")
+async def update_newspaper(
+    newspaper_id: int,
+    request: UpdateNewspaperRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Update publication metadata and synchronize Qdrant payloads if renamed."""
+    stmt = select(Newspaper).where(Newspaper.id == newspaper_id)
+    res = await db.execute(stmt)
+    newspaper = res.scalar_one_or_none()
+    if not newspaper:
+        raise HTTPException(status_code=404, detail=f"Newspaper {newspaper_id} not found")
+
+    old_name = newspaper.name
+    if request.name:
+        newspaper.name = request.name.strip()
+    if request.publisher is not None:
+        newspaper.publisher = request.publisher.strip()
+    if request.default_language is not None:
+        newspaper.default_language = request.default_language
+    if request.country is not None:
+        newspaper.country = request.country
+
+    await db.commit()
+    await db.refresh(newspaper)
+
+    # If renamed, update Qdrant vector payloads across all issues
+    if request.name and old_name != newspaper.name:
+        try:
+            settings = get_settings()
+            qdrant = QdrantStore(settings.qdrant)
+            # Find all issue IDs for this newspaper
+            issues_res = await db.execute(
+                select(Issue.id).where(Issue.newspaper_id == newspaper_id)
+            )
+            for iss_id in issues_res.scalars().all():
+                await qdrant.set_payload_by_filter(
+                    payload={"newspaper_name": newspaper.name},
+                    filters={"issue_id": iss_id},
+                )
+        except Exception:
+            pass
+
+    return {
+        "id": newspaper.id,
+        "name": newspaper.name,
+        "publisher": newspaper.publisher,
+        "default_language": newspaper.default_language,
+        "country": newspaper.country,
+    }
+
+
+@router.delete(
+    "/api/newspapers/{newspaper_id}",
+    summary="Delete newspaper and all associated issues",
+)
+async def delete_newspaper(
+    newspaper_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Delete a newspaper and cascade deletion across all its issues in Qdrant, MinIO, and MySQL."""
+    from app.ingestion.deletion_service import DeletionService
+
+    stmt = select(Newspaper).where(Newspaper.id == newspaper_id)
+    res = await db.execute(stmt)
+    newspaper = res.scalar_one_or_none()
+    if not newspaper:
+        raise HTTPException(status_code=404, detail=f"Newspaper {newspaper_id} not found")
+
+    # Delete all associated issues with 3-tier deletion
+    issues_res = await db.execute(select(Issue.id).where(Issue.newspaper_id == newspaper_id))
+    issue_ids = list(issues_res.scalars().all())
+
+    service = DeletionService(db=db)
+    for iss_id in issue_ids:
+        await service.delete_issue(iss_id)
+
+    # Delete newspaper record
+    await db.delete(newspaper)
+    await db.commit()
+
+    return {
+        "status": "deleted",
+        "newspaper_id": newspaper_id,
+        "issues_deleted_count": len(issue_ids),
+    }
+
+
+@router.patch(
+    "/api/issues/{issue_id}",
+    summary="Update issue metadata and cascade to vector payloads",
+)
+async def patch_issue(
+    issue_id: int,
+    request: UpdateIssueRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Update issue date or edition, and synchronize vector embedding payloads in Qdrant."""
+    stmt = select(Issue).where(Issue.id == issue_id).options(selectinload(Issue.newspaper))
+    res = await db.execute(stmt)
+    issue = res.scalar_one_or_none()
+    if not issue:
+        raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found")
+
+    date_changed = False
+    new_date_obj: date | None = None
+    if request.issue_date:
+        try:
+            parts = [int(p) for p in request.issue_date.split("-")]
+            if len(parts) == 3:
+                new_date_obj = date(parts[0], parts[1], parts[2])
+                if issue.issue_date != new_date_obj:
+                    issue.issue_date = new_date_obj
+                    date_changed = True
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid issue_date format: {e}"
+            ) from e
+
+    if request.edition is not None:
+        issue.edition = request.edition
+    if request.language is not None:
+        issue.language = request.language
+    if request.newspaper_id is not None:
+        issue.newspaper_id = request.newspaper_id
+
+    await db.commit()
+    await db.refresh(issue)
+
+    # Cascade to Qdrant vector store payloads
+    if date_changed and new_date_obj:
+        try:
+            settings = get_settings()
+            qdrant = QdrantStore(settings.qdrant)
+            await qdrant.set_payload_by_filter(
+                payload={"issue_date": str(new_date_obj)},
+                filters={"issue_id": issue_id},
+            )
+            # Invalidate Redis query & timeline cache
+            from app.retrieval.query_cache import QueryCache
+            cache = QueryCache(settings.redis.url)
+            await cache.clear_all()
+        except Exception:
+            pass
+
+    return {
+        "id": issue.id,
+        "newspaper_id": issue.newspaper_id,
+        "newspaper_name": issue.newspaper.name if issue.newspaper else "Daily Broadsheet",
+        "issue_date": str(issue.issue_date),
+        "edition": issue.edition,
+        "language": issue.language,
+        "status": "updated",
+    }

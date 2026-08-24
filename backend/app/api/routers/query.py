@@ -493,3 +493,60 @@ async def stream_timeline(
         },
     )
 
+
+@router.get(
+    "/timeline/suggestions",
+    summary="Get dynamic story trajectory topic suggestions from indexed articles and entities",
+)
+async def get_timeline_suggestions(
+    limit: int = Query(6, ge=1, le=20, description="Max suggestions to return"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Dynamically generate timeline suggestions from prominent recent indexed headlines."""
+    from app.models.article import Article
+    from app.models.entity import Entity
+
+    suggestions: list[str] = []
+
+    # 1. Fetch prominent headlines from latest indexed articles
+    stmt = (
+        select(Article.headline)
+        .where(
+            Article.headline.is_not(None),
+            Article.article_type.in_(["news", "editorial", "general"]),
+        )
+        .order_by(desc(Article.id))
+        .limit(30)
+    )
+    res = await db.execute(stmt)
+    raw_headlines = [h.strip() for h in res.scalars().all() if h and len(h.strip()) > 10]
+
+    for h in raw_headlines:
+        # Simplify long headlines for clean timeline query chips
+        clean_h = h.split(":")[0].split(" - ")[0].split(" | ")[0].strip()
+        if clean_h and clean_h not in suggestions and len(clean_h) <= 75:
+            suggestions.append(clean_h)
+        if len(suggestions) >= limit:
+            break
+
+    # 2. Fetch recurring entities/topics if we still need more suggestions
+    if len(suggestions) < limit:
+        entity_stmt = select(Entity.name).limit(10)
+        ent_res = await db.execute(entity_stmt)
+        for ent_name in ent_res.scalars().all():
+            if ent_name and ent_name not in suggestions:
+                suggestions.append(ent_name)
+            if len(suggestions) >= limit:
+                break
+
+    # 3. Fallback defaults if archive is completely empty
+    if not suggestions:
+        suggestions = [
+            "RBI monetary policy and interest rate trajectory",
+            "Semiconductor manufacturing investments and subsidies",
+            "Green hydrogen and renewable energy roadmap",
+            "Foreign institutional investor capital flows",
+        ]
+
+    return {"suggestions": suggestions[:limit]}
+

@@ -252,3 +252,95 @@ async def test_inspect_issue_ingestion_endpoint() -> None:
         assert len(data["articles"]) == 1
         assert len(data["chunks"]) == 1
         assert data["pagination"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_create_newspaper_endpoint() -> None:
+    app = create_app()
+    mock_db = MagicMock()
+    mock_res = MagicMock()
+    mock_res.scalar_one_or_none.return_value = None
+    mock_db.execute = AsyncMock(return_value=mock_res)
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
+
+    async def override_get_db() -> AsyncGenerator[MagicMock, None]:
+        yield mock_db
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/newspapers",
+            json={
+                "name": "The Financial Times",
+                "publisher": "Nikkei",
+                "default_language": "en",
+                "country": "GB",
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["name"] == "The Financial Times"
+
+
+@pytest.mark.asyncio
+async def test_patch_issue_endpoint() -> None:
+    app = create_app()
+    mock_db = MagicMock()
+    mock_res = MagicMock()
+    mock_issue = MagicMock()
+    mock_issue.id = 10
+    mock_issue.newspaper_id = 1
+    mock_issue.newspaper.name = "Business Standard"
+    mock_issue.issue_date = "2026-08-20"
+    mock_issue.edition = "morning"
+    mock_issue.language = "en"
+    mock_res.scalar_one_or_none.return_value = mock_issue
+
+    mock_db.execute = AsyncMock(return_value=mock_res)
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
+
+    async def override_get_db() -> AsyncGenerator[MagicMock, None]:
+        yield mock_db
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.patch(
+            "/api/issues/10",
+            json={"issue_date": "2026-07-07", "edition": "special"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "updated"
+
+
+@pytest.mark.asyncio
+async def test_get_timeline_suggestions_endpoint() -> None:
+    app = create_app()
+    mock_db = MagicMock()
+    mock_res = MagicMock()
+    mock_res.scalars.return_value.all.return_value = [
+        "FPIs Return to Dalal Street as Sensex Rebounds: Analysis",
+        "Semiconductor Foundry Subsidies Approved by Cabinet",
+    ]
+    mock_db.execute = AsyncMock(return_value=mock_res)
+
+    async def override_get_db() -> AsyncGenerator[MagicMock, None]:
+        yield mock_db
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/query/timeline/suggestions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "suggestions" in data
+        assert len(data["suggestions"]) >= 2
+        assert "FPIs Return to Dalal Street as Sensex Rebounds" in data["suggestions"][0]

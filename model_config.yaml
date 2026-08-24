@@ -57,6 +57,20 @@ providers:
     supports_vision: false
     supports_tool_use: false
     lang: en+hi
+  ollama_gemma4_26b:
+    provider: ollama
+    model: gemma4:26b
+    base_url: http://localhost:11434
+    context_window: 128000
+    supports_vision: true
+    supports_tool_use: true
+  ollama_gemma4_12b:
+    provider: ollama
+    model: gemma4:12b
+    base_url: http://localhost:11434
+    context_window: 128000
+    supports_vision: false
+    supports_tool_use: true
   groq_compound:
     provider: groq
     model: groq/compound
@@ -106,12 +120,12 @@ providers:
     supports_tool_use: false
     embedding_dim: 3072
 task_bindings:
-  query_planner: ollama_chat
-  answerer: ollama_chat
-  layout_analysis: docling_parser
-  document_parser: docling_parser
-  article_segmentation: ollama_deepseek
-  metadata_extraction: ollama_llama3
-  classification: ollama_llama3
+  layout_analysis: ollama_gemma4_26b
+  document_parser: ollama_gemma4_26b
+  ocr: ollama_gemma4_26b
   embedding: local_embed_bge
-  ocr: docling_parser
+  query_planner: ollama_gemma4_12b
+  answerer: ollama_gemma4_12b
+  metadata_extraction: ollama_gemma4_26b
+  classification: ollama_gemma4_26b
+  article_segmentation: ollama_gemma4_26b

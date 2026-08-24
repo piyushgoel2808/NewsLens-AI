@@ -65,6 +65,7 @@ class ModelRegistry:
             return OllamaProvider(
                 model=model,
                 base_url=cfg.base_url or self._settings.ollama_base_url,
+                supports_vision=cfg.supports_vision,
             )
         elif provider_type == "groq":
             return GroqProvider(

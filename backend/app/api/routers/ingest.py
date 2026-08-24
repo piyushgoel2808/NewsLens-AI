@@ -24,14 +24,56 @@ router = APIRouter(prefix="/api", tags=["ingestion"])
 
 
 @router.post(
+    "/ingest/inspect-preview",
+    summary="Lightweight pre-upload inspection to detect newspaper and multi-page consensus date",
+)
+async def inspect_upload_preview(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Inspect uploaded PDF and return detected brand, date consensus, and existing publications."""
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    from app.ingestion.consensus_extractor import extract_newspaper_and_date_consensus
+    from app.models.newspaper import Newspaper
+
+    all_news_res = await db.execute(select(Newspaper))
+    existing_newspapers = [
+        {"id": n.id, "name": n.name, "default_language": n.default_language}
+        for n in all_news_res.scalars().all()
+    ]
+    existing_names: list[str] = [str(n["name"]) for n in existing_newspapers if n["name"]]
+
+    filename = file.filename or "upload.pdf"
+    det_brand, det_date, telemetry = extract_newspaper_and_date_consensus(
+        pdf_bytes=content,
+        max_pages=15,
+        existing_newspaper_names=existing_names,
+        filename=filename,
+    )
+
+    is_new = bool(det_brand and det_brand not in existing_names)
+
+    return {
+        "detected_newspaper": det_brand or (existing_names[0] if existing_names else "Daily News"),
+        "detected_date": str(det_date) if det_date else str(date.today()),
+        "is_new_newspaper": is_new,
+        "existing_newspapers": existing_newspapers,
+        "telemetry": telemetry,
+    }
+
+
+@router.post(
     "/ingest/upload",
     summary="Upload PDF or ZIP archive of newspaper issues",
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_newspaper_document(
     file: UploadFile = File(...),
-    newspaper_name: str = Form(..., description="Name of the newspaper (e.g. 'The Daily Times')"),
-    issue_date: date = Form(..., description="Publication date of the issue (YYYY-MM-DD)"),
+    newspaper_name: str = Form("auto", description="Newspaper title or 'auto' for consensus"),
+    issue_date: date | None = Form(None, description="Publication date or None for consensus"),
     edition: str = Form("morning", description="Edition identifier (e.g. 'morning', 'evening')"),
     language: str = Form("en", description="Primary ISO 639-1 language code (e.g. 'en', 'hi')"),
     parser_engine: str = Form(
@@ -53,12 +95,15 @@ async def upload_newspaper_document(
     filename = file.filename or "upload.pdf"
     intake = IntakeService(db=db)
 
+    effective_date = issue_date or date.today()
+    effective_name = newspaper_name if newspaper_name and newspaper_name != "auto" else "auto"
+
     try:
         intake_res = await intake.process_upload(
             file_bytes=content,
             filename=filename,
-            newspaper_name=newspaper_name,
-            issue_date=issue_date,
+            newspaper_name=effective_name,
+            issue_date=effective_date,
             edition=edition,
             language=language,
             force=force,

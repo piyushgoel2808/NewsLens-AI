@@ -203,36 +203,41 @@ class IntakeService:
         issues_created: list[int] = []
         compressed_contents: dict[int, bytes] = {}
 
+        # Fetch list of all known newspaper names from DB to aid matching
+        all_news_res = await self._db.execute(select(Newspaper.name))
+        existing_names = [str(n) for n in all_news_res.scalars().all() if n]
+
         for item in items_to_process:
-            # Dynamic Page 1 Masthead and Date Pre-detection on uploaded PDF
+            # Multi-Page Consensus Date and Masthead Detection on uploaded PDF
             if is_valid_pdf(item.content):
                 try:
-                    import pymupdf
-
-                    from app.ingestion.detector import PDFPageDetector
-                    from app.ingestion.tasks import (
-                        detect_masthead_and_date,
-                        parse_filename_superscript_date,
+                    from app.ingestion.consensus_extractor import (
+                        extract_newspaper_and_date_consensus,
                     )
 
-                    filename_date = parse_filename_superscript_date(item.filename)
-                    if filename_date:
-                        item.issue_date = filename_date
+                    det_brand, det_date, consensus_meta = extract_newspaper_and_date_consensus(
+                        pdf_bytes=item.content,
+                        max_pages=15,
+                        existing_newspaper_names=existing_names,
+                        filename=item.filename,
+                    )
+                    if det_brand:
+                        item.newspaper_name = det_brand
 
-                    doc = pymupdf.open(stream=item.content, filetype="pdf")
-                    if len(doc) > 0:
-                        detector = PDFPageDetector()
-                        p1_res = detector.analyze_page(doc, 0)
-                        det_brand, det_date = detect_masthead_and_date(
-                            p1_res.blocks, float(p1_res.page_height or 1400.0)
-                        )
-                        if det_brand:
-                            item.newspaper_name = det_brand
-                        if det_date:
-                            item.issue_date = det_date
-                    doc.close()
+                    if det_date:
+                        item.issue_date = det_date
+
+                    logger.info(
+                        "Consensus metadata extraction completed for item",
+                        extra={
+                            "file_name": item.filename,
+                            "consensus_newspaper": item.newspaper_name,
+                            "consensus_date": str(item.issue_date),
+                            "date_votes": consensus_meta.get("date_votes"),
+                        },
+                    )
                 except Exception as e:
-                    logger.debug("Page 1 masthead pre-detection skipped", extra={"error": str(e)})
+                    logger.debug("Consensus metadata detection skipped", extra={"error": str(e)})
 
             newspaper = await self.get_or_create_newspaper(item.newspaper_name, item.language)
 

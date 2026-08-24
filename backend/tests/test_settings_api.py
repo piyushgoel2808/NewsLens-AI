@@ -47,3 +47,11 @@ async def test_get_and_update_model_bindings() -> None:
         )
         assert invalid_resp.status_code == 400
         assert "not defined" in invalid_resp.json()["detail"]
+
+        # 4. POST reset to default bindings
+        reset_resp = await client.post("/api/settings/model-bindings/reset")
+        assert reset_resp.status_code == 200
+        reset_data = reset_resp.json()
+        assert reset_data["status"] == "reset_to_default"
+        assert reset_data["task_bindings"]["query_planner"] == "ollama_gemma4_12b"
+        assert reset_data["task_bindings"]["layout_analysis"] == "ollama_gemma4_26b"

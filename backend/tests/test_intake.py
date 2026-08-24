@@ -44,13 +44,16 @@ class TestIntakeService:
         mock_minio = AsyncMock()
 
         # Configure mock DB queries
+        mock_all_news = MagicMock()
+        mock_all_news.scalars.return_value.all.return_value = ["The Daily Bugle"]
+
         mock_newspaper_res = MagicMock()
         mock_newspaper_res.scalar_one_or_none.return_value = Newspaper(id=1, name="The Daily Bugle")
 
         mock_issue_res = MagicMock()
         mock_issue_res.scalar_one_or_none.return_value = None
 
-        mock_db.execute.side_effect = [mock_newspaper_res, mock_issue_res]
+        mock_db.execute.side_effect = [mock_all_news, mock_newspaper_res, mock_issue_res]
 
         service = IntakeService(db=mock_db, minio=mock_minio)
         res = await service.process_upload(
@@ -94,6 +97,9 @@ class TestIntakeService:
         mock_db = AsyncMock(spec=AsyncSession)
         mock_minio = AsyncMock()
 
+        mock_all_news = MagicMock()
+        mock_all_news.scalars.return_value.all.return_value = ["Archive Chronicle"]
+
         mock_newspaper_res = MagicMock()
         mock_newspaper_res.scalar_one_or_none.return_value = Newspaper(
             id=1, name="Archive Chronicle"
@@ -106,6 +112,7 @@ class TestIntakeService:
         mock_issue_res2.scalar_one_or_none.return_value = None
 
         mock_db.execute.side_effect = [
+            mock_all_news,
             mock_newspaper_res,
             mock_issue_res1,
             mock_newspaper_res,

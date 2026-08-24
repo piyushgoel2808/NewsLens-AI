@@ -151,6 +151,21 @@ class QdrantStore:
         )
         logger.info("Qdrant delete by filter", extra={"filters": filters})
 
+    async def set_payload_by_filter(self, payload: dict[str, Any], filters: dict[str, Any]) -> None:
+        """Update payload fields for all points matching a filter selector."""
+        qdrant_filter = self._build_filter(filters)
+        if not qdrant_filter:
+            return
+        await self._client.set_payload(
+            collection_name=self._collection,
+            payload=payload,
+            points=qmodels.FilterSelector(filter=qdrant_filter),
+        )
+        logger.info(
+            "Qdrant updated payload by filter",
+            extra={"filters": filters, "payload_keys": list(payload.keys())},
+        )
+
     async def collection_info(self) -> dict[str, Any]:
         """Return collection metadata."""
         info = await self._client.get_collection(self._collection)

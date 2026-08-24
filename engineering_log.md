@@ -1572,6 +1572,55 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 - `make test`: **251/251 tests passing 100% GREEN in 38.08s**.
 - `npm run build`: **Vite build completed with 0 errors in 910ms**.
 
+---
+
+## Smart Metadata Extraction, Dynamic Newspaper CRUD, Vector Cascading & Gemma 4 Models
+
+**Date**: 2026-08-24  
+**Status**: Completed ✅
+
+### What was built
+1. **Multi-Page Consensus Extraction Engine ([`backend/app/ingestion/consensus_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/consensus_extractor.py))**:
+   - Implemented `extract_newspaper_and_date_consensus(pdf_bytes, max_pages=15, existing_newspaper_names, filename)`.
+   - Analyzes header zones (top 18%), bottom folios, and full pages across up to 15 pages to extract publication dates and masthead brands.
+   - Computes majority-vote consensus across pages to eliminate single-page misidentifications.
+   - Integrates with `IntakeService.process_upload` for zero-friction ingestion with automatic metadata resolution.
+2. **Pre-Upload Inspection Preview ([`backend/app/api/routers/ingest.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/ingest.py))**:
+   - `POST /api/ingest/inspect-preview`: Returns `{ detected_newspaper, detected_date, is_new_newspaper, existing_newspapers, telemetry }` in <50ms without creating DB records.
+3. **Dynamic Newspaper Management (CRUD) ([`backend/app/api/routers/newspapers.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/newspapers.py))**:
+   - `POST /api/newspapers`: Dynamically registers new newspaper publications without fixed limits.
+   - `PUT /api/newspapers/{id}`: Updates publication details and cascades renamed titles to Qdrant vector payloads.
+   - `DELETE /api/newspapers/{id}`: Cascades 3-tier deletion across all issues in Qdrant, MinIO, and MySQL via `DeletionService`.
+4. **Issue Date Editing with Vector Payload Cascade ([`backend/app/api/routers/newspapers.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/newspapers.py) & [`backend/app/storage/qdrant_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/qdrant_store.py))**:
+   - Added `set_payload_by_filter(payload, filters)` to `QdrantStore`.
+   - `PATCH /api/issues/{id}`: Modifies issue date/edition/newspaper and synchronizes `issue_date` payload across all Qdrant vector chunks, invalidating Redis query caches.
+5. **Dynamic Story Trajectory Suggestions ([`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py) & [`frontend/src/components/TimelineWorkspace.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/TimelineWorkspace.jsx))**:
+   - `GET /api/timeline/suggestions`: Extracts top prominent indexed headlines and recurring topics from MySQL.
+   - Replaced hardcoded sample queries in `TimelineWorkspace.jsx` with dynamic recent headline chips.
+6. **Gemma 4 Integration & Default Settings Reset ([`model_config.yaml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/model_config.yaml), [`backend/app/api/routers/settings.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/settings.py), [`frontend/src/components/RawDataViewer.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/RawDataViewer.jsx))**:
+   - Added `ollama_gemma4_26b` (vision-capable) and `ollama_gemma4_12b`.
+   - Set default task bindings:
+     - `LAYOUT_ANALYSIS`: `ollama_gemma4_26b`
+     - `DOCUMENT_PARSER`: `ollama_gemma4_26b`
+     - `OCR`: `ollama_gemma4_26b`
+     - `EMBEDDING`: `local_embed_bge`
+     - `QUERY_PLANNER`: `ollama_gemma4_12b`
+     - `ANSWERER`: `ollama_gemma4_12b`
+     - `METADATA_EXTRACTION`: `ollama_gemma4_26b`
+     - `CLASSIFICATION`: `ollama_gemma4_26b`
+     - `ARTICLE_SEGMENTATION`: `ollama_gemma4_26b`
+   - Added `POST /api/settings/model-bindings/reset` and "Reset to Default Bindings" UI button.
+7. **Frontend Console Redesign ([`frontend/src/components/UploadTrigger.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/UploadTrigger.jsx) & [`frontend/src/components/ArchiveExplorer.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/ArchiveExplorer.jsx))**:
+   - Drag-and-drop auto-inspection with new newspaper detection alerts.
+   - Dynamic newspaper dropdown and dedicated "Manage Publications" modal.
+   - Live "Edit Date" modal on issue cards with instant vector sync.
+
+### Verification
+- `make lint`: **0 errors across 76 source files** (`ruff` + `mypy` strict).
+- `make test`: **257/257 tests passing 100% GREEN in 62.13s**.
+- `npm run build`: **Vite build completed with 0 errors in 1.08s**.
+
+
 
 
 

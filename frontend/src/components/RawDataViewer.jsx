@@ -108,6 +108,29 @@ export default function RawDataViewer() {
     }
   }
 
+  async function handleResetToDefault() {
+    if (!window.confirm('Reset all model task bindings back to Gemma 4 system defaults?')) {
+      return;
+    }
+    setSwapMessage({ status: 'updating', text: 'Resetting to default Gemma 4 configuration...' });
+    try {
+      const response = await fetch('/api/settings/model-bindings/reset', {
+        method: 'POST',
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || 'Reset failed');
+      }
+      setSwapMessage({ status: 'success', text: 'Task bindings successfully restored to default Gemma 4 models!' });
+      setCurrentBindings(result.task_bindings || {});
+      if (activeEndpoint === '/api/settings/model-bindings') {
+        fetchEndpoint('/api/settings/model-bindings');
+      }
+    } catch (err) {
+      setSwapMessage({ status: 'error', text: err.message });
+    }
+  }
+
   const handleCopyJson = () => {
     if (!data) return;
     navigator.clipboard.writeText(JSON.stringify(data, null, 2));
@@ -118,22 +141,41 @@ export default function RawDataViewer() {
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 max-w-5xl mx-auto p-4 md:p-6 overflow-y-auto space-y-6">
       {/* Header */}
-      <div className="pb-4 border-b border-slate-800">
-        <h1 className="text-2xl font-bold font-serif text-slate-100 flex items-center gap-2.5">
-          <Sliders className="w-6 h-6 text-emerald-400" />
-          Model Registry & Ingestion Manifest Inspector
-        </h1>
-        <p className="text-xs text-slate-400 mt-1">
-          Dynamically re-bind LLM, VLM, Embedding, and OCR providers at runtime without service restarts, and inspect live endpoint responses.
-        </p>
+      <div className="pb-4 border-b border-slate-800 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold font-serif text-slate-100 flex items-center gap-2.5">
+            <Sliders className="w-6 h-6 text-emerald-400" />
+            Model Registry & Ingestion Manifest Inspector
+          </h1>
+          <p className="text-xs text-slate-400 mt-1">
+            Dynamically re-bind LLM, VLM, Embedding, and OCR providers at runtime without service restarts, and inspect live endpoint responses.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleResetToDefault}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-emerald-400 hover:text-emerald-300 transition-colors border border-slate-700 font-medium"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          <span>Reset to Default Bindings</span>
+        </button>
       </div>
 
       {/* Model Provider Re-Binding Panel */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-        <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-          <Cpu className="w-4 h-4 text-emerald-400" />
-          Dynamic Provider Binding Manager
-        </h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <Cpu className="w-4 h-4 text-emerald-400" />
+            Dynamic Provider Binding Manager
+          </h2>
+          <button
+            type="button"
+            onClick={handleResetToDefault}
+            className="text-xs text-slate-400 hover:text-emerald-400 transition-colors flex items-center gap-1"
+          >
+            <RefreshCw className="w-3 h-3" /> Restore Defaults
+          </button>
+        </div>
 
         <form onSubmit={handleSwapBinding} className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           <div>

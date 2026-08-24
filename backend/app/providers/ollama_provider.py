@@ -37,12 +37,24 @@ class OllamaProvider:
         self,
         model: str,
         base_url: str = "http://localhost:11434",
+        supports_vision: bool | None = None,
     ) -> None:
         self._model = model
         self._base_url = base_url
         self._client = ollama.AsyncClient(host=base_url)
+
+        is_vision_model = (
+            supports_vision
+            if supports_vision is not None
+            else (
+                "vl" in model.lower()
+                or "gemma4:26b" in model.lower()
+                or "vision" in model.lower()
+                or "llava" in model.lower()
+            )
+        )
         self._capability = ProviderCapability(
-            supports_vision="vl" in model.lower(),
+            supports_vision=bool(is_vision_model),
             supports_tool_use=True,
             supports_streaming=True,
             supports_structured_output=True,
