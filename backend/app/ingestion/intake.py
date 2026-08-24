@@ -149,7 +149,7 @@ class IntakeService:
                             logger.info(
                                 "ZIP entry PDF pre-ingestion compression",
                                 extra={
-                                    "filename": entry_name,
+                                    "file_name": entry_name,
                                     "original_bytes": comp_stats["original_bytes"],
                                     "compressed_bytes": comp_stats["compressed_bytes"],
                                     "reduction_pct": comp_stats["reduction_pct"],
@@ -179,7 +179,7 @@ class IntakeService:
             logger.info(
                 "PDF pre-ingestion compression",
                 extra={
-                    "filename": filename,
+                    "file_name": filename,
                     "original_bytes": comp_stats["original_bytes"],
                     "compressed_bytes": comp_stats["compressed_bytes"],
                     "reduction_pct": comp_stats["reduction_pct"],
