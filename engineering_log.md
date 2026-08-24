@@ -1541,6 +1541,37 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 - `make test`: **246/246 tests passing 100% GREEN**.
 - `npm run build`: **Vite build completed with 0 errors in 1.00s**.
 
+---
+
+## Pre-Ingestion PDF Compression Layer
+
+**Date**: 2026-08-24  
+**Status**: Completed ✅
+
+### What was built
+1. **PDF Compressor Utility ([`backend/app/ingestion/compressor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/compressor.py))**:
+   - Implemented `compress_pdf_bytes(pdf_bytes: bytes) -> tuple[bytes, dict[str, Any]]` and `compress_pdf(pdf_bytes: bytes) -> bytes`.
+   - Utilizes PyMuPDF (`fitz`) with lossless stream and object optimization (`garbage=4`, `clean=True`, `deflate=True`, `deflate_images=True`, `deflate_fonts=True`).
+   - Built-in guardrails:
+     - `try ... finally: doc.close()` guarantees C-level MuPDF memory cleanup without leaks.
+     - Negative compression guardrail (reverts to original bytes if output size does not decrease).
+     - Graceful error recovery: catches corrupted, encrypted, or non-PDF bytes and safely falls back to original bytes.
+2. **Integration with Intake Service ([`backend/app/ingestion/intake.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/intake.py))**:
+   - Compresses both single PDF uploads and individual PDFs extracted from multi-issue ZIP archives.
+   - Calculates SHA-256 deduplication hashes on the compressed bytes.
+   - Saves compressed bytes to MinIO `newslens-originals` bucket.
+   - Exposes `compressed_contents: dict[int, bytes]` via `IntakeResult`.
+3. **Downstream Pipeline Execution ([`backend/app/api/routers/ingest.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/ingest.py))**:
+   - Passes the compressed PDF bytes directly into `run_ingestion_pipeline(...)` for synchronous and background Celery executions, reducing downstream memory pressure on Docling and PyMuPDF parsers.
+4. **Unit Tests ([`backend/tests/test_compressor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_compressor.py))**:
+   - Added unit test suite covering valid digital PDFs, scanned PDFs (verifying >50% compression), corrupted streams, empty bytes, and wrapper APIs.
+   - Updated `test_intake.py` to assert compressed byte mapping and MinIO payload validation.
+
+### Verification
+- `make lint`: **0 errors across 75 source files** (`ruff` + `mypy` strict).
+- `make test`: **251/251 tests passing 100% GREEN in 38.08s**.
+- `npm run build`: **Vite build completed with 0 errors in 910ms**.
+
 
 
 
