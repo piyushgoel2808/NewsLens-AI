@@ -190,6 +190,12 @@ class ModelRegistry:
             "gpt4o": "openai_gpt4o",
             "gpt4o_mini": "openai_gpt4o_mini",
             "anthropic": "anthropic_sonnet",
+            "gemma": "ollama_gemma4_12b",
+            "gemma4": "ollama_gemma4_12b",
+            "gemma4:12b": "ollama_gemma4_12b",
+            "gemma4:26b": "ollama_gemma4_26b",
+            "ollama_gemma4_12b": "ollama_gemma4_12b",
+            "ollama_gemma4_26b": "ollama_gemma4_26b",
         }
         if target_id.lower() in alias_map:
             resolved_id = alias_map[target_id.lower()]
@@ -199,7 +205,16 @@ class ModelRegistry:
                     return provider
 
         # 3. Dynamic provider instantiation based on prefix/content
-        if "gemini" in target_id.lower():
+        if "gemma" in target_id.lower():
+            from app.providers.ollama_provider import OllamaProvider
+
+            m_name = "gemma4:26b" if "26b" in target_id.lower() else "gemma4:12b"
+            return OllamaProvider(
+                model=m_name,
+                base_url=self._settings.ollama_base_url,
+                supports_vision="26b" in target_id.lower(),
+            )
+        elif "gemini" in target_id.lower():
             from app.providers.gemini_provider import GeminiProvider
 
             return GeminiProvider(

@@ -176,7 +176,7 @@ async def run_ingestion_pipeline(
     issue_id: int,
     pdf_bytes: bytes,
     dpi: int = 300,
-    parser_engine: str = "docling",
+    parser_engine: str = "auto",
     minio: MinioStore | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict[str, Any]:
@@ -219,31 +219,50 @@ async def run_ingestion_pipeline(
         issue = issue_res.scalar_one_or_none()
         issue_lang = issue.language if issue else "en"
 
-        # Resolve DocumentLayoutProvider and OCREngine based on parser_engine
-        from app.providers.base import DocumentLayoutProvider, OCREngine
+        # Resolve DocumentLayoutProvider and OCREngine based on parser_engine & task bindings
+        from app.providers.base import DocumentLayoutProvider, OCREngine, VisionModelProvider
         doc_provider: Any = None
+        engine_key = (parser_engine or "auto").strip().lower()
 
-        if parser_engine == "mineru":
+        if engine_key == "mineru":
             from app.providers.mineru_provider import MinerUProvider
             doc_provider = MinerUProvider(lang=issue_lang or "en")
-        elif parser_engine in ("gemini", "gemini_vision"):
+        elif engine_key in ("gemini", "gemini_vision"):
             from app.providers.gemini_provider import GeminiProvider
             doc_provider = GeminiProvider(
                 model="gemini-3.7-flash",
                 api_key=settings.gemini_api_key or settings.google_api_key,
             )
-        elif parser_engine == "tesseract_vlm":
-            doc_provider = None
-        else:
+        elif engine_key == "docling":
             from app.providers.docling_provider import DoclingProvider
             doc_provider = DoclingProvider(lang=issue_lang or "en")
+        elif engine_key in ("tesseract_vlm", "tesseract"):
+            doc_provider = None
+        elif engine_key in ("gemma4", "gemma4:26b", "ollama_gemma4_26b", "vlm", "ollama_vlm"):
+            doc_provider = None  # Handled by LayoutAnalyzer with Gemma 4 Vision
+        else:
+            # "auto" mode: inspect active model registry task bindings
+            try:
+                from app.providers.registry import get_registry
+                bound_prov = get_registry().get_provider("layout_analysis")
+                if isinstance(bound_prov, DocumentLayoutProvider):
+                    doc_provider = bound_prov
+                else:
+                    doc_provider = None
+            except Exception:
+                doc_provider = None
 
         ocr_service = OCRService(
             db=db,
             ocr_engine=doc_provider if isinstance(doc_provider, OCREngine) else None,
             minio=store,
         )
-        layout_analyzer = LayoutAnalyzer()
+        active_provider = (
+            doc_provider
+            if isinstance(doc_provider, (DocumentLayoutProvider, VisionModelProvider))
+            else None
+        )
+        layout_analyzer = LayoutAnalyzer(vision_provider=active_provider)
 
         pages_summary: list[dict[str, Any]] = []
         all_pages_articles: dict[int, list[SegmentedArticle]] = {}

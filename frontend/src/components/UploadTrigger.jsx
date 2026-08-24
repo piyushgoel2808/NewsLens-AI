@@ -30,7 +30,7 @@ export default function UploadTrigger() {
   const [customNewspaperName, setCustomNewspaperName] = useState('');
   const [issueDate, setIssueDate] = useState(''); // empty = auto-detect
   const [edition, setEdition] = useState('morning');
-  const [parserEngine, setParserEngine] = useState('docling');
+  const [parserEngine, setParserEngine] = useState('auto');
   const [forceReingest, setForceReingest] = useState(false);
 
   const [uploadQueue, setUploadQueue] = useState([]);
@@ -414,8 +414,9 @@ export default function UploadTrigger() {
               onChange={(e) => setParserEngine(e.target.value)}
               className="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-medium outline-none focus:border-emerald-400"
             >
-              <option value="docling">📄 Docling (Neural Layout & OCR)</option>
+              <option value="auto">✨ Auto (System Default: Gemma 4 / Bound Provider)</option>
               <option value="gemma4:26b">✨ Gemma 4 (26B Vision & Layout)</option>
+              <option value="docling">📄 Docling (Neural Layout & OCR)</option>
               <option value="mineru">📐 MinerU (Academic & Tables)</option>
               <option value="gemini_vision">✨ Google Gemini Vision</option>
               <option value="tesseract_vlm">💻 Local VLM + Tesseract</option>

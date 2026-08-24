@@ -77,8 +77,8 @@ async def upload_newspaper_document(
     edition: str = Form("morning", description="Edition identifier (e.g. 'morning', 'evening')"),
     language: str = Form("en", description="Primary ISO 639-1 language code (e.g. 'en', 'hi')"),
     parser_engine: str = Form(
-        "docling",
-        description="Parser engine: docling, mineru, gemini_vision, tesseract_vlm",
+        "auto",
+        description="Parser engine: auto, gemma4:26b, docling, mineru, gemini, tesseract_vlm",
     ),
     force: bool = Form(False, description="Force re-ingestion if duplicate exists"),
     sync_processing: bool = Form(

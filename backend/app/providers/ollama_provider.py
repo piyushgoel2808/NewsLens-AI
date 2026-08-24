@@ -21,6 +21,8 @@ from app.core.logging import get_logger
 from app.providers.base import (
     Message,
     ModelResponse,
+    OCRBlock,
+    OCRResult,
     ProviderCapability,
     ProviderError,
     ToolCall,
@@ -241,3 +243,46 @@ class OllamaProvider:
             response_schema=response_schema,
             max_tokens=max_tokens,
         )
+
+    async def ocr(
+        self,
+        image_bytes: bytes,
+        lang_hint: str | None = None,
+    ) -> OCRResult:
+        """Run OCR transcription on an image using Ollama VLM or local Tesseract fallback."""
+        if not self._capability.supports_vision:
+            from app.providers.tesseract_ocr import TesseractOCR
+
+            return await TesseractOCR().ocr(image_bytes, lang_hint=lang_hint)
+
+        prompt = (
+            "Transcribe all printed newspaper text accurately from this image. "
+            "Preserve paragraphs, columns, and headings verbatim."
+        )
+        try:
+            resp = await self.analyze_image(image_bytes, prompt=prompt)
+            full_text = resp.text or ""
+            lines = [line.strip() for line in full_text.split("\n") if line.strip()]
+            blocks = [
+                OCRBlock(
+                    text=line,
+                    bbox=(0.0, float(i * 20), 1000.0, float((i + 1) * 20)),
+                    confidence=0.95,
+                    language=lang_hint or "en",
+                )
+                for i, line in enumerate(lines)
+            ]
+            return OCRResult(
+                blocks=blocks,
+                full_text=full_text,
+                mean_confidence=0.95 if blocks else 0.0,
+                language=lang_hint or "en",
+            )
+        except Exception as e:
+            logger.warning(
+                "Ollama VLM OCR failed, falling back to Tesseract",
+                extra={"model": self._model, "error": str(e)},
+            )
+            from app.providers.tesseract_ocr import TesseractOCR
+
+            return await TesseractOCR().ocr(image_bytes, lang_hint=lang_hint)

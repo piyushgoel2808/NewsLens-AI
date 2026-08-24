@@ -126,6 +126,22 @@ class RedisSettings(BaseModel):
 
 
 DEFAULT_PROVIDERS = {
+    "ollama_gemma4_26b": ProviderConfig(
+        provider="ollama",
+        model="gemma4:26b",
+        base_url="http://localhost:11434",
+        context_window=128000,
+        supports_vision=True,
+        supports_tool_use=True,
+    ),
+    "ollama_gemma4_12b": ProviderConfig(
+        provider="ollama",
+        model="gemma4:12b",
+        base_url="http://localhost:11434",
+        context_window=128000,
+        supports_vision=False,
+        supports_tool_use=True,
+    ),
     "ollama_chat": ProviderConfig(
         provider="ollama",
         model="llama3.2:3b",
@@ -154,6 +170,11 @@ DEFAULT_PROVIDERS = {
         provider="tesseract",
         lang="eng+hin",
     ),
+    "docling_parser": ProviderConfig(
+        provider="docling",
+        lang="en+hi",
+        supports_vision=True,
+    ),
     "mineru_parser": ProviderConfig(
         provider="mineru",
         lang="en+hi",
@@ -162,15 +183,15 @@ DEFAULT_PROVIDERS = {
 }
 
 DEFAULT_TASK_BINDINGS = {
-    "query_planner": "ollama_chat",
-    "answerer": "ollama_chat",
-    "layout_analysis": "mineru_parser",
-    "document_parser": "mineru_parser",
-    "article_segmentation": "ollama_chat",
-    "metadata_extraction": "ollama_chat",
-    "classification": "ollama_chat",
+    "layout_analysis": "ollama_gemma4_26b",
+    "document_parser": "ollama_gemma4_26b",
+    "ocr": "ollama_gemma4_26b",
     "embedding": "local_embed_bge",
-    "ocr": "mineru_parser",
+    "query_planner": "ollama_gemma4_12b",
+    "answerer": "ollama_gemma4_12b",
+    "metadata_extraction": "ollama_gemma4_26b",
+    "classification": "ollama_gemma4_26b",
+    "article_segmentation": "ollama_gemma4_26b",
 }
 
 

@@ -156,6 +156,8 @@ class AnswerSynthesizer:
 
         # 2. Resilient failover sequence from active registry
         failover_keys = [
+            "ollama_gemma4_12b",
+            "ollama_gemma4_26b",
             "groq_compound",
             "gemini_flash",
             "groq_qwen",
