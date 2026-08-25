@@ -414,12 +414,9 @@ export default function UploadTrigger() {
               onChange={(e) => setParserEngine(e.target.value)}
               className="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-medium outline-none focus:border-emerald-400"
             >
-              <option value="auto">✨ Auto (System Default: Gemma 4 / Bound Provider)</option>
-              <option value="gemma4:26b">✨ Gemma 4 (26B Vision & Layout)</option>
-              <option value="docling">📄 Docling (Neural Layout & OCR)</option>
-              <option value="mineru">📐 MinerU (Academic & Tables)</option>
-              <option value="gemini_vision">✨ Google Gemini Vision</option>
-              <option value="tesseract_vlm">💻 Local VLM + Tesseract</option>
+              <option value="auto">✨ Auto (Google Cloud Vision Pure OCR + DeepSeek-R1 / Gemma 4)</option>
+              <option value="google_cloud_vision">🔍 Google Cloud Vision API (Pure OCR Engine)</option>
+              <option value="gemma4:26b">🦙 Local Ollama Gemma 4 (26B)</option>
             </select>
           </div>
         </div>

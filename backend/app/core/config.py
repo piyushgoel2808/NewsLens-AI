@@ -126,6 +126,33 @@ class RedisSettings(BaseModel):
 
 
 DEFAULT_PROVIDERS = {
+    "gemini_vision": ProviderConfig(
+        provider="gemini",
+        model="gemini-3.7-flash",
+        context_window=1000000,
+        supports_vision=True,
+        supports_tool_use=True,
+    ),
+    "gemini_flash": ProviderConfig(
+        provider="gemini",
+        model="gemini-3.7-flash",
+        context_window=1000000,
+        supports_vision=False,
+        supports_tool_use=True,
+    ),
+    "google_cloud_vision": ProviderConfig(
+        provider="google_cloud_vision",
+        supports_vision=True,
+        supports_tool_use=False,
+    ),
+    "ollama_deepseek": ProviderConfig(
+        provider="ollama",
+        model="deepseek-r1:14b",
+        base_url="http://localhost:11434",
+        context_window=65536,
+        supports_vision=False,
+        supports_tool_use=True,
+    ),
     "ollama_gemma4_26b": ProviderConfig(
         provider="ollama",
         model="gemma4:26b",
@@ -148,13 +175,6 @@ DEFAULT_PROVIDERS = {
         base_url="http://localhost:11434",
         supports_tool_use=True,
     ),
-    "ollama_vlm": ProviderConfig(
-        provider="ollama",
-        model="qwen2.5vl:7b",
-        base_url="http://localhost:11434",
-        supports_vision=True,
-        supports_tool_use=True,
-    ),
     "ollama_embed": ProviderConfig(
         provider="ollama",
         model="nomic-embed-text",
@@ -166,32 +186,18 @@ DEFAULT_PROVIDERS = {
         model="BAAI/bge-m3",
         embedding_dim=1024,
     ),
-    "tesseract_ocr": ProviderConfig(
-        provider="tesseract",
-        lang="eng+hin",
-    ),
-    "docling_parser": ProviderConfig(
-        provider="docling",
-        lang="en+hi",
-        supports_vision=True,
-    ),
-    "mineru_parser": ProviderConfig(
-        provider="mineru",
-        lang="en+hi",
-        supports_vision=True,
-    ),
 }
 
 DEFAULT_TASK_BINDINGS = {
-    "layout_analysis": "ollama_gemma4_26b",
-    "document_parser": "ollama_gemma4_26b",
-    "ocr": "ollama_gemma4_26b",
+    "layout_analysis": "google_cloud_vision",
+    "document_parser": "google_cloud_vision",
+    "ocr": "google_cloud_vision",
     "embedding": "local_embed_bge",
     "query_planner": "ollama_gemma4_12b",
     "answerer": "ollama_gemma4_12b",
-    "metadata_extraction": "ollama_gemma4_26b",
-    "classification": "ollama_gemma4_26b",
-    "article_segmentation": "ollama_gemma4_26b",
+    "metadata_extraction": "ollama_gemma4_12b",
+    "classification": "ollama_gemma4_12b",
+    "article_segmentation": "ollama_gemma4_12b",
 }
 
 
@@ -261,12 +267,16 @@ class Settings(BaseSettings):
     # --- Ollama ---
     ollama_base_url: str = "http://localhost:11434"
 
-    # --- API Keys (hosted providers — optional) ---
+    # --- API Keys & GCP Credentials (hosted providers — optional) ---
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     google_api_key: str | None = None
+    google_application_credentials: str | None = None
+    gcp_service_account_key: str | None = None
+    gcp_service_account_json: str | None = None
+    gcp_project_id: str | None = None
     voyage_api_key: str | None = None
     hf_token: str | None = None
     huggingface_token: str | None = None
@@ -277,6 +287,9 @@ class Settings(BaseSettings):
         "anthropic_api_key",
         "openai_api_key",
         "google_api_key",
+        "google_application_credentials",
+        "gcp_service_account_key",
+        "gcp_service_account_json",
         "voyage_api_key",
         "qdrant_api_key",
         "hf_token",

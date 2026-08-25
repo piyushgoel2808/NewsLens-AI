@@ -278,7 +278,7 @@ class TestGeminiProvider:
     def test_raises_without_api_key(self) -> None:
         from app.providers.gemini_provider import GeminiProvider
 
-        with pytest.raises(ProviderError, match="API key is required"):
+        with pytest.raises(ProviderError, match="credentials are required|API key is required"):
             GeminiProvider(model="gemini-3.7-flash", api_key=None)
 
     @pytest.mark.asyncio

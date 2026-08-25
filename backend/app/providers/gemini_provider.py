@@ -135,6 +135,67 @@ OCR_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
+def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
+    """Clean a Pydantic JSON schema so it strictly complies with Google Gemini API requirements.
+
+    Gemini's REST API enforces an OpenAPI 3.0 schema subset and rejects:
+    - Top-level or nested '$defs' and 'definitions'
+    - '$ref' references (must be inlined)
+    - '$schema', 'title', 'default', 'additionalProperties'
+    - 'anyOf' / 'oneOf' with null types (must convert to nullable or primary type)
+    """
+    defs: dict[str, Any] = {}
+    if "$defs" in schema and isinstance(schema["$defs"], dict):
+        defs.update(schema["$defs"])
+    if "definitions" in schema and isinstance(schema["definitions"], dict):
+        defs.update(schema["definitions"])
+
+    def _resolve(node: Any) -> Any:
+        if isinstance(node, list):
+            return [_resolve(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        # If it's a $ref, dereference it from definitions/$defs
+        if "$ref" in node:
+            ref_path = str(node["$ref"])  # e.g., "#/$defs/ArticleSkeleton" or "#/definitions/Foo"
+            ref_key = ref_path.split("/")[-1]
+            if ref_key in defs:
+                resolved = defs[ref_key].copy()
+                return _resolve(resolved)
+            return {"type": "object"}
+
+        cleaned: dict[str, Any] = {}
+        for k, v in node.items():
+            # Strip unsupported metadata keywords
+            if k in (
+                "$defs",
+                "definitions",
+                "$ref",
+                "$schema",
+                "title",
+                "default",
+                "additionalProperties",
+            ):
+                continue
+
+            # Simplify anyOf / oneOf patterns created by Optional[T] / Union[T, None]
+            if k in ("anyOf", "oneOf") and isinstance(v, list):
+                non_nulls = [item for item in v if isinstance(item, dict) and item.get("type") != "null"]
+                if len(non_nulls) == 1:
+                    # Single concrete type + null -> flatten directly into the parent
+                    resolved_child = _resolve(non_nulls[0])
+                    if isinstance(resolved_child, dict):
+                        cleaned.update(resolved_child)
+                    continue
+
+            cleaned[k] = _resolve(v)
+
+        return cleaned
+
+    return _resolve(schema)
+
+
 def _normalize_box(
     box: list[float] | tuple[float, ...], width_px: int, height_px: int
 ) -> tuple[float, float, float, float]:
@@ -169,16 +230,49 @@ def _normalize_box(
 
 
 class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvider, OCREngine):
-    """Hosted LLM, Vision, OCR, and Document Layout provider backed by Google Gemini API."""
+    """Hosted LLM, Vision, OCR, and Document Layout provider backed by Google Gemini API or Vertex AI."""
 
-    def __init__(self, model: str = "gemini-3.7-flash", api_key: str | None = None) -> None:
-        if not api_key:
-            raise ProviderError(
-                "Google Gemini API key is required. "
-                "Set GOOGLE_API_KEY or GEMINI_API_KEY in your .env file."
-            )
+    def __init__(
+        self,
+        model: str = "gemini-3.7-flash",
+        api_key: str | None = None,
+        service_account_info: dict[str, Any] | str | None = None,
+    ) -> None:
         self._model = model.replace("models/", "") if model else "gemini-3.7-flash"
         self._api_key = api_key
+        self._sa_credentials: Any = None
+
+        # Try setting up Service Account credentials if provided
+        if service_account_info:
+            try:
+                from google.oauth2 import service_account
+
+                if isinstance(service_account_info, str):
+                    if service_account_info.strip().startswith("{"):
+                        info = json.loads(service_account_info)
+                        self._sa_credentials = service_account.Credentials.from_service_account_info(
+                            info,
+                            scopes=["https://www.googleapis.com/auth/generative-language", "https://www.googleapis.com/auth/cloud-platform"]
+                        )
+                    else:
+                        self._sa_credentials = service_account.Credentials.from_service_account_file(
+                            service_account_info,
+                            scopes=["https://www.googleapis.com/auth/generative-language", "https://www.googleapis.com/auth/cloud-platform"]
+                        )
+                elif isinstance(service_account_info, dict):
+                    self._sa_credentials = service_account.Credentials.from_service_account_info(
+                        service_account_info,
+                        scopes=["https://www.googleapis.com/auth/generative-language", "https://www.googleapis.com/auth/cloud-platform"]
+                    )
+            except Exception as e:
+                logger.warning("Failed to initialize GCP Service Account credentials in GeminiProvider", extra={"error": str(e)})
+
+        if not self._api_key and not self._sa_credentials:
+            raise ProviderError(
+                "Google Gemini API key or GCP Service Account credentials are required. "
+                "Set GOOGLE_API_KEY, GEMINI_API_KEY, or GCP_SERVICE_ACCOUNT_KEY in your .env file."
+            )
+
         self._capability = ProviderCapability(
             supports_vision=True,
             supports_tool_use=True,
@@ -186,6 +280,21 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
             supports_structured_output=True,
             context_window=1000000,
         )
+
+    def _get_auth_headers_and_params(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Return headers and query params for authentication."""
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        params: dict[str, str] = {}
+
+        if self._sa_credentials:
+            import google.auth.transport.requests
+            request = google.auth.transport.requests.Request()
+            self._sa_credentials.refresh(request)
+            headers["Authorization"] = f"Bearer {self._sa_credentials.token}"
+        elif self._api_key:
+            params["key"] = self._api_key
+
+        return headers, params
 
     @property
     def capability(self) -> ProviderCapability:
@@ -280,7 +389,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         }
         if response_schema:
             generation_config["responseMimeType"] = "application/json"
-            generation_config["responseSchema"] = response_schema
+            generation_config["responseSchema"] = _clean_schema_for_gemini(response_schema)
 
         payload: dict[str, Any] = {
             "contents": contents,
@@ -297,14 +406,16 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
                 model_candidates.append(fb)
 
         last_error: Exception | None = None
+        headers, params = self._get_auth_headers_and_params()
         for m in model_candidates:
-            url = f"{GEMINI_API_BASE}/{m}:generateContent?key={self._api_key}"
+            url = f"{GEMINI_API_BASE}/{m}:generateContent"
             async with httpx.AsyncClient(timeout=60.0) as client:
                 try:
                     res = await client.post(
                         url,
+                        params=params,
                         json=payload,
-                        headers={"Content-Type": "application/json"},
+                        headers=headers,
                     )
                 except Exception as e:
                     last_error = e
@@ -477,18 +588,19 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         }
         if response_schema:
             generation_config["responseMimeType"] = "application/json"
-            generation_config["responseSchema"] = response_schema
+            generation_config["responseSchema"] = _clean_schema_for_gemini(response_schema)
 
         payload: dict[str, Any] = {
             "contents": contents,
             "generationConfig": generation_config,
         }
 
-        url = f"{GEMINI_API_BASE}/{self._model}:generateContent?key={self._api_key}"
+        url = f"{GEMINI_API_BASE}/{self._model}:generateContent"
+        headers, params = self._get_auth_headers_and_params()
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             res = await client.post(
-                url, json=payload, headers={"Content-Type": "application/json"}
+                url, params=params, json=payload, headers=headers
             )
 
         if res.status_code != 200:

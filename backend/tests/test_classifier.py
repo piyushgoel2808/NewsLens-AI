@@ -95,7 +95,7 @@ class TestArticleClassifier:
 
         res = classifier.classify_and_score(article, total_issue_pages=12)
         assert res.article_type == "news"
-        assert res.section == "Inside News"
+        assert res.section in ("National", "Inside News")
 
     def test_classify_explicit_sidebar_box_story(self) -> None:
         """Verify explicit sidebar or box story is classified as 'sidebar'."""

@@ -102,21 +102,12 @@ async def update_model_bindings(
 
 @router.post("/model-bindings/reset", summary="Reset task-provider bindings to system defaults")
 async def reset_model_bindings() -> dict[str, Any]:
-    """Reset task model bindings back to default Gemma 4 configuration."""
+    """Reset task model bindings back to default configuration."""
+    from app.core.config import DEFAULT_TASK_BINDINGS
     settings = get_settings()
     model_cfg = settings.load_model_config()
 
-    default_bindings = {
-        "layout_analysis": "ollama_gemma4_26b",
-        "document_parser": "ollama_gemma4_26b",
-        "ocr": "ollama_gemma4_26b",
-        "embedding": "local_embed_bge",
-        "query_planner": "ollama_gemma4_12b",
-        "answerer": "ollama_gemma4_12b",
-        "metadata_extraction": "ollama_gemma4_26b",
-        "classification": "ollama_gemma4_26b",
-        "article_segmentation": "ollama_gemma4_26b",
-    }
+    default_bindings = dict(DEFAULT_TASK_BINDINGS)
 
     # Ensure all default providers exist or fall back safely
     for task, provider_id in default_bindings.items():

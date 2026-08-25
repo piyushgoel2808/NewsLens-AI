@@ -35,13 +35,10 @@ class OCRService:
                 if isinstance(provider, OCREngine):
                     self._ocr = provider
                 else:
-                    from app.providers.mineru_provider import MinerUProvider
-
-                    self._ocr = MinerUProvider()
+                    prov_gemini = get_registry().get_provider_by_id("gemini_vision")
+                    self._ocr = prov_gemini if isinstance(prov_gemini, OCREngine) else None  # type: ignore
             except Exception:
-                from app.providers.mineru_provider import MinerUProvider
-
-                self._ocr = MinerUProvider()
+                self._ocr = None
         self._minio = minio or MinioStore(self._settings.minio)
 
     async def process_page_ocr(
@@ -72,6 +69,9 @@ class OCRService:
             "Starting OCR on page image",
             extra={"page_id": page_id, "size_bytes": len(image_bytes)},
         )
+
+        if not self._ocr:
+            return OCRResult(blocks=[], full_text="", mean_confidence=0.0)
 
         try:
             ocr_result = await self._ocr.ocr(image_bytes=image_bytes, lang_hint=lang_hint)

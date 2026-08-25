@@ -194,11 +194,14 @@ class MetadataExtractor:
         article_id: int,
         headline: str,
         full_text: str,
+        pre_extracted_entities: list[ExtractedEntity] | None = None,
+        pre_extracted_topics: list[ExtractedTopic] | None = None,
+        pre_extracted_summary: str | None = None,
     ) -> ArticleMetadataResult:
-        """Extract all metadata and synchronize relational entity and topic tables."""
-        entities = self.extract_entities_from_text(full_text, headline=headline)
-        topics = self.extract_topics_from_text(full_text, headline=headline)
-        summary = self.generate_summary(full_text, headline=headline)
+        """Extract or persist metadata and synchronize relational entity and topic tables."""
+        entities = pre_extracted_entities or self.extract_entities_from_text(full_text, headline=headline)
+        topics = pre_extracted_topics or self.extract_topics_from_text(full_text, headline=headline)
+        summary = pre_extracted_summary or self.generate_summary(full_text, headline=headline)
 
         # 1. Update Article summary
         art_stmt = select(Article).where(Article.id == article_id)

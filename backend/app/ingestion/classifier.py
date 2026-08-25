@@ -21,8 +21,11 @@ from dataclasses import dataclass
 
 from app.core.logging import get_logger
 from app.ingestion.cross_page_assembler import AssembledArticle
+from app.models.article import _ARTICLE_TYPES
 
 logger = get_logger(__name__)
+
+_VALID_TYPES = set(_ARTICLE_TYPES)
 
 EDITORIAL_KEYWORDS = re.compile(
     r"\b(?:editorial|opinion|commentary|op-ed|column|letters\s+to\s+the\s+editor|perspective|viewpoint)\b",
@@ -65,8 +68,11 @@ class ArticleClassifier:
         self,
         article: AssembledArticle,
         total_issue_pages: int = 1,
+        vlm_section: str | None = None,
+        vlm_article_type: str | None = None,
+        vlm_prominence: str | None = None,
     ) -> ClassificationResult:
-        """Classify article type and compute prominence score."""
+        """Classify article type and compute prominence score with VLM guidance."""
         headline = (article.headline or "").strip()
         body = (article.full_text or "").strip()
         combined_text = f"{headline}\n{body}"
@@ -74,92 +80,97 @@ class ArticleClassifier:
         # 1. Determine Article Type
         if headline.upper().startswith("[ADVERTISEMENT]") or headline.upper().startswith(
             "[PUBLIC NOTICE]"
-        ):
+        ) or ADVERTISEMENT_KEYWORDS.search(combined_text[:400]):
             article_type = "advertisement"
             section = "Advertisements & Notices"
+        elif vlm_article_type and vlm_article_type in _VALID_TYPES:
+            article_type = vlm_article_type
+            section = vlm_section or ("Opinion & Editorial" if article_type in ("editorial", "opinion") else "National")
         elif EDITORIAL_KEYWORDS.search(headline) or (
             article.primary_page_number in (2, 4)
             and EDITORIAL_KEYWORDS.search(combined_text[:300])
         ):
             article_type = "editorial"
             section = "Opinion & Editorial"
-        elif ADVERTISEMENT_KEYWORDS.search(combined_text[:400]):
-            article_type = "advertisement"
-            section = "Advertisements & Notices"
         elif len(TABLE_PATTERNS.findall(body)) > 15 and article.word_count < 400:
             article_type = "table_content"
             section = "Markets & Data"
         elif article.word_count < 40 and not headline:
             article_type = "photo_caption"
-            section = "Graphics"
+            section = "Life & Culture"
         elif (
             headline.upper().startswith("[SIDEBAR]")
             or headline.upper().startswith("[BOX]")
             or SIDEBAR_KEYWORDS.search(headline)
         ):
             article_type = "sidebar"
-            section = "General News" if article.primary_page_number == 1 else "Inside News"
+            section = vlm_section or ("Front Page" if article.primary_page_number == 1 else "National")
         elif headline.upper().startswith("[SHORTS]"):
             article_type = "news"
             section = "News Briefs"
         else:
             article_type = "news"
-            sub = (article.subheadline or "").lower()
-            editorial_kws = ("our view", "my view", "their view", "column", "curator", "quick edit")
-            if any(k in sub for k in editorial_kws):
-                article_type = "editorial"
-                section = "Opinion & Editorial"
-            elif any(k in sub for k in ("mark to market", "plain facts")):
-                section = "Markets & Data"
-            elif "economy" in sub or "policy" in sub:
-                section = "Economy & Policy"
-            elif "deal" in sub or "tech" in sub or "startup" in sub:
-                section = "Deals, Tech & Startups"
-            elif "corporate" in sub or "company" in sub or "companies" in sub:
-                section = "Corporate"
-            elif "global" in sub or "world" in sub:
-                section = "Global"
-            elif "money" in sub or "ask mint" in sub or "power point" in sub:
-                section = "Personal Finance"
-            elif "life" in sub or "culture" in sub:
-                section = "Life & Culture"
+            if vlm_section:
+                section = vlm_section
             else:
-                section = "General News" if article.primary_page_number == 1 else "Inside News"
+                sub = (article.subheadline or "").lower()
+                editorial_kws = ("our view", "my view", "their view", "column", "curator", "quick edit")
+                if any(k in sub for k in editorial_kws):
+                    article_type = "editorial"
+                    section = "Opinion & Editorial"
+                elif any(k in sub for k in ("mark to market", "plain facts")):
+                    section = "Markets & Data"
+                elif "economy" in sub or "policy" in sub:
+                    section = "Economy & Policy"
+                elif "deal" in sub or "tech" in sub or "startup" in sub:
+                    section = "Deals, Tech & Startups"
+                elif "corporate" in sub or "company" in sub or "companies" in sub:
+                    section = "Corporate & Industry"
+                elif "global" in sub or "world" in sub:
+                    section = "International"
+                elif "money" in sub or "ask mint" in sub or "power point" in sub:
+                    section = "Personal Finance"
+                elif "life" in sub or "culture" in sub:
+                    section = "Life & Culture"
+                else:
+                    section = "Front Page" if article.primary_page_number == 1 else "National"
 
         # 2. Compute Prominence Score (0.0 to 1.0)
-        # Factor A: Page Placement (Page 1 is most prominent)
-        if article.primary_page_number == 1:
-            page_score = 0.50
-        elif article.primary_page_number in (2, 3):
-            page_score = 0.30
+        tier_map = {"lead": 0.90, "major": 0.70, "standard": 0.50, "minor": 0.30, "filler": 0.15}
+        if vlm_prominence and vlm_prominence in tier_map:
+            prominence_score = tier_map[vlm_prominence]
         else:
-            page_score = 0.15
+            # Heuristic calculation
+            if article.primary_page_number == 1:
+                page_score = 0.50
+            elif article.primary_page_number in (2, 3):
+                page_score = 0.30
+            else:
+                page_score = 0.15
 
-        # Factor B: Word Count Score (up to 0.25)
-        wc = article.word_count
-        if wc > 800:
-            wc_score = 0.25
-        elif wc > 400:
-            wc_score = 0.20
-        elif wc > 200:
-            wc_score = 0.15
-        elif wc > 80:
-            wc_score = 0.10
-        else:
-            wc_score = 0.05
+            wc = article.word_count
+            if wc > 800:
+                wc_score = 0.25
+            elif wc > 400:
+                wc_score = 0.20
+            elif wc > 200:
+                wc_score = 0.15
+            elif wc > 80:
+                wc_score = 0.10
+            else:
+                wc_score = 0.05
 
-        # Factor C: Headline Scale & Cross-Page Span (up to 0.25)
-        span_score = 0.05 * len(article.pages_mapping)
-        headline_score = 0.15 if len(headline) > 30 else 0.05
-        headline_factor = min(0.25, headline_score + span_score)
+            span_score = 0.05 * len(article.pages_mapping)
+            headline_score = 0.15 if len(headline) > 30 else 0.05
+            headline_factor = min(0.25, headline_score + span_score)
 
-        raw_prominence = page_score + wc_score + headline_factor
-        if article_type in ("advertisement", "photo_caption"):
-            raw_prominence *= 0.40
-        elif article_type in ("sidebar", "table_content"):
-            raw_prominence *= 0.70
+            raw_prominence = page_score + wc_score + headline_factor
+            if article_type in ("advertisement", "photo_caption"):
+                raw_prominence *= 0.40
+            elif article_type in ("sidebar", "table_content", "table_data"):
+                raw_prominence *= 0.70
 
-        prominence_score = round(max(0.05, min(1.0, raw_prominence)), 2)
+            prominence_score = round(max(0.05, min(1.0, raw_prominence)), 2)
 
         return ClassificationResult(
             article_type=article_type,

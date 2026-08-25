@@ -58,6 +58,8 @@ out/
 *.pem
 *.key
 *.crt
+service-account*.json
+*service-account*.json
 secrets/
 model_config.local.yaml    # Local overrides to model_config.yaml
 .claude-flow/

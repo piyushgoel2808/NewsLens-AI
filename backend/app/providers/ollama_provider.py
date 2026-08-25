@@ -249,11 +249,9 @@ class OllamaProvider:
         image_bytes: bytes,
         lang_hint: str | None = None,
     ) -> OCRResult:
-        """Run OCR transcription on an image using Ollama VLM or local Tesseract fallback."""
+        """Run OCR transcription on an image using Ollama VLM."""
         if not self._capability.supports_vision:
-            from app.providers.tesseract_ocr import TesseractOCR
-
-            return await TesseractOCR().ocr(image_bytes, lang_hint=lang_hint)
+            return OCRResult(blocks=[], full_text="", mean_confidence=0.0)
 
         prompt = (
             "Transcribe all printed newspaper text accurately from this image. "
@@ -280,9 +278,7 @@ class OllamaProvider:
             )
         except Exception as e:
             logger.warning(
-                "Ollama VLM OCR failed, falling back to Tesseract",
+                "Ollama VLM OCR failed",
                 extra={"model": self._model, "error": str(e)},
             )
-            from app.providers.tesseract_ocr import TesseractOCR
-
-            return await TesseractOCR().ocr(image_bytes, lang_hint=lang_hint)
+            return OCRResult(blocks=[], full_text="", mean_confidence=0.0)

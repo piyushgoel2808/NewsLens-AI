@@ -82,6 +82,7 @@ class ModelRegistry:
             return GeminiProvider(
                 model=model or "gemini-3.7-flash",
                 api_key=self._settings.gemini_api_key or self._settings.google_api_key,
+                service_account_info=self._settings.gcp_service_account_json or self._settings.gcp_service_account_key,
             )
         elif provider_type == "anthropic":
             return AnthropicProvider(
@@ -93,21 +94,20 @@ class ModelRegistry:
                 model=model,
                 api_key=self._settings.openai_api_key,
             )
+        elif provider_type in ("google_cloud_vision", "gcp_vision", "google_vision"):
+            from app.providers.google_vision_provider import GoogleCloudVisionOCR
+
+            return GoogleCloudVisionOCR(
+                service_account_info=self._settings.gcp_service_account_json or self._settings.gcp_service_account_key,
+                api_key=self._settings.google_api_key or self._settings.gemini_api_key,
+            )
         elif provider_type == "local_sentence_transformers":
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
-        elif provider_type in ("docling", "docling_parser"):
-            from app.providers.docling_provider import DoclingProvider
-
-            return DoclingProvider(lang=cfg.lang or "en")
-        elif provider_type in ("mineru", "magic_pdf", "tesseract"):
-            from app.providers.mineru_provider import MinerUProvider
-
-            return MinerUProvider(lang=cfg.lang or "en")
         else:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
-                "Supported: ollama, groq, gemini, anthropic, openai, "
-                "local_sentence_transformers, docling, mineru"
+                "Supported: gemini, google_cloud_vision, ollama, groq, anthropic, openai, "
+                "local_sentence_transformers"
             )
 
     def get_provider(self, task: str) -> AnyProvider:

@@ -218,3 +218,23 @@ def extract_newspaper_and_date_consensus(
     finally:
         if doc is not None:
             doc.close()
+
+
+class ConsensusExtractor:
+    """Class wrapper for multi-page consensus extraction."""
+
+    def __init__(self, max_pages: int = 15) -> None:
+        self.max_pages = max_pages
+
+    def extract_consensus(
+        self,
+        pdf_bytes: bytes,
+        filename: str | None = None,
+        existing_newspaper_names: list[str] | None = None,
+    ) -> tuple[str | None, date | None, dict[str, Any]]:
+        return extract_newspaper_and_date_consensus(
+            pdf_bytes=pdf_bytes,
+            max_pages=self.max_pages,
+            existing_newspaper_names=existing_newspaper_names,
+            filename=filename,
+        )

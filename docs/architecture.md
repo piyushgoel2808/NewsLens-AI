@@ -40,9 +40,9 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence System** for historica
 | **Vector Database** | Qdrant | Dense vector search with cosine similarity and metadata payload filtering |
 | **Object Store** | MinIO / AWS S3 | Rasterized page PNGs, cropped photo crops, and original PDF storage |
 | **Cache & Lock** | Redis 7 | Query caching, heavy-LLM timeline caching (1-hr TTL), rate limiting |
-| **Document Parsers** | IBM Docling, MinerU, Google Gemini VLM, PyMuPDF | Multimodal document layout analysis, table extraction, and 2D reading order |
-| **OCR Engines** | Gemini 2.5/Flash, RapidOCR, Tesseract | High-precision newspaper text and bbox transcription |
-| **LLM Reasoning** | Groq (Compound, Qwen), Gemini, OpenAI, Ollama | Multi-provider failover chain for planning, condensation, and synthesis |
+| **Document Parsers** | IBM Docling, MinerU, Google Cloud Vision, Google Gemini VLM, PyMuPDF | Multimodal document layout analysis, table extraction, and 2D reading order |
+| **OCR Engines** | Google Cloud Vision API (`DOCUMENT_TEXT_DETECTION`), Gemini 2.5/Flash, RapidOCR, Tesseract | High-precision newspaper text and bbox transcription with 98%+ confidence |
+| **LLM Reasoning** | Groq (Compound, Qwen), Gemini, OpenAI, Ollama (Gemma 4, Llama 3) | Multi-provider failover chain for planning, condensation, and synthesis |
 | **Embedding Models** | BAAI/bge-m3 (1024-dim), nomic-embed-text, OpenAI | Dense semantic representation for hybrid search |
 
 ---
@@ -50,11 +50,14 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence System** for historica
 ## 3. Core Subsystems
 
 ### A. Document Ingestion Pipeline (`backend/app/ingestion/`)
-1. **Intake & Rasterization**: Uploads broadsheet PDFs, stores originals in MinIO, renders high-DPI page images via PyMuPDF.
-2. **Layout Parsing**: Segment pages into discrete reading nodes using IBM Docling, MinerU, or Google Gemini Vision.
-3. **2D Reading Order**: Topological geometric sorting ensures column continuation without text bleeding.
-4. **Article Debundling & Metadata**: Merges multi-page jumps, extracts kickers, headlines, bylines, and section classifications.
-5. **Embedding & Indexing**: Generates 1024-dim dense vectors via BAAI/bge-m3 into Qdrant and updates MySQL FULLTEXT.
+1. **Intake & Rasterization**: Uploads broadsheet PDFs, optimizes lossless compression via PyMuPDF (`fitz`), stores originals in MinIO, renders high-DPI page images.
+2. **Multi-Page Consensus Metadata**: Extracts and cross-validates masthead title and publication date across up to 15 pages to eliminate OCR anomalies.
+3. **Layout & OCR Extraction**:
+   - **Google Cloud Vision OCR**: High-accuracy `DOCUMENT_TEXT_DETECTION` (single API call per page) with spatial block segmentation and word-level bounding box extraction.
+   - **Local VLM (Ollama Gemma 4 / Qwen)**: Grammar-constrained structured JSON layout parsing with automatic reasoning-tag pruning.
+   - **Self-Healing Fallback**: Automatically cascades from local/hosted VLM failures to Google Cloud Vision OCR layout.
+4. **2D Reading Order & Debundling**: Topological geometric sorting ensures column continuation without text bleeding, merges multi-page jumps, and rejects noisy boilerplate.
+5. **Embedding & Indexing**: Generates 1024-dim dense vectors via BAAI/bge-m3 into Qdrant with dual-index sync in MySQL `FULLTEXT`.
 
 ### B. Agentic Retrieval & Reasoning Engine (`backend/app/agent/`)
 - **Query Condenser (`condenser.py`)**: Coreference resolution across dialog turns. Detects in-context meta-queries (`"which newspaper was this from?"`) to bypass vector search and answer directly from citations.
@@ -73,7 +76,7 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence System** for historica
 All model providers implement structural subtyping via Python `Protocol` interfaces:
 - `ChatModelProvider`: `GroqProvider`, `GeminiProvider`, `OpenAIProvider`, `OllamaProvider`
 - `EmbeddingProvider`: `LocalEmbeddingProvider` (bge-m3), `OpenAIProvider`
-- `VisionModelProvider`: `GeminiProvider`, `OllamaProvider` (qwen2.5vl)
-- `DocumentLayoutProvider` & `OCREngine`: `DoclingProvider`, `MinerUProvider`, `GeminiProvider`, `TesseractOCR`
+- `VisionModelProvider`: `GoogleCloudVisionOCR`, `GeminiProvider`, `OllamaProvider` (gemma4:26b, qwen2.5vl)
+- `DocumentLayoutProvider` & `OCREngine`: `GoogleCloudVisionOCR`, `DoclingProvider`, `MinerUProvider`, `GeminiProvider`, `TesseractOCR`
 
-Configured declaratively in `model_config.yaml` with zero application code changes required.
+Configured declaratively in `model_config.yaml` with runtime zero-downtime swapping via `/api/settings/model-bindings`.

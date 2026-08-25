@@ -54,4 +54,4 @@ async def test_get_and_update_model_bindings() -> None:
         reset_data = reset_resp.json()
         assert reset_data["status"] == "reset_to_default"
         assert reset_data["task_bindings"]["query_planner"] == "ollama_gemma4_12b"
-        assert reset_data["task_bindings"]["layout_analysis"] == "ollama_gemma4_26b"
+        assert reset_data["task_bindings"]["layout_analysis"] == "google_cloud_vision"

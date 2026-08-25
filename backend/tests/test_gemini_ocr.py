@@ -167,3 +167,21 @@ class TestGeminiOCRAndLayout:
             assert result.nodes[3].node_type == "image"
             assert result.nodes[3].photo_data is not None
             assert result.nodes[3].photo_data.caption == "BSE CEO rings the opening bell."
+
+    def test_clean_schema_for_gemini(self) -> None:
+        """Verify _clean_schema_for_gemini dereferences $defs and removes invalid keywords."""
+        from app.ingestion.extraction_schemas import PageLayoutExtraction
+        from app.providers.gemini_provider import _clean_schema_for_gemini
+
+        raw_schema = PageLayoutExtraction.model_json_schema()
+        assert "$defs" in raw_schema
+
+        cleaned = _clean_schema_for_gemini(raw_schema)
+        assert "$defs" not in cleaned
+        assert "$ref" not in str(cleaned)
+        assert "properties" in cleaned
+        assert "articles" in cleaned["properties"]
+        assert "items" in cleaned["properties"]["articles"]
+        assert "properties" in cleaned["properties"]["articles"]["items"]
+        assert "headline" in cleaned["properties"]["articles"]["items"]["properties"]
+

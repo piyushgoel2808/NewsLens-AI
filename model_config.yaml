@@ -47,16 +47,6 @@ providers:
     supports_vision: false
     supports_tool_use: false
     embedding_dim: 1024
-  docling_parser:
-    provider: docling
-    supports_vision: false
-    supports_tool_use: false
-    lang: en+hi
-  mineru_parser:
-    provider: mineru
-    supports_vision: false
-    supports_tool_use: false
-    lang: en+hi
   ollama_gemma4_26b:
     provider: ollama
     model: gemma4:26b
@@ -71,23 +61,15 @@ providers:
     context_window: 128000
     supports_vision: false
     supports_tool_use: true
-  groq_compound:
-    provider: groq
-    model: groq/compound
-    context_window: 128000
-    supports_vision: false
-    supports_tool_use: true
-  groq_qwen:
-    provider: groq
-    model: qwen/qwen3.6-27b
-    context_window: 128000
-    supports_vision: false
-    supports_tool_use: true
-  groq_gpt_oss:
-    provider: groq
-    model: openai/gpt-oss-120b
-    context_window: 128000
-    supports_vision: false
+  google_cloud_vision:
+    provider: google_cloud_vision
+    supports_vision: true
+    supports_tool_use: false
+  gemini_vision:
+    provider: gemini
+    model: gemini-3.7-flash
+    context_window: 1000000
+    supports_vision: true
     supports_tool_use: true
   gemini_flash:
     provider: gemini
@@ -120,12 +102,12 @@ providers:
     supports_tool_use: false
     embedding_dim: 3072
 task_bindings:
-  layout_analysis: ollama_gemma4_26b
-  document_parser: ollama_gemma4_26b
-  ocr: ollama_gemma4_26b
+  layout_analysis: google_cloud_vision
+  document_parser: google_cloud_vision
+  ocr: google_cloud_vision
   embedding: local_embed_bge
   query_planner: ollama_gemma4_12b
   answerer: ollama_gemma4_12b
-  metadata_extraction: ollama_gemma4_26b
-  classification: ollama_gemma4_26b
-  article_segmentation: ollama_gemma4_26b
+  metadata_extraction: ollama_gemma4_12b
+  classification: ollama_gemma4_12b
+  article_segmentation: ollama_gemma4_12b
