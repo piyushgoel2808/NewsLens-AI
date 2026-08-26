@@ -127,7 +127,27 @@ def test_json_repair_with_thought_tags_and_fences():
     assert len(layout.articles) == 1
     assert layout.articles[0].headline == "Markets Surge on GDP Optimism"
     assert layout.articles[0].bbox == [10.5, 20.5, 300.0, 400.0]
-    assert layout.articles[0].prominence == "lead"
+def test_repair_truncated_json_mid_sentence():
+    """Verify recovery when LLM abruptly stops generating mid-sentence/mid-array."""
+    truncated_raw = (
+        '{"page_number": 2, "newspaper_brand": "Business Standard", "issue_date": "2024-07-29", '
+        '"printed_page_number": "2", "is_advertisement_page": true, '
+        '"articles": ['
+        '{"headline": "First Valid Article", "bbox": [10.0, 10.0, 200.0, 300.0], "prominence": "lead"}, '
+        '{"headline": "[Advertisement] ODISHA FOOD'
+    )
+    parsed = UnifiedExtractor._repair_and_parse_json(truncated_raw)
+    assert parsed is not None
+    assert parsed.get("page_number") == 2
+    assert parsed.get("newspaper_brand") == "Business Standard"
+    assert len(parsed.get("articles", [])) == 1
+    assert parsed["articles"][0]["headline"] == "First Valid Article"
+
+    # Test normalization on recovered JSON
+    layout = UnifiedExtractor._normalize_and_validate_layout(parsed, page_number=2)
+    assert layout.page_number == 2
+    assert len(layout.articles) == 1
+    assert layout.articles[0].headline == "First Valid Article"
 
 
 def test_unified_extractor_engine_resolution():

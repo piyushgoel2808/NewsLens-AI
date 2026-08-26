@@ -1656,23 +1656,25 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 **Status**: Completed ✅
 
 ### What was built
-1. **Ollama Grammar-Constrained JSON Sampling ([`backend/app/providers/ollama_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/ollama_provider.py))**:
+1. **Ollama Grammar-Constrained JSON Sampling & Context Window Expansion ([`backend/app/providers/ollama_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/ollama_provider.py))**:
+   - Configured `num_ctx: max(max_tokens * 2, 16384)` and `num_predict: max_tokens` in Ollama options to prevent mid-stream token exhaustion caused by high-resolution image prompts.
    - Added native `format=response_schema` (with graceful fallback to `format="json"`) directly into the Ollama `chat()` API call, activating Ollama's grammar-constrained token sampling engine.
    - Built automatic reasoning/thinking tag pruner stripping `<thought>...</thought>` and `<think>...</think>` tokens before parsing.
-2. **Resilient Article Normalization & JSON Repair ([`backend/app/ingestion/unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/unified_extractor.py))**:
+2. **Surgical Truncated JSON Auto-Closer & Article Normalization ([`backend/app/ingestion/unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/unified_extractor.py))**:
+   - Implemented `_repair_truncated_json`: when a local LLM stops mid-sentence/mid-array (e.g. `{"headline": "[Advertisement] ODISHA FOOD...`), the parser trims the unclosed trailing fragment, balances brackets/braces (`...}]}`), and preserves all completed preceding articles cleanly.
    - Implemented `_normalize_and_validate_layout`: cleans, coerces coordinates, and validates individual articles per-item so minor schema imperfections do not discard the entire page extraction.
-   - Strengthened `_repair_and_parse_json` to extract JSON from embedded markdown fences or multiline thought blocks.
-3. **Live Verification on Real Broadsheet PDF**:
-   - Executed live inference using local `gemma4:26b` on `BS English Delhi ²⁵⁰⁷²⁰²⁶.pdf` (Page 1).
-   - Extracted 25 discrete articles and columns directly using Ollama without triggering the Google Cloud Vision fallback.
+3. **Live Verification on Multi-Page Broadsheet PDF**:
+   - Executed live inference using local `gemma4:26b` on `BS English Delhi ²⁵⁰⁷²⁰²⁶.pdf`:
+     - **Page 1**: Extracted 25 discrete articles and columns directly without fallback.
+     - **Page 2**: Extracted 9 discrete articles directly using expanded `num_ctx` and truncated array recovery.
 4. **Unit Tests & QA Suite**:
+   - Added `test_repair_truncated_json_mid_sentence` in [`backend/tests/test_unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_unified_extractor.py).
    - Added `test_complete_with_response_schema_and_thought_stripping` in [`backend/tests/test_providers.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_providers.py).
-   - Added `test_json_repair_with_thought_tags_and_fences` in [`backend/tests/test_unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_unified_extractor.py).
 
 ### Verification
 - `make lint`: **0 errors across 77 source files** (`ruff` + `mypy` strict).
-- `make test`: **256/256 tests passing 100% GREEN in 61.20s**.
-- Live Ollama Gemma 4 extraction on `BS English Delhi ²⁵⁰⁷²⁰²⁶.pdf` verified (25 articles extracted directly).
+- `make test`: **257/257 tests passing 100% GREEN in 65.09s**.
+- Live Ollama Gemma 4 extraction on `BS English Delhi ²⁵⁰⁷²⁰²⁶.pdf` verified (Pages 1 & 2 extracted cleanly).
 
 
 

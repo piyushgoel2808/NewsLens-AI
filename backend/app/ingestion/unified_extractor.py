@@ -149,7 +149,17 @@ class UnifiedExtractor:
             except Exception:
                 pass
 
-        # 5. Structural repair: fix unclosed strings, trailing commas, unclosed brackets
+        # 5. Specialized recovery for truncated JSON arrays/objects (cut off mid-sentence)
+        truncated_repaired = UnifiedExtractor._repair_truncated_json(text)
+        if truncated_repaired:
+            try:
+                res = json.loads(truncated_repaired)
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                pass
+
+        # 6. Structural repair: fix unclosed strings, trailing commas, unclosed brackets
         repaired = text
         if repaired.count('"') % 2 != 0:
             repaired += '"'
@@ -191,6 +201,45 @@ class UnifiedExtractor:
                         continue
             logger.warning("All JSON repair attempts failed on raw model output", extra={"snippet": raw_text[:200]})
             return None
+
+    @staticmethod
+    def _repair_truncated_json(text: str) -> str | None:
+        """Surgically repair JSON string truncated mid-stream by dropping unclosed trailing elements."""
+        if not text:
+            return None
+
+        # Look for the last complete item inside an array (e.g. `},` or `}`)
+        # Case 1: Incomplete element in articles array: "...articles": [{...}, {... <cut off here>"
+        last_obj_close = text.rfind("}")
+        if last_obj_close > 0:
+            candidate = text[: last_obj_close + 1]
+            # Check if there is an unclosed array before this
+            open_sq = candidate.count("[") - candidate.count("]")
+            open_cur = candidate.count("{") - candidate.count("}")
+            if open_sq > 0:
+                candidate += "]" * open_sq
+            if open_cur > 0:
+                candidate += "}" * open_cur
+            try:
+                json.loads(candidate)
+                return candidate
+            except Exception:
+                pass
+
+        # Case 2: Array was opened but not a single object was finished: "...articles": [{"headline": "..."
+        last_arr_open = text.rfind("[")
+        if last_arr_open > 0:
+            candidate = text[:last_arr_open] + "[]"
+            open_cur = candidate.count("{") - candidate.count("}")
+            if open_cur > 0:
+                candidate += "}" * open_cur
+            try:
+                json.loads(candidate)
+                return candidate
+            except Exception:
+                pass
+
+        return None
 
     @staticmethod
     def _normalize_and_validate_layout(parsed: dict[str, Any], page_number: int) -> PageLayoutExtraction:

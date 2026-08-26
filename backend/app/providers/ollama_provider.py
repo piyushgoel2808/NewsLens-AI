@@ -129,10 +129,13 @@ class OllamaProvider:
             messages = [system_injection, *messages]
 
         ollama_messages = self._to_ollama_messages(messages)
+        # Ensure sufficient context window for multimodal images + JSON schema generation
+        ctx_size = max(max_tokens * 2, 16384)
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": ollama_messages,
             "options": {
+                "num_ctx": ctx_size,
                 "num_predict": max_tokens,
                 "temperature": temperature,
             },
