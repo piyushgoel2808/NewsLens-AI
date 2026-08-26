@@ -110,6 +110,34 @@ class TestOllamaProvider:
             call_kwargs: dict[str, Any] = mock_client.chat.call_args.kwargs
             assert "tools" in call_kwargs
 
+    @pytest.mark.asyncio
+    async def test_complete_with_response_schema_and_thought_stripping(self) -> None:
+        with patch("app.providers.ollama_provider.ollama") as mock_ollama:
+            mock_client = AsyncMock()
+            mock_ollama.AsyncClient.return_value = mock_client
+            thought_text = '<thought>Thinking about JSON schema</thought>{"status": "ok", "count": 5}'
+            mock_client.chat.return_value = MagicMock(
+                message=MagicMock(content=thought_text, tool_calls=None),
+                prompt_eval_count=15,
+                eval_count=12,
+                model="gemma4:26b",
+            )
+            provider = OllamaProvider(model="gemma4:26b")
+            schema = {"type": "object", "properties": {"status": {"type": "string"}}}
+            response = await provider.complete(
+                [Message(role="user", content="Analyze layout")],
+                response_schema=schema,
+            )
+
+            # Check format argument was passed
+            call_kwargs: dict[str, Any] = mock_client.chat.call_args.kwargs
+            assert "format" in call_kwargs
+            assert call_kwargs["format"] == schema
+
+            # Check thought was stripped from response.text
+            assert "<thought>" not in response.text
+            assert response.parsed == {"status": "ok", "count": 5}
+
     def test_vision_capability_set_for_vl_models(self) -> None:
         provider = OllamaProvider(model="qwen2.5vl:7b")
         assert provider.capability.supports_vision is True

@@ -1648,6 +1648,32 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 - `make test`: **254/254 tests passing 100% GREEN in 57.78s**.
 - Live ingestion verified with 30-page broadsheet (`Business Standard`) completing with full vector chunking, metadata extraction, and dual-index persistence.
 
+---
+
+## Local Ollama (Gemma / Qwen) Structured JSON Hardening & Robust Layout Extraction
+
+**Date**: 2026-08-26  
+**Status**: Completed ✅
+
+### What was built
+1. **Ollama Grammar-Constrained JSON Sampling ([`backend/app/providers/ollama_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/ollama_provider.py))**:
+   - Added native `format=response_schema` (with graceful fallback to `format="json"`) directly into the Ollama `chat()` API call, activating Ollama's grammar-constrained token sampling engine.
+   - Built automatic reasoning/thinking tag pruner stripping `<thought>...</thought>` and `<think>...</think>` tokens before parsing.
+2. **Resilient Article Normalization & JSON Repair ([`backend/app/ingestion/unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/unified_extractor.py))**:
+   - Implemented `_normalize_and_validate_layout`: cleans, coerces coordinates, and validates individual articles per-item so minor schema imperfections do not discard the entire page extraction.
+   - Strengthened `_repair_and_parse_json` to extract JSON from embedded markdown fences or multiline thought blocks.
+3. **Live Verification on Real Broadsheet PDF**:
+   - Executed live inference using local `gemma4:26b` on `BS English Delhi ²⁵⁰⁷²⁰²⁶.pdf` (Page 1).
+   - Extracted 25 discrete articles and columns directly using Ollama without triggering the Google Cloud Vision fallback.
+4. **Unit Tests & QA Suite**:
+   - Added `test_complete_with_response_schema_and_thought_stripping` in [`backend/tests/test_providers.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_providers.py).
+   - Added `test_json_repair_with_thought_tags_and_fences` in [`backend/tests/test_unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_unified_extractor.py).
+
+### Verification
+- `make lint`: **0 errors across 77 source files** (`ruff` + `mypy` strict).
+- `make test`: **256/256 tests passing 100% GREEN in 61.20s**.
+- Live Ollama Gemma 4 extraction on `BS English Delhi ²⁵⁰⁷²⁰²⁶.pdf` verified (25 articles extracted directly).
+
 
 
 

@@ -118,8 +118,11 @@ class UnifiedExtractor:
         if not raw_text or not raw_text.strip():
             return None
 
-        text = raw_text.strip()
-        # Strip markdown fences if present
+        # 1. Strip reasoning / thinking tokens (<thought>...</thought>, <think>...</think>)
+        cleaned = re.sub(r"<(thought|think)>.*?</\1>", "", raw_text, flags=re.DOTALL).strip()
+        text = cleaned or raw_text.strip()
+
+        # 2. Strip markdown fences if present
         if text.startswith("```json"):
             text = text[7:]
         elif text.startswith("```"):
@@ -128,23 +131,26 @@ class UnifiedExtractor:
             text = text[:-3]
         text = text.strip()
 
-        # 1. Direct standard parse
+        # 3. Direct standard parse
         try:
-            return json.loads(text)
+            res = json.loads(text)
+            if isinstance(res, dict):
+                return res
         except Exception:
             pass
 
-        # 2. Extract outermost JSON object or array
+        # 4. Extract outermost JSON object or array
         match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group(1))
+                res = json.loads(match.group(1))
+                if isinstance(res, dict):
+                    return res
             except Exception:
                 pass
 
-        # 3. Structural repair: fix unclosed strings, trailing commas, unclosed brackets
+        # 5. Structural repair: fix unclosed strings, trailing commas, unclosed brackets
         repaired = text
-        # If unclosed quote at the end
         if repaired.count('"') % 2 != 0:
             repaired += '"'
 
@@ -161,7 +167,9 @@ class UnifiedExtractor:
             repaired += "}" * open_braces
 
         try:
-            return json.loads(repaired)
+            res = json.loads(repaired)
+            if isinstance(res, dict):
+                return res
         except Exception:
             # Try progressively dropping truncated tokens from the end
             for end_idx in [repaired.rfind(","), repaired.rfind("{"), repaired.rfind("[")]:
@@ -176,11 +184,70 @@ class UnifiedExtractor:
                     if o_braces > 0:
                         sub += "}" * o_braces
                     try:
-                        return json.loads(sub)
+                        res = json.loads(sub)
+                        if isinstance(res, dict):
+                            return res
                     except Exception:
                         continue
             logger.warning("All JSON repair attempts failed on raw model output", extra={"snippet": raw_text[:200]})
             return None
+
+    @staticmethod
+    def _normalize_and_validate_layout(parsed: dict[str, Any], page_number: int) -> PageLayoutExtraction:
+        """Sanitize and softly normalize individual articles rather than discarding the whole page."""
+        parsed["page_number"] = page_number
+        raw_articles = parsed.get("articles")
+        if not isinstance(raw_articles, list):
+            parsed["articles"] = []
+            return PageLayoutExtraction.model_validate(parsed)
+
+        valid_articles: list[dict[str, Any]] = []
+        for art in raw_articles:
+            if not isinstance(art, dict):
+                continue
+            headline = str(art.get("headline") or "").strip()
+            if not headline:
+                headline = "News Item"
+
+            # Normalize bounding box [ymin, xmin, ymax, xmax]
+            raw_bbox = art.get("bbox")
+            bbox: list[float] = [0.0, 0.0, 1000.0, 1000.0]
+            if isinstance(raw_bbox, list) and len(raw_bbox) == 4:
+                try:
+                    bbox = [float(x) for x in raw_bbox]
+                except (ValueError, TypeError):
+                    bbox = [0.0, 0.0, 1000.0, 1000.0]
+
+            prominence = str(art.get("prominence") or "standard").lower()
+            if prominence not in ("lead", "major", "standard", "minor", "filler"):
+                prominence = "standard"
+
+            art_type = str(art.get("article_type") or "news").lower()
+            if art_type not in (
+                "news", "editorial", "sidebar", "advertisement",
+                "photo_caption", "table_data", "index", "teaser", "unknown"
+            ):
+                art_type = "news"
+
+            section = str(art.get("section") or "National").title()
+
+            valid_articles.append({
+                "headline": headline,
+                "subheadline": art.get("subheadline"),
+                "byline": art.get("byline"),
+                "body_text": art.get("body_text"),
+                "article_type": art_type,
+                "section": section,
+                "prominence": prominence,
+                "bbox": bbox,
+                "continues_to_page": art.get("continues_to_page"),
+                "continued_from_page": art.get("continued_from_page"),
+                "has_table": bool(art.get("has_table", False)),
+                "has_photo": bool(art.get("has_photo", False)),
+            })
+
+        parsed["articles"] = valid_articles
+        return PageLayoutExtraction.model_validate(parsed)
 
     # ---------------------------------------------------------------------------
     # Phase 1: Page Layout & Skeleton Extraction
@@ -216,9 +283,7 @@ class UnifiedExtractor:
                     parsed = self._repair_and_parse_json(resp.text)
 
                 if parsed and isinstance(parsed, dict):
-                    # Guarantee page_number is preserved
-                    parsed["page_number"] = page_number
-                    return PageLayoutExtraction.model_validate(parsed)
+                    return self._normalize_and_validate_layout(parsed, page_number)
 
             except Exception as e:
                 logger.warning(

@@ -96,6 +96,40 @@ def test_json_repair_and_parse():
     assert parsed3.get("page_number") == 1
 
 
+def test_json_repair_with_thought_tags_and_fences():
+    """Verify reasoning/thinking tags (<thought>, <think>) are cleanly stripped."""
+    thought_output = """
+    <thought>
+    Let's analyze the image layout.
+    I can see two articles on page 1.
+    </thought>
+    ```json
+    {
+        "page_number": 1,
+        "newspaper_brand": "Business Standard",
+        "articles": [
+            {
+                "headline": "Markets Surge on GDP Optimism",
+                "bbox": ["10.5", "20.5", "300.0", "400.0"],
+                "prominence": "lead"
+            }
+        ]
+    }
+    ```
+    """
+    parsed = UnifiedExtractor._repair_and_parse_json(thought_output)
+    assert parsed is not None
+    assert parsed.get("newspaper_brand") == "Business Standard"
+
+    # Test normalization and validation
+    layout = UnifiedExtractor._normalize_and_validate_layout(parsed, page_number=1)
+    assert layout.page_number == 1
+    assert len(layout.articles) == 1
+    assert layout.articles[0].headline == "Markets Surge on GDP Optimism"
+    assert layout.articles[0].bbox == [10.5, 20.5, 300.0, 400.0]
+    assert layout.articles[0].prominence == "lead"
+
+
 def test_unified_extractor_engine_resolution():
     """Verify UnifiedExtractor resolves google_cloud_vision and gemma engines correctly."""
     # Engine name passed explicitly
@@ -110,4 +144,5 @@ def test_unified_extractor_engine_resolution():
     extractor_auto = UnifiedExtractor(engine_name="auto")
     prov_auto = extractor_auto._get_provider()
     assert prov_auto.provider_name == "google_cloud_vision"
+
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -136,18 +137,40 @@ class OllamaProvider:
                 "temperature": temperature,
             },
         }
+        if response_schema:
+            # Pass native response_schema to Ollama for grammar-constrained decoding
+            kwargs["format"] = response_schema
         if tools:
             kwargs["tools"] = self._to_ollama_tools(tools)
 
         try:
             response = await self._client.chat(**kwargs)
         except ollama.ResponseError as e:
-            raise ProviderError(f"Ollama API error: {e}") from e
+            # If Ollama server rejects complex schema dictionary, fallback to format="json"
+            if response_schema and "format" in kwargs and kwargs["format"] != "json":
+                try:
+                    kwargs["format"] = "json"
+                    response = await self._client.chat(**kwargs)
+                except Exception:
+                    raise ProviderError(f"Ollama API error: {e}") from e
+            else:
+                raise ProviderError(f"Ollama API error: {e}") from e
         except Exception as e:
-            raise ProviderError(f"Ollama request failed: {e}") from e
+            if response_schema and "format" in kwargs and kwargs["format"] != "json":
+                try:
+                    kwargs["format"] = "json"
+                    response = await self._client.chat(**kwargs)
+                except Exception:
+                    raise ProviderError(f"Ollama request failed: {e}") from e
+            else:
+                raise ProviderError(f"Ollama request failed: {e}") from e
 
         latency_ms = round((time.monotonic() - t0) * 1000)
-        text: str = response.message.content or ""
+        raw_text: str = response.message.content or ""
+
+        # Strip reasoning / thinking tokens (e.g. <thought>...</thought>, <think>...</think>)
+        cleaned_text = re.sub(r"<(thought|think)>.*?</\1>", "", raw_text, flags=re.DOTALL).strip()
+        text = cleaned_text or raw_text
 
         # Parse structured output if requested
         parsed: Any | None = None
@@ -155,10 +178,18 @@ class OllamaProvider:
             try:
                 parsed = json.loads(text.strip())
             except json.JSONDecodeError:
-                logger.warning(
-                    "Failed to parse structured JSON from Ollama response",
-                    extra={"model": self._model, "text_preview": text[:200]},
-                )
+                # Attempt regex recovery if direct json.loads fails
+                match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
+                if match:
+                    try:
+                        parsed = json.loads(match.group(1))
+                    except Exception:
+                        pass
+                if not parsed:
+                    logger.warning(
+                        "Failed to parse structured JSON from Ollama response",
+                        extra={"model": self._model, "text_preview": text[:200]},
+                    )
 
         # Extract tool calls if present
         tool_calls: list[ToolCall] = []
