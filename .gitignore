@@ -101,6 +101,7 @@ celery_*.pid
 *.bak
 *.tmp
 .aider*
+.serena/
 demo/
 *.pdf
 !backend/tests/fixtures/*.pdf
