@@ -1676,6 +1676,30 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 - `make test`: **257/257 tests passing 100% GREEN in 65.09s**.
 - Live Ollama Gemma 4 extraction on `BS English Delhi ²⁵⁰⁷²⁰²⁶.pdf` verified (Pages 1 & 2 extracted cleanly).
 
+---
+
+## Repository Cleanup & Architecture Hygiene
+
+**Date**: 2026-08-27  
+**Status**: Completed ✅
+
+### What was removed & sorted
+1. **Dead Frontend Components**:
+   - Removed `frontend/src/components/StreamTester.jsx` (standalone diagnostic prototype with 0 inbound references, superseded by `AgentAssistant.jsx`).
+2. **Obsolete Scripts**:
+   - Removed `scripts/setup_docling_local.py` (legacy setup script referencing deleted `DoclingProvider`).
+3. **Build & Infrastructure Cleanup**:
+   - Cleaned `setup-docling` target from `Makefile`.
+   - Added `.serena/` to `.gitignore`.
+   - Purged local `backend/debug_output/` artifact dumps.
+4. **Archive Safeguard & PR**:
+   - Preserved pre-cleanup snapshot at `archive/pre-cleanup-snapshot`.
+   - Created clean branch `chore/file-cleanup` and opened Pull Request [#1](https://github.com/piyushgoel2808/NewsLens-AI/pull/1).
+
+### Verification
+- `make test`: **257/257 tests passing 100% GREEN**.
+- `npm run build`: **Vite build completed with 0 errors in 988ms**.
+
 
 
 
