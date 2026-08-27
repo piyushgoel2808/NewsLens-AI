@@ -652,7 +652,7 @@ class ArticleSegmenter:
             counter += len(briefs)
         articles = debundled_articles
 
-        # Pillar 3: Minimum Structural Thresholds & Orphan Snippet Absorption Pass
+        # Pillar 3: Minimum Structural Thresholds & Non-Destructive Orphan Snippet Absorption
         consolidated: list[SegmentedArticle] = []
         for art in articles:
             full_c = (
@@ -669,7 +669,7 @@ class ArticleSegmenter:
                 and art.body_text != art.headline
                 and len(art.body_text.split()) >= 4
             )
-            is_shorts = art.headline.startswith("[Shorts]") and w_count >= 15
+            is_shorts = art.headline.startswith("[Shorts]") and w_count >= 8
             is_ad = (
                 art.headline.startswith("[Advertisement]")
                 or art.headline.startswith("[Public Notice]")
@@ -684,7 +684,8 @@ class ArticleSegmenter:
                 or (w_count >= MIN_ARTICLE_WORD_COUNT)
             )
 
-            if not is_valid_structured_article and consolidated:
+            # Restrict merging: Absorb if not a valid structured article and below minimum standalone threshold (< 15 words)
+            if not is_valid_structured_article and w_count < 15 and consolidated:
                 prev = consolidated[-1]
                 prev.body_text += f"\n\n{full_c}"
                 prev.bbox_list.extend(art.bbox_list)
@@ -699,27 +700,21 @@ class ArticleSegmenter:
                 consolidated.append(art)
 
         if consolidated:
-            # If first article is an orphan snippet, merge forward into next
+            # If first article is a tiny non-sentence fragment (< 6 words), merge forward
             if len(consolidated) > 1:
                 first = consolidated[0]
                 first_has_valid_hl = bool(
                     first.headline and is_valid_headline_candidate(first.headline)
                 )
-                first_has_body = bool(
-                    first.body_text
-                    and first.body_text != first.headline
-                    and len(first.body_text.split()) >= 4
-                )
                 first_is_valid = (
                     (first.is_teaser and first.jump_to_page is not None)
-                    or (first.headline.startswith("[Shorts]") and first.word_count >= 15)
+                    or (first.headline.startswith("[Shorts]") and first.word_count >= 8)
                     or (first.headline.startswith("[Advertisement]"))
-                    or (first_has_valid_hl and first_has_body and first.word_count >= 10)
-                    or (first_has_valid_hl and first.word_count >= 15)
+                    or (first_has_valid_hl and first.word_count >= 8)
                     or (first.word_count >= MIN_ARTICLE_WORD_COUNT)
                 )
 
-                if not first_is_valid:
+                if not first_is_valid and first.word_count < 6:
                     first = consolidated.pop(0)
                     second = consolidated[0]
                     first_c = (
@@ -738,14 +733,14 @@ class ArticleSegmenter:
                     second.word_count = len(second_c.split())
             articles = consolidated
 
-        # Final Purge: Drop any remaining standalone fragment / boilerplate stub < 25 words
+        # Final Purge: Keep valid structured articles, shorts, ads, and substantial items
         valid_final_articles: list[SegmentedArticle] = []
         for art in articles:
             is_ad = art.headline.startswith(
                 ("[Advertisement]", "[Public Notice]")
             )
             is_valid_teaser = bool(art.is_teaser and art.jump_to_page is not None)
-            is_shorts = art.headline.startswith("[Shorts]") and art.word_count >= 15
+            is_shorts = art.headline.startswith("[Shorts]") and art.word_count >= 8
             is_substantial = (
                 is_valid_headline_candidate(art.headline)
                 and art.word_count >= 6
@@ -783,11 +778,7 @@ class ArticleSegmenter:
         page_number: int,
         start_idx: int,
     ) -> list[SegmentedArticle]:
-        """Debundle a 'Shorts' or 'News in Brief' column cluster into distinct child articles.
-
-        Performs vertical bounding box slicing based on line/character span so that
-        each debundled short gets a dedicated, non-overlapping bounding box.
-        """
+        """Debundle a 'Shorts', datelined capsules, or 'News in Brief' column cluster into distinct child articles."""
         full_text = (
             f"{art.headline}\n\n{art.body_text}".strip()
             if art.headline != art.body_text
@@ -799,36 +790,47 @@ class ArticleSegmenter:
         is_shorts_hl = bool(
             re.search(
                 r"(?i)\b(?:SHORTS|IN BRIEF|BRIEFS|ROUNDUP|NEWS IN BRIEF|"
-                r"PLAIN FACTS|MARKET BRIEFS|QUICK READS|CHART OF THE DAY)\b",
+                r"PLAIN FACTS|MARKET BRIEFS|QUICK READS|CHART OF THE DAY|IN FOCUS|CITY BRIEFS)\b",
                 art.headline,
             )
         )
 
-        # Look for bullet/slug split markers: •, ▪, ►, ■, bold slugs (e.g. SLUG:), or numbered items
+        # Look for bullet/slug split markers or Datelines: NEW DELHI:, MUMBAI —, PTI, etc.
         marker_pattern = re.compile(
-            r"(?:^|\n\s*)(?:[•▪►■\*\–]|\d+\.|\b[A-Z\s]{3,30}:)\s*"
+            r"(?:^|\n\s*)(?:[•▪►■\*\–—]|\d+\.|\b(?:NEW\s+DELHI|MUMBAI|BENGALURU|CHENNAI|KOLKATA|HYDERABAD|WASHINGTON|LONDON|BEIJING|[A-Z\s]{3,25})\s*[:–—\-]\s*|\b[A-Z][A-Z\s]{2,20}\s*[-–—]\s*)\s*"
         )
         matches = list(marker_pattern.finditer(full_text))
+
+        is_feature_explainer = bool(
+            re.search(
+                r"(?i)\b(?:MINT\s+PRIMER|PLAIN\s+FACTS|LONG\s+STORY|EXPLAINER|PRIMER|Q&A)\b",
+                art.headline,
+            )
+            or (art.subheadline and re.search(r"(?i)\b(?:MINT\s+PRIMER|PLAIN\s+FACTS|EXPLAINER|PRIMER)\b", art.subheadline))
+        )
+
+        # Do NOT debundle unified feature explainers or regular articles with bylines
+        if is_feature_explainer or (art.byline_author and not is_shorts_hl):
+            return [art]
 
         if not is_shorts_hl and len(matches) < 2:
             return [art]
 
         # Extract split chunks
+        paras = [p.strip() for p in full_text.split("\n\n") if p.strip()]
         spans: list[tuple[int, int]] = []
-        if matches:
+        if matches and len(matches) >= 2:
             for i in range(len(matches)):
                 start = matches[i].start()
                 end = matches[i + 1].start() if i + 1 < len(matches) else len(full_text)
                 spans.append((start, end))
-        else:
-            paras = [p.strip() for p in full_text.split("\n\n") if p.strip()]
-            if is_shorts_hl and len(paras) >= 2:
-                cur_pos = 0
-                for p in paras:
-                    pos = full_text.find(p, cur_pos)
-                    if pos >= 0:
-                        spans.append((pos, pos + len(p)))
-                        cur_pos = pos + len(p)
+        elif is_shorts_hl and len(paras) >= 2:
+            cur_pos = 0
+            for p in paras:
+                pos = full_text.find(p, cur_pos)
+                if pos >= 0:
+                    spans.append((pos, pos + len(p)))
+                    cur_pos = pos + len(p)
 
         if len(spans) < 2:
             return [art]
@@ -859,7 +861,7 @@ class ArticleSegmenter:
                 continue
 
             words = clean_chunk.split()
-            if len(words) < 15:
+            if len(words) < 8:
                 if debundled:
                     debundled[-1].body_text += f"\n\n{clean_chunk}"
                     debundled[-1].word_count = len(debundled[-1].body_text.split())

@@ -98,9 +98,10 @@ class AgentWorkflow:
             model_override=state.get("model_override"),
         )
 
-        plan_res = self._planner.plan_query(
+        plan_res = await self._planner.plan_query_async(
             condensed_query,
             enable_web_search=state.get("enable_web_search", False),
+            model_override=state.get("model_override"),
         )
 
         planned_calls = [
@@ -267,6 +268,8 @@ class AgentWorkflow:
                             issue_date=args.get("issue_date"),
                             issue_id=args.get("issue_id"),
                             page_filter=page_filter,
+                            exclude_page_filter=args.get("exclude_page_filter"),
+                            category_filter=args.get("category_filter"),
                         )
                         if "error" in summary:
                             summary_str = summary["error"]

@@ -8,12 +8,13 @@ Extracts:
 - Human reading order sequences.
 """
 
-from __future__ import annotations
-
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -23,6 +24,7 @@ from app.ingestion.detector import (
     is_title_case_or_uppercase,
     sanitize_block_text,
 )
+from app.ingestion.geometry import BBox
 from app.ingestion.reading_order import (
     BlockType,
     LayoutElement,
@@ -41,16 +43,57 @@ from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
 
+
+def _load_newspaper_rules() -> dict[str, Any]:
+    """Load configurable newspaper layout rules and vocabularies from YAML."""
+    rule_path = Path(__file__).resolve().parent.parent / "core" / "newspaper_rules.yaml"
+    if rule_path.exists():
+        try:
+            with rule_path.open(encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as ex:
+            logger.warning("Could not parse newspaper_rules.yaml, using defaults", extra={"error": str(ex)})
+    return {}
+
+
+_NEWSPAPER_RULES = _load_newspaper_rules()
+
+_SPONSOR_KEYWORDS = _NEWSPAPER_RULES.get("sponsor_and_boilerplate_keywords", [
+    "jm financial", "axis capital", "icici securities", "kfin technologies",
+    "link intime", "kotak mahindra capital", "sbi capital markets", "dam capital",
+    "equirus", "motilal oswal", "nomura financial", "jefferies", "citigroup global",
+    "morgan stanley", "goldman sachs", "hdfc bank limited", "asba",
+    "applications supported by blocked amount", "book running lead managers",
+    "registrar to the issue", "sebi registration", "corporate identity number",
+    "registered office", "compliance officer", "company secretary", "statutory auditor",
+    "red herring prospectus", "initial public offering", "equity shares of face value",
+])
+
+_BRAND_EXCLUSIONS = _NEWSPAPER_RULES.get("brand_exclusion_keywords", [
+    "mint", "livemint", "thinkahead", "think ahead", "think growth", "the hindu",
+    "the times of india", "times of india", "economic times", "business standard",
+    "indian express", "hindustan times", "dainik bhaskar", "epaper", "edition",
+])
+
+_MASTHEAD_KEYWORDS = _NEWSPAPER_RULES.get("masthead_keywords", [
+    "mint", "livemint", "hindu", "the hindu", "times of india", "economic times",
+    "business standard", "indian express", "hindustan times", "dainik bhaskar",
+    "think ahead", "think growth", "epaper", "vol", "volume", "edition",
+])
+
+_SYNDICATION_LIST = _NEWSPAPER_RULES.get("syndication_slugs", [
+    "the wall street journal", "wall street journal", "reuters", "bloomberg",
+    "bloomberg news", "pti", "press trust of india", "afp", "agence france-presse",
+    "ap", "associated press", "financial times", "new york times", "business wire",
+    "pr newswire", "news in numbers", "columns", "inside", "quote of the day",
+    "data bites", "plain facts", "mint primer", "mint curator", "ask mint",
+    "mark to market", "wsj",
+])
+
 SPONSOR_AND_BOILERPLATE_PATTERNS = re.compile(
-    r"(?i)\b(?:jm\s+financial|axis\s+capital|icici\s+securities|kfin\s+technologies|"
-    r"link\s+intime|kotak\s+mahindra\s+capital|sbi\s+capital\s+markets|dam\s+capital|"
-    r"equirus|motilal\s+oswal|nomura\s+financial|jefferies|citigroup\s+global|"
-    r"morgan\s+stanley|goldman\s+sachs|hdfc\s+bank\s+limited|asba|"
-    r"applications\s+supported\s+by\s+blocked\s+amount|book\s+running\s+lead\s+managers|"
-    r"registrar\s+to\s+the\s+issue|cin\s*:\s*[l|u]\d+|sebi\s+registration|"
-    r"corporate\s+identity\s+number|registered\s+office|compliance\s+officer|"
-    r"company\s+secretary|statutory\s+auditor|red\s+herring\s+prospectus|"
-    r"initial\s+public\s+offering|equity\s+shares\s+of\s+face\s+value)\b"
+    r"(?i)\b(?:" + "|".join(re.escape(k) for k in _SPONSOR_KEYWORDS) + r")\b"
 )
 
 DATE_LINE_PATTERN = re.compile(
@@ -62,57 +105,19 @@ DATE_LINE_PATTERN = re.compile(
 )
 
 BRAND_EXCLUSION_KEYWORDS = re.compile(
-    r"(?i)\b(?:mint|livemint|thinkahead|think\s+ahead|think\s+growth|the\s+hindu|"
-    r"the\s+times\s+of\s+india|times\s+of\s+india|economic\s+times|business\s+standard|"
-    r"indian\s+express|hindustan\s+times|dainik\s+bhaskar|epaper|edition)\b"
+    r"(?i)\b(?:" + "|".join(re.escape(k) for k in _BRAND_EXCLUSIONS) + r")\b"
 )
 
 MASTHEAD_KEYWORDS = re.compile(
-    r"(?i)\b(?:mint|livemint|hindu|the\s+hindu|times\s+of\s+india|economic\s+times|"
-    r"business\s+standard|indian\s+express|hindustan\s+times|dainik\s+bhaskar|"
-    r"think\s+ahead|think\s+growth|epaper|vol(?:\.|ume)?\s*\d+|no\s*\d+|edition|"
+    r"(?i)\b(?:" + "|".join(re.escape(k) for k in _MASTHEAD_KEYWORDS) + r"|vol(?:\.|ume)?\s*\d+|no\s*\d+|edition|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"january|february|march|april|may|june|july|august|september|october|november|december|"
     r"page\s*\d+|pg\s*\d+|p\.\s*\d+)\b"
 )
 
-STANDALONE_NOISE_TOKENS = frozenset(
-    {
-        "mint", "livemint", "thinkahead", "think ahead", "asba",
-        "jm financial", "axis capital", "kfin", "nse", "bse",
-    }
-)
+STANDALONE_NOISE_TOKENS = frozenset(set(_BRAND_EXCLUSIONS).union({"asba", "nse", "bse"}))
 
-SYNDICATION_SLUGS = frozenset(
-    {
-        "the wall street journal",
-        "wall street journal",
-        "reuters",
-        "bloomberg",
-        "bloomberg news",
-        "pti",
-        "press trust of india",
-        "afp",
-        "agence france-presse",
-        "ap",
-        "associated press",
-        "financial times",
-        "new york times",
-        "business wire",
-        "pr newswire",
-        "news in numbers",
-        "columns",
-        "inside",
-        "quote of the day",
-        "data bites",
-        "plain facts",
-        "mint primer",
-        "mint curator",
-        "ask mint",
-        "mark to market",
-        "wsj",
-    }
-)
+SYNDICATION_SLUGS = frozenset(_SYNDICATION_LIST)
 
 SYNDICATION_REGEX = re.compile(
     r"^(?:THE\s+)?(?:WALL\s+STREET\s+JOURNAL|REUTERS|BLOOMBERG(?:\s+NEWS)?|PTI|AFP|AP|"
@@ -650,123 +655,114 @@ class LayoutAnalyzer:
         elements: list[LayoutElement],
         page_width: float,
     ) -> list[LayoutElement]:
-        """Merge multi-column sliced headlines that lie on the same horizontal plane."""
+        """Merge multi-column sliced headlines that lie on the same horizontal plane.
+        
+        Optimized to O(N log N) by grouping candidate headline blocks into horizontal baseline bands
+        and merging adjacent left-to-right neighbors in a single pass.
+        """
         if len(elements) <= 1:
             return elements
 
-        elems = list(elements)
-        merged = True
-
         from app.ingestion.detector import check_is_advertisement_text
 
-        while merged:
-            merged = False
-            for i in range(len(elems)):
-                elem_a = elems[i]
-                # Strictly require true headline block types
-                if elem_a.block_type not in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE):
-                    continue
-                if check_is_advertisement_text(elem_a.text):
-                    continue
+        # Separate headlines from other layout elements
+        headline_indices: list[int] = []
+        other_elements: list[LayoutElement] = []
+        for idx, el in enumerate(elements):
+            if el.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE) and not check_is_advertisement_text(el.text):
+                headline_indices.append(idx)
+            else:
+                other_elements.append(el)
 
-                for j in range(len(elems)):
-                    if i == j:
-                        continue
-                    elem_b = elems[j]
-                    if elem_b.block_type not in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE):
-                        continue
-                    if check_is_advertisement_text(elem_b.text):
-                        continue
+        if len(headline_indices) <= 1:
+            return elements
 
-                    # Require A to be physically left of B
-                    ax0, ay0, ax1, ay1 = elem_a.bbox
-                    bx0, by0, bx1, by1 = elem_b.bbox
-                    if bx0 <= ax0:
-                        continue
+        # Extract and sort headline candidates by Y baseline (top), then X (left)
+        headlines = [elements[i] for i in headline_indices]
+        headlines.sort(key=lambda h: (h.bbox[1], h.bbox[0]))
 
-                    ha = max(ay1 - ay0, 1.0)
-                    hb = max(by1 - by0, 1.0)
-                    min_h = min(ha, hb)
-                    max_h = max(ha, hb)
-
-                    # 1. Strict Horizontal Baseline and Vertical Overlap Alignment (<= 10px)
-                    baseline_diff = abs(ay0 - by0)
-                    v_overlap = max(0.0, min(ay1, by1) - max(ay0, by0))
-                    v_overlap_ratio = v_overlap / min_h
-
-                    # 2. Strict X-axis gutter clamp (GUTTER_MIN_WIDTH = 0.012)
-                    gap_x = bx0 - ax1
-                    max_gap_x = page_width * 0.012
-
-                    # 3. Strict Font similarity (<= 15% difference)
-                    font_diff = abs(elem_a.font_size - elem_b.font_size) / max(
-                        elem_a.font_size, elem_b.font_size, 1.0
-                    )
-
-                    # Anti-collision word checks:
-                    words_a = elem_a.text.strip().split()
-                    words_b = elem_b.text.strip().split()
-                    if not words_a or not words_b:
-                        continue
-
-                    # If elem_a ends with terminal punctuation (. ? ! : " ' ”)
-                    if elem_a.text.rstrip().endswith((".", "?", "!", ":", ";", '"', "'", "”")):
-                        continue
-
-                    # Rule 3: If block A and B both contain >= 3 title-cased words and are closed,
-                    # horizontal merging across column tracks is forbidden
-                    is_open_a = is_grammatically_open_headline_fragment(elem_a.text)
-                    is_open_b = bool(
-                        words_b[0][0].islower()
-                        or words_b[0].lower() in CONTINUATION_END_TOKENS
-                    )
-                    last_token_a = words_a[-1].lower().strip(" \t\n\r.:;,")
-                    ends_with_hyphen = elem_a.text.rstrip().endswith(("-", "—", ","))
-                    is_open_connector = bool(
-                        last_token_a in CONTINUATION_END_TOKENS or is_open_a or is_open_b
-                    )
-
-                    if not is_open_connector:
-                        continue
-
-                    # If both have >= 3 words and neither ends with a connector/hyphen
-                    if (
-                        len(words_a) >= 3
-                        and len(words_b) >= 3
-                        and not (ends_with_hyphen or last_token_a in CONTINUATION_END_TOKENS)
-                    ):
-                        continue
-
-                    max_gap_x = max(page_width * 0.035, 35.0)
-
-                    if (
-                        baseline_diff <= min(max_h * 0.15, 10.0)
-                        and v_overlap_ratio >= 0.80
-                        and -5.0 <= gap_x <= max_gap_x
-                        and font_diff <= 0.15
-                    ):
-                        # Merge A and B
-                        elem_a.text = f"{elem_a.text} {elem_b.text}".strip()
-                        elem_a.bbox = (
-                            min(ax0, bx0),
-                            min(ay0, by0),
-                            max(ax1, bx1),
-                            max(ay1, by1),
-                        )
-                        elem_a.font_size = max(elem_a.font_size, elem_b.font_size)
-                        total_width = elem_a.bbox[2] - elem_a.bbox[0]
-                        if total_width >= page_width * 0.50:
-                            elem_a.block_type = BlockType.BANNER_HEADLINE
-                        else:
-                            elem_a.block_type = BlockType.HEADLINE
-
-                        elems.pop(j)
-                        merged = True
-                        break
-                if merged:
+        # Group headlines into horizontal bands (baseline_diff <= 15% height or 12px)
+        bands: list[list[LayoutElement]] = []
+        for h in headlines:
+            placed = False
+            for band in bands:
+                anchor = band[0]
+                ha = max(anchor.bbox[3] - anchor.bbox[1], 1.0)
+                hb = max(h.bbox[3] - h.bbox[1], 1.0)
+                min_h = min(ha, hb)
+                max_h = max(ha, hb)
+                baseline_diff = abs(anchor.bbox[1] - h.bbox[1])
+                v_overlap = max(0.0, min(anchor.bbox[3], h.bbox[3]) - max(anchor.bbox[1], h.bbox[1]))
+                if baseline_diff <= min(max_h * 0.20, 15.0) and (v_overlap / min_h) >= 0.70:
+                    band.append(h)
+                    placed = True
                     break
+            if not placed:
+                bands.append([h])
 
-        return elems
+        # Merge adjacent blocks within each horizontal band
+        merged_headlines: list[LayoutElement] = []
+        for band in bands:
+            # Sort band strictly from left to right by x0
+            band.sort(key=lambda h: h.bbox[0])
+            cur = band[0]
+            for next_hl in band[1:]:
+                box_a = BBox.from_tuple(cur.bbox)
+                box_b = BBox.from_tuple(next_hl.bbox)
+
+                min_h = min(box_a.height, box_b.height)
+                max_h = max(box_a.height, box_b.height)
+                baseline_diff = abs(box_a.y0 - box_b.y0)
+                v_overlap_ratio = box_a.vertical_overlap(box_b) / max(min_h, 1.0)
+
+                gap_x = box_b.x0 - box_a.x1
+                font_diff = abs(cur.font_size - next_hl.font_size) / max(cur.font_size, next_hl.font_size, 1.0)
+
+                words_a = cur.text.strip().split()
+                words_b = next_hl.text.strip().split()
+
+                can_merge = False
+                if words_a and words_b and not cur.text.rstrip().endswith((".", "?", "!", ":", ";", '"', "'", "”")):
+                    is_open_a = is_grammatically_open_headline_fragment(cur.text)
+                    is_open_b = bool(words_b[0][0].islower() or words_b[0].lower() in CONTINUATION_END_TOKENS)
+                    last_token_a = words_a[-1].lower().strip(" \t\n\r.:;,")
+                    ends_with_hyphen = cur.text.rstrip().endswith(("-", "—", ","))
+                    is_open_connector = bool(
+                        last_token_a in CONTINUATION_END_TOKENS
+                        or is_open_a
+                        or is_open_b
+                        or ends_with_hyphen
+                    )
+
+                    if is_open_connector or not (len(words_a) >= 3 and len(words_b) >= 3):
+                        max_gap_x = max(page_width * 0.035, 35.0)
+                        if (
+                            baseline_diff <= min(max_h * 0.15, 10.0)
+                            and v_overlap_ratio >= 0.80
+                            and -5.0 <= gap_x <= max_gap_x
+                            and font_diff <= 0.15
+                        ):
+                            can_merge = True
+
+                if can_merge:
+                    # Merge next_hl into cur
+                    cur.text = f"{cur.text} {next_hl.text}".strip()
+                    cur.bbox = box_a.union(box_b).as_tuple()
+                    cur.font_size = max(cur.font_size, next_hl.font_size)
+                    total_width = cur.bbox[2] - cur.bbox[0]
+                    if total_width >= page_width * 0.50:
+                        cur.block_type = BlockType.BANNER_HEADLINE
+                    else:
+                        cur.block_type = BlockType.HEADLINE
+                else:
+                    merged_headlines.append(cur)
+                    cur = next_hl
+
+            merged_headlines.append(cur)
+
+        result_elems = other_elements + merged_headlines
+        result_elems.sort(key=lambda e: (round(e.bbox[1] / 15.0), e.bbox[0]))
+        return result_elems
 
     def _consolidate_elements(
         self,
@@ -848,12 +844,16 @@ class LayoutAnalyzer:
                 if gap_y > max_v_gap * 2.5:
                     break
 
-                # Column track overlap
-                overlap_x = max(
-                    0.0, min(prev.bbox[2], elem.bbox[2]) - max(prev.bbox[0], elem.bbox[0])
-                )
-                min_w = min(prev.bbox[2] - prev.bbox[0], elem.bbox[2] - elem.bbox[0])
-                is_same_track = bool(min_w > 0 and (overlap_x / min_w) >= 0.50)
+                box_prev = BBox.from_tuple(prev.bbox)
+                box_elem = BBox.from_tuple(elem.bbox)
+
+                # Column track overlap evaluated symmetrically to avoid banner/column bleeding
+                overlap_x = box_prev.horizontal_overlap(box_elem)
+                max_w = max(box_prev.width, box_elem.width)
+                min_w = min(box_prev.width, box_elem.width)
+                width_similarity = (min_w / max_w) if max_w > 0 else 0.0
+                track_overlap_ratio = (overlap_x / max_w) if max_w > 0 else 0.0
+                is_same_track = bool(track_overlap_ratio >= 0.40 or (width_similarity >= 0.70 and (overlap_x / min_w) >= 0.60))
 
                 # HEADING-BOUNDARY BREAK: Stop immediately if an intervening headline is encountered
                 if (
@@ -881,18 +881,12 @@ class LayoutAnalyzer:
                     )
 
                     if (
-                        min_w > 0
-                        and (overlap_x / min_w) >= 0.35
+                        is_same_track
                         and -5.0 <= gap_y <= max_v_gap * 2.0
                         and font_diff <= 0.35
                     ):
                         prev.text = f"{prev.text} {elem.text}".strip()
-                        prev.bbox = (
-                            min(prev.bbox[0], elem.bbox[0]),
-                            min(prev.bbox[1], elem.bbox[1]),
-                            max(prev.bbox[2], elem.bbox[2]),
-                            max(prev.bbox[3], elem.bbox[3]),
-                        )
+                        prev.bbox = box_prev.union(box_elem).as_tuple()
                         prev.font_size = max(prev.font_size, elem.font_size)
                         merged_vertically = True
                         break
@@ -905,8 +899,7 @@ class LayoutAnalyzer:
                     scale_h = (page_height / 1000.0) if page_height else 1.0
                     max_allowed_gap = max(median_lh * 1.6, 20.0 * scale_h)
                     if (
-                        min_w > 0
-                        and (overlap_x / min_w) >= 0.45
+                        is_same_track
                         and -8.0 <= gap_y <= max_allowed_gap
                     ):
                         if prev.text.endswith("-"):
@@ -915,12 +908,7 @@ class LayoutAnalyzer:
                             prev.text = f"{prev.text}\n\n{elem.text}"
                         else:
                             prev.text = f"{prev.text} {elem.text}"
-                        prev.bbox = (
-                            min(prev.bbox[0], elem.bbox[0]),
-                            min(prev.bbox[1], elem.bbox[1]),
-                            max(prev.bbox[2], elem.bbox[2]),
-                            max(prev.bbox[3], elem.bbox[3]),
-                        )
+                        prev.bbox = box_prev.union(box_elem).as_tuple()
                         merged_vertically = True
                         break
 

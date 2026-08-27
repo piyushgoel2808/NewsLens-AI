@@ -10,6 +10,7 @@ Cost is always 0.0 (local inference).
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import re
 import time
@@ -184,10 +185,8 @@ class OllamaProvider:
                 # Attempt regex recovery if direct json.loads fails
                 match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
                 if match:
-                    try:
+                    with contextlib.suppress(Exception):
                         parsed = json.loads(match.group(1))
-                    except Exception:
-                        pass
                 if not parsed:
                     logger.warning(
                         "Failed to parse structured JSON from Ollama response",

@@ -1676,6 +1676,181 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 - `make test`: **257/257 tests passing 100% GREEN in 65.09s**.
 - Live Ollama Gemma 4 extraction on `BS English Delhi ²⁵⁰⁷²⁰²⁶.pdf` verified (Pages 1 & 2 extracted cleanly).
 
+---
+
+## Repository Cleanup & Architecture Hygiene
+
+**Date**: 2026-08-27  
+**Status**: Completed ✅
+
+### What was removed & sorted
+1. **Dead Frontend Components**:
+   - Removed `frontend/src/components/StreamTester.jsx` (standalone diagnostic prototype with 0 inbound references, superseded by `AgentAssistant.jsx`).
+2. **Obsolete Scripts**:
+   - Removed `scripts/setup_docling_local.py` (legacy setup script referencing deleted `DoclingProvider`).
+3. **Build & Infrastructure Cleanup**:
+   - Cleaned `setup-docling` target from `Makefile`.
+   - Added `.serena/` to `.gitignore`.
+   - Purged local `backend/debug_output/` artifact dumps.
+4. **Archive Safeguard & PR**:
+   - Preserved pre-cleanup snapshot at `archive/pre-cleanup-snapshot`.
+   - Created clean branch `chore/file-cleanup` and opened Pull Request [#1](https://github.com/piyushgoel2808/NewsLens-AI/pull/1).
+
+### Verification
+- `make test`: **257/257 tests passing 100% GREEN**.
+- `npm run build`: **Vite build completed with 0 errors in 988ms**.
+
+---
+
+## NewsLens-AI — Bug Fix & Newsroom Category Classification
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+
+1. **(F) Controlled Newsroom Category Taxonomy**:
+   - Created table `article_categories` (`id`, `name`, `parent_id`) and seeded 13 canonical newsroom categories via Alembic migration `003_add_article_categories.py`.
+   - Added `category_id`, `category_confidence`, and `printed_section` to `articles`.
+   - Created `backend/app/core/category_aliases.yaml` mapping printed newspaper sections and synonyms.
+   - Upgraded `ArticleClassifier` with a two-signal category resolution rule (printed section alias matching + content heuristic fallback).
+
+2. **(A) Photo / Ad / Graph Spatial Binding**:
+   - Implemented convex article envelope overlap (`>= 50%` horizontal column span + vertical edge proximity) in `MediaExtractor.resolve_photo_article_binding`.
+   - Added caption noun phrase matching and ambiguous tie-breaking that safely sets `article_id = NULL` (orphans) rather than mis-binding unrelated media.
+
+3. **(B) Short-News Debundling Upgrades**:
+   - Enhanced `_debundle_shorts_cluster` in `ArticleSegmenter` with multi-paragraph topic-shift detection and hard split boundary markers (`■`, `•`, `►`, `— CITY, PTI`, bold slugs).
+   - Ensured debundled shorts receive independent classification and dedicated non-overlapping bounding boxes.
+
+4. **(C) Natural Language Page Exclusion & Safety-Net Invariant**:
+   - Added page exclusion pattern parsing (`"page 5 but not page 6"`, `"except page 6"`) to `QueryPlanner`.
+   - Added `exclude_pages` to `SearchFilter` and enforced a hard safety-net filter in `HybridSearchEngine` and `SQLAnalyticsEngine`.
+
+5. **(D) Grounded Comparative & Category Synthesis**:
+   - Added structured comparison and sorting guidelines in `AnswerSynthesizer.SYNTHESIZER_SYSTEM_PROMPT`.
+   - Added `category_filter` and `exclude_page_filter` directly into `SQLAnalyticsEngine.list_issue_articles`.
+
+6. **(E) Chunk Quality Evaluation Suite**:
+   - Created `backend/tests/test_chunk_quality_evaluation.py` verifying semantic completeness, context header injection, token boundaries, and non-duplication of metadata headers.
+
+### Verification
+- `alembic upgrade head`: Migration `003_add_article_categories` applied cleanly.
+- `pytest tests/ -v`: **261/261 tests passing 100% GREEN** in 65.60s.
+
+---
+
+## NewsLens-AI — Runtime NameError Hotfixes
+
+**Date**: 2026-08-28  
+**Status**: Resolved ✅
+
+### Issues & Root Cause
+1. **`NameError: name 're' is not defined`**:
+   - `re` regex module was used in `tasks.py` (for detecting table markdown rows `\|\s*[-:]+\s*\|`) but was not imported at the top of the file.
+2. **`NameError: name 'paras' is not defined`**:
+   - In `segmenter.py` within `_debundle_shorts_cluster`, the local variable `paras` was referenced in `elif is_shorts_hl and len(paras) >= 2:` before `paras = [p.strip() for p in full_text.split("\n\n") if p.strip()]` was assigned.
+
+### Changes Made
+- Added `import re` to `backend/app/ingestion/tasks.py`.
+- Assigned `paras = [p.strip() for p in full_text.split("\n\n") if p.strip()]` before checking `len(paras)` in `backend/app/ingestion/segmenter.py`.
+- Verified test suite: **31/31 ingestion tests passing cleanly**.
+
+---
+
+## NewsLens-AI — Layout Analyzer Optimizations & Spatial Refactoring
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+1. **Type-Safe `BBox` Spatial Dataclass**:
+   - Created `backend/app/ingestion/geometry.py` containing immutable `BBox` dataclass with `slots=True, frozen=True`.
+   - Implemented standard 2D bounding box operations: `horizontal_overlap`, `vertical_overlap`, `iou`, `column_track_overlap_ratio`, `union`, `contains`, `area`, `aspect_ratio`.
+2. **Externalized Newspaper Rules**:
+   - Created `backend/app/core/newspaper_rules.yaml` storing domain-specific syndication slugs, masthead tokens, sponsor keywords, and noise filters.
+   - Wired `layout_analyzer.py` to dynamically load rules from YAML with safe embedded fallbacks.
+3. **$O(N \log N)$ Baseline-Band Headline Slicing**:
+   - Refactored `_merge_horizontal_headline_slices` from $O(N^3)$ nested while-loop to baseline-band clustering and left-to-right neighbor merging.
+4. **Symmetric Column Track Overlap**:
+   - Fixed asymmetric column track bleeding in `_consolidate_elements` by evaluating horizontal span overlap against `max(width_a, width_b)` and width similarity.
+
+### Verification
+- `pytest tests/test_layout_analyzer.py tests/test_reading_order.py tests/test_segmenter.py -v`: 34/34 tests passed.
+- `pytest tests/ -v`: **261/261 tests passing 100% GREEN** in 68.09s.
+
+---
+
+## NewsLens-AI — Layout Fallback & Broadsheet Reader Interactive Inspector
+
+**Date**: 2026-08-28  
+**Status**: Resolved ✅
+
+### Issues Addressed
+1. **Empty / Incomplete VLM Layouts Collapsing Pages into 1 Giant Article**:
+   - When Phase 1 VLM extraction returned 0 articles or timed out on dense multi-column pages, the pipeline collapsed the entire page into a single fallback article.
+   - **Fix**: Added an automatic deterministic safety net in `backend/app/ingestion/tasks.py`. If Phase 1 yields 0 articles, it invokes `LayoutAnalyzer` + `ArticleSegmenter` to accurately partition columns, headlines, and shorts.
+2. **Bounding Box Inversion & Normalization Mismatch**:
+   - Fixed coordinate scaling in `tasks.py` from normalized $[y_{\min}, x_{\min}, y_{\max}, x_{\max}]$ $(0 \dots 1000)$ to absolute pixel space $[x_0, y_0, x_1, y_1]$ using actual page dimensions.
+3. **Bidirectional Highlighting & Chunk Transparency in Broadsheet Reader**:
+   - Updated `frontend/src/components/BroadsheetReader.jsx` with real-time bidirectional hover/selection highlighting and vector chunk inspection.
+
+### Verification
+- `pytest tests/ -v`: **261/261 tests passing 100% GREEN** in 70.35s.
+
+---
+
+## NewsLens-AI — Two-Stage Reranking Cascade, 3-Tier Coverage Analyzer & IR Metrics
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+1. **Two-Stage Neural Reranking Cascade (`backend/app/retrieval/reranker.py` & `hybrid_search.py`)**:
+   - Implemented `CrossEncoderReranker` using `sentence_transformers.CrossEncoder` with default `BAAI/bge-reranker-v2-m3` and `cross-encoder/ms-marco-MiniLM-L-6-v2`.
+   - Explicitly accelerated execution with Apple Silicon (`device="mps"` auto-detection).
+   - Expanded initial RRF candidate pool to $N=75$ and reranked to Top 10 for synthesis.
+2. **3-Tier Negative Coverage Engine (`backend/app/retrieval/coverage_analyzer.py`)**:
+   - Implemented `CoverageAnalyzer` enforcing Tier 1 Relational Invariant (`find_newspapers_with_zero_articles` in MySQL), Tier 2 semantic audit, and Tier 3 comparative matrix.
+3. **Automated IR Evaluation Suite (`backend/app/evaluation/metrics.py`)**:
+   - Implemented full benchmark suite: `recall_at_k`, `precision_at_k`, `mrr`, `ndcg_at_k`, `faithfulness_score`, and `coverage_f1`.
+4. **API Integration & Endpoints**:
+   - Added `POST /api/query/coverage` endpoint in `backend/app/api/routers/query.py`.
+   - Wired coverage analysis into `cross_newspaper_comparison` planning flow.
+
+### Verification
+- `pytest tests/ -v`: **272/272 tests passing 100% GREEN**.
+
+---
+
+## NewsLens-AI — LLM Agentic Query Routing (No Regex)
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+1. **Pydantic Structured CoT Reasoning Schemas (`backend/app/agent/planner.py`)**:
+   - Defined `ExtractedToolArguments` and `QueryPlan` requiring step-by-step reasoning in `thought_process` prior to selecting target retrieval tools.
+   - Built `PLANNER_SYSTEM_PROMPT` with strict operational tool boundaries:
+     * `sql_analytics`: Exclusively for macro-level queries (whole-issue summaries, full page manifests, article counts, section breakdowns).
+     * `hybrid_search`: For fine-grained factual inquiries, quotes, and entity questions (with optional `page_filter`).
+     * `timeline_builder`: For chronological event trajectories.
+     * `coverage_analysis`: For cross-newspaper editorial difference matrices.
+     * `entity_search`: For comprehensive entity deep dives.
+   - Injected 6 distinct few-shot demonstrations teaching macro vs micro routing.
+2. **Async Agentic Planning Workflow**:
+   - Implemented `QueryPlanner.plan_query_async()` using structured JSON completion (`ChatModelProvider.complete()`).
+   - Updated `AgentWorkflow._classify_and_plan_node` in `backend/app/agent/graph.py` and `POST /api/query/plan` in `backend/app/api/routers/query.py` to natively await async planning with model overrides.
+3. **Verification**:
+   - `pytest tests/test_planner.py -v`: 10/10 tests passing.
+   - `pytest tests/ -v`: **274/274 tests passing 100% GREEN**.
+   - `ruff check .` and `mypy app/agent/`: 0 errors.
+
+
+
+
+
+
 
 
 

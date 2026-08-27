@@ -21,6 +21,7 @@ from app.models.article import Article
 from app.models.newspaper import Issue
 from app.providers.base import EmbeddingProvider
 from app.providers.registry import get_registry
+from app.retrieval.reranker import CrossEncoderReranker
 from app.storage.mysql_fulltext import MySQLFullTextSearch
 from app.storage.qdrant_store import QdrantStore
 
@@ -35,9 +36,15 @@ class SearchFilter:
     date_from: str | None = None  # YYYY-MM-DD
     date_to: str | None = None  # YYYY-MM-DD
     article_type: str | None = None
+    category_id: int | None = None
+    category_name: str | None = None
     min_prominence: float | None = None
     page_number: int | None = None
     printed_page: str | None = None
+    exclude_pages: list[int] = field(default_factory=list)
+    exclude_printed_pages: list[str] = field(default_factory=list)
+    has_photo: bool | None = None
+    has_table: bool | None = None
 
 
 @dataclass
@@ -62,22 +69,25 @@ class HybridSearchResult:
     bboxes: list[dict[str, Any]] = field(default_factory=list)
     printed_pages: list[str] = field(default_factory=list)
     matched_chunks: list[dict[str, Any]] = field(default_factory=list)
+    rerank_score: float | None = None
 
 
 class HybridSearchEngine:
-    """Hybrid Search Engine combining Qdrant dense vectors and MySQL FULLTEXT."""
+    """Hybrid Search Engine combining Qdrant dense vectors, MySQL FULLTEXT, and Cross-Encoder Reranking."""
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         qdrant: QdrantStore | None = None,
         embed_provider: EmbeddingProvider | None = None,
+        reranker: CrossEncoderReranker | None = None,
         k: int = 60,
     ) -> None:
         self._session_factory = session_factory
         self._settings = get_settings()
         self._qdrant = qdrant or QdrantStore(self._settings.qdrant)
         self._provider = embed_provider
+        self._reranker = reranker or CrossEncoderReranker()
         self._ft_search = MySQLFullTextSearch(session_factory=session_factory)
         self._k = k
 
@@ -97,8 +107,9 @@ class HybridSearchEngine:
         filters: SearchFilter | None = None,
         dense_weight: float = 0.5,
         sparse_weight: float = 0.5,
+        rerank: bool = True,
     ) -> list[HybridSearchResult]:
-        """Execute hybrid search using Reciprocal Rank Fusion."""
+        """Execute two-stage hybrid search using Reciprocal Rank Fusion and Cross-Encoder neural reranking."""
         if not query.strip():
             return []
 
@@ -110,6 +121,10 @@ class HybridSearchEngine:
                 search_filters_dict["page_numbers"] = filters.page_number
             if filters.printed_page:
                 search_filters_dict["printed_pages"] = filters.printed_page
+            if filters.has_photo is not None:
+                search_filters_dict["has_photo"] = filters.has_photo
+            if filters.has_table is not None:
+                search_filters_dict["has_table"] = filters.has_table
             if filters.date_from or filters.date_to:
                 date_range: dict[str, str] = {}
                 if filters.date_from:
@@ -181,12 +196,14 @@ class HybridSearchEngine:
         if not scores:
             return []
 
-        # Sort candidate article IDs by RRF score descending
+        # Two-stage retrieval cascade:
+        # Fetch Top 75 candidates from RRF hybrid search to pass into second-stage Cross-Encoder
+        candidate_pool_size = max(75, top_k * 3) if rerank else top_k
         sorted_candidates = sorted(
             scores.items(),
             key=lambda item: item[1]["rrf_score"],
             reverse=True,
-        )[:top_k]
+        )[:candidate_pool_size]
 
         candidate_ids = [item[0] for item in sorted_candidates]
 
@@ -219,6 +236,8 @@ class HybridSearchEngine:
                 and article.prominence_score < filters.min_prominence
             ):
                 continue
+            if filters and filters.category_id and article.category_id != filters.category_id:
+                continue
 
             np_name = (
                 article.issue.newspaper.name
@@ -241,7 +260,18 @@ class HybridSearchEngine:
                 else []
             )
 
-            # Check page filter if specified
+            # Hard Safety-Net Invariant: Assert no returned article has an excluded page
+            if filters and filters.exclude_pages and any(p in filters.exclude_pages for p in pages_list):
+                continue
+            if filters and filters.exclude_printed_pages:
+                excl_clean = {p.strip().lower() for p in filters.exclude_printed_pages}
+                if any(
+                    p.lower() in excl_clean or f"page {p.lower()}" in excl_clean
+                    for p in printed_pages_list
+                ):
+                    continue
+
+            # Check positive page filter if specified
             if filters and filters.page_number and filters.page_number not in pages_list:
                 continue
             if filters and filters.printed_page:
@@ -299,13 +329,41 @@ class HybridSearchEngine:
                 )
             )
 
+        # Second-Stage Neural Reranking:
+        # Pass candidate pool into CrossEncoder to compute interaction scores and extract Top K
+        if rerank and final_results:
+            candidates_data = [
+                {
+                    "result_obj": r,
+                    "headline": r.headline,
+                    "snippet": r.snippet,
+                    "rrf_score": r.rrf_score,
+                    "prominence_score": r.prominence_score,
+                }
+                for r in final_results
+            ]
+            reranked_data = await self._reranker.rerank(
+                query=query,
+                candidates=candidates_data,
+                top_k=top_k,
+            )
+            top_results: list[HybridSearchResult] = []
+            for item in reranked_data:
+                res_obj: HybridSearchResult = item["result_obj"]
+                res_obj.rerank_score = item.get("rerank_score")
+                top_results.append(res_obj)
+            final_results = top_results
+        else:
+            final_results = final_results[:top_k]
+
         logger.info(
-            "Hybrid search executed",
+            "Hybrid search executed with two-stage cascade",
             extra={
                 "query": query[:40],
                 "vector_hits": len(vector_results),
                 "keyword_hits": len(keyword_results),
                 "fused_results": len(final_results),
+                "reranked": rerank,
             },
         )
 

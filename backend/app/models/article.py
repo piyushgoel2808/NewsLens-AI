@@ -31,6 +31,20 @@ _ARTICLE_TYPES = (
 )
 
 
+class ArticleCategory(Base):
+    """Canonical newsroom category taxonomy."""
+
+    __tablename__ = "article_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("article_categories.id", ondelete="SET NULL"), nullable=True
+    )
+
+    articles: Mapped[list[Article]] = relationship("Article", back_populates="category")
+
+
 class Article(Base):
     __tablename__ = "articles"
     __mapper_args__ = {"confirm_deleted_rows": False}
@@ -42,10 +56,15 @@ class Article(Base):
     primary_page_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("pages.id", ondelete="SET NULL"), index=True
     )
+    category_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("article_categories.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    category_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     headline: Mapped[str | None] = mapped_column(String(1024))
     subheadline: Mapped[str | None] = mapped_column(String(1024))
     byline_author: Mapped[str | None] = mapped_column(String(512))
     section: Mapped[str | None] = mapped_column(String(255), index=True)
+    printed_section: Mapped[str | None] = mapped_column(String(128), nullable=True)
     article_type: Mapped[str] = mapped_column(
         Enum(*_ARTICLE_TYPES, name="article_type_enum"),
         default="unknown",
@@ -62,6 +81,7 @@ class Article(Base):
     )
 
     issue: Mapped[Any] = relationship("Issue", back_populates="articles")
+    category: Mapped[ArticleCategory | None] = relationship("ArticleCategory", back_populates="articles")
     article_pages: Mapped[list[ArticlePage]] = relationship(
         "ArticlePage", back_populates="article", cascade="all, delete-orphan"
     )

@@ -34,6 +34,79 @@ class MediaExtractor:
         self._settings = get_settings()
         self._minio = minio or MinioStore(self._settings.minio)
 
+    def resolve_photo_article_binding(
+        self,
+        photo_bbox: tuple[float, float, float, float],
+        article_envelopes: list[tuple[int, tuple[float, float, float, float], str]],
+        caption: str = "",
+    ) -> int | None:
+        """Resolve which article owns a photo using convex envelope overlap & ambiguity tie-breaking.
+
+        article_envelopes: list of (article_id, (ax0, ay0, ax1, ay1), headline)
+        """
+        if not article_envelopes:
+            return None
+
+        px0, py0, px1, py1 = photo_bbox
+        pw = max(px1 - px0, 1.0)
+
+        candidate_scores: list[tuple[int, float, str]] = []
+
+        for art_id, (ax0, ay0, ax1, ay1), headline in article_envelopes:
+            # 1. Check Horizontal Column Overlap (>= 50% required)
+            h_overlap = max(0.0, min(px1, ax1) - max(px0, ax0))
+            h_overlap_ratio = h_overlap / pw
+
+            if h_overlap_ratio < 0.40:
+                continue
+
+            # 2. Check Vertical Edge Proximity
+            # Photo inside envelope
+            if py0 >= ay0 and py1 <= ay1:
+                v_dist = 0.0
+            elif py1 < ay0:
+                v_dist = ay0 - py1  # photo above article
+            else:
+                v_dist = py0 - ay1  # photo below article
+
+            norm_v_dist = max(0.0, v_dist / max(ay1 - ay0, 100.0))
+
+            # Proximity Score (higher is better)
+            score = (h_overlap_ratio * 0.6) + (max(0.0, 1.0 - norm_v_dist) * 0.4)
+            candidate_scores.append((art_id, score, headline))
+
+        if not candidate_scores:
+            return None
+
+        candidate_scores.sort(key=lambda item: item[1], reverse=True)
+        top_art_id, top_score, top_hl = candidate_scores[0]
+
+        if top_score < 0.35:
+            return None
+
+        # Check Ambiguity: if second best is within 15% score margin
+        if len(candidate_scores) > 1:
+            second_art_id, second_score, second_hl = candidate_scores[1]
+            if (top_score - second_score) / max(top_score, 0.01) < 0.15:
+                # Tie-breaker 1: Caption keyword / entity match
+                if caption:
+                    cap_lower = caption.lower()
+                    top_match = any(w.lower() in cap_lower for w in top_hl.split() if len(w) > 4)
+                    sec_match = any(w.lower() in cap_lower for w in second_hl.split() if len(w) > 4)
+                    if top_match and not sec_match:
+                        return top_art_id
+                    elif sec_match and not top_match:
+                        return second_art_id
+
+                # If still tied and ambiguous, do not force wrong link — safely orphan
+                logger.info(
+                    "Ambiguous photo placement between multiple articles, setting article_id=NULL",
+                    extra={"top_score": top_score, "second_score": second_score},
+                )
+                return None
+
+        return top_art_id
+
     async def extract_and_store_photo(
         self,
         page_image_bytes: bytes,

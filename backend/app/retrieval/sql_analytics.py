@@ -121,49 +121,83 @@ class SQLAnalyticsEngine:
                 "page_distribution": page_distribution,
             }
 
-    async def get_issue_summary(
+    async def list_issue_articles(
         self,
+        issue_id: int | None = None,
         newspaper_name: str | None = None,
         issue_date: str | None = None,
-        issue_id: int | None = None,
+        section: str | None = None,
         page_filter: str | int | None = None,
-    ) -> dict[str, Any]:
-        """Aggregate articles, pages, sections, and manifest (optionally page-filtered)."""
+        exclude_page_filter: str | int | None = None,
+        category_filter: str | None = None,
+        page_number: int | None = None,
+    ) -> Any:
+        """Return a structured manifest of all articles in an issue with section/type breakdowns."""
         from sqlalchemy.orm import selectinload
-
-        from app.models.newspaper import Newspaper
-
         async with self._session_factory() as db:
-            stmt = select(Issue).options(
-                selectinload(Issue.newspaper),
-                selectinload(Issue.pages),
-            )
+            issue: Issue | None = None
             if issue_id:
-                stmt = stmt.where(Issue.id == issue_id)
-            elif newspaper_name and issue_date:
-                stmt = stmt.join(Newspaper).where(
-                    Newspaper.name.ilike(f"%{newspaper_name}%"),
-                    Issue.issue_date == issue_date,
-                )
-            elif issue_date:
-                stmt = stmt.where(Issue.issue_date == issue_date)
-            elif newspaper_name:
                 stmt = (
-                    stmt.join(Newspaper)
+                    select(Issue)
+                    .where(Issue.id == issue_id)
+                    .options(
+                        selectinload(Issue.newspaper),
+                        selectinload(Issue.pages),
+                    )
+                )
+                res = await db.execute(stmt)
+                issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
+            elif newspaper_name and issue_date:
+                from app.models.newspaper import Newspaper
+                stmt = (
+                    select(Issue)
+                    .join(Newspaper)
+                    .where(
+                        Newspaper.name.ilike(f"%{newspaper_name}%"),
+                        Issue.issue_date == issue_date,
+                    )
+                    .options(
+                        selectinload(Issue.newspaper),
+                        selectinload(Issue.pages),
+                    )
+                )
+                res = await db.execute(stmt)
+                issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
+            elif newspaper_name:
+                from app.models.newspaper import Newspaper
+                stmt = (
+                    select(Issue)
+                    .join(Newspaper)
                     .where(Newspaper.name.ilike(f"%{newspaper_name}%"))
                     .order_by(desc(Issue.issue_date))
+                    .options(
+                        selectinload(Issue.newspaper),
+                        selectinload(Issue.pages),
+                    )
                 )
+                res = await db.execute(stmt)
+                issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
             else:
-                stmt = stmt.order_by(desc(Issue.created_at))
+                # Latest issue
+                stmt = (
+                    select(Issue)
+                    .order_by(desc(Issue.id))
+                    .limit(1)
+                    .options(
+                        selectinload(Issue.newspaper),
+                        selectinload(Issue.pages),
+                    )
+                )
+                res = await db.execute(stmt)
+                issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
 
-            res = await db.execute(stmt)
-            issue = res.scalars().first()
             if not issue:
-                return {"error": "No matching newspaper issue found in the archive."}
+                return {"error": "Issue not found", "articles": []}
 
             art_stmt = (
                 select(Article)
                 .where(Article.issue_id == issue.id)
+                .options(selectinload(Article.category))
                 .order_by(Article.primary_page_id, desc(Article.prominence_score))
             )
             art_res = await db.execute(art_stmt)
@@ -171,6 +205,7 @@ class SQLAnalyticsEngine:
 
             section_counts: dict[str, int] = {}
             type_counts: dict[str, int] = {}
+            category_counts: dict[str, int] = {}
             manifest: list[dict[str, Any]] = []
 
             page_folio_map = {
@@ -183,6 +218,8 @@ class SQLAnalyticsEngine:
                 section_counts[sec] = section_counts.get(sec, 0) + 1
                 atype = a.article_type or "news"
                 type_counts[atype] = type_counts.get(atype, 0) + 1
+                cat_name = a.category.name if a.category else (a.section or "General")
+                category_counts[cat_name] = category_counts.get(cat_name, 0) + 1
 
                 p_num = page_num_map.get(a.primary_page_id, 1) if a.primary_page_id else 1
                 folio = (
@@ -196,51 +233,79 @@ class SQLAnalyticsEngine:
                         "id": a.id,
                         "headline": a.headline,
                         "section": sec,
+                        "category": cat_name,
                         "article_type": atype,
                         "byline_author": a.byline_author,
                         "page_number": p_num,
                         "printed_page": folio,
                         "word_count": a.word_count,
+                        "prominence_score": a.prominence_score,
                     }
                 )
 
-            # Filter by specific page if requested
-            if page_filter is not None:
+            filtered_manifest = manifest
+
+            # 1. Apply section or category filter if requested
+            if section:
+                sec_target = section.strip().lower()
+                filtered_manifest = [
+                    m for m in filtered_manifest
+                    if sec_target in str(m.get("section", "")).lower()
+                ]
+            elif category_filter:
+                cat_target = category_filter.strip().lower()
+                filtered_manifest = [
+                    m for m in filtered_manifest
+                    if cat_target in str(m.get("category", "")).lower()
+                    or cat_target in str(m.get("section", "")).lower()
+                ]
+
+            # 2. Apply positive page filter if requested
+            if page_number is not None:
+                filtered_manifest = [m for m in filtered_manifest if m.get("page_number") == page_number]
+            elif page_filter is not None:
                 p_raw = str(page_filter).strip().lower()
                 p_target = p_raw.replace("page", "").replace("pg", "").strip()
                 printed_matches = [
                     m
-                    for m in manifest
+                    for m in filtered_manifest
                     if str(m["printed_page"]).lower() == p_target
                     or str(m["printed_page"]).lower() == f"page {p_target}"
                 ]
                 filtered_manifest = (
                     printed_matches
                     if printed_matches
-                    else [m for m in manifest if str(m["page_number"]) == p_target]
+                    else [m for m in filtered_manifest if str(m["page_number"]) == p_target]
                 )
-                return {
-                    "issue_id": issue.id,
-                    "newspaper": issue.newspaper.name if issue.newspaper else "Newspaper",
-                    "issue_date": str(issue.issue_date),
-                    "page_filter": str(page_filter),
-                    "total_articles": len(filtered_manifest),
-                    "total_issue_articles": len(articles),
-                    "total_pages": len(issue.pages),
-                    "section_breakdown": section_counts,
-                    "type_breakdown": type_counts,
-                    "articles": filtered_manifest,
-                }
+
+            # 3. Apply negative page exclusion filter (hard safety net)
+            if exclude_page_filter is not None:
+                excl_raw = str(exclude_page_filter).strip().lower()
+                excl_target = excl_raw.replace("page", "").replace("pg", "").strip()
+                filtered_manifest = [
+                    m for m in filtered_manifest
+                    if str(m["page_number"]) != excl_target
+                    and str(m["printed_page"]).lower() != excl_target
+                    and str(m["printed_page"]).lower() != f"page {excl_target}"
+                ]
+
+            if section is not None or page_number is not None:
+                return filtered_manifest
 
             return {
                 "issue_id": issue.id,
                 "newspaper": issue.newspaper.name if issue.newspaper else "Newspaper",
                 "issue_date": str(issue.issue_date),
-                "total_articles": len(articles),
+                "page_filter": str(page_filter) if page_filter else None,
+                "exclude_page_filter": str(exclude_page_filter) if exclude_page_filter else None,
+                "category_filter": category_filter,
+                "total_articles": len(filtered_manifest),
+                "total_issue_articles": len(articles),
                 "total_pages": len(issue.pages),
                 "section_breakdown": section_counts,
                 "type_breakdown": type_counts,
-                "articles": manifest,
+                "category_breakdown": category_counts,
+                "articles": filtered_manifest,
             }
 
     async def count_articles(
@@ -278,22 +343,21 @@ class SQLAnalyticsEngine:
                 },
             }
 
-    async def list_issue_articles(
+    async def get_issue_summary(
         self,
         newspaper_name: str | None = None,
         issue_date: str | None = None,
-        section: str | None = None,
-        page_number: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return ordered list of articles matching criteria."""
-        summary = await self.get_issue_summary(
+        issue_id: int | None = None,
+        page_filter: str | int | None = None,
+        exclude_page_filter: str | int | None = None,
+        category_filter: str | None = None,
+    ) -> Any:
+        """Alias for list_issue_articles to maintain backward compatibility."""
+        return await self.list_issue_articles(
+            issue_id=issue_id,
             newspaper_name=newspaper_name,
             issue_date=issue_date,
+            page_filter=page_filter,
+            exclude_page_filter=exclude_page_filter,
+            category_filter=category_filter,
         )
-        raw_articles = summary.get("articles", [])
-        articles: list[dict[str, Any]] = raw_articles if isinstance(raw_articles, list) else []
-        if section:
-            articles = [a for a in articles if section.lower() in (a.get("section") or "").lower()]
-        if page_number:
-            articles = [a for a in articles if a.get("page_number") == page_number]
-        return articles

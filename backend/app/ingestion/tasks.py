@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 from collections.abc import Sequence
 from datetime import date
 from typing import Any
@@ -28,7 +29,7 @@ from app.core.logging import get_logger
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
 from app.ingestion.consensus_extractor import ConsensusExtractor
-from app.ingestion.cross_page_assembler import CrossPageAssembler
+from app.ingestion.cross_page_assembler import AssembledArticle, CrossPageAssembler
 from app.ingestion.debug_exporter import DebugArtifactsExporter
 from app.ingestion.detector import PDFPageDetector
 from app.ingestion.embedder import ArticleEmbedder
@@ -36,12 +37,13 @@ from app.ingestion.extraction_schemas import (
     PageLayoutExtraction,
 )
 from app.ingestion.folio_detector import FolioDetector
+from app.ingestion.layout_analyzer import LayoutAnalyzer
 from app.ingestion.media_extractor import MediaExtractor
 from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.rasterizer import PDFRasterizer, RasterizedPage
-from app.ingestion.segmenter import SegmentedArticle
+from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
 from app.ingestion.unified_extractor import UnifiedExtractor
-from app.models.article import Article, ArticleChunk, ArticlePage
+from app.models.article import Article, ArticleCategory, ArticleChunk, ArticlePage, Photo
 from app.models.entity import ArticleEntity, ArticleTopic
 from app.models.newspaper import Issue, Newspaper, Page
 from app.storage.minio_store import MinioStore
@@ -225,6 +227,35 @@ async def run_ingestion_pipeline(
             # Process articles on this page
             page_segmented_articles: list[SegmentedArticle] = []
 
+            # If Phase 1 layout extraction returned 0 articles (or empty layout), run LayoutAnalyzer & ArticleSegmenter
+            if not layout_data.articles and len(analysis.blocks) > 0:
+                logger.info(
+                    "Phase 1 layout extraction returned 0 articles; running LayoutAnalyzer + ArticleSegmenter fallback",
+                    extra={"page_number": page_num, "blocks_count": len(analysis.blocks)},
+                )
+                try:
+                    layout_analyzer = LayoutAnalyzer()
+                    page_layout_res = layout_analyzer.analyze_from_text_blocks(
+                        page_number=page_num,
+                        width_px=int(rendered.width_px),
+                        height_px=int(rendered.height_px),
+                        digital_blocks=analysis.blocks,
+                    )
+                    segmenter = ArticleSegmenter()
+                    seg_fallback = segmenter.segment_page(
+                        page_number=page_num,
+                        ordered_blocks=page_layout_res.reading_order,
+                        is_advertisement_page=page_record.is_advertisement_page if page_record else False,
+                    )
+                    if seg_fallback:
+                        page_segmented_articles.extend(seg_fallback)
+                except Exception as fallback_err:
+                    logger.warning(
+                        "LayoutAnalyzer fallback failed on page",
+                        extra={"page_number": page_num, "error": str(fallback_err)},
+                    )
+
+            # Process LLM/VLM articles on this page
             for art_idx, skel in enumerate(layout_data.articles):
                 is_minor = (
                     skel.prominence in ("minor", "filler")
@@ -241,7 +272,6 @@ async def run_ingestion_pipeline(
                     full_body = skel.body_text or (
                         f"{skel.headline}\n\n{skel.subheadline}" if skel.subheadline else (skel.headline or "News item.")
                     )
-                    summary_text = full_body[:250] + ("..." if len(full_body) > 250 else "")
                 else:
                     # For LLM-based extraction (Gemini / Gemma), enrich major articles with VLM crop
                     crop_bytes = extractor_engine.crop_article_image(rendered.image_bytes, bbox)
@@ -251,10 +281,18 @@ async def run_ingestion_pipeline(
                         digital_slice=analysis.full_text,
                     )
                     full_body = enrichment.body_text
-                    summary_text = enrichment.summary
 
-                # Convert bbox to standard tuple format
-                box_tuple = (float(bbox[1]), float(bbox[0]), float(bbox[3]), float(bbox[2])) if max(bbox) <= 1000.0 else (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+                # Convert normalized [ymin, xmin, ymax, xmax] (0..1000) to standard [x0, y0, x1, y1] pixels
+                if max(bbox) <= 1000.0 and (rendered.width_px > 1000 or rendered.height_px > 1000):
+                    # Normalized 0..1000 coordinates [ymin, xmin, ymax, xmax]
+                    y0 = float(bbox[0]) / 1000.0 * float(rendered.height_px)
+                    x0 = float(bbox[1]) / 1000.0 * float(rendered.width_px)
+                    y1 = float(bbox[2]) / 1000.0 * float(rendered.height_px)
+                    x1 = float(bbox[3]) / 1000.0 * float(rendered.width_px)
+                    box_tuple = (x0, y0, x1, y1)
+                else:
+                    # Already absolute pixel coordinates [x0, y0, x1, y1] or [y0, x0, y1, x1]
+                    box_tuple = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
 
                 seg = SegmentedArticle(
                     article_temp_id=f"page_{page_num}_art_{art_idx}",
@@ -327,10 +365,12 @@ async def run_ingestion_pipeline(
             page_id_map[p.page_number] = p.id
             page_folio_map[p.page_number] = p.printed_page_number or str(p.page_number)
 
-        created_articles: list[dict[str, Any]] = []
         articles_manifest: list[dict[str, Any]] = []
-        all_rag_chunks: list[dict[str, Any]] = []
         total_chunks_created = 0
+
+        # Step 7a: First Pass - Persist Articles to obtain article IDs
+        persisted_articles: list[tuple[Article, AssembledArticle, Any]] = []
+        article_envelopes_by_page: dict[int, list[tuple[int, tuple[float, float, float, float], str]]] = {}
 
         for assembled in assembled_articles:
             class_res = classifier.classify_and_score(
@@ -349,13 +389,29 @@ async def run_ingestion_pipeline(
             if is_ad and not clean_hl.startswith(("[Advertisement]", "[Public Notice]")):
                 clean_hl = f"[Advertisement] {clean_hl}"[:1024]
 
+            # Resolve Canonical Category ID if available
+            cat_id: int | None = None
+            if class_res.category:
+                cat_fetch = await db.execute(
+                    select(ArticleCategory.id).where(ArticleCategory.name == class_res.category)
+                )
+                cat_id = cat_fetch.scalar_one_or_none()
+                if not cat_id:
+                    new_cat = ArticleCategory(name=class_res.category)
+                    db.add(new_cat)
+                    await db.flush()
+                    cat_id = new_cat.id
+
             article_record = Article(
                 issue_id=issue_id,
                 primary_page_id=primary_page_id,
+                category_id=cat_id,
+                category_confidence=class_res.category_confidence,
                 headline=clean_hl,
                 subheadline=assembled.subheadline[:1024] if assembled.subheadline else None,
                 byline_author=assembled.byline_author[:512] if assembled.byline_author else None,
                 section=class_res.section[:255] if class_res.section else "National",
+                printed_section=class_res.printed_section[:128] if class_res.printed_section else None,
                 article_type="advertisement" if is_ad else class_res.article_type,
                 language=issue_lang,
                 prominence_score=class_res.prominence_score,
@@ -365,7 +421,9 @@ async def run_ingestion_pipeline(
             db.add(article_record)
             await db.flush()
 
-            # Save ArticlePage mappings
+            persisted_articles.append((article_record, assembled, class_res))
+
+            # Save ArticlePage mappings and record spatial envelopes for photo binding
             for p_map in assembled.pages_mapping:
                 mapped_pid = page_id_map.get(p_map.page_number)
                 if mapped_pid:
@@ -378,19 +436,92 @@ async def run_ingestion_pipeline(
                         block_order=p_map.block_order,
                     )
                     db.add(art_page)
+
+                    if p_map.bbox_list:
+                        env_x0 = min(b[0] for b in p_map.bbox_list)
+                        env_y0 = min(b[1] for b in p_map.bbox_list)
+                        env_x1 = max(b[2] for b in p_map.bbox_list)
+                        env_y1 = max(b[3] for b in p_map.bbox_list)
+                        envelope = (env_x0, env_y0, env_x1, env_y1)
+                    else:
+                        envelope = (0.0, 0.0, 1000.0, 1000.0)
+
+                    if p_map.page_number not in article_envelopes_by_page:
+                        article_envelopes_by_page[p_map.page_number] = []
+                    article_envelopes_by_page[p_map.page_number].append(
+                        (article_record.id, envelope, article_record.headline or "")
+                    )
             await db.flush()
+
+        # Step 7b: Extract & Store 100% Photos / Graphic Regions for each page
+        article_photos_map: dict[int, list[Photo]] = {}
+        for rendered, analysis in zip(rendered_pages, analysis_results, strict=False):
+            p_num = rendered.page_number
+            p_id = page_id_map.get(p_num)
+            if not p_id:
+                continue
+
+            page_envs = article_envelopes_by_page.get(p_num, [])
+
+            # Harvest all detected image boxes (PyMuPDF xrefs + OCR image blocks)
+            img_idx = 1
+            for ibox in analysis.image_boxes:
+                # Resolve spatial binding to article
+                bound_art_id = media_extractor.resolve_photo_article_binding(
+                    photo_bbox=ibox,
+                    article_envelopes=page_envs,
+                )
+                try:
+                    photo_rec = await media_extractor.extract_and_store_photo(
+                        page_image_bytes=rendered.image_bytes,
+                        page_id=p_id,
+                        article_id=bound_art_id,
+                        bbox=ibox,
+                        caption="",
+                        photo_index=img_idx,
+                    )
+                    if bound_art_id:
+                        if bound_art_id not in article_photos_map:
+                            article_photos_map[bound_art_id] = []
+                        article_photos_map[bound_art_id].append(photo_rec)
+                    img_idx += 1
+                except Exception as ex:
+                    logger.warning("Photo extraction failed for box", extra={"page_number": p_num, "bbox": ibox, "error": str(ex)})
+
+        # Step 7c: Chunking, Visual Tag Markup, and Vector Indexing
+        for article_record, assembled, _class_res in persisted_articles:
+            is_ad = article_record.article_type == "advertisement"
+            art_photos = article_photos_map.get(article_record.id, [])
+            has_photo = bool(art_photos)
+
+            # Check if article contains tabular or graphic statistics
+            has_table = (
+                "table_data" in (article_record.article_type or "")
+                or "table" in (assembled.headline or "").lower()
+                or bool(re.search(r"\|\s*[-:]+\s*\|", assembled.full_text))
+            )
+
+            # Inject visual markup into article full text if visuals exist
+            annotated_text = assembled.full_text
+            if has_photo:
+                annotated_text = f"{annotated_text}\n\n[🖼️ Attached Image/Photo: Visual coverage included on Page {assembled.primary_page_number}]"
+            if has_table:
+                annotated_text = f"{annotated_text}\n\n[📊 Attached Data / Infographic: Structured statistical representation included]"
+
+            # Update article full text with visual tags
+            article_record.full_text = annotated_text
 
             # Extract & Persist Metadata (NER & Topics)
             meta_res = await meta_extractor.process_and_persist_metadata(
                 article_id=article_record.id,
                 headline=assembled.headline,
-                full_text=assembled.full_text,
+                full_text=annotated_text,
             )
 
             # Chunk & Embed (skip vector indexing for advertisements)
             if not is_ad:
                 chunks = chunker.chunk_article(
-                    full_text=assembled.full_text,
+                    full_text=annotated_text,
                     newspaper_name=newspaper_name,
                     issue_date=issue_date_str,
                     headline=assembled.headline,
@@ -405,7 +536,7 @@ async def run_ingestion_pipeline(
                         issue_id=issue_id,
                         newspaper_name=newspaper_name,
                         issue_date=issue_date_str,
-                        headline=article_record.headline,
+                        headline=article_record.headline or "Untitled",
                         section=article_record.section,
                         article_type=article_record.article_type,
                         prominence_score=article_record.prominence_score,
@@ -414,6 +545,8 @@ async def run_ingestion_pipeline(
                         entities=[e.name for e in meta_res.entities],
                         topics=[t.name for t in meta_res.topics],
                         chunks=chunks,
+                        has_photo=has_photo,
+                        has_table=has_table,
                     )
                     total_chunks_created += len(chunks)
 
@@ -424,6 +557,8 @@ async def run_ingestion_pipeline(
                 "article_type": article_record.article_type,
                 "prominence_score": article_record.prominence_score,
                 "word_count": article_record.word_count,
+                "has_photo": has_photo,
+                "has_table": has_table,
             })
 
         if issue:

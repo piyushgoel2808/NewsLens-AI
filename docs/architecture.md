@@ -59,10 +59,18 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence System** for historica
 4. **2D Reading Order & Debundling**: Topological geometric sorting ensures column continuation without text bleeding, merges multi-page jumps, and rejects noisy boilerplate.
 5. **Embedding & Indexing**: Generates 1024-dim dense vectors via BAAI/bge-m3 into Qdrant with dual-index sync in MySQL `FULLTEXT`.
 
-### B. Agentic Retrieval & Reasoning Engine (`backend/app/agent/`)
+### B. Agentic Retrieval & Reasoning Engine (`backend/app/agent/` & `backend/app/retrieval/`)
 - **Query Condenser (`condenser.py`)**: Coreference resolution across dialog turns. Detects in-context meta-queries (`"which newspaper was this from?"`) to bypass vector search and answer directly from citations.
-- **Planner (`planner.py`)**: Classifies archetypes (`factual_lookup`, `thematic_timeline`, `entity_deep_dive`, `comparative_analysis`) and plans tool executions.
+- **LLM Agentic Query Planner (`planner.py`)**: Pydantic structured Chain-of-Thought (CoT) reasoning model with explicit tool boundaries. Dynamically classifies query archetypes (`factual_lookup`, `thematic_timeline`, `quantitative_trend`, `cross_newspaper_comparison`, `entity_deep_dive`) and routes macro-level queries (whole-issue summaries, full page manifests, article counts) to `sql_analytics` and fine-grained queries to `hybrid_search` without hardcoded regexes.
+- **Two-Stage Neural Retrieval Cascade (`hybrid_search.py` & `reranker.py`)**:
+  - **Stage 1 (High Recall Candidate Pool)**: Retrieves Top $N=75$ candidates using Reciprocal Rank Fusion (RRF) across Qdrant dense vector search (`BAAI/bge-m3`) and MySQL `FULLTEXT` keyword search.
+  - **Stage 2 (Cross-Encoder Neural Reranker)**: Evaluates candidate relevance via `sentence_transformers.CrossEncoder` (`BAAI/bge-reranker-v2-m3` / `ms-marco-MiniLM-L-6-v2`) with Apple Silicon `mps` auto-acceleration, producing the final Top 10 reranked context.
+- **3-Tier Negative Coverage Engine (`coverage_analyzer.py`)**:
+  - **Tier 1 (Relational Audit Invariant)**: Queries MySQL system-of-record to identify newspapers with zero articles on the requested topic.
+  - **Tier 2 (Vector/Semantic Negative Verification)**: Audits low semantic similarity candidates to confirm negative reporting.
+  - **Tier 3 (Multi-Newspaper Reconciliation Matrix)**: Generates comparative editorial matrices detailing perspective differences and omitted coverage.
 - **Synthesizer (`synthesizer.py`)**: Produces structured 4-tier briefs (`Executive Summary`, `Key Verified Facts`, `Broadsheet Perspectives`, `Explore Further`) with resilient multi-provider failover (`groq_compound` $\rightarrow$ `gemini_flash` $\rightarrow$ `groq_qwen` $\rightarrow$ `ollama_llama3`).
+- **IR Evaluation & Metrics Suite (`backend/app/evaluation/metrics.py`)**: Automated information retrieval evaluation benchmarks computing `Recall@K`, `Precision@K`, `MRR`, `NDCG@K`, `Faithfulness`, and `Coverage F1`.
 
 ### C. Cross-Newspaper Narrative Trajectory (`backend/app/retrieval/timeline_builder.py`)
 - Reconstructs story lifecycles across multiple broadsheets and dates.
@@ -80,3 +88,4 @@ All model providers implement structural subtyping via Python `Protocol` interfa
 - `DocumentLayoutProvider` & `OCREngine`: `GoogleCloudVisionOCR`, `DoclingProvider`, `MinerUProvider`, `GeminiProvider`, `TesseractOCR`
 
 Configured declaratively in `model_config.yaml` with runtime zero-downtime swapping via `/api/settings/model-bindings`.
+

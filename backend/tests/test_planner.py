@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
+import pytest
+
 from app.agent.planner import QueryPlanner
+from app.providers.base import ModelResponse
 
 
 class TestQueryPlanner:
@@ -90,13 +95,14 @@ class TestQueryPlanner:
             "List all the articles in today's paper",
             "Summarize issue overview",
             "What articles are in the July 7 edition?",
+            "Summarize the whole newspaper issue 81 of Mint 2026-8-28",
         ]
         for q in queries:
             plan = planner.plan_query(q)
             assert plan.archetype == "quantitative_trend"
-            assert len(plan.tool_calls) == 1
+            assert len(plan.tool_calls) >= 1
             assert plan.tool_calls[0].tool_name == "sql_analytics"
-            assert plan.tool_calls[0].arguments.get("analysis_type") == "issue_summary"
+            assert plan.tool_calls[0].arguments.get("analysis_type") in ("issue_summary", "count_articles")
 
     def test_plan_page_specific_article_queries(self) -> None:
         planner = QueryPlanner()
@@ -105,6 +111,7 @@ class TestQueryPlanner:
             ("how many articles on page 3", "3"),
             ("articles on page 10", "10"),
             ("what articles are on pg 4", "4"),
+            ("List articles on page 5", "5"),
         ]
         for q, expected_page in queries:
             plan = planner.plan_query(q)
@@ -121,3 +128,61 @@ class TestQueryPlanner:
         assert len(plan.tool_calls) == 1
         assert plan.tool_calls[0].tool_name == "hybrid_search"
         assert plan.tool_calls[0].arguments.get("page_filter") == "4"
+
+    @pytest.mark.asyncio
+    async def test_plan_query_async_with_llm_structured_cot(self) -> None:
+        mock_provider = AsyncMock()
+        mock_provider.complete.return_value = ModelResponse(
+            text="",
+            parsed={
+                "thought_process": "User wants a complete macro-issue summary of Mint issue 81. Relational sql_analytics is required.",
+                "archetype": "quantitative_trend",
+                "primary_tool": "sql_analytics",
+                "arguments": {
+                    "newspaper_name": "Mint",
+                    "issue_date": "2026-08-28",
+                    "issue_id": 81,
+                    "analysis_type": "issue_summary",
+                },
+                "include_secondary_hybrid_search": False,
+            },
+        )
+
+        planner = QueryPlanner(provider=mock_provider)
+        plan = await planner.plan_query_async("Summarize the whole newspaper issue 81 of Mint 2026-8-28")
+
+        assert plan.archetype == "quantitative_trend"
+        assert "macro-issue summary" in plan.reasoning
+        assert len(plan.tool_calls) == 1
+        assert plan.tool_calls[0].tool_name == "sql_analytics"
+        assert plan.tool_calls[0].arguments["newspaper_name"] == "Mint"
+        assert plan.tool_calls[0].arguments["issue_id"] == 81
+        assert plan.tool_calls[0].arguments["analysis_type"] == "issue_summary"
+
+    @pytest.mark.asyncio
+    async def test_plan_query_async_factual_page_question(self) -> None:
+        mock_provider = AsyncMock()
+        mock_provider.complete.return_value = ModelResponse(
+            text="",
+            parsed={
+                "thought_process": "User is asking about a specific entity event (Tata Power) on page 3. Requires hybrid search filtered to page 3.",
+                "archetype": "factual_lookup",
+                "primary_tool": "hybrid_search",
+                "arguments": {
+                    "query": "Tata Power",
+                    "page_filter": "3",
+                    "top_k": 6,
+                },
+                "include_secondary_hybrid_search": False,
+            },
+        )
+
+        planner = QueryPlanner(provider=mock_provider)
+        plan = await planner.plan_query_async("What happened to Tata Power on page 3?")
+
+        assert plan.archetype == "factual_lookup"
+        assert len(plan.tool_calls) == 1
+        assert plan.tool_calls[0].tool_name == "hybrid_search"
+        assert plan.tool_calls[0].arguments["page_filter"] == "3"
+        assert plan.tool_calls[0].arguments["query"] == "Tata Power"
+

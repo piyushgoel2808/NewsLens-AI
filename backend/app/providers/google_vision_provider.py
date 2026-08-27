@@ -325,7 +325,6 @@ class GoogleCloudVisionOCR(OCREngine, DocumentLayoutProvider, VisionModelProvide
         """
         import io
         import re
-        from PIL import Image
 
         from app.ingestion.detector import check_is_advertisement_text
         from app.ingestion.extraction_schemas import (
@@ -334,7 +333,6 @@ class GoogleCloudVisionOCR(OCREngine, DocumentLayoutProvider, VisionModelProvide
             PageLayoutExtraction,
         )
         from app.ingestion.layout_analyzer import LayoutAnalyzer
-        from app.ingestion.reading_order import BlockType, LayoutElement, ReadingOrderResolver
         from app.ingestion.segmenter import ArticleSegmenter
 
         # 1. Run Pure Document Text OCR

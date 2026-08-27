@@ -1,52 +1,112 @@
-"""Query Planner: Archetype classification and multi-step tool execution planning."""
+"""Query Planner: Archetype classification and multi-step tool execution planning via LLM Agentic Routing."""
 
 from __future__ import annotations
 
-import re
+import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
+from app.providers.base import ChatModelProvider, Message
+from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
 
-TIMELINE_KEYWORDS = re.compile(
-    r"\b(?:timeline|chronology|chronological|trace|evolution|over time|"
-    r"history of|progression|sequence)\b",
-    re.IGNORECASE,
-)
 
-TREND_KEYWORDS = re.compile(
-    r"\b(?:how many|count|total articles|total pages|list all|all articles|"
-    r"summarize issue|overview of|what articles|frequency|trend|trends|ratio|"
-    r"percentage|distribution|statistics|volume|metric|no\.?\s*of\s*articles|number\s*of\s*articles)\b",
-    re.IGNORECASE,
-)
+# ---------------------------------------------------------------------------
+# Pydantic Schemas for Structured Agentic Query Planning & Reasoning
+# ---------------------------------------------------------------------------
 
-COMPARISON_KEYWORDS = re.compile(
-    r"\b(?:compare|comparison|contrast|perspectives|different papers|"
-    r"coverage across|differ|bias)\b",
-    re.IGNORECASE,
-)
+QueryArchetype = Literal[
+    "factual_lookup",
+    "thematic_timeline",
+    "quantitative_trend",
+    "cross_newspaper_comparison",
+    "entity_deep_dive",
+]
 
-ENTITY_KEYWORDS = re.compile(
-    r"\b(?:everything about|all mentions of|profile|who is|what did .* say|coverage of)\b",
-    re.IGNORECASE,
-)
+PrimaryToolName = Literal[
+    "sql_analytics",
+    "hybrid_search",
+    "timeline_builder",
+    "entity_search",
+    "coverage_analysis",
+]
 
-PAGE_PATTERN = re.compile(
-    r"\b(?:page|pg|p\.)\s*([0-9]{1,3}|[A-Za-z]?[-–]?[0-9]{1,3})\b",
-    re.IGNORECASE,
-)
 
-PAGE_ARTICLE_QUERY_PATTERN = re.compile(
-    r"\b(?:list|how many|count|number of|no\.?\s*of|what|show|all)?\s*"
-    r"(?:of\s*)?articles\b.*?\b(?:page|pg|p\.)\s*"
-    r"([0-9]{1,3}|[A-Za-z]?[-–]?[0-9]{1,3})\b"
-    r"|\b(?:page|pg|p\.)\s*([0-9]{1,3}|[A-Za-z]?[-–]?[0-9]{1,3})\b.*?"
-    r"\b(?:articles|stories|news|manifest)\b",
-    re.IGNORECASE,
-)
+class ExtractedToolArguments(BaseModel):
+    """Normalized arguments for retrieval tools extracted by the planner."""
+
+    newspaper_name: str | None = Field(
+        None,
+        description="Target newspaper brand if specified (e.g. 'Mint', 'Business Standard')",
+    )
+    issue_date: str | None = Field(
+        None,
+        description="Target issue date in YYYY-MM-DD format if specified",
+    )
+    issue_id: int | None = Field(
+        None,
+        description="Target issue ID integer if specified",
+    )
+    page_filter: str | None = Field(
+        None,
+        description="Page number or printed folio string to filter by (e.g. '1', '5', 'Wrap')",
+    )
+    exclude_page_filter: str | None = Field(
+        None,
+        description="Page number string to exclude from results if requested",
+    )
+    category_filter: str | None = Field(
+        None,
+        description="Category / section name if sorting or filtering by section (e.g. 'Economy', 'Markets')",
+    )
+    analysis_type: str | None = Field(
+        None,
+        description="For sql_analytics: 'issue_summary', 'count_articles', 'entity_trends', 'topic_distribution'",
+    )
+    query: str | None = Field(
+        None,
+        description="Refined text search query for semantic / keyword retrieval",
+    )
+    top_k: int = Field(
+        6,
+        description="Number of results to retrieve",
+    )
+
+
+class QueryPlan(BaseModel):
+    """Pydantic schema enforcing structured Chain-of-Thought reasoning and tool routing."""
+
+    thought_process: str = Field(
+        ...,
+        description=(
+            "Step-by-step reasoning analyzing user intent: macro/structural vs factual/entity vs timeline "
+            "vs comparative. Explain why the selected tool is the exact correct fit according to tool boundaries."
+        ),
+    )
+    archetype: QueryArchetype = Field(
+        ...,
+        description="The classified query archetype",
+    )
+    primary_tool: PrimaryToolName = Field(
+        ...,
+        description="The main tool to invoke for this query",
+    )
+    arguments: ExtractedToolArguments = Field(
+        default_factory=lambda: ExtractedToolArguments(),
+        description="Arguments passed to the primary tool",
+    )
+    include_secondary_hybrid_search: bool = Field(
+        False,
+        description="Whether to also run hybrid search to retrieve qualitative quotes/snippets alongside SQL analytics",
+    )
+    secondary_search_query: str | None = Field(
+        None,
+        description="Targeted query string for the secondary search if needed",
+    )
 
 
 @dataclass
@@ -67,6 +127,132 @@ class PlanResult:
     tool_calls: list[PlannedToolCall]
 
 
+# ---------------------------------------------------------------------------
+# Planner System Prompt with Explicit Tool Boundaries & Few-Shot Demos
+# ---------------------------------------------------------------------------
+
+PLANNER_SYSTEM_PROMPT = """You are the expert Query Planner for NewsLens-AI, an agentic intelligence system over broadsheet newspapers.
+
+Your job is to analyze the user's research query, understand their underlying intent, produce a Chain-of-Thought reasoning breakdown, and select the optimal retrieval tool(s).
+
+### 🛠️ TOOL BOUNDARIES & OPERATIONAL CONSTRAINTS (STRICT)
+
+1. **`sql_analytics` (Relational System of Record & Structural Aggregations)**:
+   - MUST BE USED FOR:
+     * Whole-issue summaries (e.g. "Summarize issue 81 of Mint", "Give an overview of today's newspaper").
+     * Article listings & page manifests (e.g. "List all articles on page 5", "What news is on page 10?").
+     * Article counting & statistics (e.g. "How many articles are in this issue?", "Count stories about economy").
+     * Section/category breakdowns (e.g. "Show articles sorted by Sports section").
+   - NEVER USE `hybrid_search` for whole-issue summaries or whole-page article listings. Vector search only retrieves fragmented text chunks and cannot see the full document or list all articles.
+
+2. **`hybrid_search` (Dense Vector + Sparse Keyword Reranked Retrieval)**:
+   - MUST BE USED FOR:
+     * Specific factual questions, quotes, and event details (e.g. "What did the RBI governor state about inflation?").
+     * Targeted entity questions on a specific page (e.g. "What happened to Tata Power on page 3?").
+   - Arguments support `page_filter` when the user asks a factual question restricted to a single page.
+
+3. **`timeline_builder` (Chronological Narrative Trajectories)**:
+   - MUST BE USED FOR:
+     * Chronological progression, evolution over time, or narrative tracking across multiple dates (e.g. "Timeline of the Adani-Hindenburg saga").
+
+4. **`entity_search` (Entity Deep Dives)**:
+   - MUST BE USED FOR:
+     * Comprehensive profiles and salience analysis of specific individuals or organizations across the archive (e.g. "Show me everything about Winston Churchill").
+
+5. **`coverage_analysis` (Cross-Newspaper Comparative Matrix)**:
+   - MUST BE USED FOR:
+     * Comparing coverage, tone, and editorial stances across multiple newspapers (e.g. "Compare how Mint and Business Standard covered the budget").
+
+---
+
+### 📚 FEW-SHOT ROUTING EXAMPLES
+
+Example 1:
+Query: "Summarize the whole newspaper issue 81 of Mint 2026-08-28"
+Output: {
+  "thought_process": "User is requesting a macro overview and complete summary of an entire newspaper issue (Issue 81, Mint, 2026-08-28). Vector search cannot summarize full documents. sql_analytics with analysis_type='issue_summary' must be used to retrieve the full relational article manifest.",
+  "archetype": "quantitative_trend",
+  "primary_tool": "sql_analytics",
+  "arguments": {
+    "newspaper_name": "Mint",
+    "issue_date": "2026-08-28",
+    "issue_id": 81,
+    "analysis_type": "issue_summary"
+  },
+  "include_secondary_hybrid_search": false
+}
+
+Example 2:
+Query: "List all articles on page 5"
+Output: {
+  "thought_process": "User wants a structured manifest of all news items on page 5. This is a structural page manifest query requiring the relational database. sql_analytics is the primary tool with page_filter='5'.",
+  "archetype": "quantitative_trend",
+  "primary_tool": "sql_analytics",
+  "arguments": {
+    "page_filter": "5",
+    "analysis_type": "issue_summary"
+  },
+  "include_secondary_hybrid_search": false
+}
+
+Example 3:
+Query: "What happened to Tata Power on page 3?"
+Output: {
+  "thought_process": "User is asking a specific factual question about a named company (Tata Power) located on page 3. This requires semantic text retrieval focused on that page. hybrid_search is the correct tool with page_filter='3'.",
+  "archetype": "factual_lookup",
+  "primary_tool": "hybrid_search",
+  "arguments": {
+    "query": "Tata Power",
+    "page_filter": "3",
+    "top_k": 6
+  },
+  "include_secondary_hybrid_search": false
+}
+
+Example 4:
+Query: "How many articles covered the GDP growth announcement and what were the main headlines?"
+Output: {
+  "thought_process": "User wants both a quantitative count and representative article excerpts regarding GDP growth. We invoke sql_analytics to count articles and enable secondary hybrid_search for narrative excerpts.",
+  "archetype": "quantitative_trend",
+  "primary_tool": "sql_analytics",
+  "arguments": {
+    "analysis_type": "count_articles",
+    "query": "GDP growth announcement"
+  },
+  "include_secondary_hybrid_search": true,
+  "secondary_search_query": "GDP growth announcement"
+}
+
+Example 5:
+Query: "Provide a timeline of the banking crisis in 2026"
+Output: {
+  "thought_process": "User requested chronological progression and key milestones over time. timeline_builder is the primary tool.",
+  "archetype": "thematic_timeline",
+  "primary_tool": "timeline_builder",
+  "arguments": {
+    "query": "banking crisis",
+    "top_k": 25
+  },
+  "include_secondary_hybrid_search": true,
+  "secondary_search_query": "banking crisis"
+}
+
+Example 6:
+Query: "Compare how different papers covered the defense budget"
+Output: {
+  "thought_process": "User is contrasting editorial perspectives across multiple broadsheets. coverage_analysis is required alongside hybrid_search.",
+  "archetype": "cross_newspaper_comparison",
+  "primary_tool": "coverage_analysis",
+  "arguments": {
+    "query": "defense budget",
+    "top_k": 12
+  },
+  "include_secondary_hybrid_search": true,
+  "secondary_search_query": "defense budget"
+}
+"""
+
+
 def _build_targeted_web_query(query: str) -> str:
     """Transform conversational prompts into high-precision entity-anchored search queries."""
     if not query:
@@ -76,6 +262,7 @@ def _build_targeted_web_query(query: str) -> str:
         r"^(?:can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+)+",
         r"^(?:tell\s+me\s+(?:about|more\s+about)?|summarize|explain|what\s+is|what\s+are|what\s+happened\s+(?:to|with)?|who\s+is|who\s+was|search\s+for|find\s+(?:news\s+about|information\s+on)?|give\s+me\s+(?:a\s+summary\s+of|details\s+about)?|overview\s+of)\s+(?:the\s+|a\s+|an\s+)?",
     ]
+    import re
     for _ in range(3):
         prev = cleaned
         for pattern in prefix_patterns:
@@ -89,49 +276,380 @@ def _build_targeted_web_query(query: str) -> str:
 
 
 class QueryPlanner:
-    """Classifies user queries into 5 archetypes and creates targeted retrieval plans."""
+    """Agentic Query Planner leveraging LLM cognitive reasoning for dynamic tool routing."""
 
-    def classify_archetype(self, query: str) -> tuple[str, str]:
-        """Determine archetype based on semantic cues and intent."""
-        query_clean = query.strip()
+    def __init__(self, provider: ChatModelProvider | None = None) -> None:
+        self._provider = provider
 
-        if PAGE_ARTICLE_QUERY_PATTERN.search(query_clean):
-            return (
-                "quantitative_trend",
-                "User requested article listing or count for a specific newspaper page.",
-            )
-        elif TIMELINE_KEYWORDS.search(query_clean):
-            return (
-                "thematic_timeline",
-                "User requested chronological event progression or evolution over time.",
-            )
-        elif TREND_KEYWORDS.search(query_clean):
-            return (
-                "quantitative_trend",
-                "User requested statistical trends, frequencies, or volume distributions.",
-            )
-        elif COMPARISON_KEYWORDS.search(query_clean):
-            return (
-                "cross_newspaper_comparison",
-                "User requested comparison of editorial perspectives across papers.",
-            )
-        elif ENTITY_KEYWORDS.search(query_clean):
-            return (
-                "entity_deep_dive",
-                "User requested focused investigation of a specific entity or organization.",
-            )
-        else:
-            return (
-                "factual_lookup",
-                "User requested factual point-in-time information or specific news event details.",
-            )
+    def _get_provider(self, model_override: str | None = None) -> ChatModelProvider | None:
+        """Resolve LLM provider for planning."""
+        if self._provider is not None:
+            return self._provider
+        try:
+            reg = get_registry()
+            provider_inst = reg.get_provider(model_override or "query_planner")
+            if isinstance(provider_inst, ChatModelProvider):
+                return provider_inst
+        except Exception as e:
+            logger.warning("Could not resolve LLM provider for QueryPlanner", extra={"error": str(e)})
+        return None
+
+    async def plan_query_async(
+        self,
+        query: str,
+        enable_web_search: bool = False,
+        model_override: str | None = None,
+    ) -> PlanResult:
+        """Plan query using LLM structured Chain-of-Thought reasoning with graceful heuristic fallback."""
+        provider = self._get_provider(model_override)
+        if provider is not None:
+            try:
+                plan_schema = QueryPlan.model_json_schema()
+                messages = [
+                    Message(role="system", content=PLANNER_SYSTEM_PROMPT),
+                    Message(
+                        role="user",
+                        content=(
+                            f"Analyze and plan the following broadsheet research query:\n"
+                            f"Query: \"{query}\"\n"
+                            f"Provide your JSON plan strictly matching the required schema."
+                        ),
+                    ),
+                ]
+                resp = await provider.complete(
+                    messages=messages,
+                    response_schema=plan_schema,
+                    temperature=0.0,
+                    max_tokens=1024,
+                )
+
+                parsed_dict: dict[str, Any] | None = None
+                if resp.parsed and isinstance(resp.parsed, dict):
+                    parsed_dict = resp.parsed
+                elif resp.text:
+                    parsed_dict = self._parse_json_plan(resp.text)
+
+                if parsed_dict:
+                    plan_obj = QueryPlan.model_validate(parsed_dict)
+                    return self._build_plan_from_structured_model(
+                        query=query,
+                        plan_obj=plan_obj,
+                        enable_web_search=enable_web_search,
+                    )
+            except Exception as ex:
+                logger.warning(
+                    "LLM Agentic Planning failed; falling back to cognitive semantic routing",
+                    extra={"query": query[:50], "error": str(ex)},
+                )
+
+        # Fallback if no LLM provider or LLM call failed
+        return self._plan_query_heuristic(query, enable_web_search=enable_web_search)
 
     def plan_query(self, query: str, enable_web_search: bool = False) -> PlanResult:
-        """Generate ordered tool invocations for the classified archetype."""
-        archetype, reasoning = self.classify_archetype(query)
+        """Synchronous planning interface for compatibility with sync callers."""
+        return self._plan_query_heuristic(query, enable_web_search=enable_web_search)
+
+    def classify_archetype(self, query: str) -> tuple[str, str]:
+        """Classify query archetype (synchronous interface)."""
+        res = self._plan_query_heuristic(query)
+        return res.archetype, res.reasoning
+
+    @staticmethod
+    def _parse_json_plan(text: str) -> dict[str, Any] | None:
+        """Extract and parse JSON object from LLM text response."""
+        if not text:
+            return None
+        cleaned = text.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+
+        try:
+            res = json.loads(cleaned)
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+
+        import re
+        match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
+        if match:
+            try:
+                res = json.loads(match.group(1))
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                pass
+        return None
+
+    def _build_plan_from_structured_model(
+        self,
+        query: str,
+        plan_obj: QueryPlan,
+        enable_web_search: bool = False,
+    ) -> PlanResult:
+        """Translate structured QueryPlan Pydantic model into executable PlannedToolCall list."""
+        tool_calls: list[PlannedToolCall] = []
+        args = plan_obj.arguments
+
+        if plan_obj.primary_tool == "sql_analytics":
+            call_args: dict[str, Any] = {
+                "analysis_type": args.analysis_type or "issue_summary",
+                "newspaper_name": args.newspaper_name,
+                "issue_date": args.issue_date,
+                "issue_id": args.issue_id,
+                "page_filter": args.page_filter,
+                "exclude_page_filter": args.exclude_page_filter,
+                "category_filter": args.category_filter,
+                "query": args.query or query,
+            }
+            # Clean None values
+            call_args = {k: v for k, v in call_args.items() if v is not None}
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="sql_analytics",
+                    arguments=call_args,
+                    purpose=f"Execute SQL relational analytics ({call_args.get('analysis_type', 'issue_summary')})",
+                )
+            )
+
+        elif plan_obj.primary_tool == "hybrid_search":
+            call_args = {
+                "query": args.query or query,
+                "page_filter": args.page_filter,
+                "top_k": args.top_k or 6,
+            }
+            call_args = {k: v for k, v in call_args.items() if v is not None}
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="hybrid_search",
+                    arguments=call_args,
+                    purpose=(
+                        f"Execute hybrid search for query '{call_args.get('query')}'"
+                        + (f" on Page {args.page_filter}" if args.page_filter else "")
+                    ),
+                )
+            )
+
+        elif plan_obj.primary_tool == "timeline_builder":
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="timeline_builder",
+                    arguments={"query": args.query or query, "limit": args.top_k or 30},
+                    purpose="Aggregate chronological trajectory and milestone articles",
+                )
+            )
+
+        elif plan_obj.primary_tool == "entity_search":
+            ent_name = args.query or query
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="entity_search",
+                    arguments={"entity_name": ent_name, "top_k": args.top_k or 10},
+                    purpose=f"Retrieve high-salience articles mentioning entity '{ent_name}'",
+                )
+            )
+
+        elif plan_obj.primary_tool == "coverage_analysis":
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="hybrid_search",
+                    arguments={"query": args.query or query, "top_k": 12},
+                    purpose="Retrieve diverse articles across multiple newspaper editions",
+                )
+            )
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="coverage_analysis",
+                    arguments={"query": args.query or query},
+                    purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
+                )
+            )
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="sql_analytics",
+                    arguments={"analysis_type": "coverage_comparison", "query": args.query or query},
+                    purpose="Compare reporting sentiment, volume, and section prominence",
+                )
+            )
+
+        # Secondary search if requested
+        if plan_obj.include_secondary_hybrid_search and plan_obj.primary_tool != "hybrid_search":
+            sec_q = plan_obj.secondary_search_query or query
+            sec_args: dict[str, Any] = {"query": sec_q, "top_k": 6}
+            if args.page_filter:
+                sec_args["page_filter"] = args.page_filter
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="hybrid_search",
+                    arguments=sec_args,
+                    purpose=f"Retrieve corroborating article excerpts for '{sec_q}'",
+                )
+            )
+
+        if enable_web_search:
+            web_q = _build_targeted_web_query(query)
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="web_search",
+                    arguments={"query": web_q, "num_results": 5},
+                    purpose="Retrieve corroborating current news and live internet search results",
+                )
+            )
+
+        logger.info(
+            "Agentic query planned via LLM",
+            extra={
+                "query": query[:40],
+                "archetype": plan_obj.archetype,
+                "primary_tool": plan_obj.primary_tool,
+                "tools_count": len(tool_calls),
+            },
+        )
+
+        return PlanResult(
+            archetype=plan_obj.archetype,
+            reasoning=plan_obj.thought_process,
+            tool_calls=tool_calls,
+        )
+
+    def _plan_query_heuristic(self, query: str, enable_web_search: bool = False) -> PlanResult:
+        """Cognitive intent decomposition and tool routing fallback."""
+        q_lower = query.lower().strip()
+        words = [w.strip("?:!.,\"'") for w in q_lower.split()]
+
+        # 1. Check for macro-issue summary or whole-issue queries
+        is_issue_macro = any(
+            phrase in q_lower
+            for phrase in [
+                "summarize the whole",
+                "summarize issue",
+                "summary of issue",
+                "overview of issue",
+                "overview of the issue",
+                "whole newspaper",
+                "entire newspaper",
+                "whole issue",
+                "entire issue",
+                "today's paper",
+                "today's newspaper",
+                "in this newspaper",
+                "list all the articles",
+                "all the articles in",
+                "manifest",
+                "issue overview",
+                "edition?",
+                "edition",
+            ]
+        )
+
+        # 2. Check for page token and page numbers
+        has_page_token = any(w in ["page", "pg", "p."] for w in words) or "page " in q_lower or "pg " in q_lower
+        page_num_str: str | None = None
+        for i, w in enumerate(words):
+            if w in ["page", "pg", "p."] and i + 1 < len(words):
+                cand = words[i + 1]
+                if cand.isdigit() or len(cand) <= 4:
+                    page_num_str = cand
+                    break
+
+        # Check if page query is a manifest / listing vs factual question
+        is_page_manifest = has_page_token and any(
+            w in q_lower for w in ["list", "articles on", "stories on", "all articles", "no of articles", "how many", "what articles"]
+        ) and not any(w in q_lower for w in ["what happened", "what did", "why did", "how did", "announce", "state", "say"])
+
+        # 3. Check for counting / statistical aggregations
+        is_count_or_stat = any(
+            phrase in q_lower
+            for phrase in [
+                "how many articles",
+                "total articles",
+                "number of articles",
+                "no. of articles",
+                "no of articles",
+                "count of articles",
+                "frequency trend",
+                "distribution of articles",
+                "topic distribution",
+            ]
+        )
+
+        # 4. Check for timeline progression
+        is_timeline = any(
+            w in q_lower
+            for w in [
+                "timeline",
+                "chronology",
+                "chronological",
+                "evolution of",
+                "evolution",
+                "over time",
+                "history of",
+                "progression of",
+                "progression",
+            ]
+        )
+
+        # 5. Check for cross-newspaper comparison
+        is_comparison = any(
+            w in q_lower
+            for w in [
+                "compare",
+                "contrast",
+                "different papers",
+                "across newspapers",
+                "perspectives on",
+                "editorial perspectives",
+            ]
+        )
+
+        # 6. Check for entity deep dive
+        is_entity = any(
+            phrase in q_lower
+            for phrase in [
+                "everything about",
+                "all mentions of",
+                "profile the coverage",
+                "profile of",
+            ]
+        )
+
         tool_calls: list[PlannedToolCall] = []
 
-        if archetype == "thematic_timeline":
+        if is_issue_macro or is_page_manifest or is_count_or_stat:
+            archetype = "quantitative_trend"
+            reasoning = "Query requires structural issue manifest, page article listing, or count from MySQL system of record."
+            sql_args: dict[str, Any] = {"analysis_type": "issue_summary", "query": query}
+            if page_num_str:
+                sql_args["page_filter"] = page_num_str
+            if is_count_or_stat and not is_issue_macro and not is_page_manifest:
+                sql_args["analysis_type"] = "count_articles"
+
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="sql_analytics",
+                    arguments=sql_args,
+                    purpose=f"Query relational database for {sql_args['analysis_type']}",
+                )
+            )
+
+            # If page-specific manifest with multiple articles, also retrieve hybrid snippets
+            if is_page_manifest and page_num_str:
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={"query": query, "page_filter": page_num_str, "top_k": 6},
+                        purpose=f"Retrieve article content and snippets on Page {page_num_str}",
+                    )
+                )
+
+        elif is_timeline:
+            archetype = "thematic_timeline"
+            reasoning = "Query requested chronological event progression and milestones."
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="timeline_builder",
@@ -147,99 +665,21 @@ class QueryPlanner:
                 )
             )
 
-        elif archetype == "quantitative_trend":
-            page_match = PAGE_ARTICLE_QUERY_PATTERN.search(query)
-            is_issue_aggregate = bool(
-                page_match
-                or re.search(
-                    r"\b(?:how many articles|how many pages|total articles|list all|"
-                    r"all articles|summarize issue|overview of the issue|what articles|"
-                    r"manifest|all headlines|no\.?\s*of\s*articles)\b",
-                    query,
-                    re.IGNORECASE,
-                )
-            )
-
-            if page_match:
-                page_token = [g for g in page_match.groups() if g is not None][0]
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="sql_analytics",
-                        arguments={
-                            "analysis_type": "issue_summary",
-                            "page_filter": page_token,
-                            "query": query,
-                        },
-                        purpose=(
-                            f"Query MySQL system of record for exact article count and "
-                            f"manifest on Page {page_token}"
-                        ),
-                    )
-                )
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="hybrid_search",
-                        arguments={"query": query, "page_filter": page_token, "top_k": 6},
-                        purpose=f"Retrieve article content and snippets on Page {page_token}",
-                    )
-                )
-            elif is_issue_aggregate:
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="sql_analytics",
-                        arguments={"analysis_type": "issue_summary", "query": query},
-                        purpose=(
-                            "Query MySQL system of record for exact article "
-                            "counts, pages, and manifest"
-                        ),
-                    )
-                )
-            else:
-                stop_words = {
-                    "trend",
-                    "frequency",
-                    "ratio",
-                    "show",
-                    "what",
-                    "many",
-                    "count",
-                }
-                keywords = [
-                    w for w in re.findall(r"\b[A-Za-z]{4,}\b", query) if w.lower() not in stop_words
-                ]
-                primary_term = keywords[0] if keywords else query
-
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="sql_analytics",
-                        arguments={"analysis_type": "entity_trends", "term": primary_term},
-                        purpose="Calculate quantitative mention volume and frequency over time",
-                    )
-                )
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="sql_analytics",
-                        arguments={"analysis_type": "topic_distribution"},
-                        purpose="Analyze topic volume and section prominence ratios",
-                    )
-                )
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="hybrid_search",
-                        arguments={"query": query, "top_k": 5},
-                        purpose=(
-                            "Retrieve representative qualitative examples for "
-                            "statistical findings"
-                        ),
-                    )
-                )
-
-        elif archetype == "cross_newspaper_comparison":
+        elif is_comparison:
+            archetype = "cross_newspaper_comparison"
+            reasoning = "Query requested editorial perspective comparison across multiple broadsheet editions."
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="hybrid_search",
                     arguments={"query": query, "top_k": 12},
                     purpose="Retrieve diverse articles across multiple newspaper editions",
+                )
+            )
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="coverage_analysis",
+                    arguments={"query": query},
+                    purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
                 )
             )
             tool_calls.append(
@@ -250,13 +690,18 @@ class QueryPlanner:
                 )
             )
 
-        elif archetype == "entity_deep_dive":
-            ent_name = query.replace("everything about", "").replace("who is", "").strip()
+        elif is_entity:
+            archetype = "entity_deep_dive"
+            reasoning = "Query requested comprehensive profile and mentions of an entity."
+            clean_ent = query
+            for p in ["everything about", "all mentions of", "profile the coverage of", "profile of"]:
+                clean_ent = clean_ent.replace(p, "")
+            clean_ent = clean_ent.strip("?:!.,\"' ")
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="entity_search",
-                    arguments={"entity_name": ent_name, "top_k": 10},
-                    purpose=f"Retrieve high-salience articles mentioning entity '{ent_name}'",
+                    arguments={"entity_name": clean_ent, "top_k": 10},
+                    purpose=f"Retrieve high-salience articles mentioning entity '{clean_ent}'",
                 )
             )
             tool_calls.append(
@@ -268,47 +713,32 @@ class QueryPlanner:
             )
 
         else:  # factual_lookup
-            p_match = PAGE_PATTERN.search(query)
-            if p_match:
-                p_token = p_match.group(1)
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="hybrid_search",
-                        arguments={"query": query, "page_filter": p_token, "top_k": 6},
-                        purpose=f"Execute hybrid search filtered to Page {p_token}",
-                    )
-                )
-            else:
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="hybrid_search",
-                        arguments={"query": query, "top_k": 6},
-                        purpose="Execute hybrid dense/sparse search for direct factual evidence",
-                    )
-                )
-
-        if enable_web_search:
-            web_query = _build_targeted_web_query(query)
+            archetype = "factual_lookup"
+            reasoning = "Query requested specific factual details or point-in-time news reporting."
+            search_args: dict[str, Any] = {"query": query, "top_k": 6}
+            if page_num_str:
+                search_args["page_filter"] = page_num_str
             tool_calls.append(
                 PlannedToolCall(
-                    tool_name="web_search",
-                    arguments={"query": web_query, "num_results": 5},
-                    purpose="Retrieve corroborating current news and live internet search results",
+                    tool_name="hybrid_search",
+                    arguments=search_args,
+                    purpose="Execute hybrid dense/sparse search for direct factual evidence",
                 )
             )
 
-        logger.info(
-            "Query planned",
-            extra={
-                "query": query[:40],
-                "archetype": archetype,
-                "tools_planned": len(tool_calls),
-                "enable_web_search": enable_web_search,
-            },
-        )
+        if enable_web_search:
+            web_q = _build_targeted_web_query(query)
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="web_search",
+                    arguments={"query": web_q, "num_results": 5},
+                    purpose="Retrieve corroborating current news and live internet search results",
+                )
+            )
 
         return PlanResult(
             archetype=archetype,
             reasoning=reasoning,
             tool_calls=tool_calls,
         )
+

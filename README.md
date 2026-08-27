@@ -15,8 +15,9 @@
 ## 🌟 Key Features
 
 - **📑 Multi-Column Layout Segmentation & 2D Reading Order**: Uses **IBM Docling**, **MinerU**, and **Google Gemini Vision** to segment complex broadsheet layouts into discrete articles, preventing column bleeding.
-- **🔍 Hybrid Dense/Sparse Vector Search**: Combines **Qdrant** dense vector embeddings (`BAAI/bge-m3`, 1024-dim) with **MySQL FULLTEXT** keyword matching for maximum precision.
-- **🤖 Autonomous LangGraph Agent Workflow**: Dynamic query archetype classification (`factual_lookup`, `thematic_timeline`, `entity_deep_dive`, `comparative_analysis`) with conversational coreference resolution and in-context memory.
+- **⚡ Two-Stage Neural Retrieval Cascade (Cross-Encoder)**: Stage 1 RRF hybrid search (Qdrant `BAAI/bge-m3` + MySQL `FULLTEXT`) expands candidates to $N=75$, followed by Stage 2 Cross-Encoder neural reranking (`BAAI/bge-reranker-v2-m3` with Apple Silicon `mps` acceleration) returning the Top 10 high-precision hits.
+- **📊 3-Tier Negative Coverage Engine**: Performs relational audits in MySQL to identify zero-coverage publications, semantic validation, and multi-newspaper editorial reconciliation matrices (`POST /api/query/coverage`).
+- **🤖 Autonomous LangGraph Agent Workflow with Agentic Query Routing**: Pydantic structured Chain-of-Thought (CoT) planning without regex rules. Autonomously routes macro-level queries (whole-issue summaries, page manifests, counts) to `sql_analytics` and fine-grained queries to `hybrid_search`.
 - **⚡ 4-Tier Structured Executive Intelligence Briefs**:
   - `⚡ Executive Summary`: High-impact core answer and market reaction.
   - `📌 Key Verified Facts & Financials`: Precise figures, index moves (Sensex, Nifty), FPI/FII net inflows (in ₹ crore), and inline citations.
