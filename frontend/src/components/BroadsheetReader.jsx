@@ -140,9 +140,10 @@ export default function BroadsheetReader() {
         return pages.includes(currentPage.page_number);
       })
       .map((art) => {
-        const pageBboxes = art.bboxes_by_page
-          ? art.bboxes_by_page[currentPage.page_number] || []
-          : [];
+        const pageBboxes =
+          (art.page_bboxes && art.page_bboxes[currentPage.page_number]) ||
+          (art.bboxes_by_page && art.bboxes_by_page[currentPage.page_number]) ||
+          (Array.isArray(art.bboxes) ? art.bboxes : []);
         return {
           ...art,
           bboxes: pageBboxes,
@@ -439,6 +440,79 @@ export default function BroadsheetReader() {
                         >
                           Page {p.page_number}
                         </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Article Chunks & Vector Decomposition Breakdown */}
+                {articleDetails.chunks && articleDetails.chunks.length > 0 && (
+                  <div className="mt-6 border-t border-slate-800 pt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-emerald-400" />
+                        Indexed RAG Chunks ({articleDetails.chunks.length})
+                      </h3>
+                      <span className="text-[11px] text-slate-400 font-mono">
+                        Vector DB: Qdrant
+                      </span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {articleDetails.chunks.map((chk) => (
+                        <div
+                          key={chk.id || chk.chunk_index}
+                          className="bg-slate-950/80 border border-slate-800 hover:border-emerald-500/60 rounded-lg p-3 transition-colors text-xs"
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="font-mono text-[10px] uppercase font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/50">
+                              Chunk #{chk.chunk_index + 1}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              {chk.token_count || '~'} tokens
+                            </span>
+                          </div>
+                          <p className="text-slate-300 font-mono text-[11px] leading-relaxed whitespace-pre-wrap bg-slate-900/60 p-2.5 rounded border border-slate-800/80">
+                            {chk.text}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Extracted Photos Section */}
+                {articleDetails.photos && articleDetails.photos.length > 0 && (
+                  <div className="mt-6 border-t border-slate-800 pt-4">
+                    <h3 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-1.5">
+                      <Tag className="w-4 h-4 text-purple-400" />
+                      Associated Photos & Graphics ({articleDetails.photos.length})
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {articleDetails.photos.map((ph, idx) => (
+                        <div key={ph.id || idx} className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs overflow-hidden flex flex-col gap-2">
+                          {ph.image_url && (
+                            <div className="bg-slate-900 rounded overflow-hidden flex items-center justify-center max-h-48 border border-slate-800">
+                              <img
+                                src={ph.image_url}
+                                alt={ph.caption || `Photo #${ph.id}`}
+                                className="w-full h-auto object-contain max-h-48 rounded"
+                                loading="lazy"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                            </div>
+                          )}
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] text-purple-400 font-mono font-bold bg-purple-950/60 px-1.5 py-0.5 rounded border border-purple-800/40">
+                              Photo #{ph.id}
+                            </span>
+                            {ph.caption && (
+                              <p className="text-slate-400 text-[11px] italic line-clamp-2">{ph.caption}</p>
+                            )}
+                          </div>
+                        </div>
                       ))}
                     </div>
                   </div>

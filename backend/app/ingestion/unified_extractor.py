@@ -8,7 +8,6 @@ Supports:
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import re
@@ -201,6 +200,8 @@ class UnifiedExtractor:
                         continue
             logger.warning("All JSON repair attempts failed on raw model output", extra={"snippet": raw_text[:200]})
             return None
+
+        return None
 
     @staticmethod
     def _repair_truncated_json(text: str) -> str | None:

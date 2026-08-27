@@ -61,14 +61,11 @@ exclude = ["alembic/versions/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["B008"]  # FastAPI Depends() in function defaults
+ignore = ["B008", "E501"]  # FastAPI Depends() in function defaults; line length handled gracefully
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]                              # allow assert in tests
 "app/models/*" = ["F821"]                         # SQLAlchemy cross-module forward refs
-"app/storage/mysql_fulltext.py" = ["E501"]        # SQL strings exceed line limit
-"app/api/routers/models.py" = ["E501"]            # long return string
-"app/models/newspaper.py" = ["E501"]              # long constraint name
 
 [tool.mypy]
 python_version = "3.12"

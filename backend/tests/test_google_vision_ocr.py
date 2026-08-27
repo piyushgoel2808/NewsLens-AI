@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from PIL import Image
@@ -30,9 +30,11 @@ class TestGoogleCloudVisionOCR:
         assert ocr.capability.supports_vision is True
 
     def test_raises_without_credentials(self) -> None:
-        with patch("pathlib.Path.exists", return_value=False):
-            with pytest.raises(ProviderError, match="requires a GCP Service Account key or API key"):
-                GoogleCloudVisionOCR()
+        with (
+            patch("pathlib.Path.exists", return_value=False),
+            pytest.raises(ProviderError, match="requires a GCP Service Account key or API key"),
+        ):
+            GoogleCloudVisionOCR()
 
     @pytest.mark.asyncio
     async def test_google_cloud_vision_ocr_parsing(self) -> None:
@@ -95,8 +97,9 @@ class TestGoogleCloudVisionOCR:
     @pytest.mark.asyncio
     async def test_google_cloud_vision_analyze_image(self) -> None:
         """Test analyze_image returns structured PageLayoutExtraction without external LLM."""
-        from app.providers.base import VisionModelProvider
         from unittest.mock import MagicMock
+
+        from app.providers.base import VisionModelProvider
 
         ocr = GoogleCloudVisionOCR(api_key="test-key")
         assert isinstance(ocr, VisionModelProvider)

@@ -148,13 +148,29 @@ class QueryPlanner:
             )
 
         elif archetype == "quantitative_trend":
+            # Pattern for page exclusions, e.g. "page 5 but not page 6", "except page 6", "excluding page 6"
+            excl_match = re.search(
+                r"(?:but\s+not|except|excluding|not\s+including|skip)\s*(?:page|pg|p\.)?\s*([0-9]{1,3}|[A-Za-z]?[-–]?[0-9]{1,3})",
+                query,
+                re.IGNORECASE,
+            )
+            exclude_page = excl_match.group(1) if excl_match else None
+
+            # Pattern for category / section sort requests e.g. "sort by sports section"
+            cat_match = re.search(
+                r"(?i)\b(?:sports|sport|cricket|football|business|markets|economy|technology|tech|opinion|editorial|politics|entertainment|lifestyle)\b",
+                query,
+            )
+            category_filter = cat_match.group(0).title() if cat_match else None
+
             page_match = PAGE_ARTICLE_QUERY_PATTERN.search(query)
             is_issue_aggregate = bool(
                 page_match
+                or category_filter
                 or re.search(
                     r"\b(?:how many articles|how many pages|total articles|list all|"
                     r"all articles|summarize issue|overview of the issue|what articles|"
-                    r"manifest|all headlines|no\.?\s*of\s*articles)\b",
+                    r"manifest|all headlines|no\.?\s*of\s*articles|sort by|filter by)\b",
                     query,
                     re.IGNORECASE,
                 )
@@ -168,18 +184,26 @@ class QueryPlanner:
                         arguments={
                             "analysis_type": "issue_summary",
                             "page_filter": page_token,
+                            "exclude_page_filter": exclude_page,
+                            "category_filter": category_filter,
                             "query": query,
                         },
                         purpose=(
                             f"Query MySQL system of record for exact article count and "
                             f"manifest on Page {page_token}"
+                            + (f" excluding Page {exclude_page}" if exclude_page else "")
                         ),
                     )
                 )
                 tool_calls.append(
                     PlannedToolCall(
                         tool_name="hybrid_search",
-                        arguments={"query": query, "page_filter": page_token, "top_k": 6},
+                        arguments={
+                            "query": query,
+                            "page_filter": page_token,
+                            "exclude_pages": [int(exclude_page)] if exclude_page and exclude_page.isdigit() else [],
+                            "top_k": 6,
+                        },
                         purpose=f"Retrieve article content and snippets on Page {page_token}",
                     )
                 )
@@ -187,10 +211,16 @@ class QueryPlanner:
                 tool_calls.append(
                     PlannedToolCall(
                         tool_name="sql_analytics",
-                        arguments={"analysis_type": "issue_summary", "query": query},
+                        arguments={
+                            "analysis_type": "issue_summary",
+                            "exclude_page_filter": exclude_page,
+                            "category_filter": category_filter,
+                            "query": query,
+                        },
                         purpose=(
                             "Query MySQL system of record for exact article "
                             "counts, pages, and manifest"
+                            + (f" (Category: {category_filter})" if category_filter else "")
                         ),
                     )
                 )
@@ -240,6 +270,13 @@ class QueryPlanner:
                     tool_name="hybrid_search",
                     arguments={"query": query, "top_k": 12},
                     purpose="Retrieve diverse articles across multiple newspaper editions",
+                )
+            )
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="coverage_analysis",
+                    arguments={"query": query},
+                    purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
                 )
             )
             tool_calls.append(

@@ -84,6 +84,8 @@ class NewspaperChunker:
     ) -> list[DocumentChunk]:
         """Split article text into overlapping, header-contextualized chunks."""
         text = sanitize_block_text(full_text).strip()
+        # Strip previous header context if re-chunking an already formatted text
+        text = re.sub(r"^\[Newspaper:.*?Headline:.*?\]\s*", "", text, flags=re.DOTALL).strip()
         if not text:
             return []
 

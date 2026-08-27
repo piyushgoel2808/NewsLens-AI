@@ -42,6 +42,9 @@ REQUIRED RESPONSE STRUCTURE:
      * For Live Web Search (if provided): [Web: {Source Title}]({URL})
 
 3. ### 📰 Broadsheet Perspectives & Focus Areas
+   - For Cross-Newspaper Comparisons: Clearly delineate coverage differences by publication:
+     * **{Publication A} Focus**: Specific angles, tone, numbers emphasized.
+     * **{Publication B} Focus**: Contrasting viewpoints, unique quotes, counter-arguments.
    - Group reporting by publication (e.g. **Mint**, **Business Standard**, **The Hindu**).
    - 1 concise bullet point per paper on that paper's specific angle, bias, or unique data.
 

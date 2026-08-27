@@ -597,6 +597,7 @@ class PageAnalysisResult:
     is_advertisement: bool = False
     page_width: float = 0.0
     page_height: float = 0.0
+    image_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
 
 
 class PDFPageDetector:
@@ -610,14 +611,71 @@ class PDFPageDetector:
         """Analyze and extract structured text from a 0-indexed page in an open PyMuPDF document."""
         page = doc.load_page(page_index)
         page_num = page_index + 1
-        page_width = float(page.rect.width)
-        page_height = float(page.rect.height)
+        try:
+            page_width = float(page.rect.width)
+            page_height = float(page.rect.height)
+        except Exception:
+            page_width = 595.0
+            page_height = 842.0
 
         # Extract structured text dictionary
         text_page = page.get_text("dict")
         raw_text = page.get_text("text").strip()
         images = page.get_images()
         image_count = len(images)
+
+        # Harvest exact image bounding boxes (photos, figures, infographics)
+        # Scaled to 300 DPI raster pixel coordinates to match rendered page images
+        image_boxes: list[tuple[float, float, float, float]] = []
+
+        # 1. Harvest from get_image_info (fastest & most accurate in PyMuPDF)
+        try:
+            img_infos = page.get_image_info(xrefs=True)
+            for info in img_infos:
+                bbox = info.get("bbox")
+                if bbox and len(bbox) == 4:
+                    rx0 = float(bbox[0]) * (300.0 / 72.0)
+                    ry0 = float(bbox[1]) * (300.0 / 72.0)
+                    rx1 = float(bbox[2]) * (300.0 / 72.0)
+                    ry1 = float(bbox[3]) * (300.0 / 72.0)
+                    if (rx1 - rx0 >= 40.0) and (ry1 - ry0 >= 40.0):
+                        image_boxes.append((rx0, ry0, rx1, ry1))
+        except Exception:
+            pass
+
+        # 2. Harvest from page.get_images() and get_image_rects()
+        for img_info in images:
+            xref = img_info[0] if isinstance(img_info, (list, tuple)) and len(img_info) > 0 else None
+            if xref:
+                try:
+                    rects = page.get_image_rects(xref)
+                    for r in rects:
+                        rx0 = float(r.x0) * (300.0 / 72.0)
+                        ry0 = float(r.y0) * (300.0 / 72.0)
+                        rx1 = float(r.x1) * (300.0 / 72.0)
+                        ry1 = float(r.y1) * (300.0 / 72.0)
+                        if (rx1 - rx0 >= 40.0) and (ry1 - ry0 >= 40.0) and not any(
+                            abs(rx0 - ex[0]) < 10 and abs(ry0 - ex[1]) < 10
+                            for ex in image_boxes
+                        ):
+                            image_boxes.append((rx0, ry0, rx1, ry1))
+                except Exception:
+                    pass
+
+        # 3. Also inspect image blocks directly from text_page dict
+        for b in text_page.get("blocks", []):
+            if b.get("type") == 1:  # Image block in PyMuPDF
+                bbox = b.get("bbox")
+                if bbox and len(bbox) == 4:
+                    bx0 = float(bbox[0]) * (300.0 / 72.0)
+                    by0 = float(bbox[1]) * (300.0 / 72.0)
+                    bx1 = float(bbox[2]) * (300.0 / 72.0)
+                    by1 = float(bbox[3]) * (300.0 / 72.0)
+                    if (bx1 - bx0 >= 40.0) and (by1 - by0 >= 40.0) and not any(
+                        abs(bx0 - ex[0]) < 10 and abs(by0 - ex[1]) < 10
+                        for ex in image_boxes
+                    ):
+                        image_boxes.append((bx0, by0, bx1, by1))
 
         char_count = len(raw_text.replace(" ", "").replace("\n", ""))
         words = raw_text.split()
@@ -783,6 +841,7 @@ class PDFPageDetector:
                 "char_count": char_count,
                 "blocks": len(blocks),
                 "dominant_font_size": dominant_font_size,
+                "image_boxes": len(image_boxes),
             },
         )
 
@@ -799,6 +858,7 @@ class PDFPageDetector:
             is_advertisement=is_ad,
             page_width=page_width,
             page_height=page_height,
+            image_boxes=image_boxes,
         )
 
     def analyze_document_bytes(self, pdf_bytes: bytes) -> list[PageAnalysisResult]:

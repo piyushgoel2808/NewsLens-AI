@@ -1700,6 +1700,108 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 - `make test`: **257/257 tests passing 100% GREEN**.
 - `npm run build`: **Vite build completed with 0 errors in 988ms**.
 
+---
+
+## NewsLens-AI — Bug Fix & Newsroom Category Classification
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+
+1. **(F) Controlled Newsroom Category Taxonomy**:
+   - Created table `article_categories` (`id`, `name`, `parent_id`) and seeded 13 canonical newsroom categories via Alembic migration `003_add_article_categories.py`.
+   - Added `category_id`, `category_confidence`, and `printed_section` to `articles`.
+   - Created `backend/app/core/category_aliases.yaml` mapping printed newspaper sections and synonyms.
+   - Upgraded `ArticleClassifier` with a two-signal category resolution rule (printed section alias matching + content heuristic fallback).
+
+2. **(A) Photo / Ad / Graph Spatial Binding**:
+   - Implemented convex article envelope overlap (`>= 50%` horizontal column span + vertical edge proximity) in `MediaExtractor.resolve_photo_article_binding`.
+   - Added caption noun phrase matching and ambiguous tie-breaking that safely sets `article_id = NULL` (orphans) rather than mis-binding unrelated media.
+
+3. **(B) Short-News Debundling Upgrades**:
+   - Enhanced `_debundle_shorts_cluster` in `ArticleSegmenter` with multi-paragraph topic-shift detection and hard split boundary markers (`■`, `•`, `►`, `— CITY, PTI`, bold slugs).
+   - Ensured debundled shorts receive independent classification and dedicated non-overlapping bounding boxes.
+
+4. **(C) Natural Language Page Exclusion & Safety-Net Invariant**:
+   - Added page exclusion pattern parsing (`"page 5 but not page 6"`, `"except page 6"`) to `QueryPlanner`.
+   - Added `exclude_pages` to `SearchFilter` and enforced a hard safety-net filter in `HybridSearchEngine` and `SQLAnalyticsEngine`.
+
+5. **(D) Grounded Comparative & Category Synthesis**:
+   - Added structured comparison and sorting guidelines in `AnswerSynthesizer.SYNTHESIZER_SYSTEM_PROMPT`.
+   - Added `category_filter` and `exclude_page_filter` directly into `SQLAnalyticsEngine.list_issue_articles`.
+
+6. **(E) Chunk Quality Evaluation Suite**:
+   - Created `backend/tests/test_chunk_quality_evaluation.py` verifying semantic completeness, context header injection, token boundaries, and non-duplication of metadata headers.
+
+### Verification
+- `alembic upgrade head`: Migration `003_add_article_categories` applied cleanly.
+- `pytest tests/ -v`: **261/261 tests passing 100% GREEN** in 65.60s.
+
+---
+
+## NewsLens-AI — Runtime NameError Hotfixes
+
+**Date**: 2026-08-28  
+**Status**: Resolved ✅
+
+### Issues & Root Cause
+1. **`NameError: name 're' is not defined`**:
+   - `re` regex module was used in `tasks.py` (for detecting table markdown rows `\|\s*[-:]+\s*\|`) but was not imported at the top of the file.
+2. **`NameError: name 'paras' is not defined`**:
+   - In `segmenter.py` within `_debundle_shorts_cluster`, the local variable `paras` was referenced in `elif is_shorts_hl and len(paras) >= 2:` before `paras = [p.strip() for p in full_text.split("\n\n") if p.strip()]` was assigned.
+
+### Changes Made
+- Added `import re` to `backend/app/ingestion/tasks.py`.
+- Assigned `paras = [p.strip() for p in full_text.split("\n\n") if p.strip()]` before checking `len(paras)` in `backend/app/ingestion/segmenter.py`.
+- Verified test suite: **31/31 ingestion tests passing cleanly**.
+
+---
+
+## NewsLens-AI — Layout Analyzer Optimizations & Spatial Refactoring
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+1. **Type-Safe `BBox` Spatial Dataclass**:
+   - Created `backend/app/ingestion/geometry.py` containing immutable `BBox` dataclass with `slots=True, frozen=True`.
+   - Implemented standard 2D bounding box operations: `horizontal_overlap`, `vertical_overlap`, `iou`, `column_track_overlap_ratio`, `union`, `contains`, `area`, `aspect_ratio`.
+2. **Externalized Newspaper Rules**:
+   - Created `backend/app/core/newspaper_rules.yaml` storing domain-specific syndication slugs, masthead tokens, sponsor keywords, and noise filters.
+   - Wired `layout_analyzer.py` to dynamically load rules from YAML with safe embedded fallbacks.
+3. **$O(N \log N)$ Baseline-Band Headline Slicing**:
+   - Refactored `_merge_horizontal_headline_slices` from $O(N^3)$ nested while-loop to baseline-band clustering and left-to-right neighbor merging.
+4. **Symmetric Column Track Overlap**:
+   - Fixed asymmetric column track bleeding in `_consolidate_elements` by evaluating horizontal span overlap against `max(width_a, width_b)` and width similarity.
+
+### Verification
+- `pytest tests/test_layout_analyzer.py tests/test_reading_order.py tests/test_segmenter.py -v`: 34/34 tests passed.
+- `pytest tests/ -v`: **261/261 tests passing 100% GREEN** in 68.09s.
+
+---
+
+## NewsLens-AI — Layout Fallback & Broadsheet Reader Interactive Inspector
+
+**Date**: 2026-08-28  
+**Status**: Resolved ✅
+
+### Issues Addressed
+1. **Empty / Incomplete VLM Layouts Collapsing Pages into 1 Giant Article**:
+   - When Phase 1 VLM extraction returned 0 articles or timed out on dense multi-column pages, the pipeline collapsed the entire page into a single fallback article.
+   - **Fix**: Added an automatic deterministic safety net in `backend/app/ingestion/tasks.py`. If Phase 1 yields 0 articles, it invokes `LayoutAnalyzer` + `ArticleSegmenter` to accurately partition columns, headlines, and shorts.
+2. **Bounding Box Inversion & Normalization Mismatch**:
+   - Fixed coordinate scaling in `tasks.py` from normalized $[y_{\min}, x_{\min}, y_{\max}, x_{\max}]$ $(0 \dots 1000)$ to absolute pixel space $[x_0, y_0, x_1, y_1]$ using actual page dimensions.
+3. **Bidirectional Highlighting & Chunk Transparency in Broadsheet Reader**:
+   - Updated `frontend/src/components/BroadsheetReader.jsx` with real-time bidirectional hover/selection highlighting and vector chunk inspection.
+
+### Verification
+- `pytest tests/ -v`: **261/261 tests passing 100% GREEN** in 70.35s.
+
+
+
+
+
 
 
 

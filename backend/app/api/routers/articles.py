@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -83,6 +84,7 @@ async def get_article_details(
                 "caption": ph.caption,
                 "object_key": ph.object_key,
                 "bbox_json": ph.bbox_json,
+                "image_url": f"/api/photos/{ph.id}/image",
             }
             for ph in article.photos
         ],
@@ -96,6 +98,42 @@ async def get_article_details(
             for tb in article.tables
         ],
     }
+
+
+@router.get("/photos/{photo_id}/image", summary="Stream cropped article photo from MinIO")
+async def get_photo_image(
+    photo_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Stream cropped article image/photo PNG from MinIO object storage."""
+    import io
+
+    from app.core.config import get_settings
+    from app.models.article import Photo
+    from app.storage.minio_store import MinioStore
+
+    stmt = select(Photo).where(Photo.id == photo_id)
+    res = await db.execute(stmt)
+    photo = res.scalar_one_or_none()
+
+    if not photo or not photo.object_key:
+        raise HTTPException(status_code=404, detail=f"Photo {photo_id} not found")
+
+    settings = get_settings()
+    minio = MinioStore(settings.minio)
+    image_bytes = await minio.get(
+        bucket=settings.minio.bucket_pages,
+        key=photo.object_key,
+    )
+
+    if not image_bytes:
+        raise HTTPException(status_code=404, detail="Photo object missing from storage")
+
+    return StreamingResponse(
+        io.BytesIO(image_bytes),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.get(

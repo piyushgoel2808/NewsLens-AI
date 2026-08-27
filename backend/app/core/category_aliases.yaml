@@ -1,0 +1,95 @@
+# NewsLens-AI Newsroom Canonical Category Taxonomy & Aliases
+
+canonical_categories:
+  - Politics
+  - Business & Markets
+  - Sports
+  - Entertainment
+  - World/International
+  - Technology
+  - Health
+  - Crime & Law
+  - Opinion/Editorial
+  - Lifestyle
+  - Science & Environment
+  - Local/Metro
+  - Other
+
+printed_section_aliases:
+  "sports": "Sports"
+  "sport": "Sports"
+  "sports desk": "Sports"
+  "sports arena": "Sports"
+  "sports plus": "Sports"
+  "sports news": "Sports"
+  "cricket": "Sports"
+  "football": "Sports"
+  "business": "Business & Markets"
+  "markets": "Business & Markets"
+  "money": "Business & Markets"
+  "economy": "Business & Markets"
+  "economy & policy": "Business & Markets"
+  "corporate": "Business & Markets"
+  "companies": "Business & Markets"
+  "mark to market": "Business & Markets"
+  "plain facts": "Business & Markets"
+  "deals, tech & startups": "Technology"
+  "technology": "Technology"
+  "tech": "Technology"
+  "gadgets": "Technology"
+  "opinion & editorial": "Opinion/Editorial"
+  "opinion": "Opinion/Editorial"
+  "editorial": "Opinion/Editorial"
+  "views": "Opinion/Editorial"
+  "views & opinions": "Opinion/Editorial"
+  "world": "World/International"
+  "global": "World/International"
+  "international": "World/International"
+  "politics": "Politics"
+  "national": "Politics"
+  "nation": "Politics"
+  "entertainment": "Entertainment"
+  "cinema": "Entertainment"
+  "movies": "Entertainment"
+  "showcase": "Entertainment"
+  "health": "Health"
+  "health & fitness": "Health"
+  "crime": "Crime & Law"
+  "law": "Crime & Law"
+  "legal": "Crime & Law"
+  "lifestyle": "Lifestyle"
+  "life": "Lifestyle"
+  "culture": "Lifestyle"
+  "business of life": "Lifestyle"
+  "science": "Science & Environment"
+  "environment": "Science & Environment"
+  "metro": "Local/Metro"
+  "city": "Local/Metro"
+  "state": "Local/Metro"
+  "states": "Local/Metro"
+
+user_query_synonyms:
+  "sports": "Sports"
+  "sports news": "Sports"
+  "sports stories": "Sports"
+  "sport stories": "Sports"
+  "sports section": "Sports"
+  "cricket news": "Sports"
+  "football news": "Sports"
+  "business news": "Business & Markets"
+  "business section": "Business & Markets"
+  "market news": "Business & Markets"
+  "financial news": "Business & Markets"
+  "stock market": "Business & Markets"
+  "economy news": "Business & Markets"
+  "tech news": "Technology"
+  "technology news": "Technology"
+  "tech stories": "Technology"
+  "opinion pieces": "Opinion/Editorial"
+  "editorials": "Opinion/Editorial"
+  "political news": "Politics"
+  "politics": "Politics"
+  "international news": "World/International"
+  "world news": "World/International"
+  "health news": "Health"
+  "entertainment news": "Entertainment"

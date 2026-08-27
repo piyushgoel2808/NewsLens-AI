@@ -57,6 +57,8 @@ class ArticleEmbedder:
         topics: list[str],
         chunks: list[DocumentChunk],
         printed_pages: list[str] | None = None,
+        has_photo: bool = False,
+        has_table: bool = False,
     ) -> list[str]:
         """Embed a batch of document chunks, upsert to Qdrant, and persist ArticleChunk records."""
         if not chunks:
@@ -84,6 +86,8 @@ class ArticleEmbedder:
                 "section": section or "General",
                 "article_type": article_type,
                 "prominence_score": prominence_score,
+                "has_photo": has_photo,
+                "has_table": has_table,
                 "chunk_index": chunk.chunk_index,
                 "page_numbers": page_numbers,
                 "printed_pages": printed_pages or [],
