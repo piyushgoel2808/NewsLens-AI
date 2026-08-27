@@ -1798,6 +1798,55 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 ### Verification
 - `pytest tests/ -v`: **261/261 tests passing 100% GREEN** in 70.35s.
 
+---
+
+## NewsLens-AI — Two-Stage Reranking Cascade, 3-Tier Coverage Analyzer & IR Metrics
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+1. **Two-Stage Neural Reranking Cascade (`backend/app/retrieval/reranker.py` & `hybrid_search.py`)**:
+   - Implemented `CrossEncoderReranker` using `sentence_transformers.CrossEncoder` with default `BAAI/bge-reranker-v2-m3` and `cross-encoder/ms-marco-MiniLM-L-6-v2`.
+   - Explicitly accelerated execution with Apple Silicon (`device="mps"` auto-detection).
+   - Expanded initial RRF candidate pool to $N=75$ and reranked to Top 10 for synthesis.
+2. **3-Tier Negative Coverage Engine (`backend/app/retrieval/coverage_analyzer.py`)**:
+   - Implemented `CoverageAnalyzer` enforcing Tier 1 Relational Invariant (`find_newspapers_with_zero_articles` in MySQL), Tier 2 semantic audit, and Tier 3 comparative matrix.
+3. **Automated IR Evaluation Suite (`backend/app/evaluation/metrics.py`)**:
+   - Implemented full benchmark suite: `recall_at_k`, `precision_at_k`, `mrr`, `ndcg_at_k`, `faithfulness_score`, and `coverage_f1`.
+4. **API Integration & Endpoints**:
+   - Added `POST /api/query/coverage` endpoint in `backend/app/api/routers/query.py`.
+   - Wired coverage analysis into `cross_newspaper_comparison` planning flow.
+
+### Verification
+- `pytest tests/ -v`: **272/272 tests passing 100% GREEN**.
+
+---
+
+## NewsLens-AI — LLM Agentic Query Routing (No Regex)
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+1. **Pydantic Structured CoT Reasoning Schemas (`backend/app/agent/planner.py`)**:
+   - Defined `ExtractedToolArguments` and `QueryPlan` requiring step-by-step reasoning in `thought_process` prior to selecting target retrieval tools.
+   - Built `PLANNER_SYSTEM_PROMPT` with strict operational tool boundaries:
+     * `sql_analytics`: Exclusively for macro-level queries (whole-issue summaries, full page manifests, article counts, section breakdowns).
+     * `hybrid_search`: For fine-grained factual inquiries, quotes, and entity questions (with optional `page_filter`).
+     * `timeline_builder`: For chronological event trajectories.
+     * `coverage_analysis`: For cross-newspaper editorial difference matrices.
+     * `entity_search`: For comprehensive entity deep dives.
+   - Injected 6 distinct few-shot demonstrations teaching macro vs micro routing.
+2. **Async Agentic Planning Workflow**:
+   - Implemented `QueryPlanner.plan_query_async()` using structured JSON completion (`ChatModelProvider.complete()`).
+   - Updated `AgentWorkflow._classify_and_plan_node` in `backend/app/agent/graph.py` and `POST /api/query/plan` in `backend/app/api/routers/query.py` to natively await async planning with model overrides.
+3. **Verification**:
+   - `pytest tests/test_planner.py -v`: 10/10 tests passing.
+   - `pytest tests/ -v`: **274/274 tests passing 100% GREEN**.
+   - `ruff check .` and `mypy app/agent/`: 0 errors.
+
+
 
 
 

@@ -346,7 +346,11 @@ async def inspect_plan(
 ) -> dict[str, Any]:
     """Classify archetype and generate execution plan without executing tools."""
     planner = QueryPlanner()
-    plan_res = planner.plan_query(request.query)
+    plan_res = await planner.plan_query_async(
+        request.query,
+        enable_web_search=request.enable_web_search,
+        model_override=request.effective_model,
+    )
 
     return {
         "query": request.query,
