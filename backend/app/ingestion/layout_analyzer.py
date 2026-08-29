@@ -133,6 +133,74 @@ NUMBERED_QUESTION_REGEX = re.compile(
 )
 
 
+STATUTORY_AD_KEYWORDS = [
+    "qualified institutions placement", "qip", "issue price", "issue size",
+    "number of equity shares", "book running lead managers", "domestic legal counsel",
+    "international legal counsel", "advisor to the company", "registrar to the issue",
+    "thank you for being part of this milestone", "backed by trust, built for tomorrow",
+    "initial public offering", "red herring prospectus", "prospectus", "draft red herring",
+    "promoters:", "our promoters:", "bid/issue opens on", "bid/issue closes on",
+    "price band", "floor price", "public notice", "statutory notice", "tender notice",
+    "nclt", "insolvency and bankruptcy", "e-auction sale notice", "possession notice",
+    "corrigendum", "allotment of equity shares", "listing of equity shares",
+]
+
+STATUTORY_AD_REGEX = re.compile(
+    r"(?i)\b(?:" + "|".join(re.escape(k) for k in STATUTORY_AD_KEYWORDS) + r")\b"
+)
+
+
+def detect_advertisement_envelopes(
+    elements: list[LayoutElement],
+    page_width: float,
+    page_height: float,
+) -> list[tuple[float, float, float, float, str]]:
+    """Detect prominent spatial advertisement boxes (e.g. QIPs, full-column IPO notices, display ads).
+
+    Returns list of (x0, y0, x1, y1, ad_title).
+    """
+    ad_elements: list[LayoutElement] = []
+    ad_titles: list[str] = []
+
+    for el in elements:
+        txt = el.text.strip()
+        if not txt:
+            continue
+        if STATUTORY_AD_REGEX.search(txt):
+            ad_elements.append(el)
+            for line in txt.split("\n"):
+                l_s = line.strip()
+                if (
+                    3 <= len(l_s.split()) <= 12
+                    and not any(
+                        k in l_s.lower()
+                        for k in (
+                            "book running", "legal counsel", "advisor", "per equity",
+                            "number of", "issue size", "domestic", "international",
+                        )
+                    )
+                ):
+                    ad_titles.append(l_s)
+                    break
+
+    if len(ad_elements) < 2:
+        return []
+
+    x0 = min(el.bbox[0] for el in ad_elements)
+    y0 = min(el.bbox[1] for el in ad_elements)
+    x1 = max(el.bbox[2] for el in ad_elements)
+    y1 = max(el.bbox[3] for el in ad_elements)
+
+    # Pad envelope slightly to enclose adjacent logos/badges
+    x0 = max(0.0, x0 - 15.0)
+    y0 = max(0.0, y0 - 20.0)
+    x1 = min(page_width, x1 + 15.0)
+    y1 = min(page_height, y1 + 20.0)
+
+    title = ad_titles[0] if ad_titles else "Commercial Announcement"
+    return [(x0, y0, x1, y1, title)]
+
+
 def is_syndication_or_agency_slug(text: str) -> bool:
     """Check if text is a syndication slug, wire agency stamp, or recurring column header."""
     t = text.strip()
@@ -638,6 +706,25 @@ class LayoutAnalyzer:
             page_height=float(height_px),
         )
 
+        # Detect discrete spatial advertisement envelopes and inject boundary delimiters
+        ad_envelopes = detect_advertisement_envelopes(elements, float(width_px), float(height_px))
+        for x0, y0, x1, y1, ad_title in ad_envelopes:
+            has_ad_hl = any(
+                e.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                and (x0 - 10 <= e.bbox[0] and e.bbox[2] <= x1 + 10 and y0 - 10 <= e.bbox[1] <= y1 + 10)
+                for e in elements
+            )
+            if not has_ad_hl:
+                max_el_id = max((e.element_id for e in elements), default=100) + 1
+                ad_hl_elem = LayoutElement(
+                    element_id=max_el_id,
+                    bbox=(x0, y0, x1, min(y0 + 40.0, y1)),
+                    text=f"[Advertisement] {ad_title}",
+                    block_type=BlockType.HEADLINE,
+                    confidence=1.0,
+                )
+                elements.append(ad_hl_elem)
+
         resolver = ReadingOrderResolver(page_width=float(width_px), page_height=float(height_px))
         reading_order = resolver.resolve_reading_order(elements)
 
@@ -1090,8 +1177,9 @@ class LayoutAnalyzer:
                 response_schema=LAYOUT_EXTRACTION_SCHEMA,
             )
             raw_data = resp.parsed
-            if isinstance(raw_data, str):
-                raw_data = json.loads(raw_data)
+            if not isinstance(raw_data, dict):
+                from app.ingestion.visual_extractor import repair_and_parse_json
+                raw_data = repair_and_parse_json(resp.text)
 
             if not isinstance(raw_data, dict):
                 raise ValueError("Vision model response did not return a valid layout dict.")

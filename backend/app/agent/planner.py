@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -237,20 +239,136 @@ Output: {
   "secondary_search_query": "banking crisis"
 }
 
-Example 6:
-Query: "Compare how different papers covered the defense budget"
+Example 7:
+Query: "List all its sports related news"
 Output: {
-  "thought_process": "User is contrasting editorial perspectives across multiple broadsheets. coverage_analysis is required alongside hybrid_search.",
-  "archetype": "cross_newspaper_comparison",
-  "primary_tool": "coverage_analysis",
+  "thought_process": "User is asking to list all news articles belonging to the Sports section from the active newspaper issue. This is a structural section manifest query requiring sql_analytics with category_filter='Sports'.",
+  "archetype": "quantitative_trend",
+  "primary_tool": "sql_analytics",
   "arguments": {
-    "query": "defense budget",
-    "top_k": 12
+    "category_filter": "Sports",
+    "analysis_type": "issue_summary"
   },
-  "include_secondary_hybrid_search": true,
-  "secondary_search_query": "defense budget"
+  "include_secondary_hybrid_search": false
+}
+
+Example 8:
+Query: "Summarize the whole newspaper of THE ECONOMIC TIMES dated 27/8/2026"
+Output: {
+  "thought_process": "User requested an issue summary specifically for The Economic Times dated 2026-08-27. We extract the exact newspaper brand and date to pass into sql_analytics for precise relational retrieval.",
+  "archetype": "quantitative_trend",
+  "primary_tool": "sql_analytics",
+  "arguments": {
+    "newspaper_name": "The Economic Times",
+    "issue_date": "2026-08-27",
+    "analysis_type": "issue_summary"
+  },
+  "include_secondary_hybrid_search": false
 }
 """
+
+
+_KNOWN_BRANDS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(?:the\s+)?economic\s+times\b|\bthe\s+economics\s+times\b|\beconomics\s+times\b", re.I), "The Economic Times"),
+    (re.compile(r"\b(?:the\s+)?new\s+york\s+times\b|\bNYT\b", re.I), "The New York Times"),
+    (re.compile(r"\b(?:the\s+)?times\s+of\s+india\b|\bTOI\b", re.I), "The Times of India"),
+    (re.compile(r"\b(?:the\s+)?wall\s+street\s+journal\b|\bWSJ\b", re.I), "The Wall Street Journal"),
+    (re.compile(r"\b(?:the\s+)?washington\s+post\b|\bWAPO\b", re.I), "The Washington Post"),
+    (re.compile(r"\b(?:the\s+)?financial\s+times\b|\bFT\b", re.I), "Financial Times"),
+    (re.compile(r"\b(?:the\s+)?guardian\b", re.I), "The Guardian"),
+    (re.compile(r"\bbusiness\s+standard\b|\bBS\b", re.I), "Business Standard"),
+    (re.compile(r"\b(?:the\s+)?indian\s+express\b|\bIE\b", re.I), "The Indian Express"),
+    (re.compile(r"\b(?:the\s+)?hindu\b", re.I), "The Hindu"),
+    (re.compile(r"\bhindustan\s+times\b|\bHT\b", re.I), "Hindustan Times"),
+    (re.compile(r"\bmint\b|\blivemint\b", re.I), "Mint"),
+]
+
+_SECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(sports?|athletics?|cricket|tennis|football|soccer|olympics?|tournaments?|ipl|bcci|icc|grand\s+slam|badminton|golf)\b", re.I), "Sports"),
+    (re.compile(r"\b(entertainment|cinema|movies?|films?|bollywood|hollywood|arts?|music|concerts?|theatre|ott|actors?|actress(?:es)?)\b", re.I), "Entertainment"),
+    (re.compile(r"\b(science|space|isro|nasa|satellites?|rockets?|astronomy|climate|environment|wildlife|forest|ocean|ecology)\b", re.I), "Science & Environment"),
+    (re.compile(r"\b(tech|technology|ai|startups?|semiconductors?|chips?|software|fintech|gadgets?|cybersecurity|cloud|algorithms?)\b", re.I), "Technology"),
+    (re.compile(r"\b(business|markets?|stocks?|shares|sensex|nifty|equities|ipo|corporate|companies|banking|finance|financial)\b", re.I), "Business & Markets"),
+    (re.compile(r"\b(economy|economic|macroeconomics?|inflation|gdp|cpi|wpi|taxation|gst|tariffs?|budget|fiscal)\b", re.I), "Economy & Policy"),
+    (re.compile(r"\b(politics|political|elections?|voters?|parliament|lok\s+sabha|rajya\s+sabha|ministers?|cabinet|bjp|congress)\b", re.I), "Politics"),
+    (re.compile(r"\b(health|healthcare|hospitals?|doctors?|pharma|pharmaceuticals?|medicine|medicines?|vaccines?|diseases?)\b", re.I), "Health"),
+    (re.compile(r"\b(crime|courts?|legal|law|supreme\s+court|high\s+court|judges?|verdicts?|bail|cbi|ed|police|arrests?|scams?|fraud)\b", re.I), "Crime & Law"),
+    (re.compile(r"\b(opinion|editorials?|columns?|op-ed|commentary|viewpoints?|perspectives?)\b", re.I), "Opinion/Editorial"),
+    (re.compile(r"\b(world|international|global|diplomacy|foreign\s+affairs|treaty|summit|united\s+nations|g20|brics)\b", re.I), "World/International"),
+    (re.compile(r"\b(lifestyle|travel|tourism|food|dining|wellness|fitness|luxury|automotive)\b", re.I), "Lifestyle"),
+]
+
+
+
+def extract_parameters_from_query(query: str) -> dict[str, Any]:
+    """Extract explicit entity parameters (newspaper, issue ID, date, section/category, page) from query."""
+    params: dict[str, Any] = {}
+    if not query:
+        return params
+
+    # 1. Newspaper Name Extraction
+    for pat, brand in _KNOWN_BRANDS_PATTERNS:
+        if pat.search(query):
+            params["newspaper_name"] = brand
+            break
+
+    # 2. Issue ID Extraction (e.g. "issue 84", "issue #84", "issue id 84")
+    iss_match = re.search(r"\bissue\s*(?:id\s*[:=]?\s*|\#\s*|no\.?\s*|number\s*)?(\d+)\b", query, re.I)
+    if iss_match:
+        with contextlib.suppress(ValueError):
+            params["issue_id"] = int(iss_match.group(1))
+
+    # 3. Date Extraction (e.g. "27/8/2026", "27-08-2026", "2026-08-27", "27th August 2026", "August 27, 2026")
+    date_iso = None
+    # YYYY-MM-DD
+    iso_m = re.search(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", query)
+    if iso_m:
+        y, m, d = int(iso_m.group(1)), int(iso_m.group(2)), int(iso_m.group(3))
+        date_iso = f"{y:04d}-{m:02d}-{d:02d}"
+    else:
+        # DD/MM/YYYY or DD-MM-YYYY
+        dmy_m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", query)
+        if dmy_m:
+            d, m, y = int(dmy_m.group(1)), int(dmy_m.group(2)), int(dmy_m.group(3))
+            date_iso = f"{y:04d}-{m:02d}-{d:02d}"
+
+    if not date_iso:
+        # Month name patterns
+        month_map = {
+            "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+            "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+            "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+            "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+        }
+        # e.g. "27 August 2026" or "27th August 2026"
+        m1 = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)(?:,)?\s+(\d{4})\b", query)
+        if m1 and m1.group(2).lower() in month_map:
+            d = int(m1.group(1))
+            m = month_map[m1.group(2).lower()]
+            y = int(m1.group(3))
+            date_iso = f"{y:04d}-{m:02d}-{d:02d}"
+        else:
+            # e.g. "August 27, 2026"
+            m2 = re.search(r"\b([a-zA-Z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\b", query)
+            if m2 and m2.group(1).lower() in month_map:
+                m = month_map[m2.group(1).lower()]
+                d = int(m2.group(2))
+                y = int(m2.group(3))
+                date_iso = f"{y:04d}-{m:02d}-{d:02d}"
+
+    if date_iso:
+        params["issue_date"] = date_iso
+
+    # 4. Section / Category Extraction for listing queries
+    is_section_query = any(w in query.lower() for w in ["news", "articles", "stories", "section", "coverage", "reports"])
+    if is_section_query:
+        for pat, cat_name in _SECTION_PATTERNS:
+            if pat.search(query):
+                params["category_filter"] = cat_name
+                break
+
+    return params
+
 
 
 def _build_targeted_web_query(query: str) -> str:
@@ -287,7 +405,9 @@ class QueryPlanner:
             return self._provider
         try:
             reg = get_registry()
-            provider_inst = reg.get_provider(model_override or "query_planner")
+            if model_override:
+                return reg.get_chat_provider(model_override)
+            provider_inst = reg.get_provider("query_planner")
             if isinstance(provider_inst, ChatModelProvider):
                 return provider_inst
         except Exception as e:
@@ -356,18 +476,23 @@ class QueryPlanner:
 
     @staticmethod
     def _parse_json_plan(text: str) -> dict[str, Any] | None:
-        """Extract and parse JSON object from LLM text response."""
+        """Extract and parse JSON object from LLM text response with thought-tag stripping."""
         if not text:
             return None
-        cleaned = text.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        elif cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
 
+        # 1. Strip reasoning / thinking tags (<think>...</think>, <thought>...</thought>)
+        cleaned = re.sub(r"<(thought|think)>.*?</\1>", "", text, flags=re.DOTALL).strip()
+        cleaned = re.sub(r"^<(thought|think)>.*?</\1>", "", cleaned, flags=re.DOTALL).strip()
+        if not cleaned:
+            cleaned = text.strip()
+
+        # 2. Strip markdown fences
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```")[1].split("```")[0].strip()
+
+        # 3. Direct JSON load attempt
         try:
             res = json.loads(cleaned)
             if isinstance(res, dict):
@@ -375,7 +500,7 @@ class QueryPlanner:
         except Exception:
             pass
 
-        import re
+        # 4. Regex substring extraction of outermost {...}
         match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
         if match:
             try:
@@ -395,6 +520,23 @@ class QueryPlanner:
         """Translate structured QueryPlan Pydantic model into executable PlannedToolCall list."""
         tool_calls: list[PlannedToolCall] = []
         args = plan_obj.arguments
+
+        # Reconcile with deterministic regex parameter extraction
+        extracted_params = extract_parameters_from_query(query)
+        if extracted_params.get("issue_id") is not None:
+            if args.issue_id is None:
+                args.issue_id = extracted_params["issue_id"]
+            if args.page_filter == str(extracted_params["issue_id"]):
+                args.page_filter = None
+
+        if extracted_params.get("newspaper_name") and not args.newspaper_name:
+            args.newspaper_name = extracted_params["newspaper_name"]
+
+        if extracted_params.get("issue_date") and not args.issue_date:
+            args.issue_date = extracted_params["issue_date"]
+
+        if extracted_params.get("category_filter") and not args.category_filter:
+            args.category_filter = extracted_params["category_filter"]
 
         if plan_obj.primary_tool == "sql_analytics":
             call_args: dict[str, Any] = {
@@ -522,6 +664,12 @@ class QueryPlanner:
         q_lower = query.lower().strip()
         words = [w.strip("?:!.,\"'") for w in q_lower.split()]
 
+        extracted_params = extract_parameters_from_query(query)
+        newspaper_name = extracted_params.get("newspaper_name")
+        issue_id = extracted_params.get("issue_id")
+        issue_date = extracted_params.get("issue_date")
+        category_filter = extracted_params.get("category_filter")
+
         # 1. Check for macro-issue summary or whole-issue queries
         is_issue_macro = any(
             phrase in q_lower
@@ -545,7 +693,7 @@ class QueryPlanner:
                 "edition?",
                 "edition",
             ]
-        )
+        ) or (newspaper_name is not None and any(w in q_lower for w in ["summarize", "overview", "all articles", "manifest", "whole"]))
 
         # 2. Check for page token and page numbers
         has_page_token = any(w in ["page", "pg", "p."] for w in words) or "page " in q_lower or "pg " in q_lower
@@ -561,6 +709,11 @@ class QueryPlanner:
         is_page_manifest = has_page_token and any(
             w in q_lower for w in ["list", "articles on", "stories on", "all articles", "no of articles", "how many", "what articles"]
         ) and not any(w in q_lower for w in ["what happened", "what did", "why did", "how did", "announce", "state", "say"])
+
+        # Check if query is a section/category listing manifest (e.g. "list all its sports related news", "show business section")
+        is_section_manifest = bool(category_filter) and any(
+            w in q_lower for w in ["list", "show", "get", "all", "what are", "what is", "stories", "articles", "news", "headlines"]
+        ) and not any(w in q_lower for w in ["what happened", "what did", "why did", "how did", "announce", "state", "say", "quote"])
 
         # 3. Check for counting / statistical aggregations
         is_count_or_stat = any(
@@ -620,13 +773,21 @@ class QueryPlanner:
 
         tool_calls: list[PlannedToolCall] = []
 
-        if is_issue_macro or is_page_manifest or is_count_or_stat:
+        if is_issue_macro or is_page_manifest or is_section_manifest or is_count_or_stat:
             archetype = "quantitative_trend"
-            reasoning = "Query requires structural issue manifest, page article listing, or count from MySQL system of record."
+            reasoning = "Query requires structural issue manifest, section breakdown, or relational article count from MySQL."
             sql_args: dict[str, Any] = {"analysis_type": "issue_summary", "query": query}
+            if newspaper_name:
+                sql_args["newspaper_name"] = newspaper_name
+            if issue_id:
+                sql_args["issue_id"] = issue_id
+            if issue_date:
+                sql_args["issue_date"] = issue_date
+            if category_filter:
+                sql_args["category_filter"] = category_filter
             if page_num_str:
                 sql_args["page_filter"] = page_num_str
-            if is_count_or_stat and not is_issue_macro and not is_page_manifest:
+            if is_count_or_stat and not is_issue_macro and not is_page_manifest and not is_section_manifest:
                 sql_args["analysis_type"] = "count_articles"
 
             tool_calls.append(

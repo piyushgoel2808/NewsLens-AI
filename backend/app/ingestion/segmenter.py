@@ -48,6 +48,11 @@ BYLINE_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+MARKETING_SLOGAN_REGEX = re.compile(
+    r"(?i)\b(?:innovation|future|tomorrow|trusted|trust|quality|solutions|technology|technologies|"
+    r"milestone|placement|equity|shares|corporate|leading|growth|global|investors|advisors|built for|backed by|driven by|designed for)\b"
+)
+
 
 BOILERPLATE_TOKENS = {
     "limited", "ltd", "corp", "corporation", "pvt", "private", "equity", "issue",
@@ -261,6 +266,9 @@ class SegmentedArticle:
     jump_from_page: int | None = None
     is_teaser: bool = False
     raw_blocks: list[OrderedReadingBlock] = field(default_factory=list)
+    section: str | None = None
+    printed_section: str | None = None
+
 
 
 class ArticleSegmenter:
@@ -591,10 +599,12 @@ class ArticleSegmenter:
             # 6. Check byline match
             byline_match = BYLINE_REGEX.match(text)
             if byline_match and not current_article.byline_author and len(text) < 100:
-                current_article.byline_author = text
-                current_article.bbox_list.append(block.bbox)
-                current_article.raw_blocks.append(block)
-                continue
+                cand = byline_match.group(1) or text
+                if not MARKETING_SLOGAN_REGEX.search(cand):
+                    current_article.byline_author = text
+                    current_article.bbox_list.append(block.bbox)
+                    current_article.raw_blocks.append(block)
+                    continue
 
             # 7. Check jump lines
             jump_out_match = JUMP_OUT_REGEX.search(text)

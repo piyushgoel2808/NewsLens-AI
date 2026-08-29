@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.agent.condenser import (
     CLEAN_SESSION_CLARIFICATION_MESSAGE,
     condense_conversational_query,
+    extract_active_issue_from_history,
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
 )
@@ -139,6 +140,9 @@ class AgentWorkflow:
         plan = state.get("plan", [])
         evidence_items: list[dict[str, Any]] = []
         tool_records: list[ToolExecutionRecord] = []
+        active_issue_id: int | None = state.get("active_issue_id")
+        active_newspaper_name: str | None = state.get("active_newspaper_name")
+        active_issue_date: str | None = state.get("active_issue_date")
 
         for call in plan:
             t_start = time.monotonic()
@@ -271,18 +275,25 @@ class AgentWorkflow:
                         )
                     elif analysis_type == "issue_summary":
                         page_filter = args.get("page_filter")
+                        np_arg = args.get("newspaper_name") or active_newspaper_name
+                        iss_d_arg = args.get("issue_date") or active_issue_date
+                        iss_id_arg = args.get("issue_id") or active_issue_id
                         summary = await self._sql_analytics.get_issue_summary(
-                            newspaper_name=args.get("newspaper_name"),
-                            issue_date=args.get("issue_date"),
-                            issue_id=args.get("issue_id"),
+                            newspaper_name=np_arg,
+                            issue_date=iss_d_arg,
+                            issue_id=iss_id_arg,
                             page_filter=page_filter,
                             exclude_page_filter=args.get("exclude_page_filter"),
                             category_filter=args.get("category_filter"),
+                            query=args.get("query", state["query"]),
                         )
                         if "error" in summary:
-                            summary_str = summary["error"]
+                            summary_str = f"⚠️ {summary['error']}"
                             hits_count = 0
                         else:
+                            active_issue_id = summary.get("issue_id")
+                            active_newspaper_name = summary.get("newspaper")
+                            active_issue_date = summary.get("issue_date")
                             total_arts = summary.get("total_articles", 0)
                             total_pgs = summary.get("total_pages", 0)
                             sec_breakdown = ", ".join(
@@ -519,6 +530,9 @@ class AgentWorkflow:
         return {
             "evidence_items": evidence_items,
             "tool_executions": tool_records,
+            "active_issue_id": active_issue_id,
+            "active_newspaper_name": active_newspaper_name,
+            "active_issue_date": active_issue_date,
         }
 
     async def _evaluate_and_fallback_node(self, state: AgentState) -> dict[str, Any]:
@@ -745,6 +759,7 @@ class AgentWorkflow:
             # Reconstruct typed AgentState from cached dict
             return cached_result  # type: ignore[return-value]
 
+        active_ctx = extract_active_issue_from_history(history)
         initial_state: AgentState = {
             "query": query,
             "original_query": query,
@@ -761,6 +776,9 @@ class AgentWorkflow:
             "model_override": model_override,
             "enable_web_search": enable_web_search,
             "web_search_results": [],
+            "active_issue_id": active_ctx.get("issue_id"),
+            "active_newspaper_name": active_ctx.get("newspaper_name"),
+            "active_issue_date": active_ctx.get("issue_date"),
             "error": None,
         }
 

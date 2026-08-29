@@ -38,6 +38,9 @@ class AssembledArticle:
     primary_page_number: int = 1
     word_count: int = 0
     pages_mapping: list[PageBBoxMapping] = field(default_factory=list)
+    section: str | None = None
+    printed_section: str | None = None
+
 
 
 def _headline_overlap_metrics(h1: str, h2: str) -> tuple[float, float, int]:
@@ -116,6 +119,8 @@ class CrossPageAssembler:
                             block_order=0,
                         )
                     ],
+                    section=art.section,
+                    printed_section=art.printed_section,
                 )
 
                 # Check if this article jumps to a subsequent page

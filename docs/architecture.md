@@ -1,6 +1,6 @@
-# NewsLens-AI Architecture & System Design
+# NewsLens-AI Architecture & System Design Specification
 
-NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** engineered for historical broadsheet and modern newspaper archives. It provides end-to-end multi-column PDF layout segmentation, multimodal OCR, hybrid dense/sparse vector retrieval, conversational multi-turn query synthesis, cross-publication narrative trajectory tracking, and visual asset transparency.
+NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** purpose-built for historical broadsheet and modern newspaper archives. It provides end-to-end multi-column PDF layout segmentation, multimodal visual infographic extraction, deterministic OCR matrix reconstruction, hybrid dense/sparse vector retrieval, conversational multi-turn query synthesis with Corrective RAG (CRAG), cross-publication narrative trajectory tracking, and visual broadsheet transparency.
 
 ---
 
@@ -8,7 +8,7 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** engineered 
 
 ```
                                  ┌──────────────────────────────────────────────────────────┐
-                                 │                   React 18 + Vite SPA                    │
+                                 │                 React 18 + Vite SPA Client               │
                                  │  • Newspaper Scan Reader with 300 DPI Bounding-Box Overlay│
                                  │  • Interactive Visual Asset Inspector (Photos/Infographics│
                                  │  • Real-Time Agentic Assistant with Reasoning Trace (SSE)│
@@ -18,152 +18,306 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** engineered 
                                                               │ REST / SSE Streaming
                                                               ▼
 ┌───────────────────────────────────────────────────────────────────────────────────────────┐
-│                                 FastAPI Backend Server                                    │
+│                                   FastAPI Backend Server                                  │
 ├─────────────────────────────┬───────────────────────────────┬─────────────────────────────┤
 │   Document Ingestion Flow   │    Retrieval Toolbelt & DB    │   Agentic Reasoning Flow    │
 │  • Celery Async Ingestion   │  • MySQL 8 (System of Record) │  • LangGraph State Machine  │
-│  • IBM Docling (DocLayNet)  │  • Qdrant Dense Vector Store  │  • Dynamic Query Planner    │
-│  • Multi-Page Consensus     │  • MinIO Object Storage (S3)  │  • 2-Stage Rerank Cascade   │
-│  • 2D Spatial Photo Binding │  • Redis 7 (Cache & Lock)     │  • 4-Tier Synthesizer       │
-│  • Qwen3-VL Visual Extract  │  • RRF (Dense + Sparse Fusion)│  • Corrective RAG (CRAG)    │
+│  • PyMuPDF + Docling Layout │  • Qdrant Dense Vector Store  │  • Dynamic Query Planner    │
+│  • Multi-Page Consensus     │  • MinIO Object Storage (S3)  │  • Multi-Tool Dispatcher    │
+│  • Spatial Column De-bundle │  • Redis 7 (Cache & Lock)     │  • Corrective RAG (CRAG)    │
+│  • Probabilistic 12-Domain  │  • RRF (Dense + Sparse Fusion)│  • 4-Tier Synthesizer       │
+│  • Spatial Matrix OCR Parser│  • Fulltext MySQL Indexing    │  • Strict Provenance Citator│
 └─────────────────────────────┴───────────────────────────────┴─────────────────────────────┘
 ```
 
 ---
 
-## 2. Technology Stack & Infrastructure
+## 2. Technology Stack & Framework Comparison
 
-| Layer | Technology | Function |
+| Layer / Component | Chosen Technology | Evaluated Alternatives | Why Chosen & Key Architectural Trade-offs |
+|---|---|---|---|
+| **Language & Runtime** | **Python 3.12 / 3.13** | Node.js, Go, Rust | First-class ecosystem for AI/ML (PyTorch, PyMuPDF, Sentence-Transformers, LangGraph, Docling, PIL, Tesseract) and high-performance async I/O. |
+| **Package Management** | **`uv`** (Astral) | Poetry, Pipenv, Conda | **10–100x faster** dependency resolution and installation. Standard PEP 621 `pyproject.toml` support without vendor lock-in; ideal for CI and container builds. |
+| **Web Framework** | **FastAPI + Uvicorn** | Flask, Django, Express | Native async/await concurrency, automatic OpenAPI/Swagger documentation, Pydantic v2 data validation, and first-class Server-Sent Events (SSE) streaming. |
+| **Task Queue** | **Celery + Redis** | Celery+RabbitMQ, RQ, Dramatiq | Distributed background processing for multi-page broadsheet OCR and VLM extraction with Redis serving dual roles (Celery broker and query cache). |
+| **System of Record** | **MySQL 8** (`aiomysql` + `pymysql`) | PostgreSQL / pgvector | Strict relational schema, battle-tested `FULLTEXT` indexing on broadsheet text, native JSON payload columns, and high-throughput async connections via `aiomysql`. |
+| **Vector Database** | **Qdrant** | Pinecone, Milvus, Chroma, Weaviate | Self-hostable, rust-powered vector search with rich payload filtering (newspaper, issue_date, section, article_type, prominence), cosine similarity, and low memory footprint. |
+| **Object Store** | **MinIO** (S3-compatible) | Local Filesystem, AWS S3 only | Local S3-compliant distributed object storage for 300 DPI page scans and high-res image crops, allowing seamless transition to AWS S3/GCS without code changes. |
+| **PDF Extraction & Layout** | **PyMuPDF + Docling** | PDFMiner, Poppler, naive OCR | PyMuPDF provides ultra-fast digital text/font extraction and high-res rasterization; IBM Docling (DocLayNet) provides 2D spatial layout and reading-order tree analysis. |
+| **OCR Engines** | **Tesseract + RapidOCR** | Tesseract alone, Cloud Vision only | RapidOCR (ONNX) and Tesseract provide high-speed local character transcription, token coordinate bounding boxes, and multi-language support (English + Indic scripts). |
+| **Frontend Framework** | **React 18 + Vite** | Next.js, Nuxt, Angular | Lightweight client-side Single Page Application (SPA), instant HMR development with Vite, zero unnecessary server-rendering overhead for desktop analytical tools. |
+| **Styling & Icons** | **Tailwind CSS + Lucide** | Material UI, Ant Design, Bootstrap | Utility-first styling for complex responsive broadsheet canvas layouts, crisp typography, dark mode support, and comprehensive icons. |
+
+---
+
+## 3. Model Evolution, Provider Strategy & Selection Rationale
+
+NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_config.yaml`), decoupling high-level application workflows from specific LLM vendors.
+
+### Evolution & Model Transitions
+1. **Local vs. Hosted Provider Flexibility**:
+   - **Local Inference (Ollama & Sentence-Transformers)**: Supports privacy-conscious, offline deployments using `llama3.1:70b` / `llama3.2:3b` for planning and answer synthesis, `qwen2.5-vl` / `qwen3-vl` for visual layout triage, and `BAAI/bge-m3` for local dense embeddings.
+   - **Hosted Production Models (Anthropic, OpenAI, Google, Groq)**: Supports `claude-sonnet-4-5`, `gpt-4o`, `gemini-2.5-flash`, and Groq LPU inference for ultra-fast response times.
+2. **Why `BAAI/bge-m3` as Default Embedding**:
+   - 1024-dimensional dense representation.
+   - 8,192-token context window (accommodates lengthy long-form newspaper articles without aggressive truncation).
+   - Multi-lingual cross-lingual alignment (handles English, Hindi, and regional vernacular broadsheets).
+   - Zero external API call costs and zero latency fluctuations.
+3. **The Necessity of Deterministic Fallbacks**:
+   - Local vision models (e.g. running on Apple Silicon or consumer GPUs) occasionally return empty responses (`''`) or encounter memory timeouts when parsing high-density financial matrices.
+   - **The Deterministic Spatial OCR Matrix Reconstruction Engine** was engineered as a zero-failure fallback: when VLM structured extraction returns empty, the spatial matrix algorithm reconstructs tabular data directly from OCR bounding boxes with confidence $\ge 0.85$.
+
+---
+
+## 4. Core Subsystem Architecture
+
+### A. Document Ingestion & Layout Analysis Pipeline (`backend/app/ingestion/`)
+
+```
+   ┌─────────────────────────────────────────────────────────────┐
+   │                     Broadsheet PDF Scan                     │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │          PyMuPDF Lossless Intake & 300 DPI Raster           │
+   │  • Extracts embedded digital text, font sizes & bbox boxes  │
+   │  • Rasterizes high-res page image to MinIO Storage          │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │       Multi-Page Consensus Masthead & Date Extractor        │
+   │  • Extracts publication name, volume, issue, and date       │
+   │  • Cross-validates across first 3 pages to resolve consensus│
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │          Spatial Layout Analysis & Element Consolidation    │
+   │  • Slices page into columns, headline bands, and text boxes │
+   │  • Re-attaches drop-caps and repairs hyphenated line breaks │
+   │  • Merges horizontal headline slices across column tracks   │
+   │  • Detects statutory ad envelopes & injects barrier headers │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+         ┌────────────────────────┴────────────────────────┐
+         │                                                 │
+         ▼                                                 ▼
+┌──────────────────────────────────┐      ┌──────────────────────────────────┐
+│ Article Linearization & Debundle │      │ Visual Asset Harvest & Matrix    │
+│ • Column de-bundling (Shorts)    │      │ • Crops photos, charts & tables  │
+│ • Kicker extraction & bylines    │      │ • Spatial photo-article binding  │
+│ • Cross-page jump-line stitching │      │ • Dual VLM + Spatial OCR Matrix  │
+└────────────────┬─────────────────┘      └────────────────┬─────────────────┘
+                 │                                         │
+                 └────────────────────────┬────────────────┘
+                                          │
+                                          ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │        Probabilistic 12-Domain Newsroom Classification       │
+   │  • Multi-signal scoring: Headline (3x), Deck (2x), Body (1x)│
+   │  • Context Anchor Dampening for financial/political idioms  │
+   │  • Secondary Topic Extraction & MySQL Junction Persistence  │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │      Hierarchical Contextual Chunking & Qdrant Indexing     │
+   │  • Prepends metadata headers [Newspaper|Date|Sec|HL|Page]   │
+   │  • Generates dedicated visual data chunks for tables/charts │
+   │  • Embeds via BGE-M3 (1024-dim) into Qdrant Vector DB       │
+   └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### B. Dual-Engine Visual Infographic & Table Intelligence (`visual_extractor.py`)
+
+Visual elements in broadsheets contain high-value quantitative data (e.g. IPO subscription matrices, stock indices, budget allocations). NewsLens-AI handles these via a 3-stage visual intelligence pipeline:
+
+1. **Stage 1: Triage Classification**:
+   - Fast evaluation via lightweight VLM / OCR numerical token density heuristic.
+   - Categorizes crops into `data_chart`, `table`, `infographic`, `photo`, or `decorative`.
+2. **Stage 2: Structured Extraction & Spatial OCR Matrix**:
+   - **Primary**: Multimodal VLM structured prompt returning JSON containing `summary`, `markdown_table`, `key_metrics`, and `confidence`.
+   - **Deterministic Fallback**: If VLM returns empty or errors, `extract_table_via_spatial_ocr()` executes:
+     - Clusters OCR tokens into horizontal rows by vertical coordinate proximity.
+     - Detects column centers and horizontal alignment lanes.
+     - Transcribes clean GitHub-flavored Markdown tables and computes key metrics.
+3. **Stage 3: Numerical Cross-Validation**:
+   - Validates numerical tokens in the table against OCR ground truth to adjust final confidence scores.
+
+---
+
+### C. Universal 12-Domain Newsroom Taxonomy & Metaphor Disambiguation (`classifier.py`)
+
+Broadsheet language is heavily idiomatic. Financial and political articles frequently borrow sports, military, and entertainment metaphors (*"Bulls hit market for a six"*, *"Political chess in cabinet reshuffle"*).
+
+1. **12 Canonical Newsroom Desks**:
+   `Business & Markets`, `Economy & Policy`, `Politics & Governance`, `National`, `World & International`, `Corporate & Industry`, `Technology & Startups`, `Sports`, `Entertainment & Culture`, `Science & Environment`, `Health & Medicine`, `Opinion & Editorial`.
+2. **Multi-Signal Probabilistic Scoring**:
+   $$\text{Score}(D) = 3.0 \times \sum_{w \in \text{HL}} \text{tf}(w) + 2.0 \times \sum_{w \in \text{Deck}} \text{tf}(w) + 1.0 \times \sum_{w \in \text{Body}} \text{tf}(w)$$
+3. **Domain Context Anchor Dampening**:
+   If domain anchors for finance/politics (*Sensex, Nifty, RBI, Revenue, Cabinet, Parliament, FDA*) are present, metaphorical sports/war keywords receive a dampening penalty ($0.15\times - 0.25\times$), preventing misclassification.
+4. **Multi-Topic Secondary Tagging**:
+   Articles exceeding a secondary score threshold ($\ge 3.0$ and within 40% of top score) are stored in `article_topics` junction table, allowing cross-desk multi-facet retrieval.
+
+---
+
+### D. Geometric Advertisement Barrier Isolation (`layout_analyzer.py`, `segmenter.py`)
+
+Statutory and commercial disclosures (*QIP announcements, IPO prospectus summaries, tender notices*) often lack standard news headlines and occupy multi-column rectangular zones.
+
+1. **Envelope Detection**: Detects clusters of statutory keywords (`QUALIFIED INSTITUTIONS PLACEMENT`, `BOOK RUNNING LEAD MANAGERS`, `ISSUE PRICE`, `REGISTRAR TO THE ISSUE`) and constructs convex bounding envelopes.
+2. **Synthetic Boundary Injection**: Injects synthetic barrier headline elements (`[Advertisement] <Ad Title>`) at the top of the envelope.
+3. **Reading Order Isolation**: `ArticleSegmenter` isolates the advertisement into a dedicated `[Advertisement]` article, preventing adjacent editorial news columns from absorbing the advertisement copy.
+4. **Marketing Slogan Byline Suppression**: `MARKETING_SLOGAN_REGEX` rejects commercial taglines (*"By Innovation I Built For The Future"*, *"Backed by Trust"*) from being parsed as journalist bylines.
+
+---
+
+### E. Agentic Broadsheet Reasoning Lifecycle (`backend/app/agent/`)
+
+```
+   ┌─────────────────────────────────────────────────────────────┐
+   │                     User Natural Query                      │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │                   Redis Query Cache Check                   │
+   │  • SHA-256 hash lookup of normalized query string           │
+   │  • Immediate sub-millisecond return on cached hits          │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │ (Cache Miss)
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │           Conversational Context Condensation Node          │
+   │  • Resolves pronouns ("its", "they", "this newspaper")      │
+   │  • Binds active newspaper issue and date from chat history  │
+   │  • Short-circuits ambiguous initial queries with guidance   │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │           Cognitive Query Planner & Intent Router           │
+   │  • Classifies into 1 of 6 Broadsheet Query Archetypes       │
+   │  • Dispatches optimal tool execution sequence:              │
+   │    - sql_analytics (issue manifest, stats, section lists)   │
+   │    - hybrid_search (dense Qdrant + sparse MySQL RRF)        │
+   │    - entity_search (knowledge graph & salience lookups)     │
+   │    - timeline_builder (thematic chronological progression)  │
+   │    - coverage_analyzer (cross-newspaper comparison)         │
+   │    - web_search (real-time live internet grounding)         │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │         Multi-Tool Dispatch & Execution Engine              │
+   │  • Executes planned tool calls asynchronously in parallel   │
+   │  • Resilient multi-tier issue ID fallback in sql_analytics  │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │          Corrective RAG (CRAG) Retrieval Evaluator          │
+   │  • Grades keyword relevance & density of retrieved evidence │
+   │  • Triggers broadened fallback query if confidence is low   │
+   │  • Enforces anti-hallucination hard stops on empty evidence │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │         4-Tier Broadsheet Grounded Synthesizer              │
+   │  • Formulates structured response:                          │
+   │    1. Executive Summary                                     │
+   │    2. Key Verified Facts & Highlights                       │
+   │    3. Broadsheet Perspectives (Front Page vs Inside)        │
+   │    4. Explore Further Follow-up Suggestions                 │
+   │  • Generates strict markdown citations: [Paper, Date, Page] │
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │            SSE Streaming Delivery & Audit Logging           │
+   │  • Streams response tokens, reasoning trace & tool metrics  │
+   │  • Logs execution latency, cost, and query audit in MySQL   │
+   └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 5. Database Schema & Data Model (MySQL 8)
+
+The system maintains **16 interconnected relational tables**:
+
+```
+ ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+ │  newspapers  │1       *│    issues    │1       *│    pages     │
+ ├──────────────┤─────────├──────────────┤─────────├──────────────┤
+ │ id (PK)      │         │ id (PK)      │         │ id (PK)      │
+ │ name         │         │ newspaper_id │         │ issue_id     │
+ │ publisher    │         │ issue_date   │         │ page_number  │
+ │ country      │         │ edition      │         │ raster_key   │
+ └──────────────┘         │ total_pages  │         │ width/height │
+                          └──────┬───────┘         └──────┬───────┘
+                                 │1                       │1
+                                 │*                       │*
+                          ┌──────┴───────┐         ┌──────┴───────┐
+                          │   articles   │1       *│ article_pages│
+                          ├──────────────┤─────────├──────────────┤
+                          │ id (PK)      │         │ article_id   │
+                          │ issue_id     │         │ page_number  │
+                          │ headline     │         │ bbox_json    │
+                          │ byline_author│         └──────────────┘
+                          │ category_id  │
+                          │ full_text    │
+                          │ word_count   │
+                          │ prominence   │
+                          └──────┬───────┘
+                                 │
+         ┌───────────────────────┼───────────────────────┐
+         │1                      │1                      │1
+         │*                      │*                      │*
+  ┌──────┴───────┐        ┌──────┴───────┐        ┌──────┴───────┐
+  │article_chunks│        │    photos    │        │article_topics│
+  ├──────────────┤        ├──────────────┤        ├──────────────┤
+  │ id (PK)      │        │ id (PK)      │        │ article_id   │
+  │ article_id   │        │ article_id   │        │ topic_id     │
+  │ qdrant_point │        │ object_key   │        │ relevance    │
+  │ chunk_text   │        │ visual_type  │        └──────────────┘
+  │ token_count  │        │ vlm_markdown │
+  └──────────────┘        │ confidence   │
+                          └──────────────┘
+```
+
+---
+
+## 6. Key Learnings & Empirical Discoveries Across Iterations
+
+| Phase / Iteration | Empirical Discovery & Challenge | Engineering Solution Implemented |
 |---|---|---|
-| **Frontend** | React 18, Vite, Tailwind CSS, Lucide Icons, Canvas API | High-resolution PDF/image reader, interactive bbox overlays, visual asset inspector, SSE streaming consumer |
-| **Backend API** | Python 3.13 / 3.12, FastAPI, Uvicorn | Async HTTP APIs, Server-Sent Events (SSE) streaming, streaming media proxies |
-| **Task Queue** | Celery + Redis 7 | Distributed background ingestion pipeline and PDF rasterization |
-| **System of Record** | MySQL 8 (`aiomysql` async + `pymysql` sync) | 16 relational tables with `FULLTEXT` indexing on headlines and full text |
-| **Vector Database** | Qdrant | Dense vector search with cosine similarity and metadata payload filtering |
-| **Object Store** | MinIO / AWS S3 | 300 DPI page PNG scans, cropped photo/infographic assets, and original PDF archives |
-| **Cache & Lock** | Redis 7 | Query caching, heavy-LLM timeline caching (1-hr TTL), rate limiting |
-| **Document Parsers** | IBM Docling (DocLayNet), MinerU, Google Cloud Vision, Gemini VLM, PyMuPDF | Multimodal document layout analysis, table extraction, and 2D reading order |
-| **OCR Engines** | RapidOCR (ONNX), Google Cloud Vision API (`DOCUMENT_TEXT_DETECTION`), Tesseract | High-precision newspaper text and bbox transcription with 98%+ confidence |
-| **VLM & Visual Extraction**| Qwen3-VL (`qwen3-vl:latest`), Gemini 2.5/Flash, Ollama | Infographic chart-to-table transcription, visual triage, and photo captioning |
-| **LLM Reasoning** | Groq (Compound, Qwen), Gemini, OpenAI, Ollama (Gemma 4, Llama 3) | Multi-provider failover chain for planning, condensation, and synthesis |
-| **Embedding Models** | BAAI/bge-m3 (1024-dim), nomic-embed-text, OpenAI | Dense semantic representation for hybrid search |
+| **Phase 1: Coordinates** | Raster image pixels (300 DPI) differed from PDF digital coordinate points (72 DPI), misaligning bounding box overlays. | Implemented bidirectional coordinate scaling normalizers (`BBox.scale()`) standardizing all spatial polygons. |
+| **Phase 2: Mint Shorts** | Compact summary columns contained 6–10 short stories under one banner, causing segmenters to merge them into giant articles. | Engineered multi-story column de-bundling that detects horizontal divider rules, bold uppercase lead-ins, and distinct bbox tracks. |
+| **Phase 3: Typographic Ligatures** | Drop-caps (e.g. large initial "T") and OCR font ligatures created severed words (*"T he", "Ol estimates"*). | Added Pass 0 Drop-Cap Re-attachment and deterministic OCR headline repair dictionary. |
+| **Phase 4: ToC Noise** | Front-page Table of Contents boxes and pull-quote author names (*"PENNY WONG AUSTRALIAN FOREIGN MINISTER"*) formed fake articles. | Implemented regex patterns and coordinate filters to detect and suppress index teasers and pull-quote attributions. |
+| **Phase 5: Metaphors** | Financial papers used sports/war idioms (*"Bulls hit for a six"*), polluting sports desks with business articles. | Developed Domain Anchor Dampening ($0.15\times - 0.25\times$ penalty) when corporate/market anchor entities are detected. |
+| **Phase 6: Empty VLMs** | Local VLMs occasionally returned empty outputs on dense tabular crops, leaving empty table records. | Built Deterministic Spatial OCR Matrix Reconstruction Engine to assemble Markdown tables directly from OCR coordinates. |
+| **Phase 7: Ad Bleed** | Half-page commercial ads without standard headlines bled into bottom editorial stories (*Retail Investors Skip IPOs*). | Engineered convex ad-envelope detection, injecting barrier delimiter headers (`[Advertisement] ...`) to isolate ad units. |
+| **Phase 8: Slogan Bylines** | Corporate marketing taglines (*"By Innovation I Built For The Future"*) matched byline regexes and became author names. | Introduced `MARKETING_SLOGAN_REGEX` to validate author candidates against commercial buzzword filters. |
+| **Phase 9: Strict Issue IDs** | Users typing `"issue 84"` when the database stored `"Issue #88"` caused `sql_analytics` to return 0 results and poison chat context. | Upgraded `sql_analytics.py` with multi-tier fallback resolution matching by `(newspaper_name, issue_date)` when IDs mismatch. |
 
 ---
 
-## 3. Core Subsystems
+## 7. Future Work & Roadmap
 
-### A. Document Ingestion & Visual Pipeline (`backend/app/ingestion/`)
-
-```
-   ┌──────────────────┐
-   │ Broadsheet PDF   │
-   └────────┬─────────┘
-            │
-            ▼
-   ┌──────────────────────────────────────────┐
-   │ Intake & Lossless Compression (PyMuPDF)  │
-   └────────┬─────────────────────────────────┘
-            │
-            ▼
-   ┌──────────────────────────────────────────┐
-   │ 300 DPI Rasterization & MinIO Archive    │
-   └────────┬─────────────────────────────────┘
-            │
-            ▼
-   ┌──────────────────────────────────────────┐
-   │ Multi-Page Consensus Masthead & Date     │
-   │ (ConsensusExtractor + MastheadVerifier)  │
-   └────────┬─────────────────────────────────┘
-            │
-            ▼
-   ┌──────────────────────────────────────────┐
-   │ 2D Broadsheet Layout Analysis (Docling)  │
-   │ • DocLayNet + RapidOCR                   │
-   │ • Title / Deck Coalescence & Bylines     │
-   │ • Multi-Article Page Separation          │
-   └────────┬─────────────────────────────────┘
-            │
-            ├──────────────────────────────────────────────────────┐
-            │                                                      │
-            ▼                                                      ▼
-   ┌──────────────────────────────────────────┐           ┌──────────────────────────────────────────┐
-   │ Article Text & Structure Assembly        │           │ 2D Spatial Photo & Infographic Harvest   │
-   │ • 2D Reading Order Linearization         │           │ • Spatial Caption Proximity Matching     │
-   │ • Cross-Page Jump Line Stitching         │           │ • Convex Envelope Article Binding        │
-   │ • Minimum Structural Noise Filtering     │           │ • Qwen3-VL Visual Triage & Extraction    │
-   └────────┬─────────────────────────────────┘           └────────┬─────────────────────────────────┘
-            │                                                      │
-            └──────────────────────────┬───────────────────────────┘
-                                       │
-                                       ▼
-                     ┌───────────────────────────────────┐
-                     │ Hierarchical Chunking & Embedding │
-                     │ • BAAI/bge-m3 (1024-dim) vectors  │
-                     │ • Visual Infographic Data Chunks  │
-                     │ • Dual Sync: Qdrant + MySQL FT    │
-                     └───────────────────────────────────┘
-```
-
-1. **Intake & Rasterization**: Uploads broadsheet PDFs, verifies SHA-256 idempotency, optimizes lossless compression via PyMuPDF (`fitz`), stores original PDFs in MinIO `newslens-originals`, and renders 300 DPI high-resolution page scans into `newslens-pages`.
-2. **Multi-Page Consensus Masthead & Date Recognition**:
-   - Inspects headers, folios, and footers across up to 15 pages to extract authoritative brand and publication date.
-   - Comprehensive signature database covering national and global broadsheets (*The New York Times*, *The Wall Street Journal*, *Financial Times*, *The Washington Post*, *The Guardian*, *Mint*, *Business Standard*, *The Hindu*, *The Times of India*, *The Economic Times*, etc.) and acronyms (`NYT`, `WSJ`, `FT`, `WAPO`, `ET`, `TOI`, `BS`).
-   - Fallback to visual `MastheadVerifier` utilizing RapidOCR on Page 1 masthead zone (top 20%).
-3. **Docling Neural Layout Parser (`docling_parser.py`)**:
-   - Executes IBM Docling with DocLayNet and RapidOCR to segment complex broadsheet grids into semantic blocks (`title`, `section_header`, `paragraph`, `picture`, `caption`, `table`, `chart`).
-   - **Headline & Subheadline/Deck Coalescence**: Gathers multi-line headlines, summary decks, and inline bylines (`BY <NAME>`) without creating fragmented 8-word orphan articles.
-   - **Multi-Article Separation**: Accurately flushes and separates distinct articles on dense multi-story broadsheet pages.
-4. **2D Spatial Photo & Infographic Extraction**:
-   - Identifies distinct pictures and figures, filtering out full-page canvas background scans (`w >= 90%` and `h >= 90%`).
-   - Pairs multi-photo composite galleries (left, center, right photos) with shared captions using 2D vertical distance and horizontal overlap scoring.
-   - Generates high-res image crops in MinIO (`photos/{page_id}/photo_{n}.png`).
-   - Automatically binds photos to parent articles via convex spatial envelope containment and Euclidean proximity fallbacks.
-5. **VLM Visual Data Extraction (`visual_extractor.py`)**:
-   - **Stage 1 (Visual Triage)**: Uses aspect ratio heuristics + VLM classification to differentiate data infographics from editorial photos.
-   - **Stage 2 (Structured Extraction)**: Transcribes charts, graphs, and tables into Markdown tables, metric bullet points, and executive summaries via `qwen3-vl:latest`.
-   - **Stage 3 (Numerical Cross-Validation)**: Compares VLM-extracted figures against local OCR tokens to prevent visual hallucination.
-   - Injects dedicated visual data chunks into Qdrant (`chunk_type="visual"`, `has_visual_data=True`).
-6. **Resilient Object Storage**:
-   - `MinioStore.get()` gracefully catches `S3Error` (`NoSuchKey`, `NoSuchBucket`) returning empty bytes, ensuring missing assets return clean HTTP 404 responses instead of crashing the ASGI application with 500 errors.
-
----
-
-### B. Agentic Retrieval & Reasoning Engine (`backend/app/agent/` & `backend/app/retrieval/`)
-
-1. **Query Condenser (`condenser.py`)**: Resolves coreferences and conversational context across multi-turn dialogues. Detects in-context meta-queries (`"which newspaper was this from?"`) to bypass vector search and answer directly from citations.
-2. **LLM Agentic Query Planner (`planner.py`)**: Pydantic structured Chain-of-Thought (CoT) reasoning model with explicit tool boundaries. Dynamically classifies query archetypes (`factual_lookup`, `thematic_timeline`, `quantitative_trend`, `cross_newspaper_comparison`, `entity_deep_dive`) and routes macro-level queries (whole-issue summaries, full page manifests, article counts) to `sql_analytics` and fine-grained queries to `hybrid_search` without hardcoded regexes.
-3. **Two-Stage Neural Retrieval Cascade (`hybrid_search.py` & `reranker.py`)**:
-   - **Stage 1 (High Recall Candidate Pool)**: Retrieves Top $N=75$ candidates using Reciprocal Rank Fusion (RRF $k=60$) across Qdrant dense vector search (`BAAI/bge-m3`) and MySQL `FULLTEXT` keyword search.
-   - **Stage 2 (Cross-Encoder Neural Reranker)**: Evaluates candidate relevance via `sentence_transformers.CrossEncoder` (`BAAI/bge-reranker-v2-m3` / `ms-marco-MiniLM-L-6-v2`) with Apple Silicon `mps` auto-acceleration, producing the final Top 10 reranked context.
-4. **Parent-Document (Small-to-Big) Context Hydration**: Retains exact chunk bounding-box anchors while packaging surrounding parent article context (`[Exact Chunk Match]` + `[Article Parent Context]`) to prevent truncated factual synthesis.
-5. **Multi-Hop Knowledge Graph Traversal (`entity_filter.py`)**: Discovers multi-hop entity co-occurrence relations across shared newspaper stories and event clusters.
-6. **Corrective RAG (CRAG) Self-Reflection (`graph.py`)**: Evaluates retrieved evidence quality and automatically triggers entity taxonomy and web search fallback if initial archive retrieval is weak.
-7. **3-Tier Negative Coverage Engine (`coverage_analyzer.py`)**:
-   - **Tier 1 (Relational Audit Invariant)**: Queries MySQL system-of-record to identify newspapers with zero articles on the requested topic.
-   - **Tier 2 (Vector/Semantic Negative Verification)**: Audits low semantic similarity candidates to confirm negative reporting.
-   - **Tier 3 (Multi-Newspaper Reconciliation Matrix)**: Generates comparative editorial matrices detailing perspective differences and omitted coverage.
-8. **Synthesizer (`synthesizer.py`)**: Produces structured 4-tier briefs (`Executive Summary`, `Key Verified Facts`, `Broadsheet Perspectives`, `Explore Further`) with visual citations (`[📊 Chart: ...]` and `[📷 Photo: ...]`) and resilient multi-provider failover (`groq_compound` $\rightarrow$ `gemini_flash` $\rightarrow$ `groq_qwen` $\rightarrow$ `ollama_llama3`).
-
----
-
-### C. Cross-Newspaper Narrative Trajectory (`backend/app/retrieval/timeline_builder.py`)
-
-1. **Story Lifecycle Reconstruction**: Tracks narrative trajectories across multiple broadsheets and dates with reporting phases (`Breaking`, `Development`, `Financial Impact`, `Regulatory/Outcome`).
-2. **4-Tier Anti-Hallucination Defense Pipeline**:
-   - **Gate 1 (Salience Edge Filtering)**: Filters 2-hop connected entities by `salience_score >= 0.50`.
-   - **Gate 2 (Temporal Windowing Constraint)**: Bounds multi-hop article retrieval to the calendar event range $[\text{min\_date}, \text{max\_date}]$.
-   - **Gate 3 (Neural Cross-Encoder Verification)**: Reranks candidate pairs against the query topic using `CrossEncoderReranker`.
-   - **Gate 4 (Empty-Evidence Hard Stop & Attribution)**: Zero-hallucination hard stop when no grounded evidence exists.
-3. **Milestone Active Entity Evolution**: Captures central protagonist entities, their type, and centrality scores at each milestone.
-
----
-
-## 4. Provider Abstraction & Model Registry
-
-All model providers implement structural subtyping via Python `Protocol` interfaces:
-- `ChatModelProvider`: `GroqProvider`, `GeminiProvider`, `OpenAIProvider`, `OllamaProvider`
-- `EmbeddingProvider`: `LocalEmbeddingProvider` (bge-m3), `OpenAIProvider`
-- `VisionModelProvider`: `GoogleCloudVisionOCR`, `GeminiProvider`, `OllamaProvider` (qwen3-vl, gemma4:26b, qwen2.5vl)
-- `DocumentLayoutProvider` & `OCREngine`: `DoclingLayoutParser`, `MinerUProvider`, `GoogleCloudVisionOCR`, `GeminiProvider`, `TesseractOCR`
-
-Configured declaratively in `model_config.yaml` with runtime zero-downtime swapping via `/api/settings/model-bindings`.
+1. **Temporal Lineage & Storyline Delta Tracking**:
+   - Automated entity sentiment and financial valuation evolution across decades of archived issues.
+2. **Vernacular Multi-Lingual Broadsheets**:
+   - Extension of layout analysis and spatial OCR matrix reconstruction to Hindi (Dainik Bhaskar, Jagran), Tamil, Bengali, and Arabic scripts.
+3. **Cross-Publication Bias Radar**:
+   - Comparative framing analytics evaluating editorial sentiment and headline divergence on identical news events across multiple broadsheets.
+4. **Real-Time Live E-Paper Ingestion**:
+   - Automated S3 bucket watcher / Webhook pipeline for real-time dawn ingestion of daily PDF editions as they go to print.
+5. **Multimodal Audio Briefings**:
+   - Automated podcast-style audio news generation synthesizing verified facts from the daily executive summary.

@@ -141,8 +141,13 @@ class OllamaProvider:
                 "temperature": temperature,
             },
         }
-        if response_schema:
-            # Pass native response_schema to Ollama for grammar-constrained decoding
+        has_images = any(
+            isinstance(m.content, list)
+            and any(isinstance(c, dict) and c.get("type") == "image" for c in m.content)
+            for m in messages
+        )
+        if response_schema and not has_images:
+            # Pass native response_schema to Ollama for text models; omit for image payloads to avoid GBNF deadlock
             kwargs["format"] = response_schema
         if tools:
             kwargs["tools"] = self._to_ollama_tools(tools)
@@ -171,6 +176,19 @@ class OllamaProvider:
 
         latency_ms = round((time.monotonic() - t0) * 1000)
         raw_text: str = response.message.content or ""
+        thinking_text: str = getattr(response.message, "thinking", "") or ""
+
+        # Fallback to extracting response from thinking tokens if content was starved
+        if not raw_text.strip() and thinking_text.strip():
+            match = re.search(
+                r"(\{[^{}]*\"(?:summary|markdown_table|visual_type|key_metrics)\"[^}]*\}|\{.*\})",
+                thinking_text,
+                re.DOTALL,
+            )
+            if match:
+                raw_text = match.group(1)
+            else:
+                raw_text = thinking_text
 
         # Strip reasoning / thinking tokens (e.g. <thought>...</thought>, <think>...</think>)
         cleaned_text = re.sub(r"<(thought|think)>.*?</\1>", "", raw_text, flags=re.DOTALL).strip()
@@ -187,6 +205,12 @@ class OllamaProvider:
                 if match:
                     with contextlib.suppress(Exception):
                         parsed = json.loads(match.group(1))
+                if not parsed and thinking_text:
+                    # Attempt recovery from thinking tokens
+                    match_think = re.search(r"(\{.*\}|\[.*\])", thinking_text, re.DOTALL)
+                    if match_think:
+                        with contextlib.suppress(Exception):
+                            parsed = json.loads(match_think.group(1))
                 if not parsed:
                     logger.warning(
                         "Failed to parse structured JSON from Ollama response",
@@ -261,6 +285,21 @@ class OllamaProvider:
                 f"Model {self._model!r} does not support vision. "
                 "Use a model with 'vl' in the name (e.g. qwen2.5vl:7b)."
             )
+        # Defensive image resizing: clamp max dimension to 1024px to prevent
+        # Vision Transformer patch token overflow on local Ollama VLM instances
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            max_dim = 1024
+            if max(img.size) > max_dim:
+                ratio = max_dim / max(img.size)
+                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                img_resized = img.resize(new_size, Image.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                img_resized.save(buf, format="PNG")
+                image_bytes = buf.getvalue()
+        except Exception:
+            pass
+
         image_b64 = base64.b64encode(image_bytes).decode()
         messages = [
             Message(

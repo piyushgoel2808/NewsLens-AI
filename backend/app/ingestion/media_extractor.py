@@ -63,6 +63,10 @@ class MediaExtractor:
         candidate_scores: list[tuple[int, float, str]] = []
 
         for art_id, (ax0, ay0, ax1, ay1), headline in article_envelopes:
+            px_center = (px0 + px1) / 2.0
+            py_center = (py0 + py1) / 2.0
+            in_envelope = (ax0 <= px_center <= ax1 and ay0 <= py_center <= ay1)
+
             # 1. Check Horizontal Column Overlap
             h_overlap = max(0.0, min(px1, ax1) - max(px0, ax0))
             h_overlap_ratio = h_overlap / pw
@@ -79,7 +83,8 @@ class MediaExtractor:
             norm_v_dist = max(0.0, v_dist / max(ay1 - ay0, 100.0))
 
             # Proximity Score (higher is better)
-            score = (h_overlap_ratio * 0.6) + (max(0.0, 1.0 - norm_v_dist) * 0.4)
+            containment_bonus = 0.5 if in_envelope else 0.0
+            score = (h_overlap_ratio * 0.5) + (max(0.0, 1.0 - norm_v_dist) * 0.3) + containment_bonus
             candidate_scores.append((art_id, score, headline))
 
         if not candidate_scores:

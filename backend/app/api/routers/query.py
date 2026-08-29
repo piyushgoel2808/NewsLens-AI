@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.condenser import (
     CLEAN_SESSION_CLARIFICATION_MESSAGE,
     condense_conversational_query,
+    extract_active_issue_from_history,
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
     needs_condensation,
@@ -156,11 +157,14 @@ async def stream_query(
                 cond_data = json.dumps({"condensed_query": condensed})
                 yield f"event: query_condensed\ndata: {cond_data}\n\n"
 
+            active_ctx = extract_active_issue_from_history(chat_history)
+
             # 2. Planning Stage
             yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
-            plan_res = workflow._planner.plan_query(
+            plan_res = await workflow._planner.plan_query_async(
                 query,
                 enable_web_search=request.enable_web_search,
+                model_override=effective_model,
             )
             effective_archetype = plan_res.archetype
             planned_calls = [
@@ -193,6 +197,9 @@ async def stream_query(
                     "model_override": effective_model,
                     "enable_web_search": request.enable_web_search,
                     "web_search_results": [],
+                    "active_issue_id": active_ctx.get("issue_id"),
+                    "active_newspaper_name": active_ctx.get("newspaper_name"),
+                    "active_issue_date": active_ctx.get("issue_date"),
                     "error": None,
                 }
             )

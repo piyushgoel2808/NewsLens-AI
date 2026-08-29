@@ -270,4 +270,34 @@ class TestAgentWorkflowToolExecution:
         assert "COVERED" in res["evidence_items"][0]["snippet"]
         assert "NOT_FOUND" in res["evidence_items"][0]["snippet"]
 
+    def test_plan_section_listing_sports_manifest(self) -> None:
+        planner = QueryPlanner()
+        plan = planner.plan_query("list all its sports related news")
+        assert plan.archetype == "quantitative_trend"
+        assert len(plan.tool_calls) >= 1
+        sql_call = plan.tool_calls[0]
+        assert sql_call.tool_name == "sql_analytics"
+        assert sql_call.arguments.get("category_filter") == "Sports"
+        assert sql_call.arguments.get("analysis_type") == "issue_summary"
+
+    def test_plan_newspaper_issue_and_date_extraction(self) -> None:
+        planner = QueryPlanner()
+        plan = planner.plan_query("summrizze the whole newspaper of THE ECONOMICS times issue 84 dated 27/8/2026")
+        assert plan.archetype == "quantitative_trend"
+        assert len(plan.tool_calls) >= 1
+        sql_call = plan.tool_calls[0]
+        assert sql_call.tool_name == "sql_analytics"
+        assert sql_call.arguments.get("newspaper_name") == "The Economic Times"
+        assert sql_call.arguments.get("issue_id") == 84
+        assert sql_call.arguments.get("issue_date") == "2026-08-27"
+        assert sql_call.arguments.get("analysis_type") == "issue_summary"
+
+    def test_planner_get_provider_with_model_override(self) -> None:
+        planner = QueryPlanner()
+        provider = planner._get_provider("ollama_deepseek")
+        assert provider is not None
+        assert provider.provider_name == "ollama"
+
+
+
 

@@ -1,4 +1,4 @@
-"""Article Type Classifier and Prominence Scorer.
+"""Article Type Classifier, Multi-Signal Taxonomy Classifier & Prominence Scorer.
 
 Classifies articles into 8 standardized types:
 - 'news'
@@ -10,15 +10,26 @@ Classifies articles into 8 standardized types:
 - 'continuation'
 - 'unknown'
 
-Calculates normalized prominence score (0.0 to 1.0) based on page positioning,
-headline bounding box scale, and word count.
+Provides multi-signal probabilistic taxonomy scoring across 12 canonical domains:
+Sports, Entertainment, Science & Environment, Technology, Business & Markets,
+Economy & Policy, Politics, Health, Crime & Law, Opinion/Editorial,
+World/International, Lifestyle.
+
+Features:
+- Headline (3.0x), Subheadline (2.0x), and Body (1.0x) weighted token scoring.
+- Domain Context Anchor Dampening for metaphorical keyword collision disambiguation
+  (e.g., "Bulls hit market for a six" -> Business & Markets, not Sports).
+- Multi-topic secondary tagging for cross-domain stories.
+- Physical layout section vs. semantic category decoupling.
+- Strict preservation of editorial / op-ed article types.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -33,22 +44,30 @@ _VALID_TYPES = set(_ARTICLE_TYPES)
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "core" / "category_aliases.yaml"
 _CATEGORY_ALIASES: dict[str, str] = {}
 _CANONICAL_CATEGORIES: list[str] = [
-    "Politics",
-    "Business & Markets",
     "Sports",
     "Entertainment",
-    "World/International",
+    "Science & Environment",
     "Technology",
+    "Business & Markets",
+    "Economy & Policy",
+    "Politics",
     "Health",
     "Crime & Law",
     "Opinion/Editorial",
+    "World/International",
     "Lifestyle",
-    "Science & Environment",
     "Local/Metro",
     "Other",
 ]
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {}
+_DOMAIN_ANCHORS: dict[str, list[str]] = {}
+_USER_QUERY_SYNONYMS: dict[str, str] = {}
 
-if _CONFIG_PATH.exists():
+
+def _load_taxonomy_config() -> None:
+    global _CATEGORY_ALIASES, _CANONICAL_CATEGORIES, _CATEGORY_KEYWORDS, _DOMAIN_ANCHORS, _USER_QUERY_SYNONYMS
+    if not _CONFIG_PATH.exists():
+        return
     try:
         with _CONFIG_PATH.open("r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
@@ -57,11 +76,19 @@ if _CONFIG_PATH.exists():
             }
             if "canonical_categories" in cfg:
                 _CANONICAL_CATEGORIES = cfg["canonical_categories"]
+            _CATEGORY_KEYWORDS = cfg.get("category_keywords", {})
+            _DOMAIN_ANCHORS = cfg.get("domain_anchors", {})
+            _USER_QUERY_SYNONYMS = {
+                k.lower().strip(): v for k, v in cfg.get("user_query_synonyms", {}).items()
+            }
     except Exception as e:
         logger.warning("Failed to load category_aliases.yaml", extra={"error": str(e)})
 
+
+_load_taxonomy_config()
+
 EDITORIAL_KEYWORDS = re.compile(
-    r"\b(?:editorial|opinion|commentary|op-ed|column|letters\s+to\s+the\s+editor|perspective|viewpoint)\b",
+    r"\b(?:editorial|opinion|commentary|op-ed|column|columnist|letters\s+to\s+the\s+editor|perspective|viewpoint|our\s+view|my\s+view|their\s+view|quick\s+edit)\b",
     re.IGNORECASE,
 )
 
@@ -70,7 +97,7 @@ ADVERTISEMENT_KEYWORDS = re.compile(
     r"initial\s+public\s+offering|\bipo\b|red\s+herring\s+prospectus|"
     r"book\s+running\s+lead\s+manager|price\s+band|public\s+notice|statutory\s+notice|"
     r"tender\s+notice|auction\s+sale|corrigendum|classified|for\s+sale|special\s+offer|"
-    r"discount|call\s+now|inquiries)\b",
+    r"discount|call\s+now|inquiries|toll\s+free)\b",
     re.IGNORECASE,
 )
 
@@ -79,22 +106,8 @@ TABLE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-
 SIDEBAR_KEYWORDS = re.compile(
     r"(?i)\b(?:sidebar|box\s+story|highlights|key\s+takeaways|at\s+a\s+glance|in\s+a\s+nutshell|quick\s+facts)\b"
-)
-
-SPORTS_KEYWORDS = re.compile(
-    r"(?i)\b(?:match|cricket|football|wicket|innings|runs|goals|tournament|"
-    r"olympics|championship|trophy|coach|league|fifa|icc|bcci|atp|wta|ipl|test\s+match)\b"
-)
-TECH_KEYWORDS = re.compile(
-    r"(?i)\b(?:artificial\s+intelligence|\bai\b|software|cloud|semiconductor|cybersecurity|"
-    r"hardware|app|startup|fintech|venture\s+capital|algorithm|chipmaker)\b"
-)
-POLITICS_KEYWORDS = re.compile(
-    r"(?i)\b(?:parliament|minister|government|election|cabinet|bill|policy|"
-    r"lok\s+sabha|rajya\s+sabha|bjp|congress|mla|mp|constituency|governor)\b"
 )
 
 
@@ -108,10 +121,14 @@ class ClassificationResult:
     category: str | None = None
     category_confidence: float = 0.85
     printed_section: str | None = None
+    secondary_categories: list[tuple[str, float]] = field(default_factory=list)
 
 
 class ArticleClassifier:
-    """Classifies article types and computes prominence scores & canonical categories."""
+    """Classifies article types, computes multi-signal taxonomy categories and prominence."""
+
+    def __init__(self) -> None:
+        _load_taxonomy_config()
 
     def map_section_to_category(self, section_text: str | None) -> tuple[str | None, float]:
         """Map printed section text to canonical category using alias table."""
@@ -126,21 +143,104 @@ class ArticleClassifier:
                 return canon, 0.90
         return None, 0.0
 
-    def infer_category_from_content(self, headline: str, body: str) -> tuple[str, float]:
-        """Classify article into canonical category from content heuristics."""
-        content = f"{headline}\n{body[:600]}".lower()
-        if SPORTS_KEYWORDS.search(content):
-            return "Sports", 0.85
-        if TECH_KEYWORDS.search(content):
-            return "Technology", 0.85
-        if POLITICS_KEYWORDS.search(content):
-            return "Politics", 0.85
-        if EDITORIAL_KEYWORDS.search(headline):
-            return "Opinion/Editorial", 0.90
-        if len(TABLE_PATTERNS.findall(body)) > 10:
-            return "Business & Markets", 0.85
-        # Default fallback
-        return "Business & Markets" if ("market" in content or "crore" in content or "rupee" in content or "bank" in content) else "Politics", 0.70
+    def infer_category_from_content(
+        self,
+        headline: str,
+        subheadline: str | None = None,
+        body: str = "",
+        printed_section: str | None = None,
+    ) -> tuple[str, float, list[tuple[str, float]]]:
+        """Multi-signal probabilistic category classification across 12 newsroom domains.
+
+        Returns:
+            (primary_category, confidence_score, secondary_categories_list)
+        """
+        hl = (headline or "").lower()
+        sub = (subheadline or "").lower()
+        b_sample = (body or "")[:1500].lower()
+
+        # Token bags with weights: Headline 3.0x, Subheadline 2.0x, Body 1.0x
+        category_scores: dict[str, float] = {cat: 0.0 for cat in _CANONICAL_CATEGORIES}
+
+        # 1. Match Keywords per category
+        for cat, kw_list in _CATEGORY_KEYWORDS.items():
+            cat_score = 0.0
+            for kw in kw_list:
+                kw_lower = kw.lower()
+                pattern = r"\b" + re.escape(kw_lower) + r"\b"
+                # Headline matches (3x)
+                if re.search(pattern, hl):
+                    cat_score += 3.0
+                # Subheadline matches (2x)
+                if sub and re.search(pattern, sub):
+                    cat_score += 2.0
+                # Body matches (1x)
+                if b_sample and re.search(pattern, b_sample):
+                    cat_score += 1.0
+
+            category_scores[cat] = cat_score
+
+        # 2. Metaphorical Keyword Collision Disambiguation & Anchor Dampening
+        # Financial Press Metaphors: "Bulls hit market for a six", "Rally hits boundary"
+        biz_anchors = _DOMAIN_ANCHORS.get("business_anchors", [])
+        pol_anchors = _DOMAIN_ANCHORS.get("politics_anchors", [])
+        sports_anchors = _DOMAIN_ANCHORS.get("sports_anchors", [])
+
+        has_biz_anchors = any(
+            re.search(r"\b" + re.escape(a) + r"\b", f"{hl}\n{sub}\n{b_sample}")
+            for a in biz_anchors
+        )
+        has_pol_anchors = any(
+            re.search(r"\b" + re.escape(a) + r"\b", f"{hl}\n{sub}\n{b_sample}")
+            for a in pol_anchors
+        )
+        has_sports_anchors = any(
+            re.search(r"\b" + re.escape(a) + r"\b", f"{hl}\n{sub}\n{b_sample}")
+            for a in sports_anchors
+        )
+
+        # Disambiguate: If business or political anchors are dominant and no genuine sports anchors exist:
+        if (has_biz_anchors or has_pol_anchors) and not has_sports_anchors:
+            category_scores["Sports"] *= 0.15
+            category_scores["World/International"] *= 0.25  # Dampens "war" in "drug war" / "price war"
+
+        if has_biz_anchors:
+            category_scores["Business & Markets"] += 4.0
+
+        if has_pol_anchors:
+            category_scores["Politics"] += 4.0
+
+        # 3. Printed Section Boost
+        if printed_section:
+            mapped_cat, mapped_conf = self.map_section_to_category(printed_section)
+            if mapped_cat and mapped_cat in category_scores:
+                category_scores[mapped_cat] += 6.0
+
+        # Sort categories by score
+        sorted_cats = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
+        top_cat, top_score = sorted_cats[0]
+
+        if top_score <= 0.0:
+            # Fallback based on generic content cues
+            combined = f"{hl}\n{sub}\n{b_sample}"
+            if any(k in combined for k in ("market", "crore", "rupee", "bank", "fund", "shares")):
+                top_cat, top_score = "Business & Markets", 2.0
+            elif any(k in combined for k in ("minister", "government", "police", "court", "state")):
+                top_cat, top_score = "Politics", 2.0
+            else:
+                top_cat, top_score = "Politics", 1.0
+
+        # Compute confidence (bounded 0.60 to 0.98)
+        confidence = min(0.98, max(0.60, round(0.60 + (top_score / 15.0) * 0.38, 2)))
+
+        # Find secondary categories (score >= 3.0 and within 60% of top score)
+        secondary: list[tuple[str, float]] = []
+        for cat, sc in sorted_cats[1:]:
+            if sc >= 3.0 and sc >= (top_score * 0.40):
+                norm_conf = min(0.90, max(0.50, round(0.50 + (sc / 15.0) * 0.40, 2)))
+                secondary.append((cat, norm_conf))
+
+        return top_cat, confidence, secondary
 
     def classify_and_score(
         self,
@@ -151,10 +251,14 @@ class ArticleClassifier:
         vlm_prominence: str | None = None,
         printed_section: str | None = None,
     ) -> ClassificationResult:
-        """Classify article type, canonical category, and compute prominence score."""
+        """Classify article type, canonical category, secondary topics, and compute prominence."""
         headline = (article.headline or "").strip()
+        subheadline = (article.subheadline or "").strip()
         body = (article.full_text or "").strip()
-        combined_text = f"{headline}\n{body}"
+        combined_text = f"{headline}\n{subheadline}\n{body}"
+
+        # Resolve genuine printed section from assembler or argument
+        active_printed_sec = printed_section or article.printed_section
 
         # 1. Determine Article Type
         if headline.upper().startswith("[ADVERTISEMENT]") or headline.upper().startswith(
@@ -189,57 +293,71 @@ class ArticleClassifier:
             section = "News Briefs"
         else:
             article_type = "news"
-            if vlm_section:
-                section = vlm_section
+            sub_lower = subheadline.lower()
+            editorial_kws = ("our view", "my view", "their view", "column", "curator", "quick edit")
+            if any(k in sub_lower for k in editorial_kws):
+                article_type = "editorial"
+                section = "Opinion & Editorial"
+            elif any(k in sub_lower for k in ("mark to market", "plain facts")):
+                section = "Markets & Data"
+            elif "deals, tech & startups" in sub_lower:
+                section = "Deals, Tech & Startups"
             else:
-                sub = (article.subheadline or "").lower()
-                editorial_kws = ("our view", "my view", "their view", "column", "curator", "quick edit")
-                if any(k in sub for k in editorial_kws):
-                    article_type = "editorial"
-                    section = "Opinion & Editorial"
-                elif any(k in sub for k in ("mark to market", "plain facts")):
-                    section = "Markets & Data"
-                elif "economy" in sub or "policy" in sub:
-                    section = "Economy & Policy"
-                elif "deal" in sub or "tech" in sub or "startup" in sub:
-                    section = "Deals, Tech & Startups"
-                elif "corporate" in sub or "company" in sub or "companies" in sub:
-                    section = "Corporate & Industry"
-                elif "global" in sub or "world" in sub:
-                    section = "International"
-                elif "money" in sub or "ask mint" in sub or "power point" in sub:
-                    section = "Personal Finance"
-                elif "life" in sub or "culture" in sub:
-                    section = "Life & Culture"
-                else:
-                    section = "Front Page" if article.primary_page_number == 1 else "National"
+                section = None
 
-        # 2. Determine Canonical Newsroom Category
+        # 2. Determine Canonical Newsroom Category & Secondary Topics
         canonical_category: str | None = None
-        category_conf = 0.0
+        category_conf = 0.85
+        secondary_cats: list[tuple[str, float]] = []
 
         if article_type in ("advertisement", "photo_caption") and article.word_count < 40:
             canonical_category = None
             category_conf = 1.0
         else:
-            # Signal 1: Printed Section match
-            sec_to_test = printed_section or section
-            mapped_cat, mapped_conf = self.map_section_to_category(sec_to_test)
-            if mapped_cat:
-                canonical_category = mapped_cat
-                category_conf = mapped_conf
-            else:
-                # Signal 2: Content-based inference
-                inf_cat, inf_conf = self.infer_category_from_content(headline, body)
-                canonical_category = inf_cat
-                category_conf = inf_conf
+            top_cat, conf, secondary = self.infer_category_from_content(
+                headline=headline,
+                subheadline=subheadline,
+                body=body,
+                printed_section=active_printed_sec,
+            )
+            canonical_category = top_cat
+            category_conf = conf
+            secondary_cats = secondary
 
-        # 3. Compute Prominence Score (0.0 to 1.0)
+        # 3. Harmonize Physical Section with Semantic Category and Page Position
+        if not section:
+            if article.primary_page_number == 1:
+                section = "Front Page"
+            elif active_printed_sec:
+                section = active_printed_sec
+            elif vlm_section:
+                section = vlm_section
+            elif canonical_category in (
+                "Sports",
+                "Technology",
+                "Entertainment",
+                "Science & Environment",
+                "Health",
+                "Crime & Law",
+                "Lifestyle",
+            ):
+                section = canonical_category
+            elif canonical_category == "Business & Markets":
+                section = "Corporate & Industry"
+            elif canonical_category == "Economy & Policy":
+                section = "Economy & Policy"
+            elif canonical_category == "Opinion/Editorial":
+                section = "Opinion & Editorial"
+            elif canonical_category == "World/International":
+                section = "International"
+            else:
+                section = "National"
+
+        # 4. Compute Prominence Score (0.05 to 1.0)
         tier_map = {"lead": 0.90, "major": 0.70, "standard": 0.50, "minor": 0.30, "filler": 0.15}
         if vlm_prominence and vlm_prominence in tier_map:
             prominence_score = tier_map[vlm_prominence]
         else:
-            # Heuristic calculation
             if article.primary_page_number == 1:
                 page_score = 0.50
             elif article.primary_page_number in (2, 3):
@@ -277,5 +395,7 @@ class ArticleClassifier:
             section=section,
             category=canonical_category,
             category_confidence=category_conf,
-            printed_section=printed_section,
+            printed_section=active_printed_sec,
+            secondary_categories=secondary_cats,
         )
+

@@ -47,7 +47,7 @@ from app.ingestion.rasterizer import PDFRasterizer, RasterizedPage
 from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
 from app.ingestion.unified_extractor import UnifiedExtractor
 from app.models.article import Article, ArticleCategory, ArticleChunk, ArticlePage, Photo
-from app.models.entity import ArticleEntity, ArticleTopic
+from app.models.entity import ArticleEntity, ArticleTopic, Topic
 from app.models.newspaper import Issue, Newspaper, Page
 from app.storage.minio_store import MinioStore
 
@@ -418,6 +418,7 @@ async def run_ingestion_pipeline(
             class_res = classifier.classify_and_score(
                 article=assembled,
                 total_issue_pages=len(rendered_pages),
+                printed_section=assembled.printed_section,
             )
 
             is_ad = (
@@ -462,6 +463,25 @@ async def run_ingestion_pipeline(
             )
             db.add(article_record)
             await db.flush()
+
+            # Save Multi-Topic Secondary Categories if present
+            if class_res.secondary_categories:
+                for sec_cat_name, sec_conf in class_res.secondary_categories:
+                    t_fetch = await db.execute(
+                        select(Topic.id).where(Topic.name == sec_cat_name)
+                    )
+                    t_id = t_fetch.scalar_one_or_none()
+                    if not t_id:
+                        new_t = Topic(name=sec_cat_name, taxonomy_path=f"Newsroom > {sec_cat_name}")
+                        db.add(new_t)
+                        await db.flush()
+                        t_id = new_t.id
+                    art_topic = ArticleTopic(
+                        article_id=article_record.id,
+                        topic_id=t_id,
+                        confidence=sec_conf,
+                    )
+                    db.add(art_topic)
 
             persisted_articles.append((article_record, assembled, class_res))
 

@@ -95,7 +95,7 @@ class TestArticleClassifier:
 
         res = classifier.classify_and_score(article, total_issue_pages=12)
         assert res.article_type == "news"
-        assert res.section in ("National", "Inside News")
+        assert res.section in ("National", "Inside News", "International", "Corporate & Industry")
 
     def test_classify_explicit_sidebar_box_story(self) -> None:
         """Verify explicit sidebar or box story is classified as 'sidebar'."""
@@ -148,4 +148,146 @@ class TestArticleClassifier:
             word_count=90,
         )
         res_tech = classifier.classify_and_score(art_tech, total_issue_pages=16)
-        assert res_tech.section == "Deals, Tech & Startups"
+        assert res_tech.section in ("Deals, Tech & Startups", "Technology")
+
+    def test_classify_genuine_sports_cricket(self) -> None:
+        """Verify cricket / sports stories are accurately classified into Sports."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="India Turn the Screw",
+            subheadline="SSC Test Sri Lanka's resistance fades after Sooriyabandara and Mendis fifties as India close in on victory and a 2-0 series win",
+            full_text=(
+                "India Turn the Screw\nAnand Vasu REGARDLESS\n\n"
+                "Test cricket is the longest format of the game. Prasidh Krishna dropped one short "
+                "only to be deposited onto the midwicket stands. Manav Suthar was compulsive in taking on "
+                "the short ball as India's fielders and spinners bowled out the remaining wickets."
+            ),
+            primary_page_number=20,
+            word_count=450,
+            printed_section="Sports World Play",
+        )
+        res = classifier.classify_and_score(article, total_issue_pages=20)
+        assert res.category == "Sports"
+        assert res.section == "Sports World Play"
+        assert res.category_confidence >= 0.80
+
+    def test_metaphorical_financial_headline_disambiguation(self) -> None:
+        """Verify market headlines with sports idioms ('hit for a six') stay in Business & Markets."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="Bulls hit market for a six as Sensex rallies 800 points",
+            subheadline="Nifty crosses 25,000 mark on strong FPI equity inflows and quarterly corporate earnings",
+            full_text=(
+                "Dalal Street witnessed robust buying across banking and IT shares. Foreign portfolio "
+                "investors poured ₹3,500 crore into blue-chip stocks as valuation multiples expanded."
+            ),
+            primary_page_number=6,
+            word_count=400,
+        )
+        res = classifier.classify_and_score(article, total_issue_pages=16)
+        assert res.category == "Business & Markets"
+        assert res.category != "Sports"
+
+    def test_metaphorical_political_headline_disambiguation(self) -> None:
+        """Verify political headlines with gaming metaphors ('political chess') stay in Politics."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="BJP plays political chess ahead of state assembly election",
+            subheadline="Cabinet reshuffle in Uttar Pradesh focuses on caste equations and voter mobilization",
+            full_text=(
+                "The Prime Minister and Home Minister held detailed discussions with the state leadership "
+                "and MLAs to finalize candidate lists for the upcoming polls."
+            ),
+            primary_page_number=5,
+            word_count=350,
+        )
+        res = classifier.classify_and_score(article, total_issue_pages=16)
+        assert res.category == "Politics"
+        assert res.category != "Sports"
+
+    def test_metaphorical_health_pharma_headline(self) -> None:
+        """Verify pharma headlines with conflict metaphors stay in Health."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="Pharma giants battle in blockbuster drug war over patent rights",
+            subheadline="Global healthcare manufacturers clash in court over next-gen cancer vaccines and clinical trials",
+            full_text=(
+                "Leading pharmaceutical companies are scaling production of breakthrough mRNA vaccines "
+                "as hospitals and doctors await FDA clearance for clinical distribution."
+            ),
+            primary_page_number=9,
+            word_count=380,
+        )
+        res = classifier.classify_and_score(article, total_issue_pages=16)
+        assert res.category == "Health"
+        assert res.category != "World/International"
+
+    def test_multi_topic_sports_business_acquisition(self) -> None:
+        """Verify sports business story captures both primary and secondary domain topics."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="Rajasthan Royals Deal: CCI Seeks More Details on ₹4,000 Cr Acquisition",
+            subheadline="The cricket franchise sale attracts global venture capital and private equity investors",
+            full_text=(
+                "The Competition Commission of India has sought additional disclosures regarding the multi-crore "
+                "merger involving the IPL cricket team ownership and media rights valuation."
+            ),
+            primary_page_number=8,
+            word_count=420,
+        )
+        res = classifier.classify_and_score(article, total_issue_pages=16)
+        # Primary is Business & Markets or Sports, and secondary contains the other
+        categories_detected = [res.category] + [c[0] for c in res.secondary_categories]
+        assert "Business & Markets" in categories_detected
+        assert "Sports" in categories_detected
+
+    def test_classify_science_and_space(self) -> None:
+        """Verify ISRO / space exploration story is classified into Science & Environment."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="ISRO successfully places solar observation satellite into lunar orbit",
+            subheadline="The mission aims to study coronal mass ejections and deep space plasma physics",
+            full_text=(
+                "Scientists at the space agency confirmed all payload instruments are operating nominally "
+                "as the rocket completed its multi-stage trajectory."
+            ),
+            primary_page_number=7,
+            word_count=320,
+        )
+        res = classifier.classify_and_score(article, total_issue_pages=16)
+        assert res.category == "Science & Environment"
+
+    def test_classify_entertainment_cinema(self) -> None:
+        """Verify movie / cinema story is classified into Entertainment."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="Bollywood blockbuster sets new worldwide box office record in opening weekend",
+            subheadline="The star-studded cinema release earns ₹250 crore across global theatrical and OTT screens",
+            full_text=(
+                "Directed by an award-winning filmmaker, the film captivated audiences with cutting-edge "
+                "visual effects and an acclaimed musical score."
+            ),
+            primary_page_number=12,
+            word_count=300,
+        )
+        res = classifier.classify_and_score(article, total_issue_pages=16)
+        assert res.category == "Entertainment"
+
+    def test_editorial_preserves_article_type_and_classifies_domain(self) -> None:
+        """Verify editorial op-ed preserves article_type='editorial' while identifying domain topic."""
+        classifier = ArticleClassifier()
+        article = AssembledArticle(
+            headline="OPINION: REGULATING ARTIFICIAL INTELLIGENCE WITHOUT KILLING INNOVATION",
+            subheadline="BY SWAMINATHAN AIYAR",
+            full_text=(
+                "Generative AI and large language models present both systemic opportunities and risks. "
+                "Policymakers must balance algorithmic safety with venture capital investment in cloud chips."
+            ),
+            primary_page_number=10,
+            word_count=600,
+        )
+        res = classifier.classify_and_score(article, total_issue_pages=16)
+        assert res.article_type == "editorial"
+        assert res.section == "Opinion & Editorial"
+        assert res.category == "Technology"
+

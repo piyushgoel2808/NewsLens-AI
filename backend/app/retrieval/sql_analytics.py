@@ -2,17 +2,39 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
+import yaml
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
 from app.models.article import Article, ArticlePage
-from app.models.entity import ArticleEntity, Entity
+from app.models.entity import ArticleEntity, ArticleTopic, Entity, Topic
 from app.models.newspaper import Issue
 
 logger = get_logger(__name__)
+
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "core" / "category_aliases.yaml"
+_USER_QUERY_SYNONYMS: dict[str, str] = {}
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {}
+_CANONICAL_CATEGORIES: list[str] = []
+
+if _CONFIG_PATH.exists():
+    try:
+        with _CONFIG_PATH.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+            _USER_QUERY_SYNONYMS = {
+                k.lower().strip(): v for k, v in cfg.get("user_query_synonyms", {}).items()
+            }
+            _CATEGORY_KEYWORDS = cfg.get("category_keywords", {})
+            _CANONICAL_CATEGORIES = cfg.get("canonical_categories", [])
+    except Exception as e:
+        logger.warning("Failed to load category_aliases.yaml in sql_analytics", extra={"error": str(e)})
+
 
 
 class SQLAnalyticsEngine:
@@ -131,9 +153,25 @@ class SQLAnalyticsEngine:
         exclude_page_filter: str | int | None = None,
         category_filter: str | None = None,
         page_number: int | None = None,
+        query: str | None = None,
     ) -> Any:
         """Return a structured manifest of all articles in an issue with section/type breakdowns."""
         from sqlalchemy.orm import selectinload
+        from app.models.newspaper import Newspaper
+
+        # Defensive fallback: if query is provided and explicit parameters are missing, extract them
+        if query and not (issue_id or newspaper_name or issue_date):
+            from app.agent.planner import extract_parameters_from_query
+            extracted = extract_parameters_from_query(query)
+            if not issue_id and extracted.get("issue_id"):
+                issue_id = extracted["issue_id"]
+            if not newspaper_name and extracted.get("newspaper_name"):
+                newspaper_name = extracted["newspaper_name"]
+            if not issue_date and extracted.get("issue_date"):
+                issue_date = extracted["issue_date"]
+            if not category_filter and extracted.get("category_filter"):
+                category_filter = extracted["category_filter"]
+
         async with self._session_factory() as db:
             issue: Issue | None = None
             if issue_id:
@@ -147,8 +185,13 @@ class SQLAnalyticsEngine:
                 )
                 res = await db.execute(stmt)
                 issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
-            elif newspaper_name and issue_date:
-                from app.models.newspaper import Newspaper
+                # If issue found, but newspaper_name was also specified and does not match:
+                if issue and newspaper_name and issue.newspaper:
+                    if newspaper_name.lower() not in issue.newspaper.name.lower() and issue.newspaper.name.lower() not in newspaper_name.lower():
+                        issue = None
+
+            # Fallback 1: Resolve by (newspaper_name, issue_date)
+            if not issue and newspaper_name and issue_date:
                 stmt = (
                     select(Issue)
                     .join(Newspaper)
@@ -163,13 +206,14 @@ class SQLAnalyticsEngine:
                 )
                 res = await db.execute(stmt)
                 issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
-            elif newspaper_name:
-                from app.models.newspaper import Newspaper
+
+            # Fallback 2: Resolve by newspaper_name (latest issue)
+            if not issue and newspaper_name:
                 stmt = (
                     select(Issue)
                     .join(Newspaper)
                     .where(Newspaper.name.ilike(f"%{newspaper_name}%"))
-                    .order_by(desc(Issue.issue_date))
+                    .order_by(desc(Issue.issue_date), desc(Issue.id))
                     .options(
                         selectinload(Issue.newspaper),
                         selectinload(Issue.pages),
@@ -177,8 +221,23 @@ class SQLAnalyticsEngine:
                 )
                 res = await db.execute(stmt)
                 issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
-            else:
-                # Latest issue
+
+            # Fallback 3: Resolve by issue_date (latest issue on that date)
+            if not issue and issue_date:
+                stmt = (
+                    select(Issue)
+                    .where(Issue.issue_date == issue_date)
+                    .order_by(desc(Issue.id))
+                    .options(
+                        selectinload(Issue.newspaper),
+                        selectinload(Issue.pages),
+                    )
+                )
+                res = await db.execute(stmt)
+                issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
+
+            # Fallback 4: Resolve latest overall issue if no filters given
+            if not issue and not issue_id and not newspaper_name and not issue_date:
                 stmt = (
                     select(Issue)
                     .order_by(desc(Issue.id))
@@ -192,12 +251,30 @@ class SQLAnalyticsEngine:
                 issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
 
             if not issue:
-                return {"error": "Issue not found", "articles": []}
+                if issue_id and not newspaper_name and not issue_date:
+                    return {
+                        "error": f"Issue #{issue_id} was not found in the newspaper archive.",
+                        "articles": [],
+                    }
+                elif newspaper_name and issue_date:
+                    return {
+                        "error": f"No issue found for '{newspaper_name}' on date {issue_date}.",
+                        "articles": [],
+                    }
+                elif newspaper_name:
+                    return {
+                        "error": f"No issues found in archive for newspaper '{newspaper_name}'.",
+                        "articles": [],
+                    }
+                return {"error": "No newspaper issues found in archive.", "articles": []}
 
             art_stmt = (
                 select(Article)
                 .where(Article.issue_id == issue.id)
-                .options(selectinload(Article.category))
+                .options(
+                    selectinload(Article.category),
+                    selectinload(Article.article_topics).selectinload(ArticleTopic.topic),
+                )
                 .order_by(Article.primary_page_id, desc(Article.prominence_score))
             )
             art_res = await db.execute(art_stmt)
@@ -220,6 +297,7 @@ class SQLAnalyticsEngine:
                 type_counts[atype] = type_counts.get(atype, 0) + 1
                 cat_name = a.category.name if a.category else (a.section or "General")
                 category_counts[cat_name] = category_counts.get(cat_name, 0) + 1
+                art_topics = [at.topic.name for at in (a.article_topics or []) if at.topic]
 
                 p_num = page_num_map.get(a.primary_page_id, 1) if a.primary_page_id else 1
                 folio = (
@@ -232,8 +310,11 @@ class SQLAnalyticsEngine:
                     {
                         "id": a.id,
                         "headline": a.headline,
+                        "subheadline": a.subheadline,
                         "section": sec,
+                        "printed_section": a.printed_section,
                         "category": cat_name,
+                        "topics": art_topics,
                         "article_type": atype,
                         "byline_author": a.byline_author,
                         "page_number": p_num,
@@ -251,14 +332,49 @@ class SQLAnalyticsEngine:
                 filtered_manifest = [
                     m for m in filtered_manifest
                     if sec_target in str(m.get("section", "")).lower()
+                    or sec_target in str(m.get("printed_section", "") or "").lower()
                 ]
             elif category_filter:
-                cat_target = category_filter.strip().lower()
-                filtered_manifest = [
-                    m for m in filtered_manifest
-                    if cat_target in str(m.get("category", "")).lower()
-                    or cat_target in str(m.get("section", "")).lower()
-                ]
+                cat_raw = category_filter.strip().lower()
+                resolved_cat = _USER_QUERY_SYNONYMS.get(cat_raw, cat_raw).lower()
+                canon_key = next(
+                    (c for c in _CANONICAL_CATEGORIES if c.lower() in (cat_raw, resolved_cat)),
+                    None,
+                )
+                kw_cluster = _CATEGORY_KEYWORDS.get(canon_key, []) if canon_key else [cat_raw, resolved_cat]
+
+                matched: list[dict[str, Any]] = []
+                matched_ids: set[int] = set()
+
+                for m in filtered_manifest:
+                    m_id = m.get("id")
+                    m_cat = str(m.get("category", "")).lower()
+                    m_sec = str(m.get("section", "")).lower()
+                    m_psec = str(m.get("printed_section", "") or "").lower()
+                    m_topics = [t.lower() for t in m.get("topics", [])]
+                    hl_sub = f"{m.get('headline', '')} {m.get('subheadline', '')}".lower()
+
+                    structured_match = (
+                        cat_raw in m_cat
+                        or resolved_cat in m_cat
+                        or cat_raw in m_sec
+                        or resolved_cat in m_sec
+                        or cat_raw in m_psec
+                        or resolved_cat in m_psec
+                        or any(cat_raw in t or resolved_cat in t for t in m_topics)
+                    )
+                    keyword_match = any(
+                        re.search(r"\b" + re.escape(kw.lower()) + r"\b", hl_sub)
+                        for kw in kw_cluster
+                        if len(kw) >= 3
+                    )
+
+                    if (structured_match or keyword_match) and m_id not in matched_ids:
+                        matched.append(m)
+                        if m_id is not None:
+                            matched_ids.add(m_id)
+
+                filtered_manifest = matched
 
             # 2. Apply positive page filter if requested
             if page_number is not None:
@@ -351,6 +467,7 @@ class SQLAnalyticsEngine:
         page_filter: str | int | None = None,
         exclude_page_filter: str | int | None = None,
         category_filter: str | None = None,
+        query: str | None = None,
     ) -> Any:
         """Alias for list_issue_articles to maintain backward compatibility."""
         return await self.list_issue_articles(
@@ -360,4 +477,6 @@ class SQLAnalyticsEngine:
             page_filter=page_filter,
             exclude_page_filter=exclude_page_filter,
             category_filter=category_filter,
+            query=query,
         )
+

@@ -48,4 +48,7 @@ class AgentState(TypedDict):
     model_override: str | None
     enable_web_search: bool
     web_search_results: list[dict[str, Any]]
+    active_issue_id: int | None
+    active_newspaper_name: str | None
+    active_issue_date: str | None
     error: str | None

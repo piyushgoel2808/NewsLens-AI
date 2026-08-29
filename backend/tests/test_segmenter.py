@@ -713,3 +713,93 @@ class TestArticleSegmenter:
         # Standalone attribution and ToC block should never form an article
         articles = segmenter.segment_page(page_number=1, ordered_blocks=blocks)
         assert len(articles) == 0
+
+    def test_marketing_slogan_rejected_as_byline(self) -> None:
+        """Verify commercial marketing slogans starting with 'By' are not extracted as author bylines."""
+        segmenter = ArticleSegmenter()
+        blocks = [
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.HEADLINE,
+                text="Retail Investors Skip Some IPO Parties Now",
+                bbox=(50.0, 50.0, 450.0, 90.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BYLINE,
+                text="By Innovation I Built For The Future",  # Marketing tagline
+                bbox=(50.0, 95.0, 300.0, 115.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=2,
+                element_id=3,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "Retail investors are turning increasingly selective in the primary market this year. "
+                    "Data compiled by ET showed retail bidders did not even fully subscribe to the quota."
+                ) * 2,
+                bbox=(50.0, 120.0, 450.0, 300.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=5, ordered_blocks=blocks)
+        assert len(articles) == 1
+        art = articles[0]
+        assert art.headline == "Retail Investors Skip Some IPO Parties Now"
+        # Byline should NOT be set to the marketing tagline
+        assert art.byline_author is None
+
+    def test_advertisement_envelope_barrier_isolation(self) -> None:
+        """Verify that an adjacent advertisement with [Advertisement] headline starts its own article."""
+        segmenter = ArticleSegmenter()
+        blocks = [
+            # Left side editorial article
+            OrderedReadingBlock(
+                reading_order_index=0,
+                element_id=1,
+                block_type=BlockType.HEADLINE,
+                text="Retail Investors Skip Some IPO Parties Now",
+                bbox=(50.0, 50.0, 450.0, 90.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=1,
+                element_id=2,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "Retail investors are turning increasingly selective in the primary market this year. "
+                    "Data compiled by ET showed retail bidders did not even fully subscribe to the quota."
+                ) * 2,
+                bbox=(50.0, 100.0, 450.0, 400.0),
+            ),
+            # Right side advertisement with injected barrier headline
+            OrderedReadingBlock(
+                reading_order_index=2,
+                element_id=3,
+                block_type=BlockType.HEADLINE,
+                text="[Advertisement] Netweb Technologies & Tyrone - QIP Milestone",
+                bbox=(500.0, 50.0, 950.0, 90.0),
+            ),
+            OrderedReadingBlock(
+                reading_order_index=3,
+                element_id=4,
+                block_type=BlockType.BODY_TEXT,
+                text=(
+                    "QUALIFIED INSTITUTIONS PLACEMENT SUCCESSFULLY CLOSED. "
+                    "Issue size ~1200 Crore. Book Running Lead Managers and Legal Counsel."
+                ),
+                bbox=(500.0, 100.0, 950.0, 400.0),
+            ),
+        ]
+
+        articles = segmenter.segment_page(page_number=5, ordered_blocks=blocks)
+        assert len(articles) == 2
+        news_art = articles[0]
+        ad_art = articles[1]
+
+        assert news_art.headline == "Retail Investors Skip Some IPO Parties Now"
+        assert "QUALIFIED INSTITUTIONS PLACEMENT" not in news_art.body_text
+
+        assert ad_art.headline.startswith("[Advertisement]")
+        assert "QUALIFIED INSTITUTIONS PLACEMENT" in ad_art.body_text

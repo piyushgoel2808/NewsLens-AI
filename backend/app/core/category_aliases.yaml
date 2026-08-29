@@ -1,68 +1,132 @@
-# NewsLens-AI Newsroom Canonical Category Taxonomy & Aliases
+# NewsLens-AI Newsroom Canonical Category Taxonomy, Aliases & Disambiguation Anchors
 
 canonical_categories:
-  - Politics
-  - Business & Markets
   - Sports
   - Entertainment
-  - World/International
+  - Science & Environment
   - Technology
+  - Business & Markets
+  - Economy & Policy
+  - Politics
   - Health
   - Crime & Law
   - Opinion/Editorial
+  - World/International
   - Lifestyle
-  - Science & Environment
   - Local/Metro
   - Other
 
 printed_section_aliases:
+  # Sports
   "sports": "Sports"
   "sport": "Sports"
+  "sports world": "Sports"
+  "sports world play": "Sports"
+  "sports play": "Sports"
   "sports desk": "Sports"
   "sports arena": "Sports"
   "sports plus": "Sports"
   "sports news": "Sports"
   "cricket": "Sports"
   "football": "Sports"
-  "business": "Business & Markets"
-  "markets": "Business & Markets"
-  "money": "Business & Markets"
-  "economy": "Business & Markets"
-  "economy & policy": "Business & Markets"
-  "corporate": "Business & Markets"
-  "companies": "Business & Markets"
-  "mark to market": "Business & Markets"
-  "plain facts": "Business & Markets"
+  "play": "Sports"
+
+  # Entertainment
+  "entertainment": "Entertainment"
+  "cinema": "Entertainment"
+  "movies": "Entertainment"
+  "films": "Entertainment"
+  "showcase": "Entertainment"
+  "arts & culture": "Entertainment"
+  "the guide": "Entertainment"
+  "culture": "Entertainment"
+
+  # Science & Environment
+  "science": "Science & Environment"
+  "environment": "Science & Environment"
+  "science & tech": "Science & Environment"
+  "space": "Science & Environment"
+  "earth": "Science & Environment"
+  "green": "Science & Environment"
+  "planet": "Science & Environment"
+
+  # Technology & Startups
   "deals, tech & startups": "Technology"
+  "tech & startups": "Technology"
   "technology": "Technology"
   "tech": "Technology"
   "gadgets": "Technology"
+  "digital": "Technology"
+  "cyber": "Technology"
+
+  # Business & Markets
+  "business": "Business & Markets"
+  "markets": "Business & Markets"
+  "et markets": "Business & Markets"
+  "corporate": "Business & Markets"
+  "companies": "Business & Markets"
+  "corporate & industry": "Business & Markets"
+  "money": "Business & Markets"
+  "banking": "Business & Markets"
+  "mark to market": "Business & Markets"
+  "plain facts": "Business & Markets"
+  "personal finance": "Business & Markets"
+
+  # Economy & Policy
+  "economy": "Economy & Policy"
+  "economy & policy": "Economy & Policy"
+  "macro": "Economy & Policy"
+  "trade": "Economy & Policy"
+  "policy": "Economy & Policy"
+
+  # Politics & Governance
+  "politics": "Politics"
+  "national politics": "Politics"
+  "governance": "Politics"
+  "election": "Politics"
+  "elections": "Politics"
+
+  # Health & Medicine
+  "health": "Health"
+  "health & fitness": "Health"
+  "wellness": "Health"
+  "medicine": "Health"
+  "pharma": "Health"
+
+  # Crime, Law & Justice
+  "crime": "Crime & Law"
+  "law": "Crime & Law"
+  "legal": "Crime & Law"
+  "courts": "Crime & Law"
+  "justice": "Crime & Law"
+
+  # Opinion & Editorial
   "opinion & editorial": "Opinion/Editorial"
   "opinion": "Opinion/Editorial"
   "editorial": "Opinion/Editorial"
   "views": "Opinion/Editorial"
   "views & opinions": "Opinion/Editorial"
+  "op-ed": "Opinion/Editorial"
+  "commentary": "Opinion/Editorial"
+  "columns": "Opinion/Editorial"
+  "the edit": "Opinion/Editorial"
+
+  # World / International
   "world": "World/International"
   "global": "World/International"
   "international": "World/International"
-  "politics": "Politics"
-  "national": "Politics"
-  "nation": "Politics"
-  "entertainment": "Entertainment"
-  "cinema": "Entertainment"
-  "movies": "Entertainment"
-  "showcase": "Entertainment"
-  "health": "Health"
-  "health & fitness": "Health"
-  "crime": "Crime & Law"
-  "law": "Crime & Law"
-  "legal": "Crime & Law"
+  "world news": "World/International"
+
+  # Lifestyle & Travel
   "lifestyle": "Lifestyle"
   "life": "Lifestyle"
-  "culture": "Lifestyle"
+  "life & culture": "Lifestyle"
   "business of life": "Lifestyle"
-  "science": "Science & Environment"
-  "environment": "Science & Environment"
+  "travel": "Lifestyle"
+  "food": "Lifestyle"
+  "dining": "Lifestyle"
+
+  # Local / Metro
   "metro": "Local/Metro"
   "city": "Local/Metro"
   "state": "Local/Metro"
@@ -74,22 +138,534 @@ user_query_synonyms:
   "sports stories": "Sports"
   "sport stories": "Sports"
   "sports section": "Sports"
+  "cricket": "Sports"
   "cricket news": "Sports"
+  "football": "Sports"
   "football news": "Sports"
-  "business news": "Business & Markets"
-  "business section": "Business & Markets"
-  "market news": "Business & Markets"
-  "financial news": "Business & Markets"
-  "stock market": "Business & Markets"
-  "economy news": "Business & Markets"
+  "tennis": "Sports"
+  "olympics": "Sports"
+
+  "entertainment": "Entertainment"
+  "entertainment news": "Entertainment"
+  "cinema": "Entertainment"
+  "movie news": "Entertainment"
+  "bollywood": "Entertainment"
+  "hollywood": "Entertainment"
+  "arts": "Entertainment"
+  "culture": "Entertainment"
+
+  "science": "Science & Environment"
+  "science news": "Science & Environment"
+  "environment": "Science & Environment"
+  "climate": "Science & Environment"
+  "space": "Science & Environment"
+  "isro": "Science & Environment"
+  "nasa": "Science & Environment"
+
+  "tech": "Technology"
+  "technology": "Technology"
   "tech news": "Technology"
   "technology news": "Technology"
   "tech stories": "Technology"
+  "ai news": "Technology"
+  "startups": "Technology"
+
+  "business": "Business & Markets"
+  "business news": "Business & Markets"
+  "business section": "Business & Markets"
+  "market": "Business & Markets"
+  "markets": "Business & Markets"
+  "market news": "Business & Markets"
+  "financial news": "Business & Markets"
+  "stock market": "Business & Markets"
+  "stocks": "Business & Markets"
+  "corporate news": "Business & Markets"
+
+  "economy": "Economy & Policy"
+  "economy news": "Economy & Policy"
+  "gdp": "Economy & Policy"
+  "inflation": "Economy & Policy"
+  "policy news": "Economy & Policy"
+
+  "politics": "Politics"
+  "political news": "Politics"
+  "elections": "Politics"
+  "election news": "Politics"
+  "government news": "Politics"
+
+  "health": "Health"
+  "health news": "Health"
+  "medical news": "Health"
+  "pharma news": "Health"
+
+  "crime": "Crime & Law"
+  "crime news": "Crime & Law"
+  "court news": "Crime & Law"
+  "legal news": "Crime & Law"
+
+  "opinion": "Opinion/Editorial"
   "opinion pieces": "Opinion/Editorial"
   "editorials": "Opinion/Editorial"
-  "political news": "Politics"
-  "politics": "Politics"
+  "editorial": "Opinion/Editorial"
+  "op-eds": "Opinion/Editorial"
+  "columns": "Opinion/Editorial"
+
+  "world": "World/International"
+  "international": "World/International"
   "international news": "World/International"
   "world news": "World/International"
-  "health news": "Health"
-  "entertainment news": "Entertainment"
+  "foreign news": "World/International"
+
+  "lifestyle": "Lifestyle"
+  "lifestyle news": "Lifestyle"
+  "travel news": "Lifestyle"
+  "food news": "Lifestyle"
+
+category_keywords:
+  Sports:
+    - cricket
+    - test match
+    - ssc test
+    - wickets
+    - wicket
+    - innings
+    - runs
+    - tournament
+    - series win
+    - fifties
+    - century
+    - bowler
+    - bowlers
+    - batsman
+    - batsmen
+    - batters
+    - spinner
+    - spinners
+    - pacer
+    - pacers
+    - icc
+    - bcci
+    - ipl
+    - fifa
+    - olympics
+    - asian games
+    - football
+    - soccer
+    - tennis
+    - atp
+    - wta
+    - grand slam
+    - badminton
+    - golf
+    - formula 1
+    - athletics
+    - sports championship
+    - championship trophy
+    - sports team
+    - cricket franchise
+
+  Entertainment:
+    - cinema
+    - movie
+    - movies
+    - film
+    - films
+    - bollywood
+    - hollywood
+    - box office
+    - actor
+    - actors
+    - actress
+    - actresses
+    - director
+    - star
+    - trailer
+    - teaser
+    - ott
+    - streaming
+    - netflix
+    - song
+    - music
+    - album
+    - concert
+    - theatre
+    - drama
+    - celebrity
+    - celebrities
+    - fashion
+    - red carpet
+    - novel
+    - author
+
+  Science & Environment:
+    - space
+    - isro
+    - nasa
+    - satellite
+    - satellites
+    - rocket
+    - launch vehicle
+    - orbit
+    - lunar
+    - moon
+    - mars
+    - astronomy
+    - telescope
+    - climate change
+    - global warming
+    - emissions
+    - carbon
+    - renewable
+    - solar power
+    - wind power
+    - wildlife
+    - forest
+    - tiger
+    - ocean
+    - biodiversity
+    - ecology
+    - species
+    - genetics
+    - genome
+    - physics
+    - quantum
+    - geologist
+    - mudslide
+    - landslide
+    - avalanche
+    - flood
+    - floods
+    - earthquake
+    - calamity
+    - natural disaster
+    - soil health
+
+  Technology:
+    - artificial intelligence
+    - ai
+    - llm
+    - generative ai
+    - machine learning
+    - semiconductor
+    - semiconductors
+    - chip
+    - chips
+    - chipmaker
+    - nvidia
+    - cloud
+    - cybersecurity
+    - software
+    - app
+    - smartphone
+    - gadget
+    - algorithm
+    - startup
+    - startups
+    - unicorn
+    - venture capital
+    - funding round
+    - fintech
+    - saas
+    - cyberattack
+    - hacker
+    - robot
+    - robots
+    - robotics
+    - micro robots
+    - startup awards
+
+  Business & Markets:
+    - sensex
+    - nifty
+    - bse
+    - nse
+    - bourses
+    - stock market
+    - shares
+    - equities
+    - equity
+    - ipo
+    - listing
+    - valuation
+    - market cap
+    - earnings
+    - quarterly profit
+    - revenue
+    - net profit
+    - ebitda
+    - dividend
+    - mutual fund
+    - bond yield
+    - commodity
+    - gold
+    - crude oil
+    - merger
+    - acquisition
+    - takeover
+    - banking
+    - bank
+    - rbi
+    - interest rate
+    - real estate
+    - corporate
+    - crore
+
+  Economy & Policy:
+    - gdp
+    - economic growth
+    - inflation
+    - cpi
+    - wpi
+    - retail inflation
+    - wholesale inflation
+    - fiscal deficit
+    - taxation
+    - tax
+    - income tax
+    - gst
+    - tariff
+    - tariffs
+    - trade deficit
+    - exports
+    - imports
+    - budget
+    - union budget
+    - commerce ministry
+    - finance ministry
+    - agriculture
+    - farm
+    - farmers
+    - msp
+    - subsidies
+    - labor
+    - macroeconomy
+
+  Politics:
+    - election
+    - elections
+    - voter
+    - voters
+    - polling
+    - ballot
+    - parliament
+    - lok sabha
+    - rajya sabha
+    - assembly
+    - minister
+    - prime minister
+    - chief minister
+    - cabinet
+    - bill
+    - legislation
+    - bjp
+    - congress
+    - aap
+    - mla
+    - mp
+    - constituency
+    - rally
+    - party
+    - opposition
+    - democracy
+    - governor
+
+  Health:
+    - health
+    - healthcare
+    - hospital
+    - hospitals
+    - doctor
+    - doctors
+    - patient
+    - medical
+    - medicine
+    - medicines
+    - pharma
+    - pharmaceutical
+    - drug
+    - drugs
+    - clinical trial
+    - vaccine
+    - vaccines
+    - disease
+    - diseases
+    - infection
+    - virus
+    - viral
+    - surgery
+    - mental health
+    - cancer
+    - nutrition
+    - who
+    - fda
+
+  Crime & Law:
+    - supreme court
+    - high court
+    - court
+    - judge
+    - justice
+    - bench
+    - verdict
+    - ruling
+    - judgment
+    - bail
+    - plea
+    - petition
+    - cbi
+    - ed
+    - ncb
+    - enforcement directorate
+    - police
+    - arrest
+    - arrested
+    - probe
+    - investigation
+    - fraud
+    - scam
+    - money laundering
+    - corruption
+    - lawsuit
+    - trial
+    - charge sheet
+
+  Opinion/Editorial:
+    - editorial
+    - op-ed
+    - opinion
+    - commentary
+    - column
+    - columnist
+    - viewpoint
+    - perspective
+    - our view
+    - my view
+    - their view
+    - guest column
+    - analysis
+    - critique
+    - letters to the editor
+    - quick edit
+
+  World/International:
+    - international
+    - global
+    - foreign affairs
+    - diplomacy
+    - bilateral
+    - treaty
+    - summit
+    - united nations
+    - un
+    - un security council
+    - g20
+    - brics
+    - quad
+    - cross-border
+    - ceasefire
+    - war
+    - military conflict
+    - troops
+    - refugee
+    - embassy
+    - ambassador
+    - us-china
+    - russia-ukraine
+    - middle east
+
+  Lifestyle:
+    - lifestyle
+    - food
+    - cuisine
+    - dining
+    - restaurant
+    - chef
+    - recipe
+    - travel
+    - tourism
+    - destination
+    - hotel
+    - resort
+    - wellness
+    - yoga
+    - fitness
+    - luxury
+    - automotive
+    - car
+    - vehicle
+    - design
+    - architecture
+
+# Domain Context Anchors for Disambiguating Metaphorical Keywords
+domain_anchors:
+  business_anchors:
+    - sensex
+    - nifty
+    - shares
+    - stocks
+    - bourses
+    - equity
+    - equities
+    - ipo
+    - market cap
+    - valuation
+    - revenue
+    - profit
+    - crore
+    - rbi
+    - fed
+    - bank
+    - banking
+    - investor
+    - investors
+    - dividend
+    - quarterly
+    - bond
+    - bonds
+    - commodity
+    - startup
+    - startups
+    - startup awards
+    - unicorn
+    - acquisition
+    - cci
+
+  politics_anchors:
+    - bjp
+    - congress
+    - lok sabha
+    - rajya sabha
+    - parliament
+    - cabinet
+    - minister
+    - prime minister
+    - chief minister
+    - mla
+    - mp
+    - election
+    - elections
+    - constituency
+    - governor
+    - government
+    - opposition
+
+  sports_anchors:
+    - cricket
+    - test match
+    - ssc test
+    - icc
+    - bcci
+    - ipl
+    - innings
+    - wickets
+    - bowler
+    - batsman
+    - batters
+    - fifa
+    - football
+    - tennis
+    - grand slam
+    - olympics
+    - asian games
+    - badminton
+    - golf

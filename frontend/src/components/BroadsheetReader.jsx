@@ -17,6 +17,7 @@ import {
   Info,
   Search,
   Filter,
+  Loader2,
 } from 'lucide-react';
 import CanvasOverlay from './CanvasOverlay';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
@@ -47,6 +48,28 @@ export default function BroadsheetReader() {
   const [showOverlays, setShowOverlays] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSection, setSelectedSection] = useState('ALL');
+  const [analyzingPhotoIds, setAnalyzingPhotoIds] = useState({});
+
+  const handleAnalyzePhoto = async (photoId) => {
+    if (!photoId) return;
+    setAnalyzingPhotoIds((prev) => ({ ...prev, [photoId]: true }));
+    try {
+      const res = await fetch(`/api/photos/${photoId}/analyze`, { method: 'POST' });
+      if (!res.ok) throw new Error('Failed to analyze photo');
+      const updated = await res.json();
+      setArticleDetails((prev) => {
+        if (!prev || !prev.photos) return prev;
+        return {
+          ...prev,
+          photos: prev.photos.map((p) => (p.id === photoId ? { ...p, ...updated } : p)),
+        };
+      });
+    } catch (err) {
+      console.error('Photo analysis error:', err);
+    } finally {
+      setAnalyzingPhotoIds((prev) => ({ ...prev, [photoId]: false }));
+    }
+  };
 
   const canvasContainerRef = useRef(null);
   const articleListRef = useRef(null);
@@ -485,76 +508,133 @@ export default function BroadsheetReader() {
                 {/* Extracted Photos Section */}
                 {articleDetails.photos && articleDetails.photos.length > 0 && (
                   <div className="mt-6 border-t border-slate-800 pt-4">
-                    <h3 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-1.5">
-                      <Tag className="w-4 h-4 text-purple-400" />
-                      Associated Photos & Graphics ({articleDetails.photos.length})
-                    </h3>
-                    <div className="grid grid-cols-1 gap-3">
-                      {articleDetails.photos.map((ph, idx) => (
-                        <div key={ph.id || idx} className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs overflow-hidden flex flex-col gap-2.5">
-                          {ph.image_url && (
-                            <div className="bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center max-h-64 border border-slate-800 relative group">
-                              <img
-                                src={ph.image_url}
-                                alt={ph.caption || `Photo #${ph.id}`}
-                                className="w-full h-auto object-contain max-h-64 rounded-lg"
-                                loading="lazy"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                }}
-                              />
-                            </div>
-                          )}
-                          <div className="flex items-center justify-between gap-2 flex-wrap">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-purple-400 font-mono font-bold bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">
-                                Asset #{ph.id}
-                              </span>
-                              {ph.visual_type && (
-                                <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-800/50">
-                                  {ph.visual_type === 'data_chart' ? '📊 Data Chart' :
-                                   ph.visual_type === 'table' ? '🔢 Table' :
-                                   ph.visual_type === 'infographic' ? '📈 Infographic' :
-                                   ph.visual_type === 'logo' ? '🏷️ Logo' : '📷 Editorial Photo'}
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
+                        <Tag className="w-4 h-4 text-purple-400" />
+                        Associated Photos & Graphics ({articleDetails.photos.length})
+                      </h3>
+                      <span className="text-[10px] font-mono text-purple-400 bg-purple-950/40 px-2 py-0.5 rounded border border-purple-800/30">
+                        Qwen-VL Vision
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3.5">
+                      {articleDetails.photos.map((ph, idx) => {
+                        const isAnalyzing = Boolean(analyzingPhotoIds[ph.id]);
+                        return (
+                          <div key={ph.id || idx} className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-xs overflow-hidden flex flex-col gap-3 shadow-lg shadow-black/20">
+                            {ph.image_url && (
+                              <div className="bg-slate-900/90 rounded-lg overflow-hidden flex items-center justify-center max-h-72 border border-slate-800 relative group">
+                                <img
+                                  src={ph.image_url}
+                                  alt={ph.caption || `Photo #${ph.id}`}
+                                  className="w-full h-auto object-contain max-h-72 rounded-lg"
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                  }}
+                                />
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] text-purple-400 font-mono font-bold bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">
+                                  Asset #{ph.id}
                                 </span>
-                              )}
+                                {ph.visual_type && (
+                                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-800/50">
+                                    {ph.visual_type === 'data_chart' ? '📊 Data Chart' :
+                                     ph.visual_type === 'table' ? '🔢 Table' :
+                                     ph.visual_type === 'infographic' ? '📈 Infographic' :
+                                     ph.visual_type === 'logo' ? '🏷️ Logo' : '📷 Editorial Photo'}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  disabled={isAnalyzing}
+                                  onClick={() => handleAnalyzePhoto(ph.id)}
+                                  className={`text-[10px] font-medium flex items-center gap-1 px-2.5 py-1 rounded border transition-all ${
+                                    isAnalyzing
+                                      ? 'bg-purple-950/50 text-purple-300 border-purple-800/40 cursor-not-allowed'
+                                      : ph.vlm_description
+                                      ? 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
+                                      : 'bg-purple-600 hover:bg-purple-500 text-white border-purple-500 shadow-md shadow-purple-950/50'
+                                  }`}
+                                  title={ph.vlm_description ? "Re-run Qwen-3VL scene analysis" : "Analyze this photograph with Qwen-3VL"}
+                                >
+                                  {isAnalyzing ? (
+                                    <>
+                                      <Loader2 className="w-3 h-3 animate-spin text-purple-300" />
+                                      <span>Analyzing Scene...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Sparkles className="w-3 h-3 text-purple-300" />
+                                      <span>{ph.vlm_description ? 'Re-Analyze with VLM' : '⚡ Analyze with Qwen-VL'}</span>
+                                    </>
+                                  )}
+                                </button>
+                                {ph.bbox && (
+                                  <button
+                                    onClick={() => {
+                                      if (ph.bbox) {
+                                        highlightArticle(
+                                          selectedIssueId,
+                                          selectedPageNumber,
+                                          articleDetails?.id,
+                                          [ph.bbox]
+                                        );
+                                      }
+                                    }}
+                                    className="text-[10px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 bg-emerald-950/40 px-2 py-1 rounded border border-emerald-800/40 transition-colors"
+                                  >
+                                    <Maximize2 className="w-3 h-3" />
+                                    Highlight
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                            {ph.bbox && (
-                              <button
-                                onClick={() => {
-                                  if (ph.bbox) {
-                                    highlightArticle(
-                                      selectedIssueId,
-                                      selectedPageNumber,
-                                      articleDetails?.id,
-                                      [ph.bbox]
-                                    );
-                                  }
-                                }}
-                                className="text-[10px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/40 transition-colors"
-                              >
-                                <Maximize2 className="w-3 h-3" />
-                                Highlight on Page
-                              </button>
+                            {ph.caption && (
+                              <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/60">
+                                <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400 block mb-1">
+                                  📰 Original Newspaper Caption:
+                                </span>
+                                <p className="text-slate-300 text-xs italic leading-relaxed">{ph.caption}</p>
+                              </div>
+                            )}
+                            {ph.vlm_description ? (
+                              <div className="p-3 bg-gradient-to-br from-slate-900 via-slate-900/90 to-purple-950/20 border border-purple-900/50 rounded-xl text-xs text-slate-200 font-sans leading-relaxed shadow-sm">
+                                <div className="flex items-center justify-between gap-2 mb-2 pb-1.5 border-b border-purple-900/30">
+                                  <span className="text-[11px] uppercase tracking-wider font-bold text-purple-300 flex items-center gap-1.5">
+                                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                                    Qwen-VL Visual Scene Analysis
+                                  </span>
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 text-purple-400 border border-purple-800/40 font-mono">
+                                    AI Verified
+                                  </span>
+                                </div>
+                                <div className="text-slate-200 text-xs whitespace-pre-wrap leading-relaxed space-y-2">
+                                  {ph.vlm_description}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="p-2.5 bg-slate-900/30 border border-dashed border-slate-800 rounded-lg text-center">
+                                <p className="text-[11px] text-slate-400 mb-1.5">
+                                  Detailed visual scene intelligence not yet generated for this photograph.
+                                </p>
+                                <button
+                                  disabled={isAnalyzing}
+                                  onClick={() => handleAnalyzePhoto(ph.id)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-purple-400 hover:text-purple-300 transition-colors"
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                  Click here to analyze with Qwen-VL
+                                </button>
+                              </div>
                             )}
                           </div>
-                          {ph.caption && (
-                            <div className="bg-slate-900/60 p-2 rounded border border-slate-800/60">
-                              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Caption:</span>
-                              <p className="text-slate-300 text-xs italic leading-relaxed">{ph.caption}</p>
-                            </div>
-                          )}
-                          {ph.vlm_description && (
-                            <div className="p-2.5 bg-slate-900/80 border border-blue-900/40 rounded-lg text-xs text-slate-300 font-sans whitespace-pre-wrap max-h-48 overflow-y-auto leading-relaxed">
-                              <span className="text-[10px] uppercase tracking-wider font-bold text-blue-400 flex items-center gap-1 mb-1">
-                                <Sparkles className="w-3 h-3" />
-                                AI Visual Intelligence:
-                              </span>
-                              {ph.vlm_description}
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}

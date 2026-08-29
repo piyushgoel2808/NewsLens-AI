@@ -138,6 +138,65 @@ async def get_photo_image(
     )
 
 
+@router.post("/photos/{photo_id}/analyze", summary="Run on-demand VLM scene analysis on a photo")
+async def analyze_photo_asset(
+    photo_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Run on-demand Qwen-VL / VLM visual intelligence analysis on a specific photo asset."""
+    from app.core.config import get_settings
+    from app.ingestion.visual_extractor import VisualDataExtractor
+    from app.models.article import Photo
+    from app.storage.minio_store import MinioStore
+
+    stmt = select(Photo).where(Photo.id == photo_id)
+    res = await db.execute(stmt)
+    photo = res.scalar_one_or_none()
+
+    if not photo or not photo.object_key:
+        raise HTTPException(status_code=404, detail=f"Photo {photo_id} not found")
+
+    settings = get_settings()
+    minio = MinioStore(settings.minio)
+    image_bytes = await minio.get(
+        bucket=settings.minio.bucket_pages,
+        key=photo.object_key,
+    )
+
+    if not image_bytes:
+        raise HTTPException(status_code=404, detail="Photo object missing from storage")
+
+    extractor = VisualDataExtractor()
+    classification, extraction = await extractor.process_image_crop(
+        image_bytes=image_bytes,
+        ocr_text=photo.caption or "",
+    )
+
+    visual_type = classification.visual_type
+    vlm_desc: str | None = None
+    if extraction:
+        desc_parts = [extraction.summary]
+        if extraction.key_metrics:
+            desc_parts.append("\nKey Visual Elements:\n• " + "\n• ".join(extraction.key_metrics))
+        if extraction.markdown_table:
+            desc_parts.append("\n" + extraction.markdown_table)
+        vlm_desc = "\n".join(desc_parts)
+
+    photo.visual_type = visual_type
+    photo.vlm_description = vlm_desc
+    await db.commit()
+    await db.refresh(photo)
+
+    return {
+        "id": photo.id,
+        "caption": photo.caption,
+        "visual_type": photo.visual_type,
+        "vlm_description": photo.vlm_description,
+        "object_key": photo.object_key,
+        "image_url": f"/api/photos/{photo.id}/image",
+    }
+
+
 @router.get(
     "/issues/{issue_id}/articles",
     summary="List all articles in an issue ordered by prominence",

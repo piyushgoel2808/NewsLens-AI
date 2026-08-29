@@ -245,6 +245,7 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             ]
 
         articles: list[SegmentedArticle] = []
+        active_page_section: str | None = None
         current_headline: str = ""
         current_subheadline: str | None = None
         current_byline: str | None = None
@@ -254,7 +255,7 @@ class DoclingLayoutParser(DocumentLayoutProvider):
 
         def _flush_current_article() -> None:
             nonlocal current_headline, current_subheadline, current_byline
-            nonlocal current_body_parts, current_bboxes, art_counter
+            nonlocal current_body_parts, current_bboxes, art_counter, active_page_section
 
             if not current_headline and not current_body_parts:
                 return
@@ -290,6 +291,8 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                         body_text=body_str or final_h,
                         word_count=w_count,
                         bbox_list=list(current_bboxes),
+                        section=active_page_section,
+                        printed_section=active_page_section,
                     )
                 )
 
@@ -332,8 +335,17 @@ class DoclingLayoutParser(DocumentLayoutProvider):
 
             # 2. Section Header or Title
             if lbl in ("section_header", "title"):
-                # Blacklisted editorial section titles (e.g. "NATIONAL", "OPINION", "MARKETS", "WORLD")
-                if txt.upper() in SECTION_HEADER_BLACKLIST or txt.upper() in _PAGE_HEADER_KEYWORDS:
+                # Check for running page section header banner (e.g. "SPORTS WORLD PLAY", "ET MARKETS", "OPINION")
+                is_section_banner = bool(
+                    txt.upper() in SECTION_HEADER_BLACKLIST
+                    or txt.upper() in _PAGE_HEADER_KEYWORDS
+                    or (bbox[1] < height_px * 0.18 and len(txt.split()) <= 5 and any(
+                        s in txt.lower() for s in ["sport", "play", "market", "corporate", "economy", "opinion", "national", "world", "editorial", "science", "tech", "entertainment", "life"]
+                    ))
+                )
+                if is_section_banner:
+                    if not active_page_section and len(txt.split()) <= 6:
+                        active_page_section = txt.title()
                     continue
 
                 # If byline is embedded at the end of the text (e.g. "... BY LINDA QIU")
