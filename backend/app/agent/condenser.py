@@ -122,13 +122,15 @@ async def condense_conversational_query(
     if not chat_history or not needs_condensation(query, chat_history):
         return query
 
-    # Resolve LLM provider (prefer lightweight/fast model)
+    # Resolve LLM provider (prefer lightweight/fast model like groq_llama or query_planner)
     if provider is None:
         try:
             registry = get_registry()
-            provider = registry.get_provider(  # type: ignore[assignment]
-                model_override or "query_planner"
-            )
+            # Try to resolve lightweight query condenser provider first, falling back to query_planner
+            try:
+                provider = registry.get_chat_provider(model_override or "query_condenser")
+            except Exception:
+                provider = registry.get_chat_provider(model_override or "query_planner")
         except Exception as reg_err:
             logger.warning(
                 "Could not obtain provider for query condensation",
@@ -137,24 +139,13 @@ async def condense_conversational_query(
             provider = None
 
     if provider is None:
-        # Heuristic fallback: append last user turn keywords
-        last_user_query = ""
-        for msg in reversed(chat_history):
-            if msg.get("role") == "user" and msg.get("content"):
-                last_user_query = str(msg["content"]).strip()
-                break
-        if last_user_query:
-            return f"{query} regarding {last_user_query}"
         return query
 
     formatted_history = format_chat_history_for_prompt(chat_history)
     prompt = (
-        "Given the following conversation history and a follow-up question, rewrite the "
-        "follow-up question into a standalone, self-contained search query containing all "
-        "necessary entity names, topics, and dates. Do NOT answer the question—only rewrite it.\n\n"
         f"Chat History:\n{formatted_history}\n\n"
-        f"Follow-up Query: {query}\n"
-        "Standalone Query:"
+        f"Latest User Query: {query}\n\n"
+        "Rewritten Standalone Query:"
     )
 
     try:
@@ -162,8 +153,9 @@ async def condense_conversational_query(
             Message(
                 role="system",
                 content=(
-                    "You are an expert search query reformulator. Rewrite follow-up questions into "
-                    "clear, standalone search queries without answering them."
+                    "Given the chat history and the latest user query, rewrite the latest query into "
+                    "a single, standalone sentence that contains all necessary context (entities, dates, page numbers). "
+                    "Do not answer it, just rewrite it."
                 ),
             ),
             Message(role="user", content=prompt),
@@ -177,7 +169,7 @@ async def condense_conversational_query(
 
         # Clean up any quotes or prefixes
         rewritten = re.sub(
-            r'^(Standalone Query:|"|\'|`|Query:)\s*',
+            r'^(?:Standalone Query:|Rewritten Standalone Query:|Rewritten Query:|Query:|"|\'|`)\s*',
             "",
             rewritten,
             flags=re.IGNORECASE,
@@ -192,7 +184,7 @@ async def condense_conversational_query(
             return rewritten
     except Exception as e:
         logger.warning(
-            "Conversational query condensation failed, falling back to original",
+            "Conversational query condensation failed, falling back to original query",
             extra={"error": str(e), "query": query},
         )
 

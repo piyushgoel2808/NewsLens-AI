@@ -75,3 +75,29 @@ def test_extract_consensus_invalid_stream():
     assert brand is None
     assert d is None
     assert meta["status"] == "invalid_pdf"
+
+
+def test_extract_consensus_nyt_international():
+    """Verify international masthead and filename detection for New York Times."""
+    doc = pymupdf.open()
+    p = doc.new_page(width=600, height=800)
+    p.insert_text(
+        pymupdf.Point(50, 40),
+        "THE NEW YORK TIMES • INTERNATIONAL EDITION • THURSDAY, AUGUST 27, 2026",
+        fontsize=11,
+    )
+    p.insert_text(
+        pymupdf.Point(50, 150),
+        "Global trade talks advance in Geneva as delegates convene.",
+        fontsize=12,
+    )
+    pdf_bytes = doc.write()
+    doc.close()
+
+    brand, d, meta = extract_newspaper_and_date_consensus(
+        pdf_bytes=pdf_bytes,
+        filename="NYT International 2708.pdf",
+    )
+    assert brand == "The New York Times"
+    assert d == date(2026, 8, 27)
+    assert meta["status"] == "success"

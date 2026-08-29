@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -20,6 +21,7 @@ from app.agent.synthesizer import AnswerSynthesizer
 from app.core.logging import get_logger
 from app.core.metrics import record_agent_query
 from app.models.query import QueryLog
+from app.retrieval.coverage_analyzer import CoverageAnalyzer
 from app.retrieval.entity_filter import EntitySearchEngine
 from app.retrieval.hybrid_search import HybridSearchEngine, SearchFilter
 from app.retrieval.sql_analytics import SQLAnalyticsEngine
@@ -41,6 +43,10 @@ class AgentWorkflow:
         self._entity_search = EntitySearchEngine(session_factory=session_factory)
         self._timeline_builder = TimelineBuilder(session_factory=session_factory)
         self._sql_analytics = SQLAnalyticsEngine(session_factory=session_factory)
+        self._coverage_analyzer = CoverageAnalyzer(
+            session_factory=session_factory,
+            hybrid_search_engine=self._hybrid_search,
+        )
         self._web_search = WebSearchEngine()
         self._cache = CacheStore()
 
@@ -52,12 +58,14 @@ class AgentWorkflow:
 
         workflow.add_node("classify_and_plan", self._classify_and_plan_node)
         workflow.add_node("execute_tools", self._execute_tools_node)
+        workflow.add_node("evaluate_and_fallback", self._evaluate_and_fallback_node)
         workflow.add_node("synthesize_answer", self._synthesize_answer_node)
         workflow.add_node("log_query", self._log_query_node)
 
         workflow.add_edge(START, "classify_and_plan")
         workflow.add_edge("classify_and_plan", "execute_tools")
-        workflow.add_edge("execute_tools", "synthesize_answer")
+        workflow.add_edge("execute_tools", "evaluate_and_fallback")
+        workflow.add_edge("evaluate_and_fallback", "synthesize_answer")
         workflow.add_edge("synthesize_answer", "log_query")
         workflow.add_edge("log_query", END)
 
@@ -347,6 +355,132 @@ class AgentWorkflow:
                             }
                         )
 
+                    elif analysis_type == "count_articles":
+                        count_res = await self._sql_analytics.count_articles(
+                            newspaper_name=args.get("newspaper_name"),
+                            issue_date=args.get("issue_date"),
+                            section=args.get("section") or args.get("category_filter"),
+                            article_type=args.get("article_type"),
+                        )
+                        c_val = count_res.get("count", 0)
+                        hits_count = c_val
+                        filt_info = ", ".join(f"{k}: {v}" for k, v in count_res.get("filters", {}).items() if v)
+                        summary_str = (
+                            f"=== RELATIONAL ARTICLE COUNT AUDIT ===\n"
+                            f"• Total Matching Articles: {c_val}\n"
+                            f"• Active Filters: {filt_info or 'None (Total Ingested)'}\n"
+                        )
+                        evidence_items.append(
+                            {
+                                "article_id": 0,
+                                "headline": f"Article Count Analysis: {c_val} articles found",
+                                "newspaper_name": args.get("newspaper_name") or "Archive",
+                                "issue_date": args.get("issue_date") or "Overview",
+                                "pages": [1],
+                                "snippet": summary_str,
+                                "prominence_score": 1.0,
+                                "source_tool": "sql_analytics",
+                            }
+                        )
+                    elif analysis_type == "topic_distribution":
+                        topics_dist = await self._sql_analytics.get_topic_distribution()
+                        hits_count = len(topics_dist)
+                        top_lines = [
+                            f"• [{t['section']} / {t['article_type']}]: {t['count']} articles (avg prominence: {t['avg_prominence']})"
+                            for t in topics_dist[:10]
+                        ]
+                        summary_str = "=== TOPIC & SECTION DISTRIBUTION ===\n" + "\n".join(top_lines)
+                        evidence_items.append(
+                            {
+                                "article_id": 0,
+                                "headline": "Archive Topic & Section Breakdown",
+                                "newspaper_name": "Aggregated Archive Analytics",
+                                "issue_date": "Overview",
+                                "pages": [1],
+                                "snippet": summary_str,
+                                "prominence_score": 1.0,
+                                "source_tool": "sql_analytics",
+                            }
+                        )
+                    elif analysis_type == "frontpage_ratio":
+                        ratio_res = await self._sql_analytics.get_frontpage_prominence_ratio()
+                        hits_count = ratio_res.get("total_articles", 0)
+                        summary_str = (
+                            f"=== FRONTPAGE PROMINENCE RATIO ===\n"
+                            f"• Total Articles: {ratio_res.get('total_articles')}\n"
+                            f"• Frontpage Articles (Page 1): {ratio_res.get('frontpage_articles')}\n"
+                            f"• Frontpage Ratio: {round(ratio_res.get('frontpage_ratio', 0) * 100, 2)}%\n"
+                        )
+                        evidence_items.append(
+                            {
+                                "article_id": 0,
+                                "headline": "Frontpage Prominence Analysis",
+                                "newspaper_name": "Aggregated Archive Analytics",
+                                "issue_date": "Overview",
+                                "pages": [1],
+                                "snippet": summary_str,
+                                "prominence_score": 1.0,
+                                "source_tool": "sql_analytics",
+                            }
+                        )
+                    elif analysis_type == "coverage_comparison":
+                        cov_matrix = await self._coverage_analyzer.generate_coverage_matrix(
+                            query_or_event=args.get("query", state["query"]),
+                        )
+                        hits_count = cov_matrix.covered_count
+                        lines = [
+                            f"=== 3-TIER COVERAGE RECONCILIATION MATRIX: '{cov_matrix.target_query_or_event}' ===",
+                            f"• Total Publications Audited: {cov_matrix.total_publications}",
+                            f"• Confirmed Coverage: {cov_matrix.covered_count}",
+                            f"• Confirmed Omissions (Not Found): {cov_matrix.not_found_count}",
+                            f"• Uncertain / Borderline: {cov_matrix.uncertain_count}",
+                            f"• Processing Errors / Incomplete: {cov_matrix.processing_error_count}\n",
+                        ]
+                        for pub_name, rep in cov_matrix.reports.items():
+                            hls = f" (Headlines: {', '.join(rep.matched_headlines[:2])})" if rep.matched_headlines else ""
+                            lines.append(f"• {pub_name}: [{rep.status}] Confidence {round(rep.confidence * 100, 1)}%{hls} - {rep.audit_notes}")
+                        evidence_items.append(
+                            {
+                                "article_id": 0,
+                                "headline": f"Coverage Audit: {cov_matrix.target_query_or_event}",
+                                "newspaper_name": "Multi-Newspaper Audit",
+                                "issue_date": "Comparative Matrix",
+                                "pages": [1],
+                                "snippet": "\n".join(lines),
+                                "prominence_score": 1.0,
+                                "source_tool": "sql_analytics",
+                            }
+                        )
+
+                elif name == "coverage_analysis":
+                    cov_matrix = await self._coverage_analyzer.generate_coverage_matrix(
+                        query_or_event=args.get("query", state["query"]),
+                    )
+                    hits_count = cov_matrix.covered_count
+                    lines = [
+                        f"=== 3-TIER COVERAGE RECONCILIATION MATRIX: '{cov_matrix.target_query_or_event}' ===",
+                        f"• Total Publications Audited: {cov_matrix.total_publications}",
+                        f"• Confirmed Coverage: {cov_matrix.covered_count}",
+                        f"• Confirmed Omissions (Not Found): {cov_matrix.not_found_count}",
+                        f"• Uncertain / Borderline: {cov_matrix.uncertain_count}",
+                        f"• Processing Errors / Incomplete: {cov_matrix.processing_error_count}\n",
+                    ]
+                    for pub_name, rep in cov_matrix.reports.items():
+                        hls = f" (Headlines: {', '.join(rep.matched_headlines[:2])})" if rep.matched_headlines else ""
+                        lines.append(f"• {pub_name}: [{rep.status}] Confidence {round(rep.confidence * 100, 1)}%{hls} - {rep.audit_notes}")
+                    evidence_items.append(
+                        {
+                            "article_id": 0,
+                            "headline": f"Coverage Matrix: {cov_matrix.target_query_or_event}",
+                            "newspaper_name": "Multi-Newspaper Audit",
+                            "issue_date": "Comparative Matrix",
+                            "pages": [1],
+                            "snippet": "\n".join(lines),
+                            "prominence_score": 1.0,
+                            "source_tool": "coverage_analysis",
+                        }
+                    )
+
                 elif name == "web_search":
                     web_results = await self._web_search.search(
                         query=args.get("query", state["query"]),
@@ -386,6 +520,154 @@ class AgentWorkflow:
             "evidence_items": evidence_items,
             "tool_executions": tool_records,
         }
+
+    async def _evaluate_and_fallback_node(self, state: AgentState) -> dict[str, Any]:
+        """Corrective RAG (CRAG) Node: Grade retrieval quality and execute corrective fallback if needed."""
+        evidence = state.get("evidence_items", [])
+        archetype = state.get("archetype", "factual_lookup")
+        tool_records = list(state.get("tool_executions", []))
+
+        # Skip fallback evaluation for meta queries or user clarification states
+        if archetype in ("clarification_needed", "conversational_meta_query"):
+            return {"evidence_items": evidence, "tool_executions": tool_records}
+
+        # Stop-words to exclude from core query terms
+        stop_words = {
+            "a", "an", "the", "and", "or", "but", "if", "then", "else", "when",
+            "at", "by", "for", "with", "about", "against", "between", "into",
+            "through", "during", "before", "after", "above", "below", "to", "from",
+            "up", "down", "in", "out", "on", "off", "over", "under", "again",
+            "further", "then", "once", "here", "there", "all", "any", "both",
+            "each", "few", "more", "most", "other", "some", "such", "no", "nor",
+            "not", "only", "own", "same", "so", "than", "too", "very", "can",
+            "will", "just", "should", "now", "tell", "what", "which", "who",
+            "whom", "this", "that", "these", "those", "have", "has", "had",
+            "give", "details", "information", "report", "news", "articles", "anything",
+            "something", "know", "find", "show", "read", "say", "said",
+        }
+        raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", state["query"].lower())
+        query_tokens = [w for w in raw_query_words if w not in stop_words]
+
+        def _stem(word: str) -> str:
+            w = word.lower()
+            if len(w) > 4 and w.endswith("es"):
+                return w[:-2]
+            if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+                return w[:-1]
+            if len(w) > 5 and w.endswith("ing"):
+                return w[:-3]
+            if len(w) > 4 and w.endswith("ed"):
+                return w[:-2]
+            return w
+
+        query_stems = {_stem(t) for t in query_tokens}
+
+        def _score_relevance(item: dict[str, Any]) -> float:
+            if not query_tokens:
+                return 1.0
+            hl = (item.get("headline") or "").lower()
+            snip = (item.get("snippet") or item.get("full_text") or item.get("summary") or "").lower()
+            combined = f"{hl} {snip}"
+            corpus_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", combined))
+            corpus_stems = {_stem(w) for w in corpus_words}
+
+            matches = 0.0
+            for qt in query_tokens:
+                stem = _stem(qt)
+                if qt in hl or stem in hl:
+                    matches += 2.0
+                elif qt in combined or stem in corpus_stems:
+                    matches += 1.0
+
+            return matches / max(1.0, float(len(query_tokens)))
+
+        # Retain only evidence items that have positive relevance to query tokens
+        filtered_evidence = [item for item in evidence if _score_relevance(item) > 0.0]
+        filtered_evidence.sort(key=_score_relevance, reverse=True)
+
+        # Check if retrieval yielded grounded items matching query
+        has_grounded_content = bool(
+            filtered_evidence and any(len((item.get("snippet") or "").strip()) >= 20 for item in filtered_evidence)
+        )
+
+        if not has_grounded_content:
+            logger.info("CRAG triggered: 0 high-confidence articles retrieved, attempting corrective fallback")
+            t_start = time.monotonic()
+            fallback_items: list[dict[str, Any]] = list(filtered_evidence)
+
+            # 1. Fallback: Entity Graph / Taxonomy Search if a prominent entity is detected in the query
+            query_terms = [w.strip() for w in state["query"].split() if len(w) > 3 and w[0].isupper()]
+            if query_terms:
+                ent_target = query_terms[0]
+                ent_res = await self._entity_search.search_by_entity(
+                    entity_name=ent_target,
+                    top_k=5,
+                )
+                if ent_res:
+                    for er in ent_res:
+                        fallback_items.append(
+                            {
+                                "article_id": er.article_id,
+                                "issue_id": er.issue_id,
+                                "headline": er.headline,
+                                "newspaper_name": er.newspaper_name,
+                                "issue_date": er.issue_date,
+                                "pages": er.pages,
+                                "bboxes": er.bboxes,
+                                "snippet": f"[CRAG Entity Fallback - {er.entity_name}]: {er.summary}",
+                                "prominence_score": er.prominence_score,
+                                "source_tool": "crag_entity_fallback",
+                            }
+                        )
+                    dur_ms = round((time.monotonic() - t_start) * 1000)
+                    tool_records.append(
+                        ToolExecutionRecord(
+                            tool_name="crag_entity_fallback",
+                            tool_input={"entity_name": ent_target},
+                            results_count=len(ent_res),
+                            execution_time_ms=dur_ms,
+                        )
+                    )
+
+            # 2. Fallback: Live Web Search if web search is enabled and archive is empty
+            if not fallback_items and state.get("enable_web_search", False):
+                t_web = time.monotonic()
+                web_res = await self._web_search.search(
+                    query=state["query"],
+                    num_results=4,
+                )
+                if web_res:
+                    for wr in web_res:
+                        fallback_items.append(
+                            {
+                                "article_id": 0,
+                                "headline": wr.title,
+                                "newspaper_name": wr.source,
+                                "issue_date": wr.published_date or "Live Web",
+                                "pages": [1],
+                                "snippet": f"[CRAG Web Fallback]: {wr.snippet}",
+                                "url": wr.url,
+                                "is_web": True,
+                                "prominence_score": 0.8,
+                                "source_tool": "crag_web_fallback",
+                            }
+                        )
+                    dur_ms = round((time.monotonic() - t_web) * 1000)
+                    tool_records.append(
+                        ToolExecutionRecord(
+                            tool_name="crag_web_fallback",
+                            tool_input={"query": state["query"]},
+                            results_count=len(web_res),
+                            execution_time_ms=dur_ms,
+                        )
+                    )
+
+            return {
+                "evidence_items": fallback_items,
+                "tool_executions": tool_records,
+            }
+
+        return {"evidence_items": filtered_evidence, "tool_executions": tool_records}
 
     async def _synthesize_answer_node(self, state: AgentState) -> dict[str, Any]:
         """Formulate grounded answer with source citations."""

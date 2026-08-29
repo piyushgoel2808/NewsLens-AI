@@ -33,6 +33,7 @@ export default function BroadsheetReader() {
     isPulsing,
     hoveredArticleId,
     setHoveredArticleId,
+    highlightArticle,
   } = useActiveHighlight();
 
   const [issues, setIssues] = useState([]);
@@ -488,15 +489,15 @@ export default function BroadsheetReader() {
                       <Tag className="w-4 h-4 text-purple-400" />
                       Associated Photos & Graphics ({articleDetails.photos.length})
                     </h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3">
                       {articleDetails.photos.map((ph, idx) => (
-                        <div key={ph.id || idx} className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs overflow-hidden flex flex-col gap-2">
+                        <div key={ph.id || idx} className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs overflow-hidden flex flex-col gap-2.5">
                           {ph.image_url && (
-                            <div className="bg-slate-900 rounded overflow-hidden flex items-center justify-center max-h-48 border border-slate-800">
+                            <div className="bg-slate-900 rounded-lg overflow-hidden flex items-center justify-center max-h-64 border border-slate-800 relative group">
                               <img
                                 src={ph.image_url}
                                 alt={ph.caption || `Photo #${ph.id}`}
-                                className="w-full h-auto object-contain max-h-48 rounded"
+                                className="w-full h-auto object-contain max-h-64 rounded-lg"
                                 loading="lazy"
                                 onError={(e) => {
                                   e.currentTarget.style.display = 'none';
@@ -504,14 +505,54 @@ export default function BroadsheetReader() {
                               />
                             </div>
                           )}
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] text-purple-400 font-mono font-bold bg-purple-950/60 px-1.5 py-0.5 rounded border border-purple-800/40">
-                              Photo #{ph.id}
-                            </span>
-                            {ph.caption && (
-                              <p className="text-slate-400 text-[11px] italic line-clamp-2">{ph.caption}</p>
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-purple-400 font-mono font-bold bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">
+                                Asset #{ph.id}
+                              </span>
+                              {ph.visual_type && (
+                                <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-800/50">
+                                  {ph.visual_type === 'data_chart' ? '📊 Data Chart' :
+                                   ph.visual_type === 'table' ? '🔢 Table' :
+                                   ph.visual_type === 'infographic' ? '📈 Infographic' :
+                                   ph.visual_type === 'logo' ? '🏷️ Logo' : '📷 Editorial Photo'}
+                                </span>
+                              )}
+                            </div>
+                            {ph.bbox && (
+                              <button
+                                onClick={() => {
+                                  if (ph.bbox) {
+                                    highlightArticle(
+                                      selectedIssueId,
+                                      selectedPageNumber,
+                                      articleDetails?.id,
+                                      [ph.bbox]
+                                    );
+                                  }
+                                }}
+                                className="text-[10px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/40 transition-colors"
+                              >
+                                <Maximize2 className="w-3 h-3" />
+                                Highlight on Page
+                              </button>
                             )}
                           </div>
+                          {ph.caption && (
+                            <div className="bg-slate-900/60 p-2 rounded border border-slate-800/60">
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Caption:</span>
+                              <p className="text-slate-300 text-xs italic leading-relaxed">{ph.caption}</p>
+                            </div>
+                          )}
+                          {ph.vlm_description && (
+                            <div className="p-2.5 bg-slate-900/80 border border-blue-900/40 rounded-lg text-xs text-slate-300 font-sans whitespace-pre-wrap max-h-48 overflow-y-auto leading-relaxed">
+                              <span className="text-[10px] uppercase tracking-wider font-bold text-blue-400 flex items-center gap-1 mb-1">
+                                <Sparkles className="w-3 h-3" />
+                                AI Visual Intelligence:
+                              </span>
+                              {ph.vlm_description}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -601,16 +642,35 @@ export default function BroadsheetReader() {
                             : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
                         }`}
                       >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span
-                            className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold ${
-                              art.article_type === 'advertisement'
-                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                                : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            }`}
-                          >
-                            {art.section || art.article_type || 'News'}
-                          </span>
+                        <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span
+                              className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold ${
+                                art.article_type === 'advertisement'
+                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                  : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                              }`}
+                            >
+                              {art.section || art.article_type || 'News'}
+                            </span>
+
+                            {/* Visual Badges for Photos & Infographics */}
+                            {art.has_infographic && (
+                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-cyan-950/90 text-cyan-300 border border-cyan-800/60 flex items-center gap-1 shadow-sm">
+                                📊 Infographic
+                              </span>
+                            )}
+                            {art.photo_count > 0 && !art.has_infographic && (
+                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-purple-950/90 text-purple-300 border border-purple-800/60 flex items-center gap-1 shadow-sm">
+                                📷 {art.photo_count > 1 ? `${art.photo_count} Photos` : 'Photo'}
+                              </span>
+                            )}
+                            {art.table_count > 0 && !art.has_infographic && (
+                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-950/90 text-blue-300 border border-blue-800/60 flex items-center gap-1 shadow-sm">
+                                🔢 Table
+                              </span>
+                            )}
+                          </div>
                           <span className="text-[11px] text-slate-400">
                             {art.word_count} words
                           </span>

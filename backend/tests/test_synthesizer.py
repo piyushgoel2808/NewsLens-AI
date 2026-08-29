@@ -103,3 +103,46 @@ class TestAnswerSynthesizer:
         call_messages = mock_provider.complete.call_args.kwargs["messages"]
         assert len(call_messages) >= 3
         assert any("2800 MW" in m.content for m in call_messages if isinstance(m.content, str))
+
+    @pytest.mark.asyncio
+    async def test_empty_evidence_hard_stop_prevents_hallucination(self) -> None:
+        mock_provider = MagicMock()
+        mock_provider.complete = AsyncMock(
+            return_value=ModelResponse(
+                text="Prince Harry visited India yesterday.",
+                input_tokens=100,
+                output_tokens=50,
+            )
+        )
+        synth = AnswerSynthesizer(provider=mock_provider)
+
+        # Empty evidence with a standard factual query
+        ans, citations, cost = await synth.synthesize(
+            query="Tell me about Prince Harry",
+            archetype="factual_lookup",
+            evidence_items=[],
+            chat_history=[],
+        )
+
+        assert "I could not find any evidence or articles matching this query in the database" in ans
+        assert not mock_provider.complete.called
+        assert len(citations) == 0
+        assert cost == 0.0
+
+    @pytest.mark.asyncio
+    async def test_empty_evidence_streaming_hard_stop(self) -> None:
+        mock_provider = MagicMock()
+        synth = AnswerSynthesizer(provider=mock_provider)
+
+        chunks = []
+        async for chunk in synth.synthesize_stream(
+            query="Tell me about Prince Harry",
+            archetype="factual_lookup",
+            evidence_items=[],
+            chat_history=[],
+        ):
+            chunks.append(chunk)
+
+        full_stream_text = "".join(chunks)
+        assert "I could not find any evidence or articles matching this query in the database" in full_stream_text
+

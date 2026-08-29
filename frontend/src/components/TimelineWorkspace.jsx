@@ -504,6 +504,25 @@ export default function TimelineWorkspace() {
                           </p>
                         </div>
 
+                        {/* Multi-Hop Graph Active Entity Protagonists */}
+                        {m.active_entities && m.active_entities.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 mr-1 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                              Key Actors:
+                            </span>
+                            {m.active_entities.map((ent, entIdx) => (
+                              <span
+                                key={entIdx}
+                                className="px-2 py-0.5 rounded-md bg-blue-950/50 border border-blue-500/30 text-[10px] font-medium text-blue-200 flex items-center gap-1 hover:border-blue-400 transition-colors"
+                              >
+                                <span>{ent.name}</span>
+                                <span className="text-[9px] font-mono text-blue-400 capitalize">({ent.type})</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         {/* Discrepancy Alert Banner */}
                         {m.discrepancies && m.discrepancies.length > 0 && (
                           <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl p-3 text-xs text-amber-200 space-y-1">

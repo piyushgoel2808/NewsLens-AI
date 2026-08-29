@@ -103,6 +103,7 @@ celery_*.pid
 .aider*
 .serena/
 demo/
+Newspaper_RAG/
 *.pdf
 !backend/tests/fixtures/*.pdf
 !backend/tests/fixtures/*.zip

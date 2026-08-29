@@ -254,6 +254,8 @@ async def inspect_issue_ingestion(
             selectinload(Issue.newspaper),
             selectinload(Issue.pages),
             selectinload(Issue.articles).selectinload(Article.article_pages),
+            selectinload(Issue.articles).selectinload(Article.photos),
+            selectinload(Issue.articles).selectinload(Article.tables),
         )
     )
     res = await db.execute(stmt)
@@ -321,6 +323,30 @@ async def inspect_issue_ingestion(
                 for ap in a.article_pages
                 if ap.bbox_json and isinstance(ap.bbox_json, dict)
             },
+            "photos": [
+                {
+                    "id": ph.id,
+                    "caption": ph.caption,
+                    "vlm_description": ph.vlm_description,
+                    "visual_type": ph.visual_type,
+                    "image_url": f"/api/photos/{ph.id}/image",
+                    "bbox": ph.bbox_json.get("bbox") if ph.bbox_json else None,
+                }
+                for ph in a.photos
+            ],
+            "photo_count": len(a.photos),
+            "has_photo": len(a.photos) > 0,
+            "has_infographic": any(
+                ph.visual_type in ("infographic", "data_chart", "table") for ph in a.photos
+            ) or (len(a.tables) > 0),
+            "tables": [
+                {
+                    "id": tb.id,
+                    "extracted_json": tb.extracted_json,
+                }
+                for tb in a.tables
+            ],
+            "table_count": len(a.tables),
         }
         for a in issue.articles
     ]
@@ -351,6 +377,7 @@ async def inspect_issue_ingestion(
             "article_id": chunk.article_id,
             "headline": headline or "Untitled",
             "chunk_index": chunk.chunk_index,
+            "chunk_type": chunk.chunk_type,
             "text": chunk.text,
             "token_count": chunk.token_count,
             "embedding_vector_id": chunk.embedding_vector_id,

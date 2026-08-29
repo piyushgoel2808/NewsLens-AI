@@ -627,6 +627,17 @@ class PDFPageDetector:
         # Harvest exact image bounding boxes (photos, figures, infographics)
         # Scaled to 300 DPI raster pixel coordinates to match rendered page images
         image_boxes: list[tuple[float, float, float, float]] = []
+        page_w_300 = float(page_width) * (300.0 / 72.0)
+        page_h_300 = float(page_height) * (300.0 / 72.0)
+
+        def _is_valid_photo_box(x0: float, y0: float, x1: float, y1: float) -> bool:
+            w, h = x1 - x0, y1 - y0
+            if w < 40.0 or h < 40.0:
+                return False
+            # Filter out full-page background/scanned canvas rasters
+            if w >= page_w_300 * 0.90 and h >= page_h_300 * 0.90:
+                return False
+            return True
 
         # 1. Harvest from get_image_info (fastest & most accurate in PyMuPDF)
         try:
@@ -638,7 +649,7 @@ class PDFPageDetector:
                     ry0 = float(bbox[1]) * (300.0 / 72.0)
                     rx1 = float(bbox[2]) * (300.0 / 72.0)
                     ry1 = float(bbox[3]) * (300.0 / 72.0)
-                    if (rx1 - rx0 >= 40.0) and (ry1 - ry0 >= 40.0):
+                    if _is_valid_photo_box(rx0, ry0, rx1, ry1):
                         image_boxes.append((rx0, ry0, rx1, ry1))
         except Exception:
             pass
@@ -654,7 +665,7 @@ class PDFPageDetector:
                         ry0 = float(r.y0) * (300.0 / 72.0)
                         rx1 = float(r.x1) * (300.0 / 72.0)
                         ry1 = float(r.y1) * (300.0 / 72.0)
-                        if (rx1 - rx0 >= 40.0) and (ry1 - ry0 >= 40.0) and not any(
+                        if _is_valid_photo_box(rx0, ry0, rx1, ry1) and not any(
                             abs(rx0 - ex[0]) < 10 and abs(ry0 - ex[1]) < 10
                             for ex in image_boxes
                         ):
@@ -671,7 +682,7 @@ class PDFPageDetector:
                     by0 = float(bbox[1]) * (300.0 / 72.0)
                     bx1 = float(bbox[2]) * (300.0 / 72.0)
                     by1 = float(bbox[3]) * (300.0 / 72.0)
-                    if (bx1 - bx0 >= 40.0) and (by1 - by0 >= 40.0) and not any(
+                    if _is_valid_photo_box(bx0, by0, bx1, by1) and not any(
                         abs(bx0 - ex[0]) < 10 and abs(by0 - ex[1]) < 10
                         for ex in image_boxes
                     ):

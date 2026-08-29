@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -185,4 +185,89 @@ class TestQueryPlanner:
         assert plan.tool_calls[0].tool_name == "hybrid_search"
         assert plan.tool_calls[0].arguments["page_filter"] == "3"
         assert plan.tool_calls[0].arguments["query"] == "Tata Power"
+
+
+class TestAgentWorkflowToolExecution:
+    """Integration test suite verifying full LangGraph state machine tool execution nodes."""
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_analytics_count_articles(self) -> None:
+        from app.agent.graph import AgentWorkflow
+
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+        workflow._sql_analytics.count_articles = AsyncMock(
+            return_value={"count": 42, "filters": {"newspaper_name": "Mint"}}
+        )
+
+        state = {
+            "query": "How many articles are in Mint?",
+            "plan": [
+                {
+                    "tool_name": "sql_analytics",
+                    "arguments": {"analysis_type": "count_articles", "newspaper_name": "Mint"},
+                    "purpose": "Count total articles",
+                }
+            ],
+            "archetype": "quantitative_trend",
+        }
+
+        res = await workflow._execute_tools_node(state)  # type: ignore[arg-type]
+        assert len(res["evidence_items"]) == 1
+        assert res["evidence_items"][0]["source_tool"] == "sql_analytics"
+        assert "42" in res["evidence_items"][0]["snippet"]
+        assert len(res["tool_executions"]) == 1
+        assert res["tool_executions"][0]["results_count"] == 42
+
+    @pytest.mark.asyncio
+    async def test_execute_coverage_analysis_matrix(self) -> None:
+        from app.agent.graph import AgentWorkflow
+        from app.retrieval.coverage_analyzer import CoverageMatrix, CoverageStatus, PublicationCoverageReport
+
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+
+        matrix = CoverageMatrix(
+            target_query_or_event="defense budget",
+            target_date="2026-08-28",
+            total_publications=2,
+            covered_count=1,
+            not_found_count=1,
+            reports={
+                "Mint": PublicationCoverageReport(
+                    newspaper_id=1,
+                    newspaper_name="Mint",
+                    status=CoverageStatus.COVERED,
+                    confidence=0.92,
+                    matched_headlines=["Defense Outlay Boosted"],
+                ),
+                "Business Standard": PublicationCoverageReport(
+                    newspaper_id=2,
+                    newspaper_name="Business Standard",
+                    status=CoverageStatus.NOT_FOUND,
+                    confidence=0.95,
+                    audit_notes="0 articles found",
+                ),
+            },
+        )
+        workflow._coverage_analyzer.generate_coverage_matrix = AsyncMock(return_value=matrix)
+
+        state = {
+            "query": "Compare coverage on defense budget",
+            "plan": [
+                {
+                    "tool_name": "coverage_analysis",
+                    "arguments": {"query": "defense budget"},
+                    "purpose": "Coverage audit",
+                }
+            ],
+            "archetype": "cross_newspaper_comparison",
+        }
+
+        res = await workflow._execute_tools_node(state)  # type: ignore[arg-type]
+        assert len(res["evidence_items"]) == 1
+        assert res["evidence_items"][0]["source_tool"] == "coverage_analysis"
+        assert "COVERED" in res["evidence_items"][0]["snippet"]
+        assert "NOT_FOUND" in res["evidence_items"][0]["snippet"]
+
 

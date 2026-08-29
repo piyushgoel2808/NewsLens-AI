@@ -82,6 +82,8 @@ async def get_article_details(
             {
                 "id": ph.id,
                 "caption": ph.caption,
+                "vlm_description": ph.vlm_description,
+                "visual_type": ph.visual_type,
                 "object_key": ph.object_key,
                 "bbox_json": ph.bbox_json,
                 "image_url": f"/api/photos/{ph.id}/image",

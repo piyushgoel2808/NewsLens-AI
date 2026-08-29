@@ -305,7 +305,14 @@ export default function InspectionViewer() {
               {chunks.map((chk) => (
                 <div key={chk.id} style={{ border: '1px solid #e0e0e0', padding: '10px', background: '#fafafa' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
-                    <span><strong>Chunk #{chk.chunk_index}</strong> (Article ID: {chk.article_id} - <em>{chk.headline}</em>)</span>
+                    <span>
+                      <strong>Chunk #{chk.chunk_index}</strong> (Article ID: {chk.article_id} - <em>{chk.headline}</em>)
+                      {chk.chunk_type === 'visual' && (
+                        <span style={{ marginLeft: '8px', background: '#e3f2fd', color: '#1565c0', padding: '1px 6px', borderRadius: '3px', fontWeight: 'bold', fontSize: '11px', border: '1px solid #90caf9' }}>
+                          📊 Visual Infographic Chunk
+                        </span>
+                      )}
+                    </span>
                     <span>Tokens: <strong>{chk.token_count}</strong> | Vector ID: <code>{chk.embedding_vector_id || 'N/A'}</code></span>
                   </div>
                   <pre style={{ margin: 0, padding: '8px', background: '#fff', border: '1px solid #ddd', fontSize: '12px', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>

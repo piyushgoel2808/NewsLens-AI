@@ -414,7 +414,8 @@ export default function UploadTrigger() {
               onChange={(e) => setParserEngine(e.target.value)}
               className="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-medium outline-none focus:border-emerald-400"
             >
-              <option value="auto">✨ Auto (Google Cloud Vision Pure OCR + DeepSeek-R1 / Gemma 4)</option>
+              <option value="auto">✨ Auto (Docling 2D Neural Layout + RapidOCR)</option>
+              <option value="docling">⚡ Docling 2D Neural Layout Parser (Recommended)</option>
               <option value="google_cloud_vision">🔍 Google Cloud Vision API (Pure OCR Engine)</option>
               <option value="gemma4:26b">🦙 Local Ollama Gemma 4 (26B)</option>
             </select>

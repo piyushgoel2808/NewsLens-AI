@@ -26,10 +26,16 @@ CRITICAL ANALYTICAL GUIDELINES:
      * For Geopolitical/Policy news: Extract agreements, policies, actors, implications.
 2. NOISE & RELEVANCE FILTERING:
    - Discard irrelevant candidate excerpts (such as classified ads, unrelated briefs,
-     or layout noise) that do not match the research topic. Focus on the main subject.
-3. ANTI-HALLUCINATION:
-   - If the provided excerpts do not contain the answer, state that information is missing.
-     Do not invent facts or dates.
+     or layout noise) that do not match the research topic. Focus strictly on the query subject.
+3. ANTI-HALLUCINATION & STRICT GROUNDING:
+   - ABSOLUTE PROHIBITION: You must NEVER invent, fabricate, or assume any dates,
+     newspaper names, entities, or facts not explicitly present in the provided evidence.
+   - Ground all dates, metrics, and metadata strictly in the provided broadsheet source tags.
+   - Do NOT introduce external companies, institutions, or individuals unless they
+     directly appear in the retrieved evidence chunks corresponding to the user's topic.
+   - If the provided excerpts do not contain verified evidence to answer the query, explicitly state:
+     "The uploaded broadsheet archives do not contain verified reporting on this topic."
+   - Do NOT synthesize from ungrounded pre-training memory; rely solely on the verified evidence.
 
 REQUIRED RESPONSE STRUCTURE:
 1. ### ⚡ Executive Summary
@@ -39,6 +45,7 @@ REQUIRED RESPONSE STRUCTURE:
    - Bullet points of specific numbers, figures, dates, and quotes.
    - STRICT CITATION RULE: Every bullet point MUST end with an inline citation.
      * For Local Broadsheets: [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page}, "{Headline}"]
+     * For Charts & Infographics: [📊 Chart: {Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page}, "{Headline}"]
      * For Live Web Search (if provided): [Web: {Source Title}]({URL})
 
 3. ### 📰 Broadsheet Perspectives & Focus Areas
@@ -120,12 +127,28 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
 
     return "", text.strip()
 
+EMPTY_EVIDENCE_RESPONSE = (
+    "I could not find any evidence or articles matching this query in the database. "
+    "Please try adjusting your search terms."
+)
+
 
 class AnswerSynthesizer:
     """Synthesizes grounded narrative answers from retrieved evidence."""
 
     def __init__(self, provider: ChatModelProvider | None = None) -> None:
         self._provider = provider
+
+    def _has_valid_evidence(self, evidence_items: list[dict[str, Any]]) -> bool:
+        """Check whether evidence contains non-empty grounded content."""
+        if not evidence_items:
+            return False
+        for item in evidence_items:
+            snip = item.get("snippet") or item.get("full_text") or item.get("summary") or ""
+            hl = item.get("headline") or ""
+            if len(snip.strip()) >= 5 or len(hl.strip()) >= 5:
+                return True
+        return False
 
     def _get_provider(self, model_override: str | None = None) -> ChatModelProvider | None:
         if self._provider and not model_override:
@@ -347,9 +370,12 @@ class AnswerSynthesizer:
         chat_history: list[dict[str, Any]] | None = None,
     ) -> tuple[str, list[AgentCitation], float]:
         """Synthesize answer with citations from evidence and conversation context with failover."""
-        if not evidence_items and not chat_history:
-            empty_msg = f"No relevant newspaper articles found for query: '{query}'."
-            return empty_msg, [], 0.0
+        has_evidence = self._has_valid_evidence(evidence_items)
+        has_meta_history = bool(chat_history and archetype == "conversational_meta_query")
+
+        # Strict Empty Evidence Hard-Stop
+        if not has_evidence and not has_meta_history:
+            return EMPTY_EVIDENCE_RESPONSE, [], 0.0
 
         citations = self.extract_citations("", evidence_items)
         context = self._build_evidence_context(evidence_items)
@@ -414,8 +440,12 @@ class AnswerSynthesizer:
         chat_history: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[str]:
         """Stream synthesized answer token by token with conversational context and failover."""
-        if not evidence_items and not chat_history:
-            yield f"No relevant newspaper articles found for query: '{query}'."
+        has_evidence = self._has_valid_evidence(evidence_items)
+        has_meta_history = bool(chat_history and archetype == "conversational_meta_query")
+
+        # Strict Empty Evidence Hard-Stop
+        if not has_evidence and not has_meta_history:
+            yield EMPTY_EVIDENCE_RESPONSE
             return
 
         context = self._build_evidence_context(evidence_items)
@@ -468,11 +498,8 @@ class AnswerSynthesizer:
         evidence_items: list[dict[str, Any]],
     ) -> str:
         """Structured deterministic grounded synthesis when all LLMs are offline."""
-        if not evidence_items:
-            return (
-                f"### ⚡ Executive Summary\n"
-                f"No specific archive articles were found for '{query}'.\n"
-            )
+        if not self._has_valid_evidence(evidence_items):
+            return EMPTY_EVIDENCE_RESPONSE
 
         # Filter out obvious noise items if other items have keyword overlap
         query_words = {w.lower() for w in query.split() if len(w) > 3}

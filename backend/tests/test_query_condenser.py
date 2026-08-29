@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -110,6 +110,24 @@ class TestQueryCondenserUnit:
         assert condensed == "Summarize Tata Power nuclear plans in Odisha"
         assert mock_provider.complete.called
 
+        # Verify strict prompt
+        messages = mock_provider.complete.call_args.kwargs["messages"]
+        system_msg = next(m.content for m in messages if m.role == "system")
+        assert "rewrite the latest query into a single, standalone sentence" in system_msg
+
+    @pytest.mark.asyncio
+    async def test_condense_without_provider_returns_original_without_concatenation(self) -> None:
+        history = [{"role": "user", "content": "Tell me about Tata Power"}]
+        condensed = await condense_conversational_query(
+            query="Can you summarize it?",
+            chat_history=history,
+            provider=None,
+        )
+        # Verify naive "regarding" concatenation is never returned
+        assert "regarding" not in condensed
+        assert condensed == "Can you summarize it?"
+
+
 
 class TestAgentWorkflowCondensation:
     """Integration tests for AgentWorkflow with query condensation and guardrails."""
@@ -143,6 +161,7 @@ class TestAgentWorkflowCondensation:
         mock_db = MagicMock()
         mock_db.add = MagicMock()
         mock_db.commit = AsyncMock()
+        mock_db.execute = AsyncMock()
         mock_session_factory.return_value.__aenter__.return_value = mock_db
 
         workflow = AgentWorkflow(session_factory=mock_session_factory)
@@ -159,29 +178,30 @@ class TestAgentWorkflowCondensation:
             )
         )
 
-        # Mock tools & synthesizer
-        workflow._hybrid_search.search = AsyncMock(return_value=[])  # type: ignore[method-assign]
-        workflow._synthesizer.synthesize = AsyncMock(  # type: ignore[method-assign]
-            return_value=("Tata Power is planning nuclear units in Odisha.", [], 0.001)
-        )
-
         history = [
             {"role": "user", "content": "Tell me about the Tata Power nuclear plans in Odisha"},
             {"role": "assistant", "content": "Tata Power has announced nuclear expansion."},
         ]
 
-        # Condense query
-        condensed_text = await condense_conversational_query(
-            query="Can you summarize it?",
-            chat_history=history,
-            provider=mock_provider,
-        )
-        assert "Tata Power" in condensed_text
+        mock_plan = MagicMock()
+        mock_plan.archetype = "factual_lookup"
+        mock_plan.tool_calls = []
+        workflow._planner.plan_query_async = AsyncMock(return_value=mock_plan)
 
-        result = await workflow.run(
-            query="Can you summarize it?",
-            chat_history=history,
+        workflow._hybrid_search.search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        workflow._entity_search.search_by_entity = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        workflow._synthesizer.synthesize = AsyncMock(  # type: ignore[method-assign]
+            return_value=("Tata Power is planning nuclear units in Odisha.", [], 0.001)
         )
+
+        with patch(
+            "app.agent.graph.condense_conversational_query",
+            new=AsyncMock(return_value="Summarize Tata Power nuclear plans in Odisha"),
+        ):
+            result = await workflow.run(
+                query="Can you summarize it?",
+                chat_history=history,
+            )
 
         # The planner should receive the condensed context
         assert result["archetype"] in (

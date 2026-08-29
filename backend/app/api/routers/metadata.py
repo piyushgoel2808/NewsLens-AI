@@ -91,3 +91,31 @@ async def get_article_entities(
         }
         for ae in art_entities
     ]
+
+
+@router.get(
+    "/entities/{entity_name}/graph",
+    summary="Get multi-hop co-occurrence knowledge graph for an entity",
+)
+async def get_entity_graph(
+    entity_name: str,
+    depth: int = Query(2, ge=1, le=3),
+    top_neighbors: int = Query(15, ge=1, le=50),
+    min_cooccurrence: int = Query(1, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return multi-hop knowledge graph topology connecting entities through shared newspaper stories."""
+    from app.models.base import _async_session_factory
+    from app.retrieval.entity_filter import EntitySearchEngine
+
+    if _async_session_factory is None:
+        return {"root_entity": entity_name, "nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0}
+
+    engine = EntitySearchEngine(session_factory=_async_session_factory)
+    return await engine.expand_entity_cooccurrence_graph(
+        entity_name=entity_name,
+        depth=depth,
+        top_neighbors=top_neighbors,
+        min_cooccurrence=min_cooccurrence,
+    )
+

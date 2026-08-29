@@ -27,6 +27,13 @@ providers:
     context_window: 128000
     supports_vision: false
     supports_tool_use: true
+  ollama_qwen3vl:
+    provider: ollama
+    model: qwen3-vl:latest
+    base_url: http://localhost:11434
+    context_window: 32768
+    supports_vision: true
+    supports_tool_use: true
   ollama_vlm:
     provider: ollama
     model: qwen2.5vl:7b
@@ -111,3 +118,4 @@ task_bindings:
   metadata_extraction: ollama_gemma4_12b
   classification: ollama_gemma4_12b
   article_segmentation: ollama_gemma4_12b
+  visual_extraction: ollama_qwen3vl

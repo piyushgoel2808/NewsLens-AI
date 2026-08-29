@@ -14,19 +14,22 @@
 
 ## 🌟 Key Features
 
-- **📑 Multi-Column Layout Segmentation & 2D Reading Order**: Uses **IBM Docling**, **MinerU**, and **Google Gemini Vision** to segment complex broadsheet layouts into discrete articles, preventing column bleeding.
+- **📑 Docling Broadsheet Neural Layout & 2D Article Segmentation**: Uses **IBM Docling (DocLayNet)** with **RapidOCR** and 2D spatial sorting to cleanly coalesce multi-line headlines and subheadline/decks, extract inline bylines (`BY <NAME>`), and segment complex multi-story broadsheets without column bleeding.
+- **📷 2D Spatial Photo/Infographic Extraction & Multimodal Data Chunks**: Automatically isolates editorial photos, graphics, and composite photo galleries, pairs them with shared multi-column captions using 2D proximity scoring, and indexes infographic data tables into Qdrant via **Qwen3-VL** (`qwen3-vl:latest`).
+- **🏛️ Multi-Page Consensus Masthead Verification**: Robustly extracts newspaper brand and publication dates across global (*The New York Times*, *The Wall Street Journal*, *Financial Times*, *The Washington Post*, *The Guardian*) and national broadsheets with RapidOCR visual verification.
 - **⚡ Two-Stage Neural Retrieval Cascade (Cross-Encoder)**: Stage 1 RRF hybrid search (Qdrant `BAAI/bge-m3` + MySQL `FULLTEXT`) expands candidates to $N=75$, followed by Stage 2 Cross-Encoder neural reranking (`BAAI/bge-reranker-v2-m3` with Apple Silicon `mps` acceleration) returning the Top 10 high-precision hits.
 - **📊 3-Tier Negative Coverage Engine**: Performs relational audits in MySQL to identify zero-coverage publications, semantic validation, and multi-newspaper editorial reconciliation matrices (`POST /api/query/coverage`).
 - **🤖 Autonomous LangGraph Agent Workflow with Agentic Query Routing**: Pydantic structured Chain-of-Thought (CoT) planning without regex rules. Autonomously routes macro-level queries (whole-issue summaries, page manifests, counts) to `sql_analytics` and fine-grained queries to `hybrid_search`.
+- **🕸️ Interactive Multi-Hop Entity Knowledge Graph**: Interactive visualizer mapping entity relationships, co-occurrences, and hop depths across shared stories and event clusters with Corrective RAG (CRAG) self-reflection.
 - **⚡ 4-Tier Structured Executive Intelligence Briefs**:
   - `⚡ Executive Summary`: High-impact core answer and market reaction.
   - `📌 Key Verified Facts & Financials`: Precise figures, index moves (Sensex, Nifty), FPI/FII net inflows (in ₹ crore), and inline citations.
-  - `📰 Broadsheet Perspectives`: Distinct editorial angles (*Mint*, *Business Standard*, *The Hindu*).
+  - `📰 Broadsheet Perspectives`: Distinct editorial angles (*Mint*, *Business Standard*, *The Hindu*, *The New York Times*).
   - `🔍 Explore Further`: Clickable exploration pills in the UI for instant drill-down queries.
 - **🌐 Dual-Mode Retrieval (Archive + Live Web)**: Toggle live Google/Tavily/DuckDuckGo web grounding with distinct visual citation badges.
-- **📈 Cross-Newspaper Narrative Trajectory & Story Timelines**: Reconstructs evolving stories across calendar dates, tracks reporting phases (`Breaking`, `Development`, `Financial Impact`, `Regulatory/Outcome`), and detects editorial reporting discrepancies with Redis caching.
+- **📈 Cross-Newspaper Narrative Trajectory & Story Timelines**: Reconstructs evolving stories across calendar dates with 4-tier anti-hallucination gates, tracking reporting phases (`Breaking`, `Development`, `Financial Impact`, `Regulatory/Outcome`) and editorial discrepancies with Redis caching.
 - **🔄 Multi-Provider Resilience & Failover**: Hot-swappable provider support across **Groq**, **Google Gemini**, **OpenAI**, and local **Ollama** models with automated failover chains.
-- **🎯 Interactive Scan Reader with Spatial Bounding-Box Pulses**: Clicking any broadsheet citation navigates directly to the exact PDF page and pulses the bounding boxes of the referenced article.
+- **🎯 Interactive Scan Reader & Visual Asset Inspector**: High-resolution 300 DPI broadsheet reader with spatial bounding-box pulses, visual sidebar badges (`📷 Photo`, `📊 Infographic`, `🔢 Table`), and high-res cropped photo inspection.
 
 ---
 
@@ -35,10 +38,11 @@
 ```
                                  ┌──────────────────────────────────────────────────────────┐
                                  │                   React 18 + Vite SPA                    │
-                                 │  • Newspaper Scan Reader with Bounding-Box Overlay       │
-                                 │  • Real-Time Agentic Assistant with Reasoning Trace      │
-                                 │  • Interactive Cross-Newspaper Narrative Trajectory UI   │
-                                 │  • Visual Citation Badge Deep-Linking                    │
+                                 │  • Newspaper Scan Reader with 300 DPI Bounding-Box Overlay│
+                                 │  • Interactive Visual Asset Inspector (Photos/Infographics│
+                                 │  • Real-Time Agentic Assistant with Reasoning Trace (SSE)│
+                                 │  • Interactive Multi-Hop Entity Knowledge Graph UI       │
+                                 │  • Cross-Newspaper Narrative Trajectory Explorer         │
                                  └────────────────────────────┬─────────────────────────────┘
                                                               │ REST / SSE Streaming
                                                               ▼
@@ -46,10 +50,11 @@
 │                                 FastAPI Backend Server                                    │
 ├─────────────────────────────┬───────────────────────────────┬─────────────────────────────┤
 │   Document Ingestion Flow   │    Retrieval Toolbelt & DB    │   Agentic Reasoning Flow    │
-│  • Celery Async Workers     │  • MySQL 8 (FULLTEXT Index)   │  • LangGraph State Graph    │
-│  • Docling / MinerU Layout  │  • Qdrant Dense Vector Store  │  • Query Condenser & Memory │
-│  • Gemini / RapidOCR Engine │  • MinIO Object Storage (S3)  │  • Multi-Tier Synthesizer   │
-│  • 2D Reading Order Logic   │  • Redis 7 (Cache & Broker)   │  • Multi-Provider Failover  │
+│  • Celery Async Ingestion   │  • MySQL 8 (System of Record) │  • LangGraph State Machine  │
+│  • IBM Docling (DocLayNet)  │  • Qdrant Dense Vector Store  │  • Dynamic Query Planner    │
+│  • Multi-Page Consensus     │  • MinIO Object Storage (S3)  │  • 2-Stage Rerank Cascade   │
+│  • 2D Spatial Photo Binding │  • Redis 7 (Cache & Lock)     │  • 4-Tier Synthesizer       │
+│  • Qwen3-VL Visual Extract  │  • RRF (Dense + Sparse Fusion)│  • Corrective RAG (CRAG)    │
 └─────────────────────────────┴───────────────────────────────┴─────────────────────────────┘
 ```
 
@@ -127,6 +132,12 @@ providers:
     model: llama3.1:8b
     base_url: http://localhost:11434
 
+  ollama_qwen3vl:
+    provider: ollama
+    model: qwen3-vl:latest
+    base_url: http://localhost:11434
+    supports_vision: true
+
   local_embed_bge:
     provider: local_sentence_transformers
     model: BAAI/bge-m3
@@ -137,6 +148,7 @@ task_bindings:
   answerer: groq_compound
   layout_analysis: docling_parser
   article_segmentation: ollama_llama3
+  visual_extraction: ollama_qwen3vl
   embedding: local_embed_bge
 ```
 
@@ -150,7 +162,7 @@ cd backend
 uv run ruff check .
 uv run mypy app/
 
-# Run complete test suite (246 unit & integration tests)
+# Run complete test suite (293 unit & integration tests)
 uv run pytest tests/ -v
 
 # Verify frontend production build

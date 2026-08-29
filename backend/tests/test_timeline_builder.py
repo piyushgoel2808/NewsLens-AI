@@ -162,6 +162,7 @@ async def test_timeline_builder_build_narrative_trajectory_heuristic_fallback() 
     m = res.milestones[0]
     assert m.date == "2026-08-01"
     assert len(m.perspectives) == 2
+    assert hasattr(m, "active_entities")
     assert "fetching_articles" in progress_events
     assert "clustering_dates" in progress_events
     assert "completed" in progress_events

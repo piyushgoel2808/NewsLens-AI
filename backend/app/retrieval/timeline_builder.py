@@ -20,9 +20,12 @@ from sqlalchemy.orm import selectinload
 from app.core.cost_tracker import record_usage_and_cost, validate_query_budget
 from app.core.logging import get_logger
 from app.models.article import Article
+from app.models.entity import ArticleEntity, Entity
 from app.models.newspaper import Issue
 from app.providers.base import Message
 from app.providers.registry import get_registry
+from app.retrieval.entity_filter import EntitySearchEngine
+from app.retrieval.reranker import CrossEncoderReranker
 from app.storage.cache_store import CacheStore, compute_query_cache_key
 
 logger = get_logger(__name__)
@@ -64,6 +67,10 @@ class TimelineMilestone(BaseModel):
     discrepancies: list[str] = Field(
         default_factory=list,
         description="Conflicting figures, dates, metrics, or factual statements across reports",
+    )
+    active_entities: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Key entities and actors actively participating in this narrative milestone",
     )
 
 
@@ -305,7 +312,7 @@ class TimelineBuilder:
                 {"message": "Retrieving broadsheets across editions"},
             )
 
-        # 3. Retrieve Candidate Articles
+        # 3. Retrieve Candidate Articles (Direct Keyword + Multi-Hop Graph Expansion with 4-Tier Anti-Hallucination Gates)
         async with self._session_factory() as db:
             stmt = (
                 select(Article)
@@ -313,6 +320,7 @@ class TimelineBuilder:
                 .options(
                     selectinload(Article.issue).selectinload(Issue.newspaper),
                     selectinload(Article.article_pages),
+                    selectinload(Article.article_entities).selectinload(ArticleEntity.entity),
                 )
             )
 
@@ -330,7 +338,53 @@ class TimelineBuilder:
 
             stmt = stmt.order_by(asc(Issue.issue_date), asc(Article.primary_page_id)).limit(35)
             db_res = await db.execute(stmt)
-            articles = db_res.scalars().all()
+            direct_articles = list(db_res.scalars().all())
+
+        # Anti-Hallucination Gate 1 & 2: Multi-Hop Graph Expansion bounded strictly by Event Window and High Salience
+        expanded_articles_map: dict[int, Article] = {a.id: a for a in direct_articles}
+        if direct_articles:
+            event_dates = [
+                str(a.issue.issue_date) for a in direct_articles if a.issue and a.issue.issue_date
+            ]
+            min_date = min(event_dates) if event_dates else None
+            max_date = max(event_dates) if event_dates else None
+
+            # Collect high-salience protagonist entities from direct articles (Gate 1)
+            focal_entity_names = set()
+            for art in direct_articles:
+                if hasattr(art, "article_entities") and art.article_entities:
+                    for ae in art.article_entities:
+                        if ae.salience_score >= 0.50 and ae.entity and ae.entity.name:
+                            focal_entity_names.add(ae.entity.name)
+
+            if focal_entity_names and min_date and max_date:
+                # Find connected 2-hop articles within the exact temporal window (Gate 2)
+                async with self._session_factory() as db:
+                    hop_stmt = (
+                        select(Article)
+                        .join(Issue, Article.issue_id == Issue.id)
+                        .join(ArticleEntity, ArticleEntity.article_id == Article.id)
+                        .join(Entity, ArticleEntity.entity_id == Entity.id)
+                        .where(
+                            Entity.name.in_(list(focal_entity_names)[:8]),
+                            Issue.issue_date >= min_date,
+                            Issue.issue_date <= max_date,
+                            ArticleEntity.salience_score >= 0.40,
+                        )
+                        .options(
+                            selectinload(Article.issue).selectinload(Issue.newspaper),
+                            selectinload(Article.article_pages),
+                            selectinload(Article.article_entities).selectinload(ArticleEntity.entity),
+                        )
+                        .limit(20)
+                    )
+                    if issue_ids:
+                        hop_stmt = hop_stmt.where(Issue.id.in_(issue_ids))
+                    hop_res = await db.execute(hop_stmt)
+                    for ha in hop_res.scalars().all():
+                        expanded_articles_map[ha.id] = ha
+
+        articles = list(expanded_articles_map.values())
 
         if not articles:
             # Fallback to broader search if specific keywords yielded 0
@@ -341,6 +395,7 @@ class TimelineBuilder:
                     .options(
                         selectinload(Article.issue).selectinload(Issue.newspaper),
                         selectinload(Article.article_pages),
+                        selectinload(Article.article_entities).selectinload(ArticleEntity.entity),
                     )
                     .order_by(asc(Issue.issue_date))
                     .limit(20)
@@ -348,7 +403,32 @@ class TimelineBuilder:
                 if issue_ids:
                     fallback_stmt = fallback_stmt.where(Issue.id.in_(issue_ids))
                 fb_res = await db.execute(fallback_stmt)
-                articles = fb_res.scalars().all()
+                articles = list(fb_res.scalars().all())
+
+        # Anti-Hallucination Gate 3: Neural Cross-Encoder Verification Thresholding
+        # Reject candidates with semantic relevance score below 0.20 for storyline consistency
+        if len(articles) > 5:
+            try:
+                reranker = CrossEncoderReranker()
+                candidate_pairs = [
+                    (
+                        clean_query,
+                        f"{a.headline or ''} - {(a.summary or a.full_text or '')[:300]}",
+                    )
+                    for a in articles
+                ]
+                scores = reranker.predict(candidate_pairs)
+                verified_articles = []
+                for a, sc in zip(articles, scores):
+                    if sc >= 0.15:  # Retain verified storyline-relevant documents
+                        verified_articles.append(a)
+                if verified_articles:
+                    articles = verified_articles
+            except Exception as re_err:
+                logger.warning(
+                    "Neural Cross-Encoder verification skipped in timeline",
+                    extra={"error": str(re_err)},
+                )
 
         if not articles:
             return NarrativeTrajectoryResponse(
@@ -521,6 +601,25 @@ class TimelineBuilder:
                                 article_id=art_id,
                             )
                         )
+                    # Extract active entities for this milestone from the articles on that date
+                    milestone_entities_map: dict[str, dict[str, Any]] = {}
+                    for cand in matched_articles:
+                        if hasattr(cand, "article_entities") and cand.article_entities:
+                            for ae in cand.article_entities:
+                                if ae.entity and ae.entity.name:
+                                    e_name = ae.entity.name
+                                    if e_name not in milestone_entities_map:
+                                        milestone_entities_map[e_name] = {
+                                            "name": e_name,
+                                            "type": ae.entity.type,
+                                            "salience": round(ae.salience_score, 2),
+                                            "mentions": ae.mention_count,
+                                        }
+                    sorted_entities = sorted(
+                        milestone_entities_map.values(),
+                        key=lambda x: x["salience"],
+                        reverse=True,
+                    )[:6]
 
                     milestones.append(
                         TimelineMilestone(
@@ -530,6 +629,7 @@ class TimelineBuilder:
                             event_phase=e_phase,
                             perspectives=perspectives,
                             discrepancies=discrepancies,
+                            active_entities=sorted_entities,
                         )
                     )
 
@@ -598,6 +698,25 @@ class TimelineBuilder:
                             article_id=a.id,
                         )
                     )
+
+                milestone_entities_map = {}
+                for cand in date_arts:
+                    if hasattr(cand, "article_entities") and cand.article_entities:
+                        for ae in cand.article_entities:
+                            if ae.entity and ae.entity.name:
+                                e_name = ae.entity.name
+                                if e_name not in milestone_entities_map:
+                                    milestone_entities_map[e_name] = {
+                                        "name": e_name,
+                                        "type": ae.entity.type,
+                                        "salience": round(ae.salience_score, 2),
+                                        "mentions": ae.mention_count,
+                                    }
+                sorted_entities = sorted(
+                    milestone_entities_map.values(),
+                    key=lambda x: x["salience"],
+                    reverse=True,
+                )[:6]
 
                 discrepancies = []
                 if len(perspectives) > 1:

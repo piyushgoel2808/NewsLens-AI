@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.ingestion.visual_extractor import VisualDataExtractor, VisualExtractionResult
 from app.models.article import ArticleTable, Photo
 from app.storage.minio_store import MinioStore
 
@@ -24,15 +25,24 @@ class ExtractedPhoto:
     object_key: str
     caption: str
     bbox: tuple[float, float, float, float]
+    visual_type: str | None = None
+    vlm_description: str | None = None
+    extracted_data: VisualExtractionResult | None = None
 
 
 class MediaExtractor:
     """Extracts photo image crops and structured table assets from newspaper pages."""
 
-    def __init__(self, db: AsyncSession, minio: MinioStore | None = None) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        minio: MinioStore | None = None,
+        visual_extractor: VisualDataExtractor | None = None,
+    ) -> None:
         self._db = db
         self._settings = get_settings()
         self._minio = minio or MinioStore(self._settings.minio)
+        self._visual_extractor = visual_extractor or VisualDataExtractor()
 
     def resolve_photo_article_binding(
         self,
@@ -53,12 +63,9 @@ class MediaExtractor:
         candidate_scores: list[tuple[int, float, str]] = []
 
         for art_id, (ax0, ay0, ax1, ay1), headline in article_envelopes:
-            # 1. Check Horizontal Column Overlap (>= 50% required)
+            # 1. Check Horizontal Column Overlap
             h_overlap = max(0.0, min(px1, ax1) - max(px0, ax0))
             h_overlap_ratio = h_overlap / pw
-
-            if h_overlap_ratio < 0.40:
-                continue
 
             # 2. Check Vertical Edge Proximity
             # Photo inside envelope
@@ -76,18 +83,26 @@ class MediaExtractor:
             candidate_scores.append((art_id, score, headline))
 
         if not candidate_scores:
-            return None
+            # Fallback to closest article envelope on the page
+            def _center_dist(env: tuple[float, float, float, float]) -> float:
+                cx, cy = (px0 + px1) / 2.0, (py0 + py1) / 2.0
+                ecx, ecy = (env[0] + env[2]) / 2.0, (env[1] + env[3]) / 2.0
+                return ((cx - ecx) ** 2 + (cy - ecy) ** 2) ** 0.5
+
+            closest_art = min(article_envelopes, key=lambda it: _center_dist(it[1]))
+            return closest_art[0]
 
         candidate_scores.sort(key=lambda item: item[1], reverse=True)
         top_art_id, top_score, top_hl = candidate_scores[0]
 
-        if top_score < 0.35:
-            return None
+        if top_score < 0.20:
+            # Fallback to nearest candidate
+            return top_art_id
 
-        # Check Ambiguity: if second best is within 15% score margin
+        # Check Ambiguity: if second best is within 10% score margin
         if len(candidate_scores) > 1:
             second_art_id, second_score, second_hl = candidate_scores[1]
-            if (top_score - second_score) / max(top_score, 0.01) < 0.15:
+            if (top_score - second_score) / max(top_score, 0.01) < 0.10:
                 # Tie-breaker 1: Caption keyword / entity match
                 if caption:
                     cap_lower = caption.lower()
@@ -97,13 +112,6 @@ class MediaExtractor:
                         return top_art_id
                     elif sec_match and not top_match:
                         return second_art_id
-
-                # If still tied and ambiguous, do not force wrong link — safely orphan
-                logger.info(
-                    "Ambiguous photo placement between multiple articles, setting article_id=NULL",
-                    extra={"top_score": top_score, "second_score": second_score},
-                )
-                return None
 
         return top_art_id
 
@@ -141,19 +149,65 @@ class MediaExtractor:
             content_type="image/png",
         )
 
+        # Execute 3-Stage Visual Intelligence Pipeline
+        visual_type: str | None = "photo"
+        vlm_desc: str | None = None
+        extracted_res: VisualExtractionResult | None = None
+
+        try:
+            classification, extraction = await self._visual_extractor.process_image_crop(
+                crop_bytes, ocr_text=caption
+            )
+            visual_type = classification.visual_type
+            if extraction:
+                extracted_res = extraction
+                desc_parts = [extraction.summary]
+                if extraction.key_metrics:
+                    desc_parts.append("\nKey Metrics:\n• " + "\n• ".join(extraction.key_metrics))
+                if extraction.markdown_table:
+                    desc_parts.append("\n" + extraction.markdown_table)
+                vlm_desc = "\n".join(desc_parts)
+
+                # If classified as table, also create ArticleTable entry
+                if visual_type == "table":
+                    await self.store_table_metadata(
+                        page_id=page_id,
+                        article_id=article_id,
+                        bbox=bbox,
+                        table_data={
+                            "summary": extraction.summary,
+                            "markdown": extraction.markdown_table,
+                            "metrics": extraction.key_metrics,
+                            "confidence": extraction.confidence,
+                        },
+                        table_index=photo_index,
+                    )
+        except Exception as vlm_err:
+            logger.warning(
+                "Visual intelligence pass skipped or failed on crop",
+                extra={"error": str(vlm_err), "page_id": page_id},
+            )
+
         photo_record = Photo(
             article_id=article_id,
             page_id=page_id,
             bbox_json={"bbox": [x0, y0, x1, y1]},
             caption=caption,
+            vlm_description=vlm_desc,
+            visual_type=visual_type,
             object_key=object_key,
         )
         self._db.add(photo_record)
         await self._db.flush()
 
         logger.info(
-            "Extracted and stored photo asset",
-            extra={"page_id": page_id, "object_key": object_key},
+            "Extracted and stored photo asset with visual intelligence",
+            extra={
+                "page_id": page_id,
+                "object_key": object_key,
+                "visual_type": visual_type,
+                "has_vlm_desc": bool(vlm_desc),
+            },
         )
         return photo_record
 

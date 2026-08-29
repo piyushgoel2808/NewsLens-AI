@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.agent.graph import AgentWorkflow
+from app.providers.base import ModelResponse
 from app.retrieval.hybrid_search import HybridSearchResult
 
 
@@ -23,6 +24,18 @@ class TestAgentWorkflow:
 
         workflow = AgentWorkflow(session_factory=mock_session_factory)
         workflow._cache.get_query = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        mock_provider = MagicMock()
+        mock_provider.provider_name = "mock"
+        mock_provider.complete = AsyncMock(
+            return_value=ModelResponse(
+                text="MARKET SURGE REPORTED: Heavy buying drove stocks upward.",
+                input_tokens=50,
+                output_tokens=20,
+            )
+        )
+        workflow._synthesizer._provider = mock_provider
+        workflow._planner._provider = mock_provider
 
         # Mock hybrid search return
         workflow._hybrid_search.search = AsyncMock(  # type: ignore[method-assign]

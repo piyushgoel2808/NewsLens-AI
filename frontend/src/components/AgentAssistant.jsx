@@ -347,10 +347,11 @@ export default function AgentAssistant() {
               } else if (eventType === 'plan') {
                 current.archetype = data.archetype;
                 current.plan = data.plan || [];
-              } else if (eventType === 'tool_result') {
+              } else if (eventType === 'tool_result' || eventType === 'tool_results') {
+                const toolsToAdd = Array.isArray(data?.tools) ? data.tools : (data ? [data] : []);
                 current.toolExecutions = [
                   ...(current.toolExecutions || []),
-                  data,
+                  ...toolsToAdd,
                 ];
               } else if (eventType === 'token') {
                 current.content = (current.content || '') + (data.delta || '');

@@ -59,6 +59,9 @@ class ArticleEmbedder:
         printed_pages: list[str] | None = None,
         has_photo: bool = False,
         has_table: bool = False,
+        chunk_type: str = "text",
+        has_visual_data: bool = False,
+        visual_type: str | None = None,
     ) -> list[str]:
         """Embed a batch of document chunks, upsert to Qdrant, and persist ArticleChunk records."""
         if not chunks:
@@ -88,6 +91,9 @@ class ArticleEmbedder:
                 "prominence_score": prominence_score,
                 "has_photo": has_photo,
                 "has_table": has_table,
+                "has_visual_data": has_visual_data or (chunk_type == "visual"),
+                "visual_type": visual_type,
+                "chunk_type": chunk_type,
                 "chunk_index": chunk.chunk_index,
                 "page_numbers": page_numbers,
                 "printed_pages": printed_pages or [],
@@ -109,6 +115,7 @@ class ArticleEmbedder:
             chunk_record = ArticleChunk(
                 article_id=article_id,
                 chunk_index=chunk.chunk_index,
+                chunk_type=chunk_type,
                 text=chunk.text,
                 token_count=chunk.token_count,
                 embedding_vector_id=point_id,
@@ -123,6 +130,7 @@ class ArticleEmbedder:
             "Article chunks embedded and indexed in Qdrant",
             extra={
                 "article_id": article_id,
+                "chunk_type": chunk_type,
                 "chunks_count": len(chunks),
                 "point_ids": vector_ids[:3],
             },

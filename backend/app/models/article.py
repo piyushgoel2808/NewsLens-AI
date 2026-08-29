@@ -138,6 +138,7 @@ class ArticleChunk(Base):
         Integer, ForeignKey("articles.id", ondelete="CASCADE"), nullable=False, index=True
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_type: Mapped[str] = mapped_column(String(20), default="text", nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # UUID string pointing to the Qdrant point ID; MySQL never stores the raw vector
@@ -159,6 +160,8 @@ class Photo(Base):
     )
     bbox_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     caption: Mapped[str | None] = mapped_column(Text)
+    vlm_description: Mapped[str | None] = mapped_column(Text)
+    visual_type: Mapped[str | None] = mapped_column(String(50))
     object_key: Mapped[str | None] = mapped_column(String(512))  # MinIO key
 
     article: Mapped[Article | None] = relationship("Article", back_populates="photos")

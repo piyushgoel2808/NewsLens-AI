@@ -1836,7 +1836,6 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
      * `hybrid_search`: For fine-grained factual inquiries, quotes, and entity questions (with optional `page_filter`).
      * `timeline_builder`: For chronological event trajectories.
      * `coverage_analysis`: For cross-newspaper editorial difference matrices.
-     * `entity_search`: For comprehensive entity deep dives.
    - Injected 6 distinct few-shot demonstrations teaching macro vs micro routing.
 2. **Async Agentic Planning Workflow**:
    - Implemented `QueryPlanner.plan_query_async()` using structured JSON completion (`ChatModelProvider.complete()`).
@@ -1845,6 +1844,167 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
    - `pytest tests/test_planner.py -v`: 10/10 tests passing.
    - `pytest tests/ -v`: **274/274 tests passing 100% GREEN**.
    - `ruff check .` and `mypy app/agent/`: 0 errors.
+
+---
+
+## NewsLens-AI — Parent-Doc Retrieval, Multi-Hop GraphRAG & Corrective RAG (CRAG)
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+
+1. **Parent-Document (Small-to-Big) Context Hydration (`backend/app/retrieval/hybrid_search.py`)**:
+   - Upgraded `HybridSearchResult` to retain exact chunk bounding-box anchors while packaging surrounding parent article context (`[Exact Chunk Match]` + `[Article Parent Context]`).
+   - Prevents truncated factual synthesis when financial figures or qualifiers span across paragraph boundaries.
+
+2. **Multi-Hop Knowledge Graph Traversal & Topology Expansion (`backend/app/retrieval/entity_filter.py`)**:
+   - Implemented `EntitySearchEngine.expand_entity_cooccurrence_graph(entity_name, depth=2, min_cooccurrence=1)`:
+     * Discovers multi-hop entity relations across shared newspaper stories and event clusters.
+     * Computes relational edge co-occurrence weights.
+   - Added REST endpoint `GET /api/entities/{entity_name}/graph` in `backend/app/api/routers/metadata.py`.
+
+3. **Corrective RAG (CRAG) Self-Reflection Node (`backend/app/agent/graph.py`)**:
+   - Added `_evaluate_and_fallback_node` to LangGraph state workflow:
+     * Evaluates retrieved evidence quality and semantic grounding scores.
+     * Automatically triggers entity taxonomy and web search fallback if initial archive retrieval is weak.
+
+4. **Interactive Entity Knowledge Graph UI (`frontend/src/components/EntityGraphWorkspace.jsx`)**:
+   - Built an interactive multi-hop knowledge graph visualizer in React & Tailwind.
+   - Allows users to explore entity connections, adjust hop depths, filter by entity type (org/person/location), and inspect interconnected story frequencies.
+   - Integrated into main navigation tab bar in `frontend/src/App.jsx`.
+
+### Verification
+- `uv run pytest tests/ -v`: **279/279 tests passing (100% GREEN)**.
+- `npm --prefix frontend run build`: Vite build completed successfully without errors.
+
+---
+
+## NewsLens-AI — Multi-Hop Graph Narrative Trajectory with 4-Tier Anti-Hallucination Gates
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+
+1. **4-Tier Anti-Hallucination Defense Pipeline (`backend/app/retrieval/timeline_builder.py`)**:
+   - **Gate 1 (Salience Edge Filtering)**: Filters 2-hop connected entities by `salience_score >= 0.50` so passing name drops don't pull irrelevant noise.
+   - **Gate 2 (Temporal Windowing Constraint)**: Strictly bounds multi-hop article retrieval to the calendar event range $[\text{min\_date}, \text{max\_date}]$ of the core narrative.
+   - **Gate 3 (Neural Cross-Encoder Verification)**: Reranks candidate pairs against the query topic using `CrossEncoderReranker`, pruning out-of-domain articles.
+   - **Gate 4 (Empty-Evidence Hard Stop & Attribution)**: If 0 articles pass the gates, returns a zero-hallucination message; all synthesized milestones include verified bounding box citations.
+
+2. **Milestone Active Entity Evolution Model (`backend/app/retrieval/timeline_builder.py`)**:
+   - Added `active_entities: list[dict[str, Any]]` to `TimelineMilestone` representing central protagonist entities, their type, and centrality scores at each milestone.
+
+3. **Frontend Entity Evolution Badges (`frontend/src/components/TimelineWorkspace.jsx`)**:
+   - Rendered interactive "Key Actors" entity tags on each timeline milestone card with pulse animations and entity classification indicators.
+
+### Verification
+- `uv run pytest tests/test_timeline_builder.py -v`: 5/5 passing (100% GREEN).
+- `npm --prefix frontend run build`: Vite build clean.
+
+---
+
+## NewsLens-AI — Multimodal Infographic Data Extraction & Vector Chunk Injection via Qwen3-VL
+
+**Date**: 2026-08-28  
+**Status**: Completed ✅
+
+### What was built
+
+1. **3-Stage Visual Intelligence Pipeline (`backend/app/ingestion/visual_extractor.py`)**:
+   - **Stage 1 (Fast Visual Triage Gate)**: Uses aspect-ratio and dimension heuristics + schema-constrained VLM classification to filter non-data editorial photos/logos before running expensive extraction passes.
+   - **Stage 2 (Structured VLM Extraction)**: Transcribes charts, graphs, and tabular image crops into 2-sentence executive summaries, GitHub-flavored Markdown tables, and structured metric bullet points.
+   - **Stage 3 (Numerical Cross-Validation)**: Compares VLM-extracted numerical metrics against OCR tokens from the same bounding box region, scoring extraction confidence to prevent visual hallucinations.
+
+2. **Dedicated Visual Chunking & Ingestion Flow (`backend/app/ingestion/chunker.py` & `tasks.py`)**:
+   - Implemented `NewspaperChunker.create_visual_chunk()` to create dedicated, unfragmented chunks for infographic data assets with rich metadata headers (`[Visual Data Asset: Data Chart]`).
+   - Integrated into `run_ingestion_pipeline` to index visual chunks in Qdrant with `has_visual_data: True`, `visual_type`, and `chunk_type="visual"`.
+
+3. **Data Model Upgrades (`backend/app/models/article.py` & `model_config.yaml`)**:
+   - Added `chunk_type` to `ArticleChunk`.
+   - Added `vlm_description` and `visual_type` to `Photo` model.
+   - Added `ollama_qwen3vl` provider and `visual_extraction` task binding in `model_config.yaml`.
+
+4. **Retrieval & Synthesizer Visual Citation (`backend/app/retrieval/hybrid_search.py` & `synthesizer.py`)**:
+   - Updated `HybridSearchResult` to capture `has_visual_data` and `visual_type`.
+   - Added `[📊 Chart: {Newspaper}, {Date}, Page {P}, "{Headline}"]` structured citation standard to the synthesizer.
+
+### Verification
+- `uv run pytest tests/test_visual_extractor.py -v`: 5/5 passing (100% GREEN).
+- `uv run pytest tests/ -v`: **284/284 tests passing (100% GREEN)**.
+- `npm --prefix frontend run build`: Vite production build clean (0 errors).
+
+---
+
+## NewsLens-AI — Docling Broadsheet Segmentation, 2D Spatial Photo/Infographic Extraction, Consensus Masthead & Storage Hardening
+
+**Date**: 2026-08-29  
+**Status**: Completed ✅
+
+### Problems Diagnosed
+
+1. **Headline & Subheadline/Deck Splitting**:
+   - On dense broadsheet pages, lead stories with introductory summary decks (e.g., *"U.S. farmers struggle to get basic services"* followed by *"Lower government staffing has led to problems with loans and infrastructure"*) were previously split into separate orphan articles.
+2. **Multi-Article Page Merging**:
+   - Pages containing multiple distinct editorial stories (e.g. Page 11 with Lafayette's 1824 tour, The Barbie backlash, and Anthropic) were sometimes improperly merged into a single monolith or fragmented without proper boundaries.
+3. **Missing Editorial Photos & Full-Page Canvas Hijacking**:
+   - In older ingestions, each page only recorded a single `[0, 0, width, height]` full-page image because `detector.py`'s `image_boxes` was picking up the background raster scan from PyMuPDF `get_image_info()`.
+   - On broadsheets where multiple side-by-side photos shared a single wide caption beneath them (e.g. Page 5 with 4 farmer portraits and 1 wide caption), sequential parsers dropped photos that were not immediately followed by a caption block.
+4. **Unhandled S3Error NoSuchKey 500 on Missing Page Scans**:
+   - `GET /api/pages/{id}/image` returned ASGI 500 Internal Server Errors when requesting deleted/missing page scans from MinIO because `MinioStore.get()` did not catch `S3Error`.
+5. **International Masthead Misclassification**:
+   - `NYT International 2708.pdf` was misidentified as "The Hindu" because masthead rules lacked international broadsheet titles and acronyms (`NYT`, `WSJ`, `FT`, `WAPO`).
+6. **Ollama VLM 404 Model Binding**:
+   - `model_config.yaml` referenced `qwen3vl:latest` (missing hyphen), causing Ollama 404 errors during visual extraction.
+
+---
+
+### Solutions Implemented
+
+#### 1. Docling Broadsheet Layout Parser (`backend/app/ingestion/docling_parser.py`)
+- **Title & Deck Coalescence**: In `assemble_articles()`, when a headline is active with no body paragraphs yet, subsequent summary decks or sentences are coalesced into `current_subheadline` rather than creating 8-word orphan articles.
+- **Inline Byline Extraction**: Regular expression parser extracts inline bylines matching `BY <NAME>` (e.g., `BY LINDA QIU`, `BY REIS THEBAULT`) into `byline_author`.
+- **Multi-Article Separation**: When an active article has body text and a new distinct headline arrives, `_flush_current_article()` is cleanly triggered, separating multi-article pages into discrete stories.
+
+#### 2. 2D Spatial Photo & Infographic Proximity Matching (`docling_parser.py` & `detector.py`)
+- **Background Raster Filtering**: In `detector.py`, added `_is_valid_photo_box()` which rejects full-page canvas scans (`w >= 90%` and `h >= 90%` of page width/height).
+- **2D Spatial Matching**: In `docling_parser.py`, `extract_page_media_items()` identifies all `picture`, `figure`, `image`, `chart`, and `diagram` bounding boxes and pairs them with captions above/below using vertical distance and horizontal overlap scoring ($v\_dist - (h\_overlap / page\_w \times 100.0)$).
+- **Multi-Photo Composite Galleries**: Correctly associates shared landscape captions with multiple side-by-side portrait photos (tested on Page 5 with all 5 distinct photos and captions detected).
+- **Convex Spatial Envelope Binding**: In `backend/app/ingestion/media_extractor.py`, `resolve_photo_article_binding()` links photos to parent articles via convex spatial envelope containment and Euclidean proximity fallbacks.
+
+#### 3. Consensus Masthead & International Newspaper Recognition (`consensus_extractor.py` & `masthead_verifier.py`)
+- Added major international broadsheets (*The New York Times*, *The Wall Street Journal*, *Financial Times*, *The Washington Post*, *The Guardian*, *USA Today*, *Los Angeles Times*) to `_KNOWN_MASTHEADS` and `_MASTHEAD_RULES`.
+- Added broadsheet filename acronym signatures (`NYT`, `WSJ`, `FT`, `WAPO`) to ensure `NYT International 2708.pdf` is authoritatively recognized as **The New York Times**.
+
+#### 4. Resilient Object Storage & Error Handling (`backend/app/storage/minio_store.py`)
+- Updated `MinioStore.get()` to catch `minio.error.S3Error` (`NoSuchKey`, `NoSuchBucket`, `ResourceNotFound`) and return `b""`.
+- Endpoints (`/api/pages/{id}/image` and `/api/photos/{id}/image`) now cleanly return `HTTP 404 Not Found` with structured JSON error details instead of crashing with 500 errors.
+
+#### 5. Ollama Model Binding Alignment (`model_config.yaml`)
+- Aligned `ollama_qwen3vl` to `model: qwen3-vl:latest` (matching the locally installed Ollama model tag).
+
+#### 6. Frontend Visual Badging & Interactive Photo Inspector (`BroadsheetReader.jsx`)
+- **Sidebar Badges**: Added `📷 Photo (N)`, `📊 Infographic`, and `🔢 Table` badges on sidebar article cards.
+- **Photo Inspector Pane**: Rendered high-resolution image crops with verified captions, AI visual intelligence summaries (`vlm_description`), and an interactive **"Highlight on Page"** button that pulses the exact bounding box on the 300 DPI broadsheet canvas.
+
+---
+
+### Verification & Test Results
+
+- **Unit & Integration Test Suite**: `uv run pytest tests/ -v` — **293 / 293 passed (100% GREEN) in 60s**.
+  - `test_docling_parser.py`: 6/6 passed.
+  - `test_detector.py`: 14/14 passed.
+  - `test_consensus_extractor.py`: 4/4 passed (including NYT International).
+  - `test_masthead_verifier.py`: 3/3 passed.
+- **Frontend Production Build**: `npm --prefix frontend run build` — Vite build completed cleanly with 0 errors.
+- **Live Ingestion**: Ingested Issue #86 (*The New York Times*, 28 pages): **68 Articles and 133 Bound Photos & Infographics** extracted and indexed.
+- **Endpoint Verification**:
+  - `GET /api/pages/1907/image` $\rightarrow$ `HTTP 404: {"detail": "Image object missing from storage"}`.
+  - `GET /api/pages/2002/image` $\rightarrow$ `HTTP 200 (5.8 MB)`.
+
+
+
 
 
 

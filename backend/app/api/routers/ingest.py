@@ -57,7 +57,7 @@ async def inspect_upload_preview(
     is_new = bool(det_brand and det_brand not in existing_names)
 
     return {
-        "detected_newspaper": det_brand or (existing_names[0] if existing_names else "Daily News"),
+        "detected_newspaper": det_brand or "Daily Broadsheet",
         "detected_date": str(det_date) if det_date else str(date.today()),
         "is_new_newspaper": is_new,
         "existing_newspapers": existing_newspapers,

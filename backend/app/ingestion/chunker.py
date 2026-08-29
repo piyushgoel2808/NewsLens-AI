@@ -166,5 +166,41 @@ class NewspaperChunker:
             "Article chunked",
             extra={"headline": headline[:40], "chunks_created": len(chunks)},
         )
-
         return chunks
+
+    def create_visual_chunk(
+        self,
+        visual_markdown: str,
+        visual_type: str,
+        summary: str = "",
+        newspaper_name: str = "",
+        issue_date: str = "",
+        headline: str = "",
+        section: str | None = None,
+        pages: list[int] | None = None,
+        printed_pages: list[str] | None = None,
+        chunk_index: int = 0,
+    ) -> DocumentChunk:
+        """Create a dedicated, unfragmented visual data chunk with contextual header."""
+        header = self.create_header_context(
+            newspaper_name=newspaper_name,
+            issue_date=issue_date,
+            headline=headline,
+            section=section,
+            pages=pages,
+            printed_pages=printed_pages,
+        )
+        type_tag = visual_type.replace("_", " ").title()
+        summary_line = f"\n[Visual Summary: {summary}]" if summary else ""
+        visual_block = f"[Visual Data Asset: {type_tag}]{summary_line}\n\n{visual_markdown.strip()}"
+        full_text = f"{header}\n\n{visual_block}"
+        approx_tokens = len(full_text.split())
+
+        return DocumentChunk(
+            chunk_index=chunk_index,
+            text=full_text,
+            token_count=approx_tokens,
+            header_context=header,
+            raw_text=visual_block,
+        )
+

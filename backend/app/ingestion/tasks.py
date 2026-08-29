@@ -24,6 +24,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
 
+import pymupdf
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ingestion.chunker import NewspaperChunker
@@ -32,6 +34,7 @@ from app.ingestion.consensus_extractor import ConsensusExtractor
 from app.ingestion.cross_page_assembler import AssembledArticle, CrossPageAssembler
 from app.ingestion.debug_exporter import DebugArtifactsExporter
 from app.ingestion.detector import PDFPageDetector
+from app.ingestion.docling_parser import DoclingLayoutParser
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.extraction_schemas import (
     PageLayoutExtraction,
@@ -163,29 +166,34 @@ async def run_ingestion_pipeline(
             logger.info("Consensus identified publication date", extra={"issue_date": str(con_date), "issue_id": issue_id})
         await db.flush()
 
-        # Step 4: Phase 1 Bounded Parallel Extraction (Page Skeletons & Layout)
-        # 4 concurrent requests for cloud Gemini, 1 for local Ollama
-        concurrency_limit = 1 if "gemma" in (parser_engine or "").lower() else 4
-        semaphore = asyncio.Semaphore(concurrency_limit)
+        is_docling_engine = not parser_engine or "docling" in parser_engine.lower() or parser_engine.lower() == "auto"
+        phase1_layouts: dict[int, PageLayoutExtraction] = {}
 
-        async def _extract_page_phase1(idx: int, rendered: RasterizedPage) -> tuple[int, PageLayoutExtraction]:
-            async with semaphore:
-                digital_hint = analysis_results[idx].full_text if idx < len(analysis_results) else None
-                layout = await extractor_engine.extract_page_layout(
-                    page_number=rendered.page_number,
-                    image_bytes=rendered.image_bytes,
-                    digital_text_hint=digital_hint,
-                )
-                return (rendered.page_number, layout)
+        if not is_docling_engine:
+            # Step 4: Phase 1 Bounded Parallel Extraction (Page Skeletons & Layout)
+            # 4 concurrent requests for cloud Gemini, 1 for local Ollama
+            concurrency_limit = 1 if "gemma" in (parser_engine or "").lower() else 4
+            semaphore = asyncio.Semaphore(concurrency_limit)
 
-        phase1_tasks = [_extract_page_phase1(i, r) for i, r in enumerate(rendered_pages)]
-        phase1_results_list = await asyncio.gather(*phase1_tasks)
-        phase1_layouts: dict[int, PageLayoutExtraction] = dict(phase1_results_list)
+            async def _extract_page_phase1(idx: int, rendered: RasterizedPage) -> tuple[int, PageLayoutExtraction]:
+                async with semaphore:
+                    digital_hint = analysis_results[idx].full_text if idx < len(analysis_results) else None
+                    layout = await extractor_engine.extract_page_layout(
+                        page_number=rendered.page_number,
+                        image_bytes=rendered.image_bytes,
+                        digital_text_hint=digital_hint,
+                    )
+                    return (rendered.page_number, layout)
+
+            phase1_tasks = [_extract_page_phase1(i, r) for i, r in enumerate(rendered_pages)]
+            phase1_results_list = await asyncio.gather(*phase1_tasks)
+            phase1_layouts = dict(phase1_results_list)
 
         # Step 5: Convert Skeletons & Run Selective Phase 2 Enrichment
         folio_detector = FolioDetector()
         media_extractor = MediaExtractor(minio=store, db=db)
         all_pages_articles: dict[int, list[SegmentedArticle]] = {}
+        page_media_items: dict[int, list[ExtractedPhotoData]] = {}
         page_extractions: list[dict[str, Any]] = []
 
         last_known_folio: int | None = None
@@ -227,86 +235,120 @@ async def run_ingestion_pipeline(
             # Process articles on this page
             page_segmented_articles: list[SegmentedArticle] = []
 
-            # If Phase 1 layout extraction returned 0 articles (or empty layout), run LayoutAnalyzer & ArticleSegmenter
-            if not layout_data.articles and len(analysis.blocks) > 0:
+            # If docling engine is selected, OR Phase 1 layout extraction returned 0 articles (or empty layout)
+            if is_docling_engine or not layout_data.articles:
                 logger.info(
-                    "Phase 1 layout extraction returned 0 articles; running LayoutAnalyzer + ArticleSegmenter fallback",
-                    extra={"page_number": page_num, "blocks_count": len(analysis.blocks)},
+                    "Extracting articles using DoclingLayoutParser",
+                    extra={"page_number": page_num, "is_docling_engine": is_docling_engine},
                 )
                 try:
-                    layout_analyzer = LayoutAnalyzer()
-                    page_layout_res = layout_analyzer.analyze_from_text_blocks(
+                    docling_parser = DoclingLayoutParser()
+                    src_pdf = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+                    single_doc = pymupdf.open()
+                    single_doc.insert_pdf(src_pdf, from_page=i, to_page=i)
+                    page_pdf_bytes = single_doc.tobytes()
+                    single_doc.close()
+                    src_pdf.close()
+
+                    parsed_doc_items = await asyncio.get_running_loop().run_in_executor(
+                        None,
+                        docling_parser.parse_docling_document,
+                        page_pdf_bytes,
+                        page_num,
+                        int(rendered.width_px),
+                        int(rendered.height_px),
+                    )
+                    docling_articles = docling_parser.assemble_articles(
                         page_number=page_num,
+                        items=parsed_doc_items,
                         width_px=int(rendered.width_px),
                         height_px=int(rendered.height_px),
-                        digital_blocks=analysis.blocks,
-                    )
-                    segmenter = ArticleSegmenter()
-                    seg_fallback = segmenter.segment_page(
-                        page_number=page_num,
-                        ordered_blocks=page_layout_res.reading_order,
                         is_advertisement_page=page_record.is_advertisement_page if page_record else False,
                     )
-                    if seg_fallback:
-                        page_segmented_articles.extend(seg_fallback)
-                except Exception as fallback_err:
+                    page_media_items[page_num] = docling_parser.extract_page_media_items(parsed_doc_items)
+                    if docling_articles:
+                        page_segmented_articles.extend(docling_articles)
+                except Exception as docling_err:
                     logger.warning(
-                        "LayoutAnalyzer fallback failed on page",
-                        extra={"page_number": page_num, "error": str(fallback_err)},
+                        "DoclingLayoutParser failed on page, attempting legacy fallback",
+                        extra={"page_number": page_num, "error": str(docling_err)},
+                    )
+                    if len(analysis.blocks) > 0:
+                        try:
+                            layout_analyzer = LayoutAnalyzer()
+                            page_layout_res = layout_analyzer.analyze_from_text_blocks(
+                                page_number=page_num,
+                                width_px=int(rendered.width_px),
+                                height_px=int(rendered.height_px),
+                                digital_blocks=analysis.blocks,
+                            )
+                            segmenter = ArticleSegmenter()
+                            seg_fallback = segmenter.segment_page(
+                                page_number=page_num,
+                                ordered_blocks=page_layout_res.reading_order,
+                                is_advertisement_page=page_record.is_advertisement_page if page_record else False,
+                            )
+                            if seg_fallback:
+                                page_segmented_articles.extend(seg_fallback)
+                        except Exception as fallback_err:
+                            logger.warning(
+                                "LayoutAnalyzer fallback failed on page",
+                                extra={"page_number": page_num, "error": str(fallback_err)},
+                            )
+
+            # Process LLM/VLM articles on this page if not already populated by Docling
+            if not page_segmented_articles:
+                for art_idx, skel in enumerate(layout_data.articles):
+                    is_minor = (
+                        skel.prominence in ("minor", "filler")
+                        or skel.article_type in ("advertisement", "photo_caption", "table_data", "index", "teaser")
                     )
 
-            # Process LLM/VLM articles on this page
-            for art_idx, skel in enumerate(layout_data.articles):
-                is_minor = (
-                    skel.prominence in ("minor", "filler")
-                    or skel.article_type in ("advertisement", "photo_caption", "table_data", "index", "teaser")
-                )
+                    # Convert bounding box to [x0, y0, x1, y1] normalized/pixel
+                    bbox = skel.bbox if len(skel.bbox) == 4 else [0.0, 0.0, 1000.0, 1000.0]
 
-                # Convert bounding box to [x0, y0, x1, y1] normalized/pixel
-                bbox = skel.bbox if len(skel.bbox) == 4 else [0.0, 0.0, 1000.0, 1000.0]
+                    # Phase 2 enrichment:
+                    # When using Google Cloud Vision, full-page OCR blocks are already extracted with 98%+ accuracy.
+                    # Avoid wasteful per-article crop API calls and extract directly from skel.body_text / page text.
+                    if is_gcv_engine or is_minor:
+                        full_body = skel.body_text or (
+                            f"{skel.headline}\n\n{skel.subheadline}" if skel.subheadline else (skel.headline or "News item.")
+                        )
+                    else:
+                        # For LLM-based extraction (Gemini / Gemma), enrich major articles with VLM crop
+                        crop_bytes = extractor_engine.crop_article_image(rendered.image_bytes, bbox)
+                        enrichment = await extractor_engine.enrich_article(
+                            headline=skel.headline,
+                            article_crop_bytes=crop_bytes,
+                            digital_slice=analysis.full_text,
+                        )
+                        full_body = enrichment.body_text
 
-                # Phase 2 enrichment:
-                # When using Google Cloud Vision, full-page OCR blocks are already extracted with 98%+ accuracy.
-                # Avoid wasteful per-article crop API calls and extract directly from skel.body_text / page text.
-                if is_gcv_engine or is_minor:
-                    full_body = skel.body_text or (
-                        f"{skel.headline}\n\n{skel.subheadline}" if skel.subheadline else (skel.headline or "News item.")
-                    )
-                else:
-                    # For LLM-based extraction (Gemini / Gemma), enrich major articles with VLM crop
-                    crop_bytes = extractor_engine.crop_article_image(rendered.image_bytes, bbox)
-                    enrichment = await extractor_engine.enrich_article(
+                    # Convert normalized [ymin, xmin, ymax, xmax] (0..1000) to standard [x0, y0, x1, y1] pixels
+                    if max(bbox) <= 1000.0 and (rendered.width_px > 1000 or rendered.height_px > 1000):
+                        # Normalized 0..1000 coordinates [ymin, xmin, ymax, xmax]
+                        y0 = float(bbox[0]) / 1000.0 * float(rendered.height_px)
+                        x0 = float(bbox[1]) / 1000.0 * float(rendered.width_px)
+                        y1 = float(bbox[2]) / 1000.0 * float(rendered.height_px)
+                        x1 = float(bbox[3]) / 1000.0 * float(rendered.width_px)
+                        box_tuple = (x0, y0, x1, y1)
+                    else:
+                        # Already absolute pixel coordinates [x0, y0, x1, y1] or [y0, x0, y1, x1]
+                        box_tuple = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+
+                    seg = SegmentedArticle(
+                        article_temp_id=f"page_{page_num}_art_{art_idx}",
                         headline=skel.headline,
-                        article_crop_bytes=crop_bytes,
-                        digital_slice=analysis.full_text,
+                        subheadline=skel.subheadline,
+                        byline_author=skel.byline,
+                        body_text=full_body,
+                        word_count=len(full_body.split()),
+                        bbox_list=[box_tuple],
+                        jump_to_page=skel.continues_to_page,
+                        jump_from_page=skel.continued_from_page,
+                        is_teaser=(skel.article_type == "teaser"),
                     )
-                    full_body = enrichment.body_text
-
-                # Convert normalized [ymin, xmin, ymax, xmax] (0..1000) to standard [x0, y0, x1, y1] pixels
-                if max(bbox) <= 1000.0 and (rendered.width_px > 1000 or rendered.height_px > 1000):
-                    # Normalized 0..1000 coordinates [ymin, xmin, ymax, xmax]
-                    y0 = float(bbox[0]) / 1000.0 * float(rendered.height_px)
-                    x0 = float(bbox[1]) / 1000.0 * float(rendered.width_px)
-                    y1 = float(bbox[2]) / 1000.0 * float(rendered.height_px)
-                    x1 = float(bbox[3]) / 1000.0 * float(rendered.width_px)
-                    box_tuple = (x0, y0, x1, y1)
-                else:
-                    # Already absolute pixel coordinates [x0, y0, x1, y1] or [y0, x0, y1, x1]
-                    box_tuple = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
-
-                seg = SegmentedArticle(
-                    article_temp_id=f"page_{page_num}_art_{art_idx}",
-                    headline=skel.headline,
-                    subheadline=skel.subheadline,
-                    byline_author=skel.byline,
-                    body_text=full_body,
-                    word_count=len(full_body.split()),
-                    bbox_list=[box_tuple],
-                    jump_to_page=skel.continues_to_page,
-                    jump_from_page=skel.continued_from_page,
-                    is_teaser=(skel.article_type == "teaser"),
-                )
-                page_segmented_articles.append(seg)
+                    page_segmented_articles.append(seg)
 
             # Fallback if 0 articles detected on a non-empty page
             if not page_segmented_articles and len(analysis.blocks) > 0:
@@ -463,21 +505,36 @@ async def run_ingestion_pipeline(
 
             page_envs = article_envelopes_by_page.get(p_num, [])
 
-            # Harvest all detected image boxes (PyMuPDF xrefs + OCR image blocks)
-            img_idx = 1
+            # Harvest photos from Docling media items and PDF image boxes
+            media_list = page_media_items.get(p_num, [])
+            all_media_boxes: list[tuple[tuple[float, float, float, float], str]] = [
+                (m.bbox, m.caption or "") for m in media_list if m.bbox
+            ]
+
+            # Also incorporate any PyMuPDF xrefs not already covered
             for ibox in analysis.image_boxes:
+                # Check if already covered by Docling
+                if not any(
+                    abs(ibox[0] - mb[0][0]) < 30 and abs(ibox[1] - mb[0][1]) < 30
+                    for mb in all_media_boxes
+                ):
+                    all_media_boxes.append((ibox, ""))
+
+            img_idx = 1
+            for m_box, m_cap in all_media_boxes:
                 # Resolve spatial binding to article
                 bound_art_id = media_extractor.resolve_photo_article_binding(
-                    photo_bbox=ibox,
+                    photo_bbox=m_box,
                     article_envelopes=page_envs,
+                    caption=m_cap,
                 )
                 try:
                     photo_rec = await media_extractor.extract_and_store_photo(
                         page_image_bytes=rendered.image_bytes,
                         page_id=p_id,
                         article_id=bound_art_id,
-                        bbox=ibox,
-                        caption="",
+                        bbox=m_box,
+                        caption=m_cap,
                         photo_index=img_idx,
                     )
                     if bound_art_id:
@@ -486,7 +543,7 @@ async def run_ingestion_pipeline(
                         article_photos_map[bound_art_id].append(photo_rec)
                     img_idx += 1
                 except Exception as ex:
-                    logger.warning("Photo extraction failed for box", extra={"page_number": p_num, "bbox": ibox, "error": str(ex)})
+                    logger.warning("Photo extraction failed for box", extra={"page_number": p_num, "bbox": m_box, "error": str(ex)})
 
         # Step 7c: Chunking, Visual Tag Markup, and Vector Indexing
         for article_record, assembled, _class_res in persisted_articles:
@@ -520,6 +577,7 @@ async def run_ingestion_pipeline(
 
             # Chunk & Embed (skip vector indexing for advertisements)
             if not is_ad:
+                # 1. Generate text paragraph chunks
                 chunks = chunker.chunk_article(
                     full_text=annotated_text,
                     newspaper_name=newspaper_name,
@@ -530,6 +588,25 @@ async def run_ingestion_pipeline(
                     printed_pages=[page_folio_map.get(pm.page_number, str(pm.page_number)) for pm in assembled.pages_mapping],
                 )
 
+                # 2. Generate dedicated visual chunks for infographics, data charts, and tables
+                visual_chunks = []
+                for p_idx, photo in enumerate(art_photos, start=len(chunks)):
+                    if photo.vlm_description and photo.visual_type in {"data_chart", "table", "infographic"}:
+                        v_chunk = chunker.create_visual_chunk(
+                            visual_markdown=photo.vlm_description,
+                            visual_type=photo.visual_type,
+                            summary=photo.caption or "",
+                            newspaper_name=newspaper_name,
+                            issue_date=issue_date_str,
+                            headline=assembled.headline,
+                            section=article_record.section or "National",
+                            pages=[pm.page_number for pm in assembled.pages_mapping],
+                            printed_pages=[page_folio_map.get(pm.page_number, str(pm.page_number)) for pm in assembled.pages_mapping],
+                            chunk_index=p_idx,
+                        )
+                        visual_chunks.append((v_chunk, photo.visual_type))
+
+                # Index text chunks
                 if chunks:
                     await embedder.embed_and_index_chunks(
                         article_id=article_record.id,
@@ -547,8 +624,33 @@ async def run_ingestion_pipeline(
                         chunks=chunks,
                         has_photo=has_photo,
                         has_table=has_table,
+                        chunk_type="text",
                     )
                     total_chunks_created += len(chunks)
+
+                # Index dedicated visual chunks
+                for v_chunk, v_type in visual_chunks:
+                    await embedder.embed_and_index_chunks(
+                        article_id=article_record.id,
+                        issue_id=issue_id,
+                        newspaper_name=newspaper_name,
+                        issue_date=issue_date_str,
+                        headline=article_record.headline or "Untitled",
+                        section=article_record.section,
+                        article_type=article_record.article_type,
+                        prominence_score=article_record.prominence_score,
+                        page_numbers=[pm.page_number for pm in assembled.pages_mapping],
+                        printed_pages=[page_folio_map.get(pm.page_number, str(pm.page_number)) for pm in assembled.pages_mapping],
+                        entities=[e.name for e in meta_res.entities],
+                        topics=[t.name for t in meta_res.topics],
+                        chunks=[v_chunk],
+                        has_photo=True,
+                        has_table=True,
+                        chunk_type="visual",
+                        has_visual_data=True,
+                        visual_type=v_type,
+                    )
+                    total_chunks_created += 1
 
             articles_manifest.append({
                 "article_id": article_record.id,

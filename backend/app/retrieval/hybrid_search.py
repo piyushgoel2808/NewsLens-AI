@@ -70,6 +70,11 @@ class HybridSearchResult:
     printed_pages: list[str] = field(default_factory=list)
     matched_chunks: list[dict[str, Any]] = field(default_factory=list)
     rerank_score: float | None = None
+    parent_article_text: str | None = None
+    has_visual_data: bool = False
+    visual_type: str | None = None
+
+
 
 
 class HybridSearchEngine:
@@ -284,18 +289,29 @@ class HybridSearchEngine:
                 if not (matches_printed or matches_pdf_page):
                     continue
 
-            # Snippet: prefer matched chunk text for maximal grounding precision
-            snippet = ""
+            # Snippet & Parent-Document (Small-to-Big) Context Strategy:
+            # 1. Capture exact matched chunks for citation precision
+            # 2. Enrich with parent article text / full summary for non-truncated synthesis
+            exact_match_snippet = ""
             if score_info["chunks"]:
                 chunk_texts = [
                     c.get("chunk_text") or c.get("raw_text") or ""
                     for c in score_info["chunks"]
                     if (c.get("chunk_text") or c.get("raw_text"))
                 ]
-                snippet = "\n\n".join(chunk_texts[:2]) if chunk_texts else ""
+                exact_match_snippet = "\n\n".join(chunk_texts[:2]) if chunk_texts else ""
 
-            if not snippet:
-                snippet = article.summary or (article.full_text[:500] if article.full_text else "")
+            parent_full_text = article.full_text or article.summary or ""
+
+            if exact_match_snippet:
+                snippet = (
+                    f"[Exact Chunk Match]:\n{exact_match_snippet}\n\n"
+                    f"[Article Parent Context]:\n{parent_full_text[:1200]}"
+                    if len(parent_full_text) > len(exact_match_snippet)
+                    else exact_match_snippet
+                )
+            else:
+                snippet = article.summary or (article.full_text[:600] if article.full_text else "")
 
             bboxes_list: list[dict[str, Any]] = []
             if article.article_pages:
@@ -305,6 +321,10 @@ class HybridSearchEngine:
                             bboxes_list.extend(ap.bbox_json)
                         elif isinstance(ap.bbox_json, dict):
                             bboxes_list.append(ap.bbox_json)
+
+            # Detect if matched chunks or article contain visual infographic / chart data
+            has_vis = any(c.get("has_visual_data") or c.get("chunk_type") == "visual" for c in score_info["chunks"])
+            v_type = next((c.get("visual_type") for c in score_info["chunks"] if c.get("visual_type")), None)
 
             final_results.append(
                 HybridSearchResult(
@@ -326,6 +346,9 @@ class HybridSearchEngine:
                     bboxes=bboxes_list,
                     printed_pages=printed_pages_list,
                     matched_chunks=score_info["chunks"],
+                    parent_article_text=parent_full_text,
+                    has_visual_data=has_vis,
+                    visual_type=v_type,
                 )
             )
 

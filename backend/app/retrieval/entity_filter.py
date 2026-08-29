@@ -156,3 +156,162 @@ class EntitySearchEngine:
             )
 
             return results
+
+    async def expand_entity_cooccurrence_graph(
+        self,
+        entity_name: str,
+        depth: int = 2,
+        top_neighbors: int = 15,
+        min_cooccurrence: int = 1,
+    ) -> dict[str, Any]:
+        """Multi-Hop Knowledge Graph Traversal: Expand entity co-occurrence graph across articles."""
+        async with self._session_factory() as db:
+            # 1. Locate focal entity (matching name)
+            root_stmt = select(Entity).where(Entity.name.ilike(f"%{entity_name}%")).limit(5)
+            root_res = await db.execute(root_stmt)
+            root_entities = list(root_res.scalars().all())
+
+            if not root_entities:
+                return {
+                    "root_entity": entity_name,
+                    "nodes": [],
+                    "edges": [],
+                    "total_nodes": 0,
+                    "total_edges": 0,
+                }
+
+            root_ids = {e.id for e in root_entities}
+            visited_entity_ids = set(root_ids)
+            nodes_map: dict[int, dict[str, Any]] = {
+                e.id: {
+                    "id": str(e.id),
+                    "name": e.name,
+                    "type": e.type,
+                    "depth": 0,
+                    "article_count": 0,
+                }
+                for e in root_entities
+            }
+            edges_map: dict[tuple[int, int], dict[str, Any]] = {}
+
+            current_frontier = set(root_ids)
+
+            # Traversal loop up to depth
+            for current_depth in range(1, min(depth, 3) + 1):
+                if not current_frontier:
+                    break
+
+                # Find all articles containing frontier entities
+                art_stmt = (
+                    select(ArticleEntity.article_id, ArticleEntity.entity_id)
+                    .where(ArticleEntity.entity_id.in_(current_frontier))
+                )
+                art_res = await db.execute(art_stmt)
+                frontier_articles: dict[int, set[int]] = {}
+                for art_id, ent_id in art_res.all():
+                    frontier_articles.setdefault(ent_id, set()).add(art_id)
+
+                all_art_ids = {art_id for arts in frontier_articles.values() for art_id in arts}
+                if not all_art_ids:
+                    break
+
+                # Find all co-occurring entities in those articles
+                cooc_stmt = (
+                    select(
+                        ArticleEntity.article_id,
+                        ArticleEntity.entity_id,
+                        ArticleEntity.salience_score,
+                        Entity.name,
+                        Entity.type,
+                    )
+                    .join(Entity, ArticleEntity.entity_id == Entity.id)
+                    .where(ArticleEntity.article_id.in_(all_art_ids))
+                )
+                cooc_res = await db.execute(cooc_stmt)
+                rows = cooc_res.all()
+
+                next_frontier: set[int] = set()
+
+                # Group by article to build co-occurrence pairs
+                art_to_entities: dict[int, list[tuple[int, str, str, float]]] = {}
+                for art_id, ent_id, salience, name, ent_type in rows:
+                    art_to_entities.setdefault(art_id, []).append((ent_id, name, ent_type, salience))
+                    if ent_id not in nodes_map:
+                        nodes_map[ent_id] = {
+                            "id": str(ent_id),
+                            "name": name,
+                            "type": ent_type,
+                            "depth": current_depth,
+                            "article_count": 0,
+                        }
+                    nodes_map[ent_id]["article_count"] += 1
+
+                for art_id, ent_list in art_to_entities.items():
+                    for i in range(len(ent_list)):
+                        for j in range(i + 1, len(ent_list)):
+                            e1, n1, t1, s1 = ent_list[i]
+                            e2, n2, t2, s2 = ent_list[j]
+
+                            # Ensure edge touches the frontier at this step
+                            if e1 not in current_frontier and e2 not in current_frontier:
+                                continue
+
+                            u, v = min(e1, e2), max(e1, e2)
+                            pair_key = (u, v)
+                            if pair_key not in edges_map:
+                                edges_map[pair_key] = {
+                                    "source": str(u),
+                                    "target": str(v),
+                                    "source_name": n1 if u == e1 else n2,
+                                    "target_name": n2 if u == e1 else n1,
+                                    "weight": 0,
+                                    "articles": set(),
+                                }
+                            edges_map[pair_key]["weight"] += 1
+                            edges_map[pair_key]["articles"].add(art_id)
+
+                            if e1 not in visited_entity_ids:
+                                next_frontier.add(e1)
+                                visited_entity_ids.add(e1)
+                            if e2 not in visited_entity_ids:
+                                next_frontier.add(e2)
+                                visited_entity_ids.add(e2)
+
+                current_frontier = next_frontier
+
+            # Filter edges by min_cooccurrence and prune top neighbors
+            sorted_edges = sorted(
+                edges_map.values(),
+                key=lambda x: x["weight"],
+                reverse=True,
+            )
+            filtered_edges = [
+                {
+                    "source": e["source"],
+                    "target": e["target"],
+                    "source_name": e["source_name"],
+                    "target_name": e["target_name"],
+                    "weight": e["weight"],
+                    "article_count": len(e["articles"]),
+                }
+                for e in sorted_edges
+                if e["weight"] >= min_cooccurrence
+            ][:top_neighbors * 2]
+
+            active_node_ids = {e["source"] for e in filtered_edges} | {e["target"] for e in filtered_edges}
+            active_node_ids |= {str(i) for i in root_ids}
+
+            filtered_nodes = [
+                nodes_map[int(nid)]
+                for nid in active_node_ids
+                if int(nid) in nodes_map
+            ]
+
+            return {
+                "root_entity": root_entities[0].name,
+                "nodes": filtered_nodes,
+                "edges": filtered_edges,
+                "total_nodes": len(filtered_nodes),
+                "total_edges": len(filtered_edges),
+            }
+

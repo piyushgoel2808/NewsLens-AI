@@ -71,15 +71,21 @@ class MinioStore:
         await self._run(_put)
 
     async def get(self, bucket: str, key: str) -> bytes:
-        """Download an object and return its bytes."""
+        """Download an object and return its bytes. Returns b'' if key does not exist."""
 
         def _get() -> bytes:
-            response = self._client.get_object(bucket_name=bucket, object_name=key)
             try:
-                return response.read()
-            finally:
-                response.close()
-                response.release_conn()
+                response = self._client.get_object(bucket_name=bucket, object_name=key)
+                try:
+                    return response.read()
+                finally:
+                    response.close()
+                    response.release_conn()
+            except S3Error as e:
+                if e.code in ("NoSuchKey", "NoSuchBucket", "ResourceNotFound"):
+                    logger.warning("Object not found in MinIO", extra={"bucket": bucket, "key": key, "code": e.code})
+                    return b""
+                raise
 
         return await self._run(_get)
 
