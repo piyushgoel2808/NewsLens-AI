@@ -28,8 +28,11 @@
   - `🔍 Explore Further`: Clickable exploration pills in the UI for instant drill-down queries.
 - **🌐 Dual-Mode Retrieval (Archive + Live Web)**: Toggle live Google/Tavily/DuckDuckGo web grounding with distinct visual citation badges.
 - **📈 Cross-Newspaper Narrative Trajectory & Story Timelines**: Reconstructs evolving stories across calendar dates with 4-tier anti-hallucination gates, tracking reporting phases (`Breaking`, `Development`, `Financial Impact`, `Regulatory/Outcome`) and editorial discrepancies with Redis caching.
-- **🔄 Multi-Provider Resilience & Failover**: Hot-swappable provider support across **Groq**, **Google Gemini**, **OpenAI**, and local **Ollama** models with automated failover chains.
-- **🎯 Interactive Scan Reader & Visual Asset Inspector**: High-resolution 300 DPI broadsheet reader with spatial bounding-box pulses, visual sidebar badges (`📷 Photo`, `📊 Infographic`, `🔢 Table`), and high-res cropped photo inspection.
+- **🔄 Interactive Single-Page Re-Ingestion Engine**: On-demand re-processing for specific broadsheet pages via UI (`POST /api/issues/{issue_id}/pages/{page_number}/reingest`). Atomically purges previous page-exclusive articles, entities, and Qdrant vectors, re-running Docling OCR, photo harvesting, and semantic embedding without re-processing the entire 24+ page issue.
+- **👁️ VLM Spatial Grounding & Sub-Photo Crop Recovery**: Uses Qwen-VL native visual grounding (`detect_subphotos_via_vlm_grounding`) to identify and crop discrete editorial portraits, insets, and standalone charts on composite display pages where heuristic boundary detection misses them.
+- **💬 Conversational Context Condenser & In-Context Meta-Queries**: Seamlessly resolves pronouns (*"its"*, *"they"*, *"them"*) across dialogue turns while short-circuiting in-context meta-queries (*"what was the date"*, *"which newspaper"*, *"show citations"*) directly from chat history without triggering unnecessary retrieval cascades.
+- **📑 Comprehensive Schema Documentation & CLI Inspector**: Built-in `make schema` and `make schema-list` commands coupled with full documentation in `docs/database_schema.md` detailing all 17 MySQL tables, relational invariants, and query JSON payloads.
+- **🎯 Interactive Scan Reader & Visual Asset Inspector**: High-resolution 300 DPI broadsheet reader with spatial bounding-box pulses, visual sidebar badges (`📷 Photo`, `📊 Infographic`, `🔢 Table`), on-demand VLM photo analysis, and single-page re-ingest button with live status banners.
 
 ---
 

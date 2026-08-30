@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import io
 import json
 import re
 import time
@@ -18,6 +19,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import ollama
+from PIL import Image
 
 from app.core.logging import get_logger
 from app.providers.base import (
@@ -146,9 +148,11 @@ class OllamaProvider:
             and any(isinstance(c, dict) and c.get("type") == "image" for c in m.content)
             for m in messages
         )
-        if response_schema and not has_images:
-            # Pass native response_schema to Ollama for text models; omit for image payloads to avoid GBNF deadlock
-            kwargs["format"] = response_schema
+        if response_schema:
+            if not has_images and isinstance(response_schema, dict) and len(response_schema) > 1:
+                kwargs["format"] = response_schema
+            else:
+                kwargs["format"] = "json"
         if tools:
             kwargs["tools"] = self._to_ollama_tools(tools)
 
@@ -185,10 +189,7 @@ class OllamaProvider:
                 thinking_text,
                 re.DOTALL,
             )
-            if match:
-                raw_text = match.group(1)
-            else:
-                raw_text = thinking_text
+            raw_text = match.group(1) if match else thinking_text
 
         # Strip reasoning / thinking tokens (e.g. <thought>...</thought>, <think>...</think>)
         cleaned_text = re.sub(r"<(thought|think)>.*?</\1>", "", raw_text, flags=re.DOTALL).strip()

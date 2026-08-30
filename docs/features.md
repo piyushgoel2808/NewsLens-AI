@@ -14,6 +14,11 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * 🟢 **Teal / Cyan**: Secondary briefs, column shorts, and statutory notices (Prominence $< 0.30$).
 * **Physical Page Folio vs PDF Index Tracking**: Accurately displays both the physical printed page folio (e.g. *"Page 5"*, *"Page B4"*, *"Foliated 14"*) and the zero-indexed PDF container index (`PDF p. 5`).
 * **Zoom, Pan, and Responsive Viewport Controls**: Smooth zoom (50% to 300%), drag-to-pan, fit-to-width, fit-to-page, and keyboard navigation.
+* **Interactive Single-Page Re-Ingestion (`POST /api/issues/{issue_id}/pages/{page_number}/reingest`)**:
+  * Allows users to re-run layout parsing, OCR, and photo extraction for a single problematic page directly from the reader toolbar (`Re-ingest Page` button).
+  * Atomically deletes previous page-exclusive articles, entities, topics, chunks, photos, and Qdrant vector points, replacing them with freshly parsed records without corrupting or restarting the entire multi-page issue.
+* **VLM Spatial Grounding for Composite Photo Displays**:
+  * Automatically applies VLM visual grounding (`detect_subphotos_via_vlm_grounding`) to identify, describe, and crop discrete portraits and photo insets on complex composite display pages.
 
 ---
 
@@ -30,6 +35,7 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * Resolves pronouns (*"its"*, *"they"*, *"them"*, *"this newspaper"*).
   * Automatically binds active publication names (*"The Economic Times"*) and issue dates (*"2026-08-27"*) across multiple dialogue turns.
   * Short-circuits ambiguous opening questions with interactive suggestions.
+  * **In-Context Meta-Query Detection (`is_in_context_meta_query`)**: Directly answers follow-up inquiries about prior turns (*"which newspaper was that?"*, *"what was the date?"*, *"who wrote this article?"*) directly from chat history without triggering wasteful retrieval cascades.
 * **4-Tier Structured Broadsheet Synthesis**:
   * **Executive Summary**: High-level macro context.
   * **Key Verified Facts & Highlights**: Bulleted list of verified claims with bracketed citations.

@@ -101,10 +101,14 @@ class AgentWorkflow:
             }
 
         # Coreference Resolution & Query Condensation for follow-up turns
+        active_ctx = extract_active_issue_from_history(chat_history)
         condensed_query = await condense_conversational_query(
             query=query,
             chat_history=chat_history,
             model_override=state.get("model_override"),
+            active_issue_id=state.get("active_issue_id") or active_ctx.get("issue_id"),
+            active_newspaper_name=state.get("active_newspaper_name") or active_ctx.get("newspaper_name"),
+            active_issue_date=state.get("active_issue_date") or active_ctx.get("issue_date"),
         )
 
         plan_res = await self._planner.plan_query_async(
@@ -551,7 +555,7 @@ class AgentWorkflow:
             "at", "by", "for", "with", "about", "against", "between", "into",
             "through", "during", "before", "after", "above", "below", "to", "from",
             "up", "down", "in", "out", "on", "off", "over", "under", "again",
-            "further", "then", "once", "here", "there", "all", "any", "both",
+            "further", "once", "here", "there", "all", "any", "both",
             "each", "few", "more", "most", "other", "some", "such", "no", "nor",
             "not", "only", "own", "same", "so", "than", "too", "very", "can",
             "will", "just", "should", "now", "tell", "what", "which", "who",
@@ -573,8 +577,6 @@ class AgentWorkflow:
             if len(w) > 4 and w.endswith("ed"):
                 return w[:-2]
             return w
-
-        query_stems = {_stem(t) for t in query_tokens}
 
         def _score_relevance(item: dict[str, Any]) -> float:
             if not query_tokens:

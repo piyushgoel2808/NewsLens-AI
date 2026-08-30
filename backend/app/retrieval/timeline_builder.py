@@ -24,7 +24,6 @@ from app.models.entity import ArticleEntity, Entity
 from app.models.newspaper import Issue
 from app.providers.base import Message
 from app.providers.registry import get_registry
-from app.retrieval.entity_filter import EntitySearchEngine
 from app.retrieval.reranker import CrossEncoderReranker
 from app.storage.cache_store import CacheStore, compute_query_cache_key
 

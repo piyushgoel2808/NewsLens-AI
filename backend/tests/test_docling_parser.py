@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.ingestion.docling_parser import (
     _AUTHOR_NAME_PATTERN,
     _DATELINE_PATTERN,
@@ -155,3 +153,56 @@ class TestDoclingLayoutParser:
         assert len(photos) == 1
         assert photos[0].bbox == (200.0, 200.0, 800.0, 600.0)
         assert "Mary and Zachariah Box" in (photos[0].caption or "")
+
+    def test_is_header_or_footer_noise_masthead(self) -> None:
+        parser = DoclingLayoutParser()
+        # Front-page masthead banner at y=150-700 on a 4400px page (under 20% height)
+        masthead_text = "mint CHENNAI, AHMEDABAD, HYDERABAD, PUNE* Friday, July 31, 2026 livemint.com"
+        assert parser._is_header_or_footer_noise(masthead_text, (70.0, 148.0, 1370.0, 714.0), 4400) is True
+
+        # Legitimate top headline at y=150-250 (not masthead keywords)
+        legit_headline = "Inflation Drops to 3.2 Percent as Oil Prices Cool"
+        assert parser._is_header_or_footer_noise(legit_headline, (70.0, 150.0, 1370.0, 250.0), 4400) is False
+
+        # Printer marks
+        assert parser._is_header_or_footer_noise("SIHT", (15.0, 10.0, 45.0, 25.0), 4400) is True
+
+    def test_assemble_articles_with_advertisement_feature(self) -> None:
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="text",
+                text="Bulk drug exporters fret as China tightens screws ▶P1",
+                bbox=(1400.0, 580.0, 2040.0, 690.0),
+                page_number=1,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="ArcelorMittal 20th anniversary 2026",
+                bbox=(225.0, 1070.0, 1260.0, 1160.0),
+                page_number=1,
+            ),
+            DoclingParsedItem(
+                label="section_header",
+                text="Smarter steels for people and planet",
+                bbox=(1930.0, 2140.0, 2570.0, 2440.0),
+                page_number=1,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="For two decades, we've grown by pushing steel further - safer, smarter, more sustainable. Grounded in quality. Driven by innovation and our people.",
+                bbox=(1940.0, 2460.0, 2490.0, 2690.0),
+                page_number=1,
+            ),
+        ]
+
+        articles = parser.assemble_articles(
+            page_number=1,
+            items=items,
+            width_px=2800,
+            height_px=4400,
+        )
+
+        assert len(articles) >= 1
+        headlines = [a.headline for a in articles]
+        assert any("Smarter steels" in h for h in headlines)

@@ -20,11 +20,10 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
+import pymupdf
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import selectinload
-
-import pymupdf
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -34,7 +33,7 @@ from app.ingestion.consensus_extractor import ConsensusExtractor
 from app.ingestion.cross_page_assembler import AssembledArticle, CrossPageAssembler
 from app.ingestion.debug_exporter import DebugArtifactsExporter
 from app.ingestion.detector import PDFPageDetector
-from app.ingestion.docling_parser import DoclingLayoutParser
+from app.ingestion.docling_parser import DoclingLayoutParser, ExtractedPhotoData
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.extraction_schemas import (
     PageLayoutExtraction,
@@ -351,13 +350,31 @@ async def run_ingestion_pipeline(
                     page_segmented_articles.append(seg)
 
             # Fallback if 0 articles detected on a non-empty page
-            if not page_segmented_articles and len(analysis.blocks) > 0:
-                full_page_txt = analysis.full_text.strip()
-                if len(full_page_txt) > 40:
+            if not page_segmented_articles:
+                full_page_txt = ""
+                if hasattr(analysis, "full_text") and analysis.full_text.strip():
+                    full_page_txt = analysis.full_text.strip()
+                elif "parsed_doc_items" in locals() and parsed_doc_items:
+                    full_page_txt = "\n\n".join(it.text for it in parsed_doc_items if it.text.strip()).strip()
+
+                is_ad_page = (page_record.is_advertisement_page if page_record else False) or (
+                    bool(full_page_txt and check_is_advertisement_text(full_page_txt))
+                )
+
+                if full_page_txt and len(full_page_txt.split()) >= 6:
+                    fallback_hl = (
+                        f"[Advertisement] Page {page_num} Feature"
+                        if is_ad_page
+                        else f"Page {page_num} Feature"
+                    )
+                    lines = [line_str.strip() for line_str in full_page_txt.split("\n") if line_str.strip()]
+                    if lines and 3 <= len(lines[0].split()) <= 12:
+                        fallback_hl = f"[Advertisement] {lines[0]}" if is_ad_page else lines[0]
+
                     page_segmented_articles.append(
                         SegmentedArticle(
                             article_temp_id=f"page_{page_num}_art_fallback",
-                            headline=f"Page {page_num} Report",
+                            headline=fallback_hl,
                             body_text=full_page_txt,
                             word_count=len(full_page_txt.split()),
                             bbox_list=[(0.0, 0.0, float(rendered.width_px), float(rendered.height_px))],
@@ -540,8 +557,13 @@ async def run_ingestion_pipeline(
                 ):
                     all_media_boxes.append((ibox, ""))
 
+            has_large_canvas = False
             img_idx = 1
             for m_box, m_cap in all_media_boxes:
+                b_area = max(0.0, m_box[2] - m_box[0]) * max(0.0, m_box[3] - m_box[1])
+                if (b_area / max(1.0, float(rendered.width_px * rendered.height_px))) >= 0.75:
+                    has_large_canvas = True
+
                 # Resolve spatial binding to article
                 bound_art_id = media_extractor.resolve_photo_article_binding(
                     photo_bbox=m_box,
@@ -557,13 +579,40 @@ async def run_ingestion_pipeline(
                         caption=m_cap,
                         photo_index=img_idx,
                     )
+                    if photo_rec:
+                        if bound_art_id:
+                            if bound_art_id not in article_photos_map:
+                                article_photos_map[bound_art_id] = []
+                            article_photos_map[bound_art_id].append(photo_rec)
+                        img_idx += 1
+                except Exception as ex:
+                    logger.warning("Photo extraction failed for box", extra={"page_number": p_num, "bbox": m_box, "error": str(ex)})
+
+            # Fallback: if page yielded 0 discrete photos AND has a large canvas (>= 75%), run VLM Grounding Sweep
+            page_art_photos = [
+                p for art_id, p_list in article_photos_map.items()
+                if art_id in [a.id for a, _, _ in persisted_articles if a.primary_page_id == p_id]
+                for p in p_list
+            ]
+            if not page_art_photos and has_large_canvas:
+                logger.info(
+                    "Triggering VLM Grounding Sweep fallback on large visual canvas",
+                    extra={"page_number": p_num, "page_id": p_id},
+                )
+                grounded_subphotos = await media_extractor.extract_subphotos_vlm_fallback(
+                    page_image_bytes=rendered.image_bytes,
+                    page_id=p_id,
+                    article_envelopes=page_envs,
+                    width_px=rendered.width_px,
+                    height_px=rendered.height_px,
+                    start_photo_index=img_idx,
+                )
+                for bound_art_id, photo_rec in grounded_subphotos:
                     if bound_art_id:
                         if bound_art_id not in article_photos_map:
                             article_photos_map[bound_art_id] = []
                         article_photos_map[bound_art_id].append(photo_rec)
                     img_idx += 1
-                except Exception as ex:
-                    logger.warning("Photo extraction failed for box", extra={"page_number": p_num, "bbox": m_box, "error": str(ex)})
 
         # Step 7c: Chunking, Visual Tag Markup, and Vector Indexing
         for article_record, assembled, _class_res in persisted_articles:

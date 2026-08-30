@@ -1,3 +1,4 @@
+import inspect
 import io
 from datetime import date
 from typing import Any
@@ -10,11 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
 from app.models.article import Article, ArticleChunk
 from app.models.base import get_db
 from app.models.newspaper import Issue, Newspaper, Page
 from app.storage.minio_store import MinioStore
 from app.storage.qdrant_store import QdrantStore
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["corpus"])
 
@@ -617,3 +621,68 @@ async def patch_issue(
         "language": issue.language,
         "status": "updated",
     }
+
+
+@router.post(
+    "/api/issues/{issue_id}/pages/{page_number}/reingest",
+    summary="Re-ingest Single Broadsheet Page",
+)
+async def reingest_issue_page(
+    issue_id: int,
+    page_number: int,
+    parser_engine: str = Query("auto", description="Parser engine to use: auto, docling, google_vision, or gemini"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Execute complete atomic re-ingestion for a single page of an issue.
+
+    Purges previous page-exclusive articles, entities, topics, chunks, photos, and Qdrant vectors;
+    re-slices the page from the original PDF; re-runs Docling OCR and layout parsing;
+    extracts metadata and Named Entities; chunks and embeds into Qdrant and MySQL.
+    """
+    from app.ingestion.page_reingestion import PageReingestionService
+
+    try:
+        service = PageReingestionService(db=db)
+        result = await service.reingest_page(
+            issue_id=issue_id,
+            page_number=page_number,
+            parser_engine=parser_engine,
+        )
+        commit_fn = getattr(db, "commit", None)
+        if callable(commit_fn):
+            res_commit = commit_fn()
+            if inspect.isawaitable(res_commit):
+                await res_commit
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+    except Exception as ex:
+        logger.error(
+            "Single page re-ingestion failed",
+            extra={"issue_id": issue_id, "page_number": page_number, "error": str(ex)},
+        )
+        raise HTTPException(status_code=500, detail=f"Page re-ingestion failed: {ex}") from ex
+
+
+@router.post(
+    "/api/pages/{page_id}/reingest",
+    summary="Re-ingest Single Page by Page ID",
+)
+async def reingest_page_by_id(
+    page_id: int,
+    parser_engine: str = Query("auto", description="Parser engine to use"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Re-ingest page using page_id."""
+    stmt = select(Page).where(Page.id == page_id)
+    res = await db.execute(stmt)
+    page = res.scalar_one_or_none()
+    if not page:
+        raise HTTPException(status_code=404, detail=f"Page {page_id} not found")
+    return await reingest_issue_page(
+        issue_id=page.issue_id,
+        page_number=page.page_number,
+        parser_engine=parser_engine,
+        db=db,
+    )
+

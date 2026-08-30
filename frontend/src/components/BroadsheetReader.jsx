@@ -18,6 +18,8 @@ import {
   Search,
   Filter,
   Loader2,
+  RefreshCw,
+  CheckCircle2,
 } from 'lucide-react';
 import CanvasOverlay from './CanvasOverlay';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
@@ -68,6 +70,59 @@ export default function BroadsheetReader() {
       console.error('Photo analysis error:', err);
     } finally {
       setAnalyzingPhotoIds((prev) => ({ ...prev, [photoId]: false }));
+    }
+  };
+
+  const [isReingestingPage, setIsReingestingPage] = useState(false);
+  const [reingestStatus, setReingestStatus] = useState(null);
+
+  const handleReingestCurrentPage = async () => {
+    if (!selectedIssueId || !selectedPageNumber || isReingestingPage) return;
+
+    const confirmed = window.confirm(
+      `Re-ingest Page ${selectedPageNumber}?\n\nThis will re-run Docling OCR, recover picture-nested text, extract photos with Qwen-VL scene intelligence, re-segment articles, extract entities/topics, and re-index dense vector embeddings into Qdrant.`
+    );
+    if (!confirmed) return;
+
+    setIsReingestingPage(true);
+    setReingestStatus({
+      type: 'loading',
+      message: `Re-ingesting Page ${selectedPageNumber}... Running Docling OCR, Visual Extraction, and Vector Re-indexing.`,
+    });
+
+    try {
+      const res = await fetch(
+        `/api/issues/${selectedIssueId}/pages/${selectedPageNumber}/reingest`,
+        { method: 'POST' }
+      );
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+
+      // Refresh issue inspection data
+      const refreshRes = await fetch(`/api/issues/${selectedIssueId}/inspection?chunk_limit=100`);
+      if (refreshRes.ok) {
+        const freshData = await refreshRes.json();
+        setIssueData(freshData);
+      }
+      setSelectedArticleId(null);
+
+      setReingestStatus({
+        type: 'success',
+        message: `Page ${selectedPageNumber} successfully re-ingested! (${data.articles_count} articles, ${data.chunks_count} chunks re-indexed into Qdrant).`,
+      });
+      setTimeout(() => setReingestStatus(null), 7000);
+    } catch (err) {
+      console.error('Page re-ingestion error:', err);
+      setReingestStatus({
+        type: 'error',
+        message: `Re-ingestion failed: ${err.message}`,
+      });
+      setTimeout(() => setReingestStatus(null), 8000);
+    } finally {
+      setIsReingestingPage(false);
     }
   };
 
@@ -323,8 +378,59 @@ export default function BroadsheetReader() {
             <Layers className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Overlays</span>
           </button>
+
+          {/* Re-Ingest Single Page Button */}
+          <button
+            onClick={handleReingestCurrentPage}
+            disabled={isReingestingPage || loading}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm ${
+              isReingestingPage
+                ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 ring-1 ring-amber-500/40'
+                : 'bg-slate-800 hover:bg-slate-700/80 border-slate-700 hover:border-slate-600 text-slate-300 hover:text-white'
+            }`}
+            title="Re-run layout analysis, OCR, VLM scene extraction, and vector indexing for this single page"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${
+                isReingestingPage ? 'animate-spin text-amber-400' : 'text-amber-400/90'
+              }`}
+            />
+            <span className="hidden sm:inline">
+              {isReingestingPage ? 'Re-ingesting...' : 'Re-ingest Page'}
+            </span>
+          </button>
         </div>
       </header>
+
+      {/* Re-ingestion Live Status Banner */}
+      {reingestStatus && (
+        <div
+          className={`px-4 py-2 text-xs flex items-center justify-between border-b transition-colors ${
+            reingestStatus.type === 'loading'
+              ? 'bg-amber-950/40 border-amber-800/50 text-amber-200'
+              : reingestStatus.type === 'success'
+              ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-200'
+              : 'bg-red-950/40 border-red-800/50 text-red-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {reingestStatus.type === 'loading' ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+            ) : reingestStatus.type === 'success' ? (
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Info className="w-3.5 h-3.5 text-red-400" />
+            )}
+            <span>{reingestStatus.message}</span>
+          </div>
+          <button
+            onClick={() => setReingestStatus(null)}
+            className="text-[11px] opacity-70 hover:opacity-100 underline ml-3"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Main Content Area (Split Screen) */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
@@ -700,8 +806,20 @@ export default function BroadsheetReader() {
               {/* Scrollable Article Cards */}
               <div ref={articleListRef} className="flex-1 overflow-y-auto p-3 space-y-2.5">
                 {filteredArticles.length === 0 ? (
-                  <div className="text-center py-10 text-slate-500 text-xs">
-                    No articles found matching filters on this page.
+                  <div className="text-center py-12 px-4 text-slate-400 text-xs flex flex-col items-center gap-2">
+                    <span className="p-3 bg-slate-900 border border-slate-800 rounded-full text-slate-400">
+                      <BookOpen className="w-5 h-5 text-emerald-400/80" />
+                    </span>
+                    <p className="font-semibold text-slate-300">
+                      {searchTerm || selectedSection !== 'ALL'
+                        ? 'No articles match your filters.'
+                        : 'Cover Flap / Full-Page Visual Display'}
+                    </p>
+                    <p className="text-[11px] text-slate-500 max-w-[220px]">
+                      {searchTerm || selectedSection !== 'ALL'
+                        ? 'Try clearing the search term or section filter.'
+                        : 'This page consists of broadsheet display art, mastheads, or commercial advertisements.'}
+                    </p>
                   </div>
                 ) : (
                   filteredArticles.map((art) => {

@@ -165,6 +165,12 @@ Your job is to analyze the user's research query, understand their underlying in
    - MUST BE USED FOR:
      * Comparing coverage, tone, and editorial stances across multiple newspapers (e.g. "Compare how Mint and Business Standard covered the budget").
 
+6. **CRITICAL ANTI-HALLUCINATION GUARDRAILS**:
+   - NEVER invent, assume, or hallucinate a newspaper brand, issue date, or page number.
+   - If the user query does NOT explicitly specify a page number (e.g. "page 5"), NEVER set `page_filter`.
+   - If the user query does NOT explicitly mention a newspaper name or date, omit them from `arguments` so the active conversation context can supply them.
+   - NEVER copy placeholder values (like 'The Economic Times' or 'page_filter: 5') from few-shot examples into your plan unless they appear in the query.
+
 ---
 
 ### 📚 FEW-SHOT ROUTING EXAMPLES
@@ -269,6 +275,7 @@ Output: {
 
 
 _KNOWN_BRANDS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(?:the\s+)?goan(?:\s+everyday)?\b", re.I), "The Goan"),
     (re.compile(r"\b(?:the\s+)?economic\s+times\b|\bthe\s+economics\s+times\b|\beconomics\s+times\b", re.I), "The Economic Times"),
     (re.compile(r"\b(?:the\s+)?new\s+york\s+times\b|\bNYT\b", re.I), "The New York Times"),
     (re.compile(r"\b(?:the\s+)?times\s+of\s+india\b|\bTOI\b", re.I), "The Times of India"),
@@ -281,6 +288,9 @@ _KNOWN_BRANDS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(?:the\s+)?hindu\b", re.I), "The Hindu"),
     (re.compile(r"\bhindustan\s+times\b|\bHT\b", re.I), "Hindustan Times"),
     (re.compile(r"\bmint\b|\blivemint\b", re.I), "Mint"),
+    (re.compile(r"\b(?:the\s+)?daily\s+tribune\b|\btribune\b", re.I), "The Daily Tribune"),
+    (re.compile(r"\b(?:the\s+)?daily\s+chronicle\b|\bchronicle\b", re.I), "The Daily Chronicle"),
+    (re.compile(r"\bdaily\s+broadsheet\b", re.I), "Daily Broadsheet"),
 ]
 
 _SECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -537,6 +547,35 @@ class QueryPlanner:
 
         if extracted_params.get("category_filter") and not args.category_filter:
             args.category_filter = extracted_params["category_filter"]
+
+        # Hallucination Guardrails:
+        # 1. Page filter: Only permit page_filter if the page number was explicitly in query
+        if args.page_filter is not None:
+            p_val = str(args.page_filter).strip()
+            page_in_query = bool(re.search(rf"\bpage\s*{re.escape(p_val)}\b|\bp\.?\s*{re.escape(p_val)}\b", query, re.I))
+            if not page_in_query:
+                logger.info("Pruned hallucinated page_filter not mentioned in query", extra={"page_filter": p_val, "query": query})
+                args.page_filter = None
+
+        # 2. Newspaper Name: Only permit newspaper_name if it matches query or extracted_params
+        if args.newspaper_name:
+            if extracted_params.get("newspaper_name"):
+                args.newspaper_name = extracted_params["newspaper_name"]
+            else:
+                brand_tokens = [w.lower() for w in args.newspaper_name.split() if w.lower() not in {"the", "of", "and"}]
+                if not any(tok in query.lower() for tok in brand_tokens):
+                    logger.info("Pruned hallucinated newspaper_name not in query", extra={"newspaper_name": args.newspaper_name, "query": query})
+                    args.newspaper_name = None
+
+        # 3. Issue Date: Only permit issue_date if it matches query or extracted_params
+        if args.issue_date:
+            if extracted_params.get("issue_date"):
+                args.issue_date = extracted_params["issue_date"]
+            else:
+                d_parts = args.issue_date.split("-")
+                if not any(part in query for part in d_parts):
+                    logger.info("Pruned hallucinated issue_date not in query", extra={"issue_date": args.issue_date, "query": query})
+                    args.issue_date = None
 
         if plan_obj.primary_tool == "sql_analytics":
             call_args: dict[str, Any] = {

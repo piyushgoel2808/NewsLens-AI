@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import Any
 
@@ -103,7 +104,7 @@ def extract_active_issue_from_history(chat_history: list[dict[str, Any]]) -> dic
     if not chat_history:
         return res
 
-    from app.agent.planner import extract_parameters_from_query
+    from app.agent.planner import _KNOWN_BRANDS_PATTERNS, extract_parameters_from_query
 
     for turn in reversed(chat_history):
         content = str(turn.get("content", ""))
@@ -115,16 +116,34 @@ def extract_active_issue_from_history(chat_history: list[dict[str, Any]]) -> dic
         if params.get("issue_date") and not res.get("issue_date"):
             res["issue_date"] = params["issue_date"]
 
-        # Also inspect source headers / citation blocks
-        u_content = content.upper()
-        if "THE NEW YORK TIMES" in u_content and not res.get("newspaper_name"):
-            res["newspaper_name"] = "The New York Times"
-        elif "THE ECONOMIC TIMES" in u_content and not res.get("newspaper_name"):
-            res["newspaper_name"] = "The Economic Times"
-        elif "MINT" in u_content and not res.get("newspaper_name"):
-            res["newspaper_name"] = "Mint"
-        elif "BUSINESS STANDARD" in u_content and not res.get("newspaper_name"):
-            res["newspaper_name"] = "Business Standard"
+        # 1. Inspect executive summary headers: e.g. "The Goan newspaper issue 94 (2026-08-02)"
+        summary_m = re.search(
+            r"([A-Za-z0-9\s\.\'\-]+?)\s+(?:newspaper\s+)?issue\s+(\d+)(?:\s*\((\d{4}-\d{2}-\d{2})\))?",
+            content,
+            re.IGNORECASE,
+        )
+        if summary_m:
+            detected_pub = summary_m.group(1).strip().replace("⚡", "").replace("EXECUTIVE SUMMARY", "").strip()
+            detected_pub = re.sub(r"^[\s\*\#\-\:]+", "", detected_pub).strip()
+            if detected_pub and len(detected_pub) >= 3 and not res.get("newspaper_name"):
+                for pat, brand in _KNOWN_BRANDS_PATTERNS:
+                    if pat.search(detected_pub):
+                        res["newspaper_name"] = brand
+                        break
+                if not res.get("newspaper_name") and len(detected_pub.split()) <= 4:
+                    res["newspaper_name"] = detected_pub
+            if summary_m.group(2) and not res.get("issue_id"):
+                with contextlib.suppress(ValueError):
+                    res["issue_id"] = int(summary_m.group(2))
+            if summary_m.group(3) and not res.get("issue_date"):
+                res["issue_date"] = summary_m.group(3)
+
+        # 2. Inspect all known brand patterns across turn text
+        if not res.get("newspaper_name"):
+            for pat, brand in _KNOWN_BRANDS_PATTERNS:
+                if pat.search(content):
+                    res["newspaper_name"] = brand
+                    break
 
         if res.get("newspaper_name") and res.get("issue_date"):
             break
@@ -155,15 +174,18 @@ async def condense_conversational_query(
     chat_history: list[dict[str, Any]],
     provider: ChatModelProvider | None | Any = _UNSET,
     model_override: str | None = None,
+    active_issue_id: int | None = None,
+    active_newspaper_name: str | None = None,
+    active_issue_date: str | None = None,
 ) -> str:
     """Rewrite a conversational follow-up query into a standalone search query with entities."""
     if not chat_history or not needs_condensation(query, chat_history):
         return query
 
     active_ctx = extract_active_issue_from_history(chat_history)
-    np_name = active_ctx.get("newspaper_name")
-    iss_id = active_ctx.get("issue_id")
-    iss_date = active_ctx.get("issue_date")
+    np_name = active_newspaper_name or active_ctx.get("newspaper_name")
+    iss_id = active_issue_id or active_ctx.get("issue_id")
+    iss_date = active_issue_date or active_ctx.get("issue_date")
 
     # Resolve LLM provider (prefer lightweight/fast model like groq_llama or query_planner)
     resolved_provider: ChatModelProvider | None
@@ -186,8 +208,8 @@ async def condense_conversational_query(
 
     formatted_history = format_chat_history_for_prompt(chat_history)
     ctx_hint = ""
-    if np_name:
-        ctx_hint = f" Active Publication: {np_name}" + (f" (Issue {iss_id})" if iss_id else "") + (f" dated {iss_date}" if iss_date else "") + "."
+    if np_name or iss_id:
+        ctx_hint = " Active Publication: " + (f"{np_name} " if np_name else "") + (f"(Issue {iss_id})" if iss_id else "") + (f" dated {iss_date}" if iss_date else "") + "."
 
     prompt = (
         f"Chat History:\n{formatted_history}\n\n"
@@ -202,16 +224,17 @@ async def condense_conversational_query(
                 Message(
                     role="system",
                     content=(
+                        "You are an expert search query reformulator. "
                         "Given the chat history and latest user query, rewrite the latest query into "
                         "a single, standalone sentence that contains all necessary context (entities, dates, page numbers). "
                         "Replace relative pronouns ('its', 'this', 'the newspaper', 'it') with the explicit "
                         "newspaper brand, issue ID, and date from the conversation context. "
-                        "Do not answer it, just rewrite it."
+                        "Output ONLY the rewritten query text. Do NOT add reasoning, bullets, quotes, or preambles."
                     ),
                 ),
                 Message(role="user", content=prompt),
             ]
-            resp = await provider.complete(
+            resp = await resolved_provider.complete(
                 messages=messages,
                 max_tokens=128,
                 temperature=0.0,
@@ -220,15 +243,19 @@ async def condense_conversational_query(
 
             # Clean up any quotes or prefixes
             rewritten = re.sub(
-                r'^(?:Standalone Query:|Rewritten Standalone Query:|Rewritten Query:|Query:|"|\'|`)\s*',
+                r'^(?:Standalone Query:|Rewritten Standalone Query:|Rewritten Query:|Query:|"|\'|`|\*|\-)\s*',
                 "",
                 rewritten,
                 flags=re.IGNORECASE,
             ).strip()
             rewritten = re.sub(r'("|\'|`)$', "", rewritten).strip()
 
-            # Verify that rewritten query did not keep unresolved pronouns when we know np_name
-            if rewritten and len(rewritten) >= 3 and not (rewritten.lower() == query.lower() and np_name and "its" in query.lower()):
+            # Verify that rewritten query is clean and resolved relative pronouns
+            has_unresolved_pronoun = bool(re.search(r"\b(its|it|this\s+paper)\b", rewritten, re.I))
+            is_echo = rewritten.lower() == query.lower()
+            is_valid = len(rewritten) >= 3 and not (is_echo and (np_name or iss_id)) and not (has_unresolved_pronoun and (np_name or iss_id))
+
+            if is_valid and "\n" not in rewritten and not rewritten.startswith("*"):
                 logger.info(
                     "Conversational query condensed",
                     extra={"original_query": query, "condensed_query": rewritten},
@@ -241,20 +268,28 @@ async def condense_conversational_query(
             )
 
     # Deterministic Heuristic Coreference Fallback:
-    if np_name:
+    if np_name or iss_id:
         q_resolved = query
-        id_str = f" issue {iss_id}" if iss_id else ""
-        date_str = f" dated {iss_date}" if iss_date else ""
-        pub_desc = f"{np_name}{id_str}{date_str}"
+        parts = []
+        if np_name:
+            parts.append(np_name)
+        if iss_id:
+            parts.append(f"issue {iss_id}")
+        if iss_date:
+            parts.append(f"dated {iss_date}")
+        pub_desc = " ".join(parts)
 
-        # Replace pronouns
-        q_resolved = re.sub(r"\b(?:its|this\s+paper's|this\s+newspaper's|the\s+paper's|the\s+newspaper's)\b", f"{pub_desc}'s", q_resolved, flags=re.I)
+        # Replace pronouns: e.g. "list all its sports related news" -> "list all sports related news from The Goan issue 94 dated 2026-08-02"
+        if re.search(r"\b(?:all\s+)?its\b", q_resolved, re.I):
+            q_resolved = re.sub(r"\b(?:all\s+)?its\s+(.+)$", rf"all \1 from {pub_desc}", q_resolved, flags=re.I)
+            if pub_desc not in q_resolved:
+                q_resolved = re.sub(r"\bits\b", f"{pub_desc}'s", q_resolved, flags=re.I)
+
+        q_resolved = re.sub(r"\b(?:this\s+paper's|this\s+newspaper's|the\s+paper's|the\s+newspaper's)\b", f"{pub_desc}'s", q_resolved, flags=re.I)
         q_resolved = re.sub(r"\b(?:in\s+its|in\s+this\s+paper|in\s+this\s+newspaper|in\s+the\s+paper|in\s+the\s+newspaper|in\s+this\s+issue|in\s+the\s+issue)\b", f"in {pub_desc}", q_resolved, flags=re.I)
         q_resolved = re.sub(r"\b(?:from\s+its|from\s+this\s+paper|from\s+this\s+newspaper|from\s+the\s+paper|from\s+the\s+newspaper|from\s+this\s+issue|from\s+the\s+issue)\b", f"from {pub_desc}", q_resolved, flags=re.I)
 
-        if "its" in query.lower() and pub_desc not in q_resolved:
-            q_resolved = re.sub(r"\bits\b", f"{pub_desc}'s", q_resolved, flags=re.I)
-        elif not any(b in q_resolved.lower() for b in [np_name.lower(), "economic times", "new york times", "mint"]):
+        if pub_desc not in q_resolved:
             q_resolved = f"{q_resolved} from {pub_desc}"
 
         logger.info(

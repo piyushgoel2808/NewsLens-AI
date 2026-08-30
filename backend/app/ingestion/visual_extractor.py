@@ -17,7 +17,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.core.logging import get_logger
-from app.providers.base import Message, VisionModelProvider
+from app.providers.base import VisionModelProvider
 from app.providers.registry import get_registry
 
 logger = get_logger(__name__)

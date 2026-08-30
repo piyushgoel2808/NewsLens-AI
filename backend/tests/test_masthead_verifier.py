@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
-
 from app.ingestion.masthead_verifier import (
     _MASTHEAD_RULES,
-    _parse_date_groups,
     MastheadVerifier,
+    _parse_date_groups,
 )
 
 

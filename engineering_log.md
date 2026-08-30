@@ -2207,3 +2207,43 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 5. **Test Suite**:
    - `uv run pytest tests/ -v` $\rightarrow$ **318 / 318 tests green (100%)**.
 
+---
+
+## Phase 9.7 — Single-Page Atomic Re-Ingestion & VLM Sub-Photo Grounding
+
+**Date**: 2026-08-30  
+**Status**: Completed ✅
+
+### What was built & fixed
+1. **Single-Page Re-Ingestion Service (`page_reingestion.py`)**:
+   - Implemented `PageReingestionService`: allows granular, atomic re-processing of a single page without reprocessing an entire 24+ page broadsheet issue.
+   - Slices the target page from the original PDF stored in MinIO.
+   - Atomically purges previous page-exclusive articles, entities, topics, chunks, photos, and Qdrant vectors.
+   - Re-runs Docling OCR, photo harvesting, Qwen-VL scene analysis, article segmentation, NER, and vector embedding into Qdrant.
+2. **Re-Ingestion API Endpoints (`newspapers.py`)**:
+   - Added `POST /api/issues/{issue_id}/pages/{page_number}/reingest` and `POST /api/pages/{page_id}/reingest`.
+3. **Broadsheet Reader UI Integration (`BroadsheetReader.jsx`)**:
+   - Added `Re-ingest Page` button to the reader toolbar with live spinning loader, confirmation modal, and status notification banner.
+   - Added friendly empty-state messaging explaining cover flaps and full-page visual displays.
+4. **VLM Visual Grounding (`media_extractor.py`)**:
+   - Implemented `detect_subphotos_via_vlm_grounding()` using Qwen-VL to detect and crop discrete sub-photos and charts on composite photo pages.
+5. **Conversational Meta-Query Detection (`condenser.py`, `graph.py`)**:
+   - Added `is_in_context_meta_query()` to recognize meta questions about previous turns (*"what date was that?"*, *"which newspaper?"*) and answer directly from history without triggering full retrieval pipelines.
+
+---
+
+## Phase 9.8 — Complete Database Schema Documentation & Schema Inspector CLI
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was built & documented
+1. **Schema Inspector CLI Script (`scripts/show_schema.py`)**:
+   - Added `show_schema.py` supporting `uv run python scripts/show_schema.py [table] [--list]`.
+   - Added Makefile targets: `make schema` and `make schema-list`.
+2. **Comprehensive Database Schema Documentation (`docs/database_schema.md`)**:
+   - Cataloged all 17 MySQL tables (`newspapers`, `ingestion_jobs`, `issues`, `pages`, `article_categories`, `articles`, `article_pages`, `article_chunks`, `photos`, `tables`, `entities`, `article_entities`, `topics`, `article_topics`, `events`, `article_events`, `query_log`).
+   - Detailed every column with SQL data type, nullability, realistic examples, and engineering rationale.
+   - Added JSON Schemas for Agentic RAG Requests, Planner CoT (`QueryPlan`), Tool Payloads (`hybrid_search`, `sql_analytics`, `entity_search`, `timeline_builder`), Corrective RAG (CRAG) fallbacks, and SSE streaming event protocol.
+
+

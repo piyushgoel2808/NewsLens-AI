@@ -222,7 +222,11 @@ class TestAgentWorkflowToolExecution:
     @pytest.mark.asyncio
     async def test_execute_coverage_analysis_matrix(self) -> None:
         from app.agent.graph import AgentWorkflow
-        from app.retrieval.coverage_analyzer import CoverageMatrix, CoverageStatus, PublicationCoverageReport
+        from app.retrieval.coverage_analyzer import (
+            CoverageMatrix,
+            CoverageStatus,
+            PublicationCoverageReport,
+        )
 
         mock_session_factory = MagicMock()
         workflow = AgentWorkflow(session_factory=mock_session_factory)

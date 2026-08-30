@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
 from app.models.article import Article, ArticlePage
-from app.models.entity import ArticleEntity, ArticleTopic, Entity, Topic
+from app.models.entity import ArticleEntity, ArticleTopic, Entity
 from app.models.newspaper import Issue
 
 logger = get_logger(__name__)
@@ -156,7 +156,6 @@ class SQLAnalyticsEngine:
         query: str | None = None,
     ) -> Any:
         """Return a structured manifest of all articles in an issue with section/type breakdowns."""
-        from sqlalchemy.orm import selectinload
         from app.models.newspaper import Newspaper
 
         # Defensive fallback: if query is provided and explicit parameters are missing, extract them

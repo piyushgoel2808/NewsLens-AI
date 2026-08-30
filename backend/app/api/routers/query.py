@@ -146,18 +146,20 @@ async def stream_query(
             tool_data = json.dumps({"evidence_count": 0, "tools": []})
             yield f"event: tool_results\ndata: {tool_data}\n\n"
         else:
+            active_ctx = extract_active_issue_from_history(chat_history)
             if chat_history and needs_condensation(query, chat_history):
                 yield f"event: stage\ndata: {json.dumps({'stage': 'condensing_query'})}\n\n"
                 condensed = await condense_conversational_query(
                     query=query,
                     chat_history=chat_history,
                     model_override=effective_model,
+                    active_issue_id=active_ctx.get("issue_id"),
+                    active_newspaper_name=active_ctx.get("newspaper_name"),
+                    active_issue_date=active_ctx.get("issue_date"),
                 )
                 query = condensed
                 cond_data = json.dumps({"condensed_query": condensed})
                 yield f"event: query_condensed\ndata: {cond_data}\n\n"
-
-            active_ctx = extract_active_issue_from_history(chat_history)
 
             # 2. Planning Stage
             yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"

@@ -48,6 +48,12 @@ migrate-down: ## Rollback the last Alembic migration
 migrate-history: ## Show Alembic migration history
 	$(BACKEND) uv run alembic history --verbose
 
+schema: ## View MySQL database schema (e.g. 'make schema' or 'make schema table=articles')
+	$(BACKEND) uv run python ../scripts/show_schema.py $(table)
+
+schema-list: ## List all MySQL database tables
+	$(BACKEND) uv run python ../scripts/show_schema.py --list
+
 # --- Development ---
 
 install: ## Install all Python dependencies via uv

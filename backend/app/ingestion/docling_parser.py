@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import pymupdf
@@ -23,9 +23,7 @@ from app.core.logging import get_logger
 from app.ingestion.layout_analyzer import (
     clean_ocr_text_artifacts,
     is_syndication_or_agency_slug,
-    is_toc_index_block,
 )
-from app.ingestion.reading_order import OrderedReadingBlock
 from app.ingestion.segmenter import (
     SECTION_HEADER_BLACKLIST,
     SegmentedArticle,
@@ -149,6 +147,20 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             if any(kw in clean for kw in _PAGE_HEADER_KEYWORDS) or len(clean.split()) <= 6:
                 return True
 
+        # Enhanced masthead banner detection on front/wrap pages up to 20% page height
+        if y1 <= height_px * 0.20:
+            has_masthead_brand = any(kw in clean for kw in _PAGE_HEADER_KEYWORDS)
+            has_epaper_or_url = any(u in clean for u in ("LIVEMINT", "EPAPER", ".COM", "WWW."))
+            has_date_marker = bool(
+                re.search(r"\b(?:MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)\b", clean)
+                and re.search(r"\b(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER|\d{4})\b", clean)
+            )
+            is_printer_mark = clean in ("SIHT", "CMYK", "A ND-NDE")
+            if (has_masthead_brand and (has_epaper_or_url or has_date_marker)) or is_printer_mark:
+                return True
+            if clean in _PAGE_HEADER_KEYWORDS:
+                return True
+
         if y0 >= height_px * 0.95:
             if re.search(r"\b(?:PAGE\s*\d+|\d+\s*\|\s*[A-Z]+)\b", clean) or len(clean.split()) <= 4:
                 return True
@@ -178,6 +190,39 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             page_h_pts = 842.0
 
         items: list[DoclingParsedItem] = []
+        visited_text_ids: set[int] = set()
+
+        def _process_text_item(t_item: Any, lvl: int) -> DoclingParsedItem | None:
+            t_id = id(t_item)
+            if t_id in visited_text_ids:
+                return None
+            visited_text_ids.add(t_id)
+
+            t_text = clean_ocr_text_artifacts(getattr(t_item, "text", "") or "")
+            if not t_text:
+                return None
+
+            t_bbox_obj = t_item.prov[0].bbox if getattr(t_item, "prov", None) and len(t_item.prov) > 0 else None
+            t_bbox_px = self._convert_bbox_to_pixels(
+                bbox=t_bbox_obj,
+                page_w_pts=page_w_pts,
+                page_h_pts=page_h_pts,
+                width_px=width_px,
+                height_px=height_px,
+            )
+
+            if self._is_header_or_footer_noise(t_text, t_bbox_px, height_px):
+                return None
+
+            t_label = t_item.label.value if hasattr(t_item.label, "value") else str(t_item.label)
+            return DoclingParsedItem(
+                label=t_label,
+                text=t_text,
+                bbox=t_bbox_px,
+                page_number=page_number,
+                level=lvl,
+            )
+
         for item, level in docling_doc.iterate_items():
             raw_label = item.label.value if hasattr(item.label, "value") else str(item.label)
             text = clean_ocr_text_artifacts(getattr(item, "text", "") or "")
@@ -194,8 +239,34 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             if self._is_header_or_footer_noise(text, bbox_px, height_px):
                 continue
 
-            if not text and raw_label not in ("picture", "table"):
+            # If this is a picture, include the picture node and resolve any nested child texts
+            if raw_label == "picture":
+                items.append(
+                    DoclingParsedItem(
+                        label=raw_label,
+                        text="",
+                        bbox=bbox_px,
+                        page_number=page_number,
+                        level=level,
+                    )
+                )
+                for child_ref in getattr(item, "children", []):
+                    try:
+                        cref_str = getattr(child_ref, "cref", "")
+                        if cref_str.startswith("#/texts/") and hasattr(docling_doc, "texts"):
+                            idx = int(cref_str.split("/")[-1])
+                            child_text_item = docling_doc.texts[idx]
+                            parsed_child = _process_text_item(child_text_item, lvl=level + 1)
+                            if parsed_child:
+                                items.append(parsed_child)
+                    except Exception:
+                        pass
                 continue
+
+            if not text and raw_label != "table":
+                continue
+
+            visited_text_ids.add(id(item))
 
             tbl_data: ExtractedTableData | None = None
             if raw_label == "table":
@@ -217,6 +288,12 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                     table_data=tbl_data,
                 )
             )
+
+        # Secondary safety net: check if any texts in docling_doc.texts were unvisited
+        for t_item in getattr(docling_doc, "texts", []):
+            parsed_t = _process_text_item(t_item, lvl=1)
+            if parsed_t:
+                items.append(parsed_t)
 
         return items
 
@@ -261,15 +338,23 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                 return
 
             body_str = "\n\n".join(current_body_parts).strip()
+            if current_subheadline:
+                body_str = f"{current_subheadline}\n\n{body_str}".strip() if body_str else current_subheadline
+
             h_text = current_headline
             if not h_text and body_str:
-                sentences = body_str.split("\n")
-                first_line = sentences[0].strip()
-                if len(first_line.split()) <= 15:
-                    h_text = first_line
-                    body_str = "\n".join(sentences[1:]).strip()
-                else:
-                    h_text = first_line[:80] + "..."
+                sentences = [s.strip() for s in body_str.split("\n") if s.strip()]
+                if sentences:
+                    # If first line is a very short brand/kicker and second line is a substantive headline
+                    if len(sentences[0].split()) <= 2 and len(sentences) > 1 and len(sentences[1].split()) >= 3:
+                        h_text = sentences[1]
+                        remaining = [sentences[0]] + sentences[2:]
+                        body_str = "\n".join(remaining).strip()
+                    elif len(sentences[0].split()) <= 15:
+                        h_text = sentences[0]
+                        body_str = "\n".join(sentences[1:]).strip()
+                    else:
+                        h_text = sentences[0][:80] + "..."
 
             if not h_text:
                 return
@@ -312,6 +397,12 @@ class DoclingLayoutParser(DocumentLayoutProvider):
 
             if not txt and lbl not in ("picture", "table"):
                 continue
+
+            # Teaser strip boundary check:
+            # If previous items are from a top teaser strip (containing page pointers) and there is a large vertical gap, flush them.
+            if current_bboxes and (bbox[1] - current_bboxes[-1][3] > height_px * 0.07):
+                if any(re.search(r"(?:▶|►|>|->)?\s*P\d{1,2}\b", p) for p in current_body_parts):
+                    _flush_current_article()
 
             next_txt = items[idx + 1].text.strip() if idx + 1 < total_items else ""
 

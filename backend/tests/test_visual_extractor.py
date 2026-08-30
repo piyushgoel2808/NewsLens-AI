@@ -10,7 +10,6 @@ from PIL import Image
 
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.visual_extractor import (
-    VisualClassification,
     VisualDataExtractor,
     VisualExtractionResult,
 )

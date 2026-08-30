@@ -8,7 +8,6 @@ with optional VLM fallback, completely eliminating incorrect issue labeling.
 from __future__ import annotations
 
 import asyncio
-import io
 import re
 import unicodedata
 from datetime import date
