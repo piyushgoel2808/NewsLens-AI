@@ -294,6 +294,34 @@ async def run_ingestion_pipeline(
                                 "LayoutAnalyzer fallback failed on page",
                                 extra={"page_number": page_num, "error": str(fallback_err)},
                             )
+                    else:
+                        # Corrupted font stream or scanned page: run pure OCR on rendered image
+                        try:
+                            from app.providers.google_vision_provider import GoogleCloudVisionOCR
+                            gcv_key = settings.google_api_key or settings.gemini_api_key
+                            gcv_ocr = GoogleCloudVisionOCR(api_key=gcv_key)
+                            ocr_res = await gcv_ocr.ocr(image_bytes=rendered.image_bytes, lang_hint=issue_lang)
+                            if ocr_res.blocks:
+                                layout_analyzer = LayoutAnalyzer()
+                                page_layout_res = layout_analyzer.analyze_from_text_blocks(
+                                    page_number=page_num,
+                                    width_px=int(rendered.width_px),
+                                    height_px=int(rendered.height_px),
+                                    ocr_blocks=ocr_res.blocks,
+                                )
+                                segmenter = ArticleSegmenter()
+                                seg_fallback = segmenter.segment_page(
+                                    page_number=page_num,
+                                    ordered_blocks=page_layout_res.reading_order,
+                                    is_advertisement_page=page_record.is_advertisement_page if page_record else False,
+                                )
+                                if seg_fallback:
+                                    page_segmented_articles.extend(seg_fallback)
+                        except Exception as ocr_fb_err:
+                            logger.warning(
+                                "GCV OCR fallback failed on page",
+                                extra={"page_number": page_num, "error": str(ocr_fb_err)},
+                            )
 
             # Process LLM/VLM articles on this page if not already populated by Docling
             if not page_segmented_articles:

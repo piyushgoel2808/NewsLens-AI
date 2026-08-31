@@ -146,3 +146,33 @@ class TestAnswerSynthesizer:
         full_stream_text = "".join(chunks)
         assert "I could not find any evidence or articles matching this query in the database" in full_stream_text
 
+    def test_evidence_context_budgeting_truncates(self) -> None:
+        synth = AnswerSynthesizer()
+        large_evidence = [
+            {
+                "headline": f"Story {i}",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+                "pages": [i],
+                "snippet": "Very long story text " * 150,  # ~3000 chars each
+                "article_id": i,
+            }
+            for i in range(25)  # 25 items
+        ]
+        context = synth._build_evidence_context(large_evidence)
+        # Should be capped at 12 items
+        assert "ARCHIVE EVIDENCE EXCERPT [12]" in context
+        assert "ARCHIVE EVIDENCE EXCERPT [13]" not in context
+        # Check snippet truncation
+        assert "[excerpt truncated for length]" in context
+
+    def test_parse_thought_and_answer_strips_memo_headers(self) -> None:
+        raw_output = (
+            "EXECUTIVE INTELLIGENCE BRIEFING\n"
+            "Date: October 26, 2023 (Current Analysis) Subject: Governance Transparency\n\n"
+            "### ⚡ Executive Summary\nThe Goa government is facing scrutiny."
+        )
+        _, cleaned = parse_thought_and_answer(raw_output)
+        assert "October 26, 2023" not in cleaned
+        assert cleaned.startswith("### ⚡ Executive Summary")
+

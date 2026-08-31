@@ -261,12 +261,17 @@ class OllamaProvider:
     ) -> AsyncIterator[str]:
         """Streaming text completion via Ollama."""
         ollama_messages = self._to_ollama_messages(messages)
+        ctx_size = max(max_tokens * 2, 16384)
         try:
             async for chunk in await self._client.chat(
                 model=self._model,
                 messages=ollama_messages,
                 stream=True,
-                options={"num_predict": max_tokens, "temperature": temperature},
+                options={
+                    "num_ctx": ctx_size,
+                    "num_predict": max_tokens,
+                    "temperature": temperature,
+                },
             ):
                 if chunk.message.content:
                     yield chunk.message.content

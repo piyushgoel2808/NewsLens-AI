@@ -30,14 +30,19 @@ from app.core.logging import get_logger
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
 from app.ingestion.cross_page_assembler import CrossPageAssembler
-from app.ingestion.detector import PDFPageDetector
-from app.ingestion.docling_parser import DoclingLayoutParser, ExtractedPhotoData
+from app.ingestion.detector import PDFPageDetector, PageType
+from app.ingestion.docling_parser import (
+    CorruptedPdfTextLayerError,
+    DoclingLayoutParser,
+    ExtractedPhotoData,
+)
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.folio_detector import FolioDetector
+from app.ingestion.layout_analyzer import LayoutAnalyzer
 from app.ingestion.media_extractor import MediaExtractor
 from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.rasterizer import PDFRasterizer
-from app.ingestion.segmenter import SegmentedArticle
+from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
 from app.models.article import (
     Article,
     ArticleCategory,
@@ -294,39 +299,96 @@ class PageReingestionService:
             },
         )
 
-        # 5. Extract Layout & Articles using DoclingLayoutParser
+        # 5. Extract Layout & Articles
         detector = PDFPageDetector()
         digital_analysis = detector.analyze_document_bytes(single_pdf_bytes)
         single_analysis = digital_analysis[0] if digital_analysis else None
 
-        docling_parser = DoclingLayoutParser()
-        parsed_doc_items = await asyncio.get_running_loop().run_in_executor(
-            None,
-            docling_parser.parse_docling_document,
-            single_pdf_bytes,
-            page_number,
-            width_px,
-            height_px,
+        page_segmented_articles: list[SegmentedArticle] = []
+        page_media_items: list[ExtractedPhotoData] = []
+        requires_image_ocr = (
+            single_analysis is not None
+            and (single_analysis.page_type == PageType.SCANNED or single_analysis.requires_ocr)
         )
 
-        docling_articles = docling_parser.assemble_articles(
-            page_number=page_number,
-            items=parsed_doc_items,
-            width_px=width_px,
-            height_px=height_px,
-            is_advertisement_page=page.is_advertisement_page,
-        )
+        if not requires_image_ocr:
+            try:
+                docling_parser = DoclingLayoutParser()
+                parsed_doc_items = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    docling_parser.parse_docling_document,
+                    single_pdf_bytes,
+                    page_number,
+                    width_px,
+                    height_px,
+                )
 
-        page_segmented_articles: list[SegmentedArticle] = list(docling_articles)
-        page_media_items: list[ExtractedPhotoData] = docling_parser.extract_page_media_items(parsed_doc_items)
+                docling_articles = docling_parser.assemble_articles(
+                    page_number=page_number,
+                    items=parsed_doc_items,
+                    width_px=width_px,
+                    height_px=height_px,
+                    is_advertisement_page=page.is_advertisement_page,
+                )
 
-        # Fallback if 0 articles detected
+                page_segmented_articles = list(docling_articles)
+                page_media_items = docling_parser.extract_page_media_items(parsed_doc_items)
+            except CorruptedPdfTextLayerError as font_err:
+                logger.warning(
+                    "Docling failed due to corrupted PDF font layer, escalating to image OCR fallback",
+                    extra={"page_number": page_number, "error": str(font_err)},
+                )
+                requires_image_ocr = True
+            except Exception as docling_err:
+                logger.warning(
+                    "DoclingLayoutParser encountered error, checking image OCR fallback",
+                    extra={"page_number": page_number, "error": str(docling_err)},
+                )
+                requires_image_ocr = True
+
+        # Fallback to Pure Image OCR (Google Cloud Vision / LayoutAnalyzer) if required or 0 articles extracted
+        if requires_image_ocr or not page_segmented_articles:
+            logger.info(
+                "Running Pure Image OCR fallback for page",
+                extra={"page_number": page_number, "width_px": width_px, "height_px": height_px},
+            )
+            try:
+                from app.providers.google_vision_provider import GoogleCloudVisionOCR
+                gcv_api_key = self._settings.google_api_key or self._settings.gemini_api_key
+                gcv_ocr = GoogleCloudVisionOCR(api_key=gcv_api_key)
+                ocr_result = await gcv_ocr.ocr(image_bytes=page_image_bytes, lang_hint=issue_lang)
+
+                if ocr_result.blocks:
+                    layout_analyzer = LayoutAnalyzer()
+                    page_layout = layout_analyzer.analyze_from_text_blocks(
+                        page_number=page_number,
+                        width_px=width_px,
+                        height_px=height_px,
+                        ocr_blocks=ocr_result.blocks,
+                    )
+                    segmenter = ArticleSegmenter()
+                    ocr_articles = segmenter.segment_page(
+                        page_number=page_number,
+                        ordered_blocks=page_layout.reading_order,
+                        is_advertisement_page=page.is_advertisement_page,
+                    )
+                    if ocr_articles:
+                        page_segmented_articles = ocr_articles
+                        logger.info(
+                            "Image OCR successfully recovered segmented articles",
+                            extra={"page_number": page_number, "articles_count": len(ocr_articles)},
+                        )
+            except Exception as ocr_err:
+                logger.warning(
+                    "Image OCR fallback encountered error",
+                    extra={"page_number": page_number, "error": str(ocr_err)},
+                )
+
+        # Ultimate fallback if still 0 articles detected
         if not page_segmented_articles:
             full_page_txt = ""
-            if single_analysis and single_analysis.full_text.strip():
+            if single_analysis and single_analysis.full_text.strip() and not requires_image_ocr:
                 full_page_txt = single_analysis.full_text.strip()
-            elif parsed_doc_items:
-                full_page_txt = "\n\n".join(it.text for it in parsed_doc_items if it.text.strip()).strip()
 
             is_ad_page = (page.is_advertisement_page) or bool(
                 full_page_txt and check_is_advertisement_text(full_page_txt)

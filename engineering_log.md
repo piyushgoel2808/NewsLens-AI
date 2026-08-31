@@ -2246,4 +2246,47 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
    - Detailed every column with SQL data type, nullability, realistic examples, and engineering rationale.
    - Added JSON Schemas for Agentic RAG Requests, Planner CoT (`QueryPlan`), Tool Payloads (`hybrid_search`, `sql_analytics`, `entity_search`, `timeline_builder`), Corrective RAG (CRAG) fallbacks, and SSE streaming event protocol.
 
+---
+
+## Phase 9.9 — Multi-Date Query Routing, Newspaper Filter Resolution & Synthesizer Context Budgeting
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was resolved & hardened
+1. **Multi-Date Extraction in Query Planner (`planner.py`)**:
+   - `extract_parameters_from_query()` extracts all ISO, DD/MM/YYYY, and month-name date mentions into `target_dates`, `date_from`, and `date_to`.
+   - Single-newspaper multi-issue comparative queries (e.g., comparing Aug 1 and Aug 2 editions of *The Goan*) are routed to targeted `sql_analytics` issue summaries for each date alongside a scoped `hybrid_search`, completely preventing all-newspaper `coverage_analysis` explosion.
+2. **Newspaper Filter Name-to-ID Resolution (`graph.py`)**:
+   - In `_execute_tools_node()`, `hybrid_search` now dynamically queries MySQL to resolve `newspaper_name` (e.g., `"The Goan"`) to its corresponding integer `newspaper_id`, ensuring search filters apply accurately without bleeding into other publications.
+3. **Strict Context Token Budgeting in Synthesizer (`synthesizer.py`)**:
+   - `_build_evidence_context()` caps items to the top 12 and truncates long individual snippets to 1,200 characters, preventing prompt explosion past model context limits.
+   - Added prompt constraints and regex post-cleaning in `parse_thought_and_answer()` to strip arbitrary pre-training memo headers (such as `"Date: October 26, 2023 (Current Analysis)"`).
+4. **Ollama Streaming Context Window Configuration (`ollama_provider.py`)**:
+   - Configured `complete_stream()` with `"num_ctx": max(max_tokens * 2, 16384)` matching batch completion, preventing Ollama from defaulting to 4,096 tokens and erroring on large multi-document contexts.
+
+---
+
+## Phase 9.10 — Corrupted Font CMap Recovery & High-Precision Image OCR Fallback
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was resolved & hardened
+1. **Corrupted Font CMap / Replacement Character Detection (`docling_parser.py`)**:
+   - Implemented `CorruptedPdfTextLayerError`.
+   - In `parse_docling_document()`, evaluates extracted text items. If replacement characters (`\ufffd` or `\ufeff`) exceed 3% of text or fail gibberish validation (`is_text_gibberish()`), the parser escalates with `CorruptedPdfTextLayerError` rather than polluting downstream tables.
+   - In `assemble_articles()`, rejects any candidate headline containing `\ufffd` or failing gibberish checks.
+2. **Pure Image OCR Escalation in Single-Page Re-Ingestion (`page_reingestion.py`)**:
+   - Detects when a page is flagged as `SCANNED`, requires OCR, or raises `CorruptedPdfTextLayerError`.
+   - Routes the 300 DPI raster page image directly to `GoogleCloudVisionOCR`.
+   - Passes high-confidence OCR blocks into `LayoutAnalyzer.analyze_from_text_blocks()` to compute 2D reading order and `ArticleSegmenter.segment_page()` to construct clean, non-jumbled `SegmentedArticle` units with accurate bounding boxes and full text.
+3. **Full Issue Ingestion Fallback Hardening (`tasks.py`)**:
+   - Updated `_process_pdf_issue()` fallback: if Docling fails or the page lacks readable digital blocks, runs pure image OCR via `GoogleCloudVisionOCR` instead of yielding empty article sets.
+4. **Verification & Issue #64 Page 1 Re-Ingestion**:
+   - Successfully executed atomic single-page re-ingestion on **The Indian Express (Issue #64, Page 1)**.
+   - Restored 14 distinct articles with 17 Qdrant vector chunks, converting corrupted `` placeholders into verified headlines (*"Messi Magic Steals Egypt Dream"*, *"Missiles, minerals and port: Delhi, Jakarta seal key deals"*, *"Kejriwal's former residence will be Delhi state guest house and cultural centre"*).
+
+
+
 

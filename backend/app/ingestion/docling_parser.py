@@ -20,6 +20,7 @@ from docling.document_converter import DocumentConverter
 from docling_core.types.doc import CoordOrigin
 
 from app.core.logging import get_logger
+from app.ingestion.detector import is_text_gibberish
 from app.ingestion.layout_analyzer import (
     clean_ocr_text_artifacts,
     is_syndication_or_agency_slug,
@@ -40,6 +41,11 @@ from app.providers.base import (
 )
 
 logger = get_logger(__name__)
+
+
+class CorruptedPdfTextLayerError(Exception):
+    """Raised when Docling output contains corrupted font CMaps or replacement characters (\ufffd)."""
+    pass
 
 # Boilerplate tokens to reject as article headlines
 _PAGE_HEADER_KEYWORDS = {
@@ -295,6 +301,25 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             if parsed_t:
                 items.append(parsed_t)
 
+        # Integrity Validation: Detect corrupted embedded font CMaps / \ufffd dominance
+        all_text = " ".join(it.text for it in items if it.text)
+        if all_text.strip():
+            num_replacement = sum(1 for c in all_text if c in ("\ufffd", "\ufeff"))
+            replacement_ratio = num_replacement / max(len(all_text.replace(" ", "")), 1)
+            if replacement_ratio >= 0.03 or is_text_gibberish(all_text):
+                logger.warning(
+                    "Docling parsed text contains corrupted font artifacts / replacement characters",
+                    extra={
+                        "page_number": page_number,
+                        "replacement_chars": num_replacement,
+                        "replacement_ratio": round(replacement_ratio, 4),
+                    },
+                )
+                raise CorruptedPdfTextLayerError(
+                    f"Page {page_number} text layer is corrupted with {num_replacement} replacement characters "
+                    f"({replacement_ratio:.1%}). Requires pure Image OCR fallback."
+                )
+
         return items
 
     def assemble_articles(
@@ -361,6 +386,10 @@ class DoclingLayoutParser(DocumentLayoutProvider):
 
             kicker, clean_h = extract_kicker_and_clean_headline(h_text)
             final_h = clean_h or h_text
+
+            # Discard headlines that are predominantly replacement characters (\ufffd) or gibberish
+            if "\ufffd" in final_h or is_text_gibberish(final_h):
+                return
 
             full_text = f"{final_h}\n\n{body_str}".strip() if final_h != body_str else body_str
             w_count = len(full_text.split())

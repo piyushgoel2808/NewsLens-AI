@@ -36,6 +36,18 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * Automatically binds active publication names (*"The Economic Times"*) and issue dates (*"2026-08-27"*) across multiple dialogue turns.
   * Short-circuits ambiguous opening questions with interactive suggestions.
   * **In-Context Meta-Query Detection (`is_in_context_meta_query`)**: Directly answers follow-up inquiries about prior turns (*"which newspaper was that?"*, *"what was the date?"*, *"who wrote this article?"*) directly from chat history without triggering wasteful retrieval cascades.
+* **Intelligent Multi-Date Extraction & Single-Brand Comparative Routing**:
+  * Automatically parses multi-date expressions across ISO, DD/MM/YYYY, and month-name formats (e.g., `1/8/2026 and 2/8/2026`).
+  * If a query compares multiple editions or dates of the *same* newspaper, the planner intelligently routes to targeted SQL issue summaries and scoped hybrid search instead of invoking an all-newspaper `coverage_analysis` across the entire database.
+* **Dynamic Brand-to-ID Filter Resolution**:
+  * In `graph.py`, hybrid searches mentioning publication names (such as *"The Goan"*) dynamically query MySQL to resolve the exact `newspaper_id`, ensuring search results are strictly confined to the requested newspaper.
+* **Context Budgeting & Anti-Hallucination Memo Protection**:
+  * Caps evidence context to the top 12 items and truncates long excerpts to 1,200 characters, guaranteeing the synthesizer prompt stays within $\le 3,500$ tokens to prevent local LLM context overflow (`4096 tokens`).
+  * Protects against pre-training knowledge cutoff date hallucinations (e.g., memorized 2023 dates) with negative prompt guards and regex post-cleaning.
+* **Corrupted Font CMap Recovery & High-Precision Image OCR Fallback**:
+  * Employs automated `\ufffd` replacement character and gibberish ratio detection (`CorruptedPdfTextLayerError`).
+  * When a PDF's embedded fonts lack valid `ToUnicode` mapping tables (causing traditional text scrapers to output unmapped glyphs), automatically escalates to pure image OCR via `GoogleCloudVisionOCR` on the 300 DPI raster page.
+  * Reconstructs 2D reading order with `LayoutAnalyzer` and segments clean articles without corrupt Unicode symbols.
 * **4-Tier Structured Broadsheet Synthesis**:
   * **Executive Summary**: High-level macro context.
   * **Key Verified Facts & Highlights**: Bulleted list of verified claims with bracketed citations.

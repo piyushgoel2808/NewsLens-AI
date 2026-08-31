@@ -206,3 +206,43 @@ class TestDoclingLayoutParser:
         assert len(articles) >= 1
         headlines = [a.headline for a in articles]
         assert any("Smarter steels" in h for h in headlines)
+
+    def test_assemble_articles_rejects_replacement_character_headline(self) -> None:
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="title",
+                text="    ",
+                bbox=(50.0, 100.0, 400.0, 130.0),
+                page_number=1,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="36\n  \n      ",
+                bbox=(50.0, 135.0, 400.0, 250.0),
+                page_number=1,
+            ),
+        ]
+        articles = parser.assemble_articles(
+            page_number=1,
+            items=items,
+            width_px=1000,
+            height_px=1400,
+        )
+        assert len(articles) == 0
+
+    def test_corrupted_font_check_raises_error(self) -> None:
+        from app.ingestion.docling_parser import CorruptedPdfTextLayerError
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="text",
+                text="\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd \ufffd\ufffd\ufffd\ufffd",
+                bbox=(0.0, 0.0, 100.0, 100.0),
+                page_number=1,
+            )
+        ]
+        all_text = " ".join(it.text for it in items if it.text)
+        num_replacement = sum(1 for c in all_text if c in ("\ufffd", "\ufeff"))
+        replacement_ratio = num_replacement / max(len(all_text.replace(" ", "")), 1)
+        assert replacement_ratio >= 0.03

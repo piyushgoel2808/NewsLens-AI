@@ -21,6 +21,7 @@ from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.synthesizer import AnswerSynthesizer
 from app.core.logging import get_logger
 from app.core.metrics import record_agent_query
+from app.models.newspaper import Newspaper
 from app.models.query import QueryLog
 from app.retrieval.coverage_analyzer import CoverageAnalyzer
 from app.retrieval.entity_filter import EntitySearchEngine
@@ -157,22 +158,35 @@ class AgentWorkflow:
             try:
                 if name == "hybrid_search":
                     filters = None
+                    np_id = args.get("newspaper_id")
+                    np_name = args.get("newspaper_name")
+                    if not np_id and np_name:
+                        try:
+                            from sqlalchemy import select
+                            async with self._session_factory() as db:
+                                stmt = select(Newspaper.id).where(Newspaper.name.ilike(f"%{np_name}%")).limit(1)
+                                res = await db.execute(stmt)
+                                np_id = res.scalar_one_or_none()
+                        except Exception as e:
+                            logger.warning("Could not resolve newspaper_id by name in hybrid_search", extra={"name": np_name, "error": str(e)})
+
                     filter_keys = (
                         "newspaper_id",
+                        "newspaper_name",
                         "date_from",
                         "date_to",
                         "page_filter",
                         "page_number",
                         "printed_page",
                     )
-                    has_filter = any(k in args for k in filter_keys)
+                    has_filter = any(k in args for k in filter_keys) or (np_id is not None)
                     if has_filter:
                         p_filt = args.get("page_filter") or args.get("printed_page")
                         p_num = args.get("page_number")
                         if p_filt and not p_num and str(p_filt).isdigit():
                             p_num = int(p_filt)
                         filters = SearchFilter(
-                            newspaper_id=args.get("newspaper_id"),
+                            newspaper_id=np_id,
                             date_from=args.get("date_from"),
                             date_to=args.get("date_to"),
                             page_number=p_num,

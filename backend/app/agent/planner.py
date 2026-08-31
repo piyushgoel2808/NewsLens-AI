@@ -49,6 +49,18 @@ class ExtractedToolArguments(BaseModel):
         None,
         description="Target issue date in YYYY-MM-DD format if specified",
     )
+    date_from: str | None = Field(
+        None,
+        description="Start date for range/comparison queries in YYYY-MM-DD format",
+    )
+    date_to: str | None = Field(
+        None,
+        description="End date for range/comparison queries in YYYY-MM-DD format",
+    )
+    target_dates: list[str] = Field(
+        default_factory=list,
+        description="Specific list of dates mentioned for multi-issue comparisons",
+    )
     issue_id: int | None = Field(
         None,
         description="Target issue ID integer if specified",
@@ -328,46 +340,57 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
         with contextlib.suppress(ValueError):
             params["issue_id"] = int(iss_match.group(1))
 
-    # 3. Date Extraction (e.g. "27/8/2026", "27-08-2026", "2026-08-27", "27th August 2026", "August 27, 2026")
-    date_iso = None
-    # YYYY-MM-DD
-    iso_m = re.search(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", query)
-    if iso_m:
-        y, m, d = int(iso_m.group(1)), int(iso_m.group(2)), int(iso_m.group(3))
-        date_iso = f"{y:04d}-{m:02d}-{d:02d}"
-    else:
-        # DD/MM/YYYY or DD-MM-YYYY
-        dmy_m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", query)
-        if dmy_m:
-            d, m, y = int(dmy_m.group(1)), int(dmy_m.group(2)), int(dmy_m.group(3))
-            date_iso = f"{y:04d}-{m:02d}-{d:02d}"
+    # 3. Date Extraction (e.g. "1/8/2026 and 2/8/2026", "27-08-2026", "2026-08-27", "27th August 2026")
+    found_dates: list[str] = []
 
-    if not date_iso:
-        # Month name patterns
-        month_map = {
-            "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
-            "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
-            "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
-            "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
-        }
-        # e.g. "27 August 2026" or "27th August 2026"
-        m1 = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)(?:,)?\s+(\d{4})\b", query)
-        if m1 and m1.group(2).lower() in month_map:
+    # YYYY-MM-DD
+    for iso_m in re.finditer(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", query):
+        y, m, d = int(iso_m.group(1)), int(iso_m.group(2)), int(iso_m.group(3))
+        iso_str = f"{y:04d}-{m:02d}-{d:02d}"
+        if iso_str not in found_dates:
+            found_dates.append(iso_str)
+
+    # DD/MM/YYYY or DD-MM-YYYY
+    for dmy_m in re.finditer(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", query):
+        d, m, y = int(dmy_m.group(1)), int(dmy_m.group(2)), int(dmy_m.group(3))
+        iso_str = f"{y:04d}-{m:02d}-{d:02d}"
+        if iso_str not in found_dates:
+            found_dates.append(iso_str)
+
+    # Month name patterns
+    month_map = {
+        "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+        "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+        "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+        "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+    }
+    # e.g. "27 August 2026" or "27th August 2026"
+    for m1 in re.finditer(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)(?:,)?\s+(\d{4})\b", query):
+        if m1.group(2).lower() in month_map:
             d = int(m1.group(1))
             m = month_map[m1.group(2).lower()]
             y = int(m1.group(3))
-            date_iso = f"{y:04d}-{m:02d}-{d:02d}"
-        else:
-            # e.g. "August 27, 2026"
-            m2 = re.search(r"\b([a-zA-Z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\b", query)
-            if m2 and m2.group(1).lower() in month_map:
-                m = month_map[m2.group(1).lower()]
-                d = int(m2.group(2))
-                y = int(m2.group(3))
-                date_iso = f"{y:04d}-{m:02d}-{d:02d}"
+            iso_str = f"{y:04d}-{m:02d}-{d:02d}"
+            if iso_str not in found_dates:
+                found_dates.append(iso_str)
 
-    if date_iso:
-        params["issue_date"] = date_iso
+    # e.g. "August 27, 2026"
+    for m2 in re.finditer(r"\b([a-zA-Z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\b", query):
+        if m2.group(1).lower() in month_map:
+            m = month_map[m2.group(1).lower()]
+            d = int(m2.group(2))
+            y = int(m2.group(3))
+            iso_str = f"{y:04d}-{m:02d}-{d:02d}"
+            if iso_str not in found_dates:
+                found_dates.append(iso_str)
+
+    if found_dates:
+        params["target_dates"] = found_dates
+        params["issue_date"] = found_dates[0]
+        if len(found_dates) >= 2:
+            sorted_dates = sorted(found_dates)
+            params["date_from"] = sorted_dates[0]
+            params["date_to"] = sorted_dates[-1]
 
     # 4. Section / Category Extraction for listing queries
     is_section_query = any(w in query.lower() for w in ["news", "articles", "stories", "section", "coverage", "reports"])
@@ -577,30 +600,83 @@ class QueryPlanner:
                     logger.info("Pruned hallucinated issue_date not in query", extra={"issue_date": args.issue_date, "query": query})
                     args.issue_date = None
 
-        if plan_obj.primary_tool == "sql_analytics":
-            call_args: dict[str, Any] = {
-                "analysis_type": args.analysis_type or "issue_summary",
-                "newspaper_name": args.newspaper_name,
-                "issue_date": args.issue_date,
-                "issue_id": args.issue_id,
-                "page_filter": args.page_filter,
-                "exclude_page_filter": args.exclude_page_filter,
-                "category_filter": args.category_filter,
-                "query": args.query or query,
-            }
-            # Clean None values
-            call_args = {k: v for k, v in call_args.items() if v is not None}
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="sql_analytics",
-                    arguments=call_args,
-                    purpose=f"Execute SQL relational analytics ({call_args.get('analysis_type', 'issue_summary')})",
+        # Populate date ranges if extracted
+        if extracted_params.get("date_from") and not args.date_from:
+            args.date_from = extracted_params["date_from"]
+        if extracted_params.get("date_to") and not args.date_to:
+            args.date_to = extracted_params["date_to"]
+        if extracted_params.get("target_dates") and not args.target_dates:
+            args.target_dates = extracted_params["target_dates"]
+
+        # If user is asking to compare issues/dates of ONE specific newspaper,
+        # redirect from all-newspaper coverage_analysis to targeted multi-issue SQL summaries & scoped hybrid search
+        is_single_brand_multi_issue = (
+            args.newspaper_name is not None
+            and (len(args.target_dates) >= 2 or (args.date_from and args.date_to))
+        )
+
+        if plan_obj.primary_tool == "sql_analytics" or is_single_brand_multi_issue:
+            if is_single_brand_multi_issue and plan_obj.primary_tool == "coverage_analysis":
+                plan_obj.primary_tool = "sql_analytics"
+                # Schedule targeted SQL summaries for the requested dates of that newspaper
+                for target_dt in (args.target_dates or [args.date_from, args.date_to]):
+                    if not target_dt:
+                        continue
+                    tool_calls.append(
+                        PlannedToolCall(
+                            tool_name="sql_analytics",
+                            arguments={
+                                "analysis_type": "issue_summary",
+                                "newspaper_name": args.newspaper_name,
+                                "issue_date": target_dt,
+                                "query": args.query or query,
+                            },
+                            purpose=f"Retrieve article manifest and headlines for {args.newspaper_name} on {target_dt}",
+                        )
+                    )
+                # Also add scoped hybrid search across those dates
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={
+                            "query": args.query or query,
+                            "newspaper_name": args.newspaper_name,
+                            "date_from": args.date_from,
+                            "date_to": args.date_to,
+                            "top_k": 10,
+                        },
+                        purpose=f"Retrieve key articles from {args.newspaper_name} between {args.date_from} and {args.date_to}",
+                    )
                 )
-            )
+            else:
+                call_args: dict[str, Any] = {
+                    "analysis_type": args.analysis_type or "issue_summary",
+                    "newspaper_name": args.newspaper_name,
+                    "issue_date": args.issue_date,
+                    "date_from": args.date_from,
+                    "date_to": args.date_to,
+                    "issue_id": args.issue_id,
+                    "page_filter": args.page_filter,
+                    "exclude_page_filter": args.exclude_page_filter,
+                    "category_filter": args.category_filter,
+                    "query": args.query or query,
+                }
+                # Clean None values
+                call_args = {k: v for k, v in call_args.items() if v is not None}
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments=call_args,
+                        purpose=f"Execute SQL relational analytics ({call_args.get('analysis_type', 'issue_summary')})",
+                    )
+                )
 
         elif plan_obj.primary_tool == "hybrid_search":
             call_args = {
                 "query": args.query or query,
+                "newspaper_name": args.newspaper_name,
+                "date_from": args.date_from,
+                "date_to": args.date_to,
                 "page_filter": args.page_filter,
                 "top_k": args.top_k or 6,
             }
@@ -611,6 +687,7 @@ class QueryPlanner:
                     arguments=call_args,
                     purpose=(
                         f"Execute hybrid search for query '{call_args.get('query')}'"
+                        + (f" in {args.newspaper_name}" if args.newspaper_name else "")
                         + (f" on Page {args.page_filter}" if args.page_filter else "")
                     ),
                 )
@@ -639,7 +716,13 @@ class QueryPlanner:
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="hybrid_search",
-                    arguments={"query": args.query or query, "top_k": 12},
+                    arguments={
+                        "query": args.query or query,
+                        "newspaper_name": args.newspaper_name,
+                        "date_from": args.date_from,
+                        "date_to": args.date_to,
+                        "top_k": 12,
+                    },
                     purpose="Retrieve diverse articles across multiple newspaper editions",
                 )
             )
@@ -866,29 +949,71 @@ class QueryPlanner:
             )
 
         elif is_comparison:
-            archetype = "cross_newspaper_comparison"
-            reasoning = "Query requested editorial perspective comparison across multiple broadsheet editions."
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="hybrid_search",
-                    arguments={"query": query, "top_k": 12},
-                    purpose="Retrieve diverse articles across multiple newspaper editions",
-                )
+            is_single_brand_multi_issue = (
+                newspaper_name is not None
+                and (len(extracted_params.get("target_dates", [])) >= 2 or (extracted_params.get("date_from") and extracted_params.get("date_to")))
             )
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="coverage_analysis",
-                    arguments={"query": query},
-                    purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
+            if is_single_brand_multi_issue:
+                archetype = "quantitative_trend"
+                reasoning = f"Query compares multiple specific editions/dates of {newspaper_name}. Scheduling targeted SQL issue summaries and scoped hybrid search."
+                for target_dt in (extracted_params.get("target_dates") or [extracted_params.get("date_from"), extracted_params.get("date_to")]):
+                    if not target_dt:
+                        continue
+                    tool_calls.append(
+                        PlannedToolCall(
+                            tool_name="sql_analytics",
+                            arguments={
+                                "analysis_type": "issue_summary",
+                                "newspaper_name": newspaper_name,
+                                "issue_date": target_dt,
+                                "query": query,
+                            },
+                            purpose=f"Retrieve article manifest and headlines for {newspaper_name} on {target_dt}",
+                        )
+                    )
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={
+                            "query": query,
+                            "newspaper_name": newspaper_name,
+                            "date_from": extracted_params.get("date_from"),
+                            "date_to": extracted_params.get("date_to"),
+                            "top_k": 10,
+                        },
+                        purpose=f"Retrieve key articles from {newspaper_name} between {extracted_params.get('date_from')} and {extracted_params.get('date_to')}",
+                    )
                 )
-            )
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="sql_analytics",
-                    arguments={"analysis_type": "coverage_comparison", "query": query},
-                    purpose="Compare reporting sentiment, volume, and section prominence",
+            else:
+                archetype = "cross_newspaper_comparison"
+                reasoning = "Query requested editorial perspective comparison across multiple broadsheet editions."
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={
+                            "query": query,
+                            "newspaper_name": newspaper_name,
+                            "date_from": extracted_params.get("date_from"),
+                            "date_to": extracted_params.get("date_to"),
+                            "top_k": 12,
+                        },
+                        purpose="Retrieve diverse articles across multiple newspaper editions",
+                    )
                 )
-            )
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="coverage_analysis",
+                        arguments={"query": query},
+                        purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
+                    )
+                )
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments={"analysis_type": "coverage_comparison", "query": query},
+                        purpose="Compare reporting sentiment, volume, and section prominence",
+                    )
+                )
 
         elif is_entity:
             archetype = "entity_deep_dive"

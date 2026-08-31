@@ -296,11 +296,35 @@ class TestAgentWorkflowToolExecution:
         assert sql_call.arguments.get("issue_date") == "2026-08-27"
         assert sql_call.arguments.get("analysis_type") == "issue_summary"
 
-    def test_planner_get_provider_with_model_override(self) -> None:
+    def test_single_newspaper_multi_date_comparison(self) -> None:
         planner = QueryPlanner()
-        provider = planner._get_provider("ollama_deepseek")
-        assert provider is not None
-        assert provider.provider_name == "ollama"
+        plan = planner.plan_query("COMPARE NEWSPAPER THE GOAN DATE 1/8/2026 AND THE THE GOAN NEWSPAPER DATED 2/8/2026")
+        assert plan.archetype == "quantitative_trend"
+        # Verify tools: targeted SQL issue summaries and scoped hybrid search, NOT all-newspaper coverage analysis
+        tool_names = [t.tool_name for t in plan.tool_calls]
+        assert "coverage_analysis" not in tool_names
+        assert "sql_analytics" in tool_names
+        assert "hybrid_search" in tool_names
+
+        sql_calls = [t for t in plan.tool_calls if t.tool_name == "sql_analytics"]
+        assert len(sql_calls) == 2
+        dates = {c.arguments.get("issue_date") for c in sql_calls}
+        assert "2026-08-01" in dates
+        assert "2026-08-02" in dates
+
+        hybrid_calls = [t for t in plan.tool_calls if t.tool_name == "hybrid_search"]
+        assert len(hybrid_calls) == 1
+        assert hybrid_calls[0].arguments.get("newspaper_name") == "The Goan"
+        assert hybrid_calls[0].arguments.get("date_from") == "2026-08-01"
+        assert hybrid_calls[0].arguments.get("date_to") == "2026-08-02"
+
+    def test_extract_parameters_multi_date(self) -> None:
+        from app.agent.planner import extract_parameters_from_query
+        res = extract_parameters_from_query("COMPARE NEWSPAPER THE GOAN DATE 1/8/2026 AND THE THE GOAN NEWSPAPER DATED 2/8/2026")
+        assert res.get("newspaper_name") == "The Goan"
+        assert res.get("date_from") == "2026-08-01"
+        assert res.get("date_to") == "2026-08-02"
+        assert res.get("target_dates") == ["2026-08-01", "2026-08-02"]
 
 
 

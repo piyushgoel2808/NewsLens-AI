@@ -31,6 +31,8 @@ CRITICAL ANALYTICAL GUIDELINES:
    - ABSOLUTE PROHIBITION: You must NEVER invent, fabricate, or assume any dates,
      newspaper names, entities, or facts not explicitly present in the provided evidence.
    - Ground all dates, metrics, and metadata strictly in the provided broadsheet source tags.
+   - NEVER generate introductory memo headers containing arbitrary dates (such as "Date: October 26, 2023 (Current Analysis)").
+     The ONLY dates permitted in your response are the publication dates explicitly stated in the evidence chunks.
    - Do NOT introduce external companies, institutions, or individuals unless they
      directly appear in the retrieved evidence chunks corresponding to the user's topic.
    - If the provided excerpts do not contain verified evidence to answer the query, explicitly state:
@@ -119,6 +121,7 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
         text,
         flags=re.IGNORECASE,
     )
+    ans_text = text.strip()
     if reasoning_prefix_match:
         pattern = (
             r"\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|"
@@ -127,9 +130,17 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
         split_match = re.search(pattern, text, flags=re.IGNORECASE)
         if split_match:
             s_idx = split_match.start()
-            return text[:s_idx].strip(), text[s_idx:].strip()
+            ans_text = text[s_idx:].strip()
+            return text[:s_idx].strip(), ans_text
 
-    return "", text.strip()
+    # Post-clean: Strip hallucinated memo headers with arbitrary pre-training dates like "Date: October 26, 2023 (Current Analysis)"
+    ans_text = re.sub(
+        r"(?i)^(?:\*{0,2}EXECUTIVE\s+INTELLIGENCE\s+BRIEFING\*{0,2}\s*\n+)?Date:\s*[A-Za-z]+\s+\d{1,2},?\s+20\d{2}\s*\([^\)]*Current Analysis[^\)]*\)\s*Subject:[^\n]+\n*",
+        "",
+        ans_text,
+    ).strip()
+
+    return "", ans_text
 
 EMPTY_EVIDENCE_RESPONSE = (
     "I could not find any evidence or articles matching this query in the database. "
@@ -212,24 +223,39 @@ class AnswerSynthesizer:
         return candidates
 
     def _build_evidence_context(self, evidence_items: list[dict[str, Any]]) -> str:
-        """Format retrieved evidence documents into structured prompt context."""
+        """Format retrieved evidence documents into structured prompt context with strict token budgeting."""
         context_blocks: list[str] = []
-        for i, item in enumerate(evidence_items, start=1):
+        # Cap at top 12 items to prevent prompt explosion (guaranteeing <= 3500 tokens)
+        budgeted_items = evidence_items[:12] if evidence_items else []
+        seen_keys: set[str] = set()
+
+        for item in budgeted_items:
             is_web = item.get("is_web") or item.get("source_tool") == "web_search"
             hl = item.get("headline", "Untitled Article")
-            text = item.get("snippet") or item.get("full_text") or item.get("summary") or ""
+            text = (item.get("snippet") or item.get("full_text") or item.get("summary") or "").strip()
 
+            # Deduplication key across items
+            dedup_key = f"{hl.lower().strip()}_{text[:80].lower().strip()}"
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
+            # Truncate overly long text snippets to 1,200 chars to protect context size
+            if len(text) > 1200:
+                text = text[:1200].rstrip() + " ... [excerpt truncated for length]"
+
+            idx = len(context_blocks) + 1
             if is_web:
                 url = item.get("url", "")
                 src = item.get("newspaper_name", "Live Web")
                 dt = item.get("issue_date", "Current")
                 context_blocks.append(
-                    f"--- LIVE WEB EVIDENCE EXCERPT [{i}] ---\n"
+                    f"--- LIVE WEB EVIDENCE EXCERPT [{idx}] ---\n"
                     f"Source: {src}\n"
                     f"Title: {hl}\n"
                     f"URL: {url}\n"
                     f"Date: {dt}\n"
-                    f"Content:\n{text.strip()}\n"
+                    f"Content:\n{text}\n"
                 )
             else:
                 np_name = item.get("newspaper_name", "Unknown Publication")
@@ -241,13 +267,13 @@ class AnswerSynthesizer:
                     f"(PDF Page {pdf_page}), Headline: \"{hl}\"]"
                 )
                 context_blocks.append(
-                    f"--- ARCHIVE EVIDENCE EXCERPT [{i}] ---\n"
+                    f"--- ARCHIVE EVIDENCE EXCERPT [{idx}] ---\n"
                     f"{evidence_tag}\n"
                     f"Publication: {np_name}\n"
                     f"Date: {dt}\n"
                     f"Page(s): Page {pdf_page} (PDF Page {pdf_page})\n"
                     f"Headline: {hl}\n"
-                    f"Content:\n{text.strip()}\n"
+                    f"Content:\n{text}\n"
                 )
         return "\n".join(context_blocks)
 
