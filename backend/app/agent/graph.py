@@ -21,7 +21,7 @@ from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.synthesizer import AnswerSynthesizer
 from app.core.logging import get_logger
 from app.core.metrics import record_agent_query
-from app.models.newspaper import Newspaper
+from app.models.newspaper import Issue, Newspaper
 from app.models.query import QueryLog
 from app.retrieval.coverage_analyzer import CoverageAnalyzer
 from app.retrieval.entity_filter import EntitySearchEngine
@@ -293,96 +293,216 @@ class AgentWorkflow:
                         )
                     elif analysis_type == "issue_summary":
                         page_filter = args.get("page_filter")
-                        np_arg = args.get("newspaper_name") or active_newspaper_name
+                        
+                        # Context inheritance guardrails:
+                        # 1. Do NOT inherit newspaper_name from chat history if query is cross-newspaper comparison
+                        #    or if this tool call explicitly targets all newspapers on an issue_date.
+                        # 2. Do NOT inherit newspaper_name or issue_id if the tool call specifies an issue_date
+                        #    that differs from the active_issue_date in history.
+                        is_comparative = (
+                            state.get("archetype") == "cross_newspaper_comparison"
+                            or any(w in str(state.get("query", "")).lower() for w in ["all available", "all newspaper", "across newspaper", "both newspaper", "different newspaper"])
+                        )
+                        date_mismatch = bool(args.get("issue_date") and active_issue_date and args.get("issue_date") != active_issue_date)
+                        target_all_on_date = bool(args.get("issue_date") and not args.get("newspaper_name"))
+                        inherit_history = not is_comparative and not date_mismatch and not target_all_on_date
+
+                        np_arg = args.get("newspaper_name") or (active_newspaper_name if inherit_history else None)
                         iss_d_arg = args.get("issue_date") or active_issue_date
-                        iss_id_arg = args.get("issue_id") or active_issue_id
-                        summary = await self._sql_analytics.get_issue_summary(
-                            newspaper_name=np_arg,
-                            issue_date=iss_d_arg,
-                            issue_id=iss_id_arg,
-                            page_filter=page_filter,
-                            exclude_page_filter=args.get("exclude_page_filter"),
-                            category_filter=args.get("category_filter"),
-                            query=args.get("query", state["query"]),
+                        iss_id_arg = args.get("issue_id") or (active_issue_id if inherit_history else None)
+
+                        # Multi-issue mode: when issue_date is specified without newspaper_name,
+                        # retrieve ALL issues on that date for cross-newspaper comparison
+                        is_multi_issue_date = (
+                            iss_d_arg
+                            and not np_arg
+                            and not iss_id_arg
                         )
-                        if "error" in summary:
-                            summary_str = f"⚠️ {summary['error']}"
-                            hits_count = 0
-                        else:
-                            active_issue_id = summary.get("issue_id")
-                            active_newspaper_name = summary.get("newspaper")
-                            active_issue_date = summary.get("issue_date")
-                            total_arts = summary.get("total_articles", 0)
-                            total_pgs = summary.get("total_pages", 0)
-                            sec_breakdown = ", ".join(
-                                f"{k}: {v}" for k, v in summary.get("section_breakdown", {}).items()
-                            )
-                            articles_list = summary.get("articles", [])
-                            hits_count = total_arts
 
-                            manifest_lines = []
-                            for idx, a in enumerate(articles_list[:50], 1):
-                                pr_page = str(a.get("printed_page") or "").strip()
-                                pg_num = a.get("page_number", 1)
-                                if (
-                                    pr_page
-                                    and not pr_page.startswith("Unnumbered")
-                                    and not pr_page.startswith("PDF p.")
-                                    and pr_page != str(pg_num)
-                                ):
-                                    folio_info = f"Page {pr_page} (PDF p.{pg_num})"
-                                else:
-                                    folio_info = f"Page {pg_num}"
-                                author_info = (
-                                    f" by {a['byline_author']}" if a.get("byline_author") else ""
+                        if is_multi_issue_date:
+                            from sqlalchemy import select as sa_select
+                            from sqlalchemy.orm import selectinload as sa_selectinload
+                            async with self._session_factory() as db:
+                                stmt = (
+                                    sa_select(Issue)
+                                    .where(Issue.issue_date == iss_d_arg)
+                                    .options(
+                                        sa_selectinload(Issue.newspaper),
+                                        sa_selectinload(Issue.pages),
+                                    )
+                                    .order_by(Issue.id)
                                 )
-                                manifest_lines.append(
-                                    f'{idx}. [{a["section"]}] "{a["headline"]}" '
-                                    f"({folio_info}{author_info}, {a['word_count']} words)"
-                                )
-                            manifest_text = "\n".join(manifest_lines)
+                                res = await db.execute(stmt)
+                                date_issues = res.scalars().all()
 
-                            np_title = summary.get("newspaper", "Archive")
-                            iss_d = summary.get("issue_date", "")
-                            if page_filter:
-                                no_arts_msg = (
-                                    "No editorial articles found on this page "
-                                    "(Page may be a full-page advertisement, "
-                                    "photo gallery, or unindexed wrap)."
-                                )
-                                body_content = manifest_text if manifest_lines else no_arts_msg
-                                summary_str = (
-                                    f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
-                                    f"({iss_d}) - PAGE {page_filter} ===\n"
-                                    f"• Total Articles on Page {page_filter}: {total_arts}\n"
-                                    f"• Total Issue Pages: {total_pgs}\n\n"
-                                    f"Articles on Page {page_filter}:\n{body_content}"
-                                )
+                            if date_issues:
+                                for di in date_issues:
+                                    summary = await self._sql_analytics.get_issue_summary(
+                                        issue_id=di.id,
+                                        query=args.get("query", state["query"]),
+                                        page_filter=page_filter,
+                                        exclude_page_filter=args.get("exclude_page_filter"),
+                                        category_filter=args.get("category_filter"),
+                                    )
+                                    if "error" in summary:
+                                        continue
+
+                                    total_arts = summary.get("total_articles", 0)
+                                    total_pgs = summary.get("total_pages", 0)
+                                    sec_breakdown = ", ".join(
+                                        f"{k}: {v}" for k, v in summary.get("section_breakdown", {}).items()
+                                    )
+                                    articles_list = summary.get("articles", [])
+                                    hits_count += total_arts
+
+                                    manifest_lines = []
+                                    for idx, a in enumerate(articles_list[:30], 1):
+                                        pr_page = str(a.get("printed_page") or "").strip()
+                                        pg_num = a.get("page_number", 1)
+                                        if (
+                                            pr_page
+                                            and not pr_page.startswith("Unnumbered")
+                                            and not pr_page.startswith("PDF p.")
+                                            and pr_page != str(pg_num)
+                                        ):
+                                            folio_info = f"Page {pr_page} (PDF p.{pg_num})"
+                                        else:
+                                            folio_info = f"Page {pg_num}"
+                                        author_info = (
+                                            f" by {a['byline_author']}" if a.get("byline_author") else ""
+                                        )
+                                        manifest_lines.append(
+                                            f'{idx}. [{a["section"]}] "{a["headline"]}" '
+                                            f"({folio_info}{author_info}, {a['word_count']} words)"
+                                        )
+                                    manifest_text = "\n".join(manifest_lines)
+
+                                    np_title = summary.get("newspaper", "Archive")
+                                    iss_d = summary.get("issue_date", "")
+                                    summary_str = (
+                                        f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
+                                        f"({iss_d}) ===\n"
+                                        f"• Total Articles Ingested: {total_arts}\n"
+                                        f"• Total Issue Pages: {total_pgs}\n"
+                                        f"• Sections Breakdown: {sec_breakdown}\n\n"
+                                        f"Article Manifest:\n{manifest_text}"
+                                    )
+                                    evidence_items.append(
+                                        {
+                                            "article_id": 0,
+                                            "headline": (
+                                                f"Issue Manifest: {np_title} ({iss_d})"
+                                            ),
+                                            "newspaper_name": np_title,
+                                            "issue_date": iss_d,
+                                            "pages": [1],
+                                            "snippet": summary_str,
+                                            "prominence_score": 1.0,
+                                            "source_tool": "sql_analytics",
+                                        }
+                                    )
                             else:
-                                summary_str = (
-                                    f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
-                                    f"({iss_d}) ===\n"
-                                    f"• Total Articles Ingested: {total_arts}\n"
-                                    f"• Total Issue Pages: {total_pgs}\n"
-                                    f"• Sections Breakdown: {sec_breakdown}\n\n"
-                                    f"Article Manifest:\n{manifest_text}"
+                                evidence_items.append(
+                                    {
+                                        "article_id": 0,
+                                        "headline": f"No issues found for date {iss_d_arg}",
+                                        "newspaper_name": "Archive",
+                                        "issue_date": iss_d_arg,
+                                        "pages": [1],
+                                        "snippet": f"⚠️ No newspaper issues were found in the archive for date {iss_d_arg}.",
+                                        "prominence_score": 1.0,
+                                        "source_tool": "sql_analytics",
+                                    }
                                 )
+                        else:
+                            # Standard single-issue summary
+                            summary = await self._sql_analytics.get_issue_summary(
+                                newspaper_name=np_arg,
+                                issue_date=iss_d_arg,
+                                issue_id=iss_id_arg,
+                                page_filter=page_filter,
+                                exclude_page_filter=args.get("exclude_page_filter"),
+                                category_filter=args.get("category_filter"),
+                                query=args.get("query", state["query"]),
+                            )
+                            if "error" in summary:
+                                summary_str = f"⚠️ {summary['error']}"
+                                hits_count = 0
+                            else:
+                                active_issue_id = summary.get("issue_id")
+                                active_newspaper_name = summary.get("newspaper")
+                                active_issue_date = summary.get("issue_date")
+                                total_arts = summary.get("total_articles", 0)
+                                total_pgs = summary.get("total_pages", 0)
+                                sec_breakdown = ", ".join(
+                                    f"{k}: {v}" for k, v in summary.get("section_breakdown", {}).items()
+                                )
+                                articles_list = summary.get("articles", [])
+                                hits_count = total_arts
 
-                        evidence_items.append(
-                            {
-                                "article_id": 0,
-                                "headline": (
-                                    f"Issue Manifest: {summary.get('newspaper', 'Archive')} "
-                                    f"({summary.get('issue_date', '')})"
-                                ),
-                                "newspaper_name": summary.get("newspaper", "Archive"),
-                                "issue_date": summary.get("issue_date", "Overview"),
-                                "pages": [1],
-                                "snippet": summary_str,
-                                "prominence_score": 1.0,
-                                "source_tool": "sql_analytics",
-                            }
-                        )
+                                manifest_lines = []
+                                for idx, a in enumerate(articles_list[:50], 1):
+                                    pr_page = str(a.get("printed_page") or "").strip()
+                                    pg_num = a.get("page_number", 1)
+                                    if (
+                                        pr_page
+                                        and not pr_page.startswith("Unnumbered")
+                                        and not pr_page.startswith("PDF p.")
+                                        and pr_page != str(pg_num)
+                                    ):
+                                        folio_info = f"Page {pr_page} (PDF p.{pg_num})"
+                                    else:
+                                        folio_info = f"Page {pg_num}"
+                                    author_info = (
+                                        f" by {a['byline_author']}" if a.get("byline_author") else ""
+                                    )
+                                    manifest_lines.append(
+                                        f'{idx}. [{a["section"]}] "{a["headline"]}" '
+                                        f"({folio_info}{author_info}, {a['word_count']} words)"
+                                    )
+                                manifest_text = "\n".join(manifest_lines)
+
+                                np_title = summary.get("newspaper", "Archive")
+                                iss_d = summary.get("issue_date", "")
+                                if page_filter:
+                                    no_arts_msg = (
+                                        "No editorial articles found on this page "
+                                        "(Page may be a full-page advertisement, "
+                                        "photo gallery, or unindexed wrap)."
+                                    )
+                                    body_content = manifest_text if manifest_lines else no_arts_msg
+                                    summary_str = (
+                                        f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
+                                        f"({iss_d}) - PAGE {page_filter} ===\n"
+                                        f"• Total Articles on Page {page_filter}: {total_arts}\n"
+                                        f"• Total Issue Pages: {total_pgs}\n\n"
+                                        f"Articles on Page {page_filter}:\n{body_content}"
+                                    )
+                                else:
+                                    summary_str = (
+                                        f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
+                                        f"({iss_d}) ===\n"
+                                        f"• Total Articles Ingested: {total_arts}\n"
+                                        f"• Total Issue Pages: {total_pgs}\n"
+                                        f"• Sections Breakdown: {sec_breakdown}\n\n"
+                                        f"Article Manifest:\n{manifest_text}"
+                                    )
+
+                            evidence_items.append(
+                                {
+                                    "article_id": 0,
+                                    "headline": (
+                                        f"Issue Manifest: {summary.get('newspaper', 'Archive')} "
+                                        f"({summary.get('issue_date', '')})"
+                                    ),
+                                    "newspaper_name": summary.get("newspaper", "Archive"),
+                                    "issue_date": summary.get("issue_date", "Overview"),
+                                    "pages": [1],
+                                    "snippet": summary_str,
+                                    "prominence_score": 1.0,
+                                    "source_tool": "sql_analytics",
+                                }
+                            )
 
                     elif analysis_type == "count_articles":
                         count_res = await self._sql_analytics.count_articles(
@@ -455,6 +575,7 @@ class AgentWorkflow:
                     elif analysis_type == "coverage_comparison":
                         cov_matrix = await self._coverage_analyzer.generate_coverage_matrix(
                             query_or_event=args.get("query", state["query"]),
+                            target_date=args.get("target_date") or args.get("issue_date"),
                         )
                         hits_count = cov_matrix.covered_count
                         lines = [
@@ -480,10 +601,69 @@ class AgentWorkflow:
                                 "source_tool": "sql_analytics",
                             }
                         )
+                    elif analysis_type == "coverage_difference":
+                        src_np = args.get("newspaper_name") or args.get("source_newspaper")
+                        cmp_np = args.get("comparison_newspaper")
+                        iss_dt = args.get("issue_date") or args.get("target_date") or active_issue_date
+
+                        diff_res = await self._sql_analytics.get_newspaper_coverage_difference(
+                            source_newspaper=src_np,
+                            comparison_newspaper=cmp_np,
+                            issue_date=iss_dt,
+                        )
+                        if "error" in diff_res:
+                            evidence_items.append(
+                                {
+                                    "article_id": 0,
+                                    "headline": f"Coverage Difference Error: {diff_res['error']}",
+                                    "newspaper_name": src_np or "Archive",
+                                    "issue_date": iss_dt or "Overview",
+                                    "pages": [1],
+                                    "snippet": f"⚠️ {diff_res['error']}",
+                                    "prominence_score": 1.0,
+                                    "source_tool": "sql_analytics",
+                                }
+                            )
+                        else:
+                            exclusives = diff_res.get("exclusive_articles", [])
+                            hits_count = len(exclusives)
+
+                            ex_lines = []
+                            for idx, ex in enumerate(exclusives[:40], 1):
+                                p_str = f"Page {ex.get('page_number')} (PDF Page {ex.get('page_number')})"
+                                ex_lines.append(
+                                    f"{idx}. [{p_str}] ({ex.get('section')}) \"{ex.get('headline')}\""
+                                )
+
+                            diff_manifest_text = "\n".join(ex_lines)
+                            summary_str = (
+                                f"=== VERIFIED EXCLUSIVE COVERAGE: {diff_res['source_newspaper']} "
+                                f"({diff_res['issue_date']}) NOT PRESENT IN {diff_res['comparison_newspaper']} ===\n"
+                                f"• Total Source Articles: {diff_res['total_source_articles']}\n"
+                                f"• Total Comparison Articles: {diff_res['total_comparison_articles']}\n"
+                                f"• Verified Exclusive Articles to {diff_res['source_newspaper']}: {diff_res['exclusive_count']}\n"
+                                f"• Shared Cross-Newspaper Stories: {diff_res['shared_count']}\n\n"
+                                f"Exclusive Articles Manifest:\n{diff_manifest_text}"
+                            )
+                            evidence_items.append(
+                                {
+                                    "article_id": 0,
+                                    "headline": (
+                                        f"Verified Exclusive Articles: {diff_res['source_newspaper']} vs {diff_res['comparison_newspaper']}"
+                                    ),
+                                    "newspaper_name": diff_res["source_newspaper"],
+                                    "issue_date": diff_res["issue_date"],
+                                    "pages": [1],
+                                    "snippet": summary_str,
+                                    "prominence_score": 1.0,
+                                    "source_tool": "sql_analytics",
+                                }
+                            )
 
                 elif name == "coverage_analysis":
                     cov_matrix = await self._coverage_analyzer.generate_coverage_matrix(
                         query_or_event=args.get("query", state["query"]),
+                        target_date=args.get("target_date"),
                     )
                     hits_count = cov_matrix.covered_count
                     lines = [
@@ -611,9 +791,21 @@ class AgentWorkflow:
 
             return matches / max(1.0, float(len(query_tokens)))
 
-        # Retain only evidence items that have positive relevance to query tokens
-        filtered_evidence = [item for item in evidence if _score_relevance(item) > 0.0]
-        filtered_evidence.sort(key=_score_relevance, reverse=True)
+        # For macro-structural tools or cross-newspaper comparative archetypes,
+        # structured manifests and audit matrices must never be thrown away by lexical query matching.
+        def _is_structural_or_macro_evidence(item: dict[str, Any]) -> bool:
+            return (
+                archetype in ("cross_newspaper_comparison", "quantitative_trend")
+                or item.get("source_tool") in ("sql_analytics", "coverage_analysis")
+                or item.get("article_id") == 0
+            )
+
+        # Retain evidence items that have positive relevance to query tokens OR are structural manifests
+        filtered_evidence = [
+            item for item in evidence
+            if _is_structural_or_macro_evidence(item) or _score_relevance(item) > 0.0
+        ]
+        filtered_evidence.sort(key=lambda it: (1.0 if _is_structural_or_macro_evidence(it) else _score_relevance(it)), reverse=True)
 
         # Check if retrieval yielded grounded items matching query
         has_grounded_content = bool(
@@ -775,7 +967,7 @@ class AgentWorkflow:
             # Reconstruct typed AgentState from cached dict
             return cached_result  # type: ignore[return-value]
 
-        active_ctx = extract_active_issue_from_history(history)
+        active_ctx = extract_active_issue_from_history(history, current_query=query)
         initial_state: AgentState = {
             "query": query,
             "original_query": query,

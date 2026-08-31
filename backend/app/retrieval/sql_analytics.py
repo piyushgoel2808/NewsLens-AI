@@ -479,3 +479,93 @@ class SQLAnalyticsEngine:
             query=query,
         )
 
+    async def get_newspaper_coverage_difference(
+        self,
+        source_newspaper: str,
+        comparison_newspaper: str,
+        issue_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Compute verified differential coverage: articles in source_newspaper absent from comparison_newspaper."""
+        source_summary = await self.list_issue_articles(
+            newspaper_name=source_newspaper,
+            issue_date=issue_date,
+        )
+        if not isinstance(source_summary, dict) or "error" in source_summary:
+            err = source_summary.get("error", "Source issue not found") if isinstance(source_summary, dict) else "Source error"
+            return {"error": f"Source publication '{source_newspaper}': {err}"}
+
+        comp_summary = await self.list_issue_articles(
+            newspaper_name=comparison_newspaper,
+            issue_date=issue_date,
+        )
+        if not isinstance(comp_summary, dict) or "error" in comp_summary:
+            err = comp_summary.get("error", "Comparison issue not found") if isinstance(comp_summary, dict) else "Comparison error"
+            return {"error": f"Comparison publication '{comparison_newspaper}': {err}"}
+
+        source_articles = source_summary.get("articles", [])
+        comp_articles = comp_summary.get("articles", [])
+
+        # Build token sets for comparison headlines
+        comp_word_sets: list[set[str]] = []
+        for ca in comp_articles:
+            chl = (ca.get("headline") or "").strip().lower()
+            c_words = set(w.strip("?:!.,\"'()[]{}<>-") for w in chl.split() if len(w) > 3)
+            comp_word_sets.append(c_words)
+
+        exclusive_articles: list[dict[str, Any]] = []
+        shared_articles: list[dict[str, Any]] = []
+
+        # Noise tokens to filter out
+        noise_hls = {
+            "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
+            "in short >>", "in short", "news in brief", "panaji", "margao", "vasco", "mapusa",
+        }
+
+        for sa in source_articles:
+            hl = (sa.get("headline") or "").strip()
+            if len(hl) < 10 or hl.lower() in noise_hls:
+                continue
+
+            hl_words = set(w.strip("?:!.,\"'()[]{}<>-") for w in hl.lower().split() if len(w) > 3)
+            if not hl_words:
+                continue
+
+            max_overlap = 0.0
+            matched_comp_hl = None
+            for idx, c_words in enumerate(comp_word_sets):
+                if not c_words:
+                    continue
+                overlap = len(hl_words & c_words) / max(1, min(len(hl_words), len(c_words)))
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    matched_comp_hl = comp_articles[idx].get("headline")
+
+            if max_overlap >= 0.50:
+                shared_articles.append({
+                    "source_headline": hl,
+                    "matched_headline": matched_comp_hl,
+                    "overlap_score": round(max_overlap, 2),
+                })
+            else:
+                exclusive_articles.append({
+                    "id": sa.get("id"),
+                    "headline": hl,
+                    "page_number": sa.get("page_number", 1),
+                    "printed_page": sa.get("printed_page", "1"),
+                    "section": sa.get("section", "General"),
+                    "category": sa.get("category", "General"),
+                    "snippet": sa.get("summary") or sa.get("snippet", ""),
+                })
+
+        return {
+            "source_newspaper": source_summary.get("newspaper", source_newspaper),
+            "comparison_newspaper": comp_summary.get("newspaper", comparison_newspaper),
+            "issue_date": str(source_summary.get("issue_date", issue_date)),
+            "total_source_articles": len(source_articles),
+            "total_comparison_articles": len(comp_articles),
+            "exclusive_count": len(exclusive_articles),
+            "shared_count": len(shared_articles),
+            "exclusive_articles": exclusive_articles,
+            "shared_articles": shared_articles[:10],
+        }
+

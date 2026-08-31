@@ -198,22 +198,27 @@ sequenceDiagram
 ```
 
 #### Detailed Retrieval Steps:
-1. **Query Condensation** ([`backend/app/agent/query_condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/query_condenser.py)):
-   - Contextualizes conversational follow-ups (e.g. *"What about its French partner?"* $\to$ *"Safran partnership with HAL for helicopter engine"*).
+1. **Conversational Query Condensation** ([`backend/app/agent/condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py)):
+   - Contextualizes conversational follow-ups while employing query-aware guardrails to drop stale publications or dates whenever a user switches dates or initiates cross-newspaper comparisons.
+   - Preserves differential exclusion context across multi-turn follow-ups (*"list all those 11 articles"* $\to$ *"list all those articles in The Goan but not in The Morning Standard dated 2026-08-01"*).
 2. **Query Planner** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)):
+   - Multi-brand entity extraction and typo tolerance (e.g. mapping `"he Morning Standard"` to `The Morning Standard`).
    - Classifies query into archetypes:
      - `factual_lookup`: Specific event or metric.
-     - `comparative_perspective`: Differing coverage across newspapers.
-     - `temporal_evolution`: Evolution over dates.
-     - `quantitative_trend`: Charts, stocks, macro indicators.
+     - `cross_newspaper_comparison`: Differing coverage, multi-broadsheet audits, or differential article exclusions (*"In X but not in Y"*).
+     - `thematic_timeline`: Evolution over dates.
+     - `quantitative_trend`: Charts, stocks, macro indicators, and whole-issue article manifests.
+     - `entity_deep_dive`: Multi-hop entity exploration and salience profiles.
+     - `conversational_meta_query`: Continuity and metadata lookups directly from dialogue context.
 3. **Hybrid Search Engine** ([`backend/app/retrieval/hybrid_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/hybrid_search.py)):
-   - **Vector Search**: Qdrant cosine similarity over 1024-dim dense space.
+   - **Vector Search**: Qdrant cosine similarity over 1024-dim dense space (`BAAI/bge-m3`).
    - **Keyword Search**: MySQL `MATCH ... AGAINST` in natural language mode with query expansion.
    - **Reciprocal Rank Fusion (RRF)**: Merges ranks using $RRF = \sum \frac{1}{60 + \text{rank}_i}$.
-   - **Cross-Encoder Reranker**: Deep token-level relevance scoring using `ms-marco-MiniLM-L-6-v2`.
+   - **Cross-Encoder Reranker**: Deep token-level relevance scoring using `BAAI/bge-reranker-v2-m3`.
 4. **Specialized Tools**:
+   - `SQLAnalytics`: Whole-issue manifests, section distributions, article counts, and **Deterministic Coverage Differences** (`get_newspaper_coverage_difference`) computing exact article exclusions between publications on the same date via headline token overlap.
+   - `CoverageAnalyzer`: Multi-newspaper 3-tier negative coverage matrix audits.
    - `EntityFilter`: N-hop entity exploration (`search_by_entity`).
-   - `SQLAnalytics`: Aggregate SQL metrics (article counts, section distribution).
    - `TimelineBuilder`: Chronological narrative trajectories.
    - `WebSearchEngine`: Live web verification (DuckDuckGo / Tavily / Serper).
 

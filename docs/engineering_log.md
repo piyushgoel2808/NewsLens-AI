@@ -2207,3 +2207,154 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
 5. **Test Suite**:
    - `uv run pytest tests/ -v` $\rightarrow$ **318 / 318 tests green (100%)**.
 
+---
+
+## Phase 9.7 — Single-Page Atomic Re-Ingestion & VLM Sub-Photo Grounding
+
+**Date**: 2026-08-30  
+**Status**: Completed ✅
+
+### What was built & fixed
+1. **Single-Page Re-Ingestion Service (`page_reingestion.py`)**:
+   - Implemented `PageReingestionService`: allows granular, atomic re-processing of a single page without reprocessing an entire 24+ page broadsheet issue.
+   - Slices the target page from the original PDF stored in MinIO.
+   - Atomically purges previous page-exclusive articles, entities, topics, chunks, photos, and Qdrant vectors.
+   - Re-runs Docling OCR, photo harvesting, Qwen-VL scene analysis, article segmentation, NER, and vector embedding into Qdrant.
+2. **Re-Ingestion API Endpoints (`newspapers.py`)**:
+   - Added `POST /api/issues/{issue_id}/pages/{page_number}/reingest` and `POST /api/pages/{page_id}/reingest`.
+3. **Broadsheet Reader UI Integration (`BroadsheetReader.jsx`)**:
+   - Added `Re-ingest Page` button to the reader toolbar with live spinning loader, confirmation modal, and status notification banner.
+   - Added friendly empty-state messaging explaining cover flaps and full-page visual displays.
+4. **VLM Visual Grounding (`media_extractor.py`)**:
+   - Implemented `detect_subphotos_via_vlm_grounding()` using Qwen-VL to detect and crop discrete sub-photos and charts on composite photo pages.
+5. **Conversational Meta-Query Detection (`condenser.py`, `graph.py`)**:
+   - Added `is_in_context_meta_query()` to recognize meta questions about previous turns (*"what date was that?"*, *"which newspaper?"*) and answer directly from history without triggering full retrieval pipelines.
+
+---
+
+## Phase 9.8 — Complete Database Schema Documentation & Schema Inspector CLI
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was built & documented
+1. **Schema Inspector CLI Script (`scripts/show_schema.py`)**:
+   - Added `show_schema.py` supporting `uv run python scripts/show_schema.py [table] [--list]`.
+   - Added Makefile targets: `make schema` and `make schema-list`.
+2. **Comprehensive Database Schema Documentation (`docs/database_schema.md`)**:
+   - Cataloged all 17 MySQL tables (`newspapers`, `ingestion_jobs`, `issues`, `pages`, `article_categories`, `articles`, `article_pages`, `article_chunks`, `photos`, `tables`, `entities`, `article_entities`, `topics`, `article_topics`, `events`, `article_events`, `query_log`).
+   - Detailed every column with SQL data type, nullability, realistic examples, and engineering rationale.
+   - Added JSON Schemas for Agentic RAG Requests, Planner CoT (`QueryPlan`), Tool Payloads (`hybrid_search`, `sql_analytics`, `entity_search`, `timeline_builder`), Corrective RAG (CRAG) fallbacks, and SSE streaming event protocol.
+
+---
+
+## Phase 9.9 — Multi-Date Query Routing, Newspaper Filter Resolution & Synthesizer Context Budgeting
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was resolved & hardened
+1. **Multi-Date Extraction in Query Planner (`planner.py`)**:
+   - `extract_parameters_from_query()` extracts all ISO, DD/MM/YYYY, and month-name date mentions into `target_dates`, `date_from`, and `date_to`.
+   - Single-newspaper multi-issue comparative queries (e.g., comparing Aug 1 and Aug 2 editions of *The Goan*) are routed to targeted `sql_analytics` issue summaries for each date alongside a scoped `hybrid_search`, completely preventing all-newspaper `coverage_analysis` explosion.
+2. **Newspaper Filter Name-to-ID Resolution (`graph.py`)**:
+   - In `_execute_tools_node()`, `hybrid_search` now dynamically queries MySQL to resolve `newspaper_name` (e.g., `"The Goan"`) to its corresponding integer `newspaper_id`, ensuring search filters apply accurately without bleeding into other publications.
+3. **Strict Context Token Budgeting in Synthesizer (`synthesizer.py`)**:
+   - `_build_evidence_context()` caps items to the top 12 and truncates long individual snippets to 1,200 characters, preventing prompt explosion past model context limits.
+   - Added prompt constraints and regex post-cleaning in `parse_thought_and_answer()` to strip arbitrary pre-training memo headers (such as `"Date: October 26, 2023 (Current Analysis)"`).
+4. **Ollama Streaming Context Window Configuration (`ollama_provider.py`)**:
+   - Configured `complete_stream()` with `"num_ctx": max(max_tokens * 2, 16384)` matching batch completion, preventing Ollama from defaulting to 4,096 tokens and erroring on large multi-document contexts.
+
+---
+
+## Phase 9.10 — Corrupted Font CMap Recovery & High-Precision Image OCR Fallback
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was resolved & hardened
+1. **Corrupted Font CMap / Replacement Character Detection (`docling_parser.py`)**:
+   - Implemented `CorruptedPdfTextLayerError`.
+   - In `parse_docling_document()`, evaluates extracted text items. If replacement characters (`\ufffd` or `\ufeff`) exceed 3% of text or fail gibberish validation (`is_text_gibberish()`), the parser escalates with `CorruptedPdfTextLayerError` rather than polluting downstream tables.
+   - In `assemble_articles()`, rejects any candidate headline containing `\ufffd` or failing gibberish checks.
+2. **Pure Image OCR Escalation in Single-Page Re-Ingestion (`page_reingestion.py`)**:
+   - Detects when a page is flagged as `SCANNED`, requires OCR, or raises `CorruptedPdfTextLayerError`.
+   - Routes the 300 DPI raster page image directly to `GoogleCloudVisionOCR`.
+   - Passes high-confidence OCR blocks into `LayoutAnalyzer.analyze_from_text_blocks()` to compute 2D reading order and `ArticleSegmenter.segment_page()` to construct clean, non-jumbled `SegmentedArticle` units with accurate bounding boxes and full text.
+3. **Full Issue Ingestion Fallback Hardening (`tasks.py`)**:
+   - Updated `_process_pdf_issue()` fallback: if Docling fails or the page lacks readable digital blocks, runs pure image OCR via `GoogleCloudVisionOCR` instead of yielding empty article sets.
+4. **Verification & Issue #64 Page 1 Re-Ingestion**:
+   - Successfully executed atomic single-page re-ingestion on **The Indian Express (Issue #64, Page 1)**.
+   - Restored 14 distinct articles with 17 Qdrant vector chunks, converting corrupted `` placeholders into verified headlines (*"Messi Magic Steals Egypt Dream"*, *"Missiles, minerals and port: Delhi, Jakarta seal key deals"*, *"Kejriwal's former residence will be Delhi state guest house and cultural centre"*).
+
+---
+
+## Phase 9.11 — Dynamic Publication Isolation & Cross-Turn Context Leakage Prevention
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was resolved & hardened
+1. **Multi-Turn Context Contamination Root Cause**:
+   - When a user engaged in multiple chat turns discussing different publications (e.g., earlier discussion of *The New York Times* on LIV Golf or *The Indian Express* on Ram Temple), subsequent comparative queries (such as *"comapare all the available newspaper dated 1/8/2026"*) erroneously inherited stale publications and dates from conversation history.
+   - In `graph.py`, `sql_analytics` fell back to `active_newspaper_name` extracted from `chat_history` when `args.newspaper_name` was `None`, inadvertently forcing an all-newspaper comparative query into a single past newspaper.
+   - In `synthesizer.py`, recent chat history was appended directly to the LLM without scoping instructions, causing the generator to incorporate prior turn stories into the target date's answer.
+2. **Dynamic Context Guardrails in `condenser.py`**:
+   - Updated `extract_active_issue_from_history(chat_history, current_query)` with three dynamic guardrails:
+     - **Cross-Newspaper Invalidation**: If `current_query` has comparative intent (*"compare"*, *"difference"*, *"all available newspapers"*), inherited single `newspaper_name` and `issue_id` are purged.
+     - **Date Mismatch Invalidation**: If `current_query` specifies its own date or range, any stale `issue_date`, `issue_id`, or `newspaper_name` from a different date in history is invalidated.
+     - **Newspaper Override**: If `current_query` specifies its own newspaper brand, historical newspaper contexts are dropped.
+3. **Dynamic Publication Scoping in `synthesizer.py`**:
+   - Implemented `_build_synthesizer_user_prompt()` for both streaming and non-streaming synthesis paths:
+     - Dynamically inspects `evidence_items` to extract verified publications present in the current retrieval.
+     - Injects `Verified Available Publications for this Query: <Pub1>, <Pub2>` and a `STRICT PUBLICATION & DATE ISOLATION` block.
+     - Added Guideline 4 to `SYNTHESIZER_SYSTEM_PROMPT` explicitly instructing the model never to pull in headlines, events, or publications from earlier chat turns.
+4. **Front-End Chat History Lifecycle & Storage Cleanup (`AgentAssistant.jsx`)**:
+   - In `handleClearChat`: Explicitly purges `localStorage.removeItem('newslens_chat_messages')` and clears active article/bbox highlights, preventing stale history from persisting on browser refresh.
+   - In `handleSend`: Excluded initial assistant greeting from `historyPayload` so that a freshly cleared session sends an empty history array `chat_history: []`.
+5. **Structural Manifest Protection in Corrective RAG (`graph.py`)**:
+   - Added `_is_structural_or_macro_evidence` to `_evaluate_retrieval_node()` so that comprehensive relational manifests from `sql_analytics` and coverage matrices from `coverage_analysis` are preserved and never pruned by lexical query token filtering.
+
+---
+
+## Phase 9.12 — Cross-Newspaper Differential Coverage Analysis & Conversational Follow-Up Enumeration
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was resolved & hardened
+1. **Root Cause Analysis for "In X but not in Y" Failure**:
+   - User query: *"List the news that are in the GOAN dated 1/8/2026 but not in he Morning Standard dated 1/8/2026"*.
+   - **Missing Brand Pattern**: *The Morning Standard* was not in `_KNOWN_BRANDS_PATTERNS`.
+   - **First-Match Break**: `extract_parameters_from_query` terminated on the first matching publication, capturing only *The Goan* and ignoring the comparison publication.
+   - **Single-Date Promotion Bug**: `args.date_from and args.date_to` evaluated to `True` when both were set to `"2026-08-01"` (single date promotion), mistaking a single-date cross-newspaper query for a single-brand multi-issue query and cancelling comparative tools.
+   - **Missing Difference Engine**: The system retrieved only *The Goan* search snippets, causing the model to hallucinate a count ("11 articles") and fail on follow-up turns (*"list all those 11 articles"*).
+2. **Multi-Brand & Differential Parameter Extraction (`planner.py`)**:
+   - Added `comparison_newspaper: str | None` and `target_newspapers: list[str]` to `ExtractedToolArguments`.
+   - Added `The Morning Standard` to `_KNOWN_BRANDS_PATTERNS` with typo tolerance (`(?:(?:the|he)\s+)?morning\s+standard`).
+   - Updated `extract_parameters_from_query` to extract all mentioned publications, preserve token order, and detect exclusion phrasing (`"but not in"`, `"not in"`, `"absent in"`, `"exclusive to"`).
+   - Fixed `is_single_brand_multi_issue` to require `args.date_from != args.date_to` and `not args.comparison_newspaper`.
+   - In both structured LLM planning and heuristic fallback, routed differential queries to `sql_analytics(analysis_type="coverage_difference")` and scoped `hybrid_search`.
+3. **Deterministic Differential Coverage Engine (`sql_analytics.py`)**:
+   - Implemented `get_newspaper_coverage_difference(source_newspaper, comparison_newspaper, issue_date)`:
+     - Loads complete relational article manifests for both publications on the given date from MySQL.
+     - Builds token sets for comparison headlines and filters layout noise ("SATURDAY", "PANAJI").
+     - Computes token overlap across all stories to deterministically isolate exclusive articles from shared wire stories.
+     - Returns exact page numbers, folios, sections, and headlines for all verified exclusive articles.
+4. **Tool Execution & Evidence Budgeting (`graph.py`, `synthesizer.py`)**:
+   - Added the `coverage_difference` execution branch in `graph.py` to format structured exclusive manifests.
+   - Expanded evidence character budget to 4,000 characters for `VERIFIED EXCLUSIVE COVERAGE`, preventing truncation of article lists.
+5. **Conversational Follow-Up Enumeration (`condenser.py`)**:
+   - Updated `extract_active_issue_from_history` to track `comparison_newspaper` and `is_differential`.
+   - Enhanced `condense_conversational_query` so follow-up queries (*"list all those 11 articles"*) preserve the differential context, resolving to:
+     `"list all those 11 articles in The Goan but not in The Morning Standard dated 2026-08-01"`.
+6. **Verification & Testing**:
+   - Added `test_plan_differential_coverage_in_x_but_not_in_y` in `test_planner.py`.
+   - Added `test_get_newspaper_coverage_difference` in `test_sql_analytics.py`.
+   - Ran live differential analysis on MySQL issues #93 (*The Goan*, 174 articles) and #98 (*The Morning Standard*, 144 articles), accurately isolating 142 exclusive articles and 12 shared stories.
+   - Verified that all **346 backend tests pass (100% green)**.
+   - Verified that the frontend builds cleanly (`npm run build`).
+
+
+
+

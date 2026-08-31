@@ -2287,6 +2287,74 @@ Reasoning models (such as Groq Qwen 3.6 / DeepSeek) emit internal chain-of-thoug
    - Successfully executed atomic single-page re-ingestion on **The Indian Express (Issue #64, Page 1)**.
    - Restored 14 distinct articles with 17 Qdrant vector chunks, converting corrupted `` placeholders into verified headlines (*"Messi Magic Steals Egypt Dream"*, *"Missiles, minerals and port: Delhi, Jakarta seal key deals"*, *"Kejriwal's former residence will be Delhi state guest house and cultural centre"*).
 
+---
+
+## Phase 9.11 — Dynamic Publication Isolation & Cross-Turn Context Leakage Prevention
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was resolved & hardened
+1. **Multi-Turn Context Contamination Root Cause**:
+   - When a user engaged in multiple chat turns discussing different publications (e.g., earlier discussion of *The New York Times* on LIV Golf or *The Indian Express* on Ram Temple), subsequent comparative queries (such as *"comapare all the available newspaper dated 1/8/2026"*) erroneously inherited stale publications and dates from conversation history.
+   - In `graph.py`, `sql_analytics` fell back to `active_newspaper_name` extracted from `chat_history` when `args.newspaper_name` was `None`, inadvertently forcing an all-newspaper comparative query into a single past newspaper.
+   - In `synthesizer.py`, recent chat history was appended directly to the LLM without scoping instructions, causing the generator to incorporate prior turn stories into the target date's answer.
+2. **Dynamic Context Guardrails in `condenser.py`**:
+   - Updated `extract_active_issue_from_history(chat_history, current_query)` with three dynamic guardrails:
+     - **Cross-Newspaper Invalidation**: If `current_query` has comparative intent (*"compare"*, *"difference"*, *"all available newspapers"*), inherited single `newspaper_name` and `issue_id` are purged.
+     - **Date Mismatch Invalidation**: If `current_query` specifies its own date or range, any stale `issue_date`, `issue_id`, or `newspaper_name` from a different date in history is invalidated.
+     - **Newspaper Override**: If `current_query` specifies its own newspaper brand, historical newspaper contexts are dropped.
+3. **Dynamic Publication Scoping in `synthesizer.py`**:
+   - Implemented `_build_synthesizer_user_prompt()` for both streaming and non-streaming synthesis paths:
+     - Dynamically inspects `evidence_items` to extract verified publications present in the current retrieval.
+     - Injects `Verified Available Publications for this Query: <Pub1>, <Pub2>` and a `STRICT PUBLICATION & DATE ISOLATION` block.
+     - Added Guideline 4 to `SYNTHESIZER_SYSTEM_PROMPT` explicitly instructing the model never to pull in headlines, events, or publications from earlier chat turns.
+4. **Front-End Chat History Lifecycle & Storage Cleanup (`AgentAssistant.jsx`)**:
+   - In `handleClearChat`: Explicitly purges `localStorage.removeItem('newslens_chat_messages')` and clears active article/bbox highlights, preventing stale history from persisting on browser refresh.
+   - In `handleSend`: Excluded initial assistant greeting from `historyPayload` so that a freshly cleared session sends an empty history array `chat_history: []`.
+5. **Structural Manifest Protection in Corrective RAG (`graph.py`)**:
+   - Added `_is_structural_or_macro_evidence` to `_evaluate_retrieval_node()` so that comprehensive relational manifests from `sql_analytics` and coverage matrices from `coverage_analysis` are preserved and never pruned by lexical query token filtering.
+
+---
+
+## Phase 9.12 — Cross-Newspaper Differential Coverage Analysis & Conversational Follow-Up Enumeration
+
+**Date**: 2026-08-31  
+**Status**: Completed ✅
+
+### What was resolved & hardened
+1. **Root Cause Analysis for "In X but not in Y" Failure**:
+   - User query: *"List the news that are in the GOAN dated 1/8/2026 but not in he Morning Standard dated 1/8/2026"*.
+   - **Missing Brand Pattern**: *The Morning Standard* was not in `_KNOWN_BRANDS_PATTERNS`.
+   - **First-Match Break**: `extract_parameters_from_query` terminated on the first matching publication, capturing only *The Goan* and ignoring the comparison publication.
+   - **Single-Date Promotion Bug**: `args.date_from and args.date_to` evaluated to `True` when both were set to `"2026-08-01"` (single date promotion), mistaking a single-date cross-newspaper query for a single-brand multi-issue query and cancelling comparative tools.
+   - **Missing Difference Engine**: The system retrieved only *The Goan* search snippets, causing the model to hallucinate a count ("11 articles") and fail on follow-up turns (*"list all those 11 articles"*).
+2. **Multi-Brand & Differential Parameter Extraction (`planner.py`)**:
+   - Added `comparison_newspaper: str | None` and `target_newspapers: list[str]` to `ExtractedToolArguments`.
+   - Added `The Morning Standard` to `_KNOWN_BRANDS_PATTERNS` with typo tolerance (`(?:(?:the|he)\s+)?morning\s+standard`).
+   - Updated `extract_parameters_from_query` to extract all mentioned publications, preserve token order, and detect exclusion phrasing (`"but not in"`, `"not in"`, `"absent in"`, `"exclusive to"`).
+   - Fixed `is_single_brand_multi_issue` to require `args.date_from != args.date_to` and `not args.comparison_newspaper`.
+   - In both structured LLM planning and heuristic fallback, routed differential queries to `sql_analytics(analysis_type="coverage_difference")` and scoped `hybrid_search`.
+3. **Deterministic Differential Coverage Engine (`sql_analytics.py`)**:
+   - Implemented `get_newspaper_coverage_difference(source_newspaper, comparison_newspaper, issue_date)`:
+     - Loads complete relational article manifests for both publications on the given date from MySQL.
+     - Builds token sets for comparison headlines and filters layout noise ("SATURDAY", "PANAJI").
+     - Computes token overlap across all stories to deterministically isolate exclusive articles from shared wire stories.
+     - Returns exact page numbers, folios, sections, and headlines for all verified exclusive articles.
+4. **Tool Execution & Evidence Budgeting (`graph.py`, `synthesizer.py`)**:
+   - Added the `coverage_difference` execution branch in `graph.py` to format structured exclusive manifests.
+   - Expanded evidence character budget to 4,000 characters for `VERIFIED EXCLUSIVE COVERAGE`, preventing truncation of article lists.
+5. **Conversational Follow-Up Enumeration (`condenser.py`)**:
+   - Updated `extract_active_issue_from_history` to track `comparison_newspaper` and `is_differential`.
+   - Enhanced `condense_conversational_query` so follow-up queries (*"list all those 11 articles"*) preserve the differential context, resolving to:
+     `"list all those 11 articles in The Goan but not in The Morning Standard dated 2026-08-01"`.
+6. **Verification & Testing**:
+   - Added `test_plan_differential_coverage_in_x_but_not_in_y` in `test_planner.py`.
+   - Added `test_get_newspaper_coverage_difference` in `test_sql_analytics.py`.
+   - Ran live differential analysis on MySQL issues #93 (*The Goan*, 174 articles) and #98 (*The Morning Standard*, 144 articles), accurately isolating 142 exclusive articles and 12 shared stories.
+   - Verified that all **346 backend tests pass (100% green)**.
+   - Verified that the frontend builds cleanly (`npm run build`).
+
 
 
 

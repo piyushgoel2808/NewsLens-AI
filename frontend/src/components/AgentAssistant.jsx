@@ -274,7 +274,12 @@ export default function AgentAssistant() {
     };
 
     const historyPayload = messages
-      .filter((m) => !m.isStreaming && m.content)
+      .filter(
+        (m) =>
+          !m.isStreaming &&
+          m.content &&
+          !m.content.startsWith('Hello! I am your **NewsLens-AI')
+      )
       .slice(-8)
       .map((m) => ({ role: m.role, content: sanitizeAnswerText(m.content) }));
 
@@ -425,6 +430,14 @@ export default function AgentAssistant() {
   };
 
   const handleClearChat = () => {
+    try {
+      localStorage.removeItem('newslens_chat_messages');
+    } catch {
+      // ignore
+    }
+    if (typeof highlightArticle === 'function') {
+      highlightArticle(null, 1, null, []);
+    }
     setMessages([
       {
         role: 'assistant',

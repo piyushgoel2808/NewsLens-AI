@@ -78,16 +78,54 @@ class QdrantStore:
         must: list[qmodels.Condition] = []
         for key, value in filters.items():
             if isinstance(value, dict):
-                # Range filter: {"issue_date": {"gte": "2024-01-01", "lte": "2024-12-31"}}
+                # Check if it's an exact match date/value (gte == lte)
+                if "gte" in value and "lte" in value and value["gte"] == value["lte"]:
+                    must.append(
+                        qmodels.FieldCondition(
+                            key=key,
+                            match=qmodels.MatchValue(value=value["gte"]),
+                        )
+                    )
+                    continue
+
+                # Check if any value is a date string (e.g. YYYY-MM-DD)
+                is_date = any(isinstance(v, str) and "-" in v for v in value.values())
+                if is_date:
+                    from datetime import datetime, timezone
+                    dt_kwargs: dict[str, Any] = {}
+                    for bound, val in value.items():
+                        if isinstance(val, str):
+                            try:
+                                if bound in ("gte", "gt"):
+                                    if len(val) == 10:
+                                        d = datetime.fromisoformat(val)
+                                        dt_kwargs[bound] = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
+                                    else:
+                                        dt_kwargs[bound] = datetime.fromisoformat(val)
+                                elif bound in ("lte", "lt"):
+                                    if len(val) == 10:
+                                        d = datetime.fromisoformat(val)
+                                        dt_kwargs[bound] = datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc)
+                                    else:
+                                        dt_kwargs[bound] = datetime.fromisoformat(val)
+                            except Exception:
+                                pass
+                        elif isinstance(val, (int, float)):
+                            dt_kwargs[bound] = val
+                    if dt_kwargs:
+                        must.append(
+                            qmodels.FieldCondition(
+                                key=key,
+                                range=qmodels.DatetimeRange(**dt_kwargs),
+                            )
+                        )
+                    continue
+
+                # Standard numeric range filter
                 range_kwargs = {}
-                if "gte" in value:
-                    range_kwargs["gte"] = value["gte"]
-                if "lte" in value:
-                    range_kwargs["lte"] = value["lte"]
-                if "gt" in value:
-                    range_kwargs["gt"] = value["gt"]
-                if "lt" in value:
-                    range_kwargs["lt"] = value["lt"]
+                for bound in ("gte", "lte", "gt", "lt"):
+                    if bound in value:
+                        range_kwargs[bound] = value[bound]
                 must.append(
                     qmodels.FieldCondition(
                         key=key,

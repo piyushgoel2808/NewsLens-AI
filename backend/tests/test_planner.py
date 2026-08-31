@@ -326,6 +326,95 @@ class TestAgentWorkflowToolExecution:
         assert res.get("date_to") == "2026-08-02"
         assert res.get("target_dates") == ["2026-08-01", "2026-08-02"]
 
+    def test_compare_all_available_newspapers_dated(self) -> None:
+        planner = QueryPlanner()
+        plan = planner.plan_query("comapare all the available newspaper dated 1/8/2026")
+        assert plan.archetype == "cross_newspaper_comparison"
+        
+        tool_names = [t.tool_name for t in plan.tool_calls]
+        assert "sql_analytics" in tool_names
+        assert "hybrid_search" in tool_names
+        assert "coverage_analysis" in tool_names
+
+        # Verify sql_analytics issue_summary has target date
+        sql_summary = next(t for t in plan.tool_calls if t.tool_name == "sql_analytics" and t.arguments.get("analysis_type") == "issue_summary")
+        assert sql_summary.arguments.get("issue_date") == "2026-08-01"
+
+        # Verify hybrid_search has promoted date_from and date_to
+        hybrid = next(t for t in plan.tool_calls if t.tool_name == "hybrid_search")
+        assert hybrid.arguments.get("date_from") == "2026-08-01"
+        assert hybrid.arguments.get("date_to") == "2026-08-01"
+
+        # Verify coverage_analysis has target_date
+        cov = next(t for t in plan.tool_calls if t.tool_name == "coverage_analysis")
+        assert cov.arguments.get("target_date") == "2026-08-01"
+
+        # Verify sql_analytics coverage_comparison has target_date
+        sql_cov = next(t for t in plan.tool_calls if t.tool_name == "sql_analytics" and t.arguments.get("analysis_type") == "coverage_comparison")
+        assert sql_cov.arguments.get("target_date") == "2026-08-01"
+
+    @pytest.mark.asyncio
+    async def test_llm_plan_cross_newspaper_date_promotion(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+        from app.providers.base import ModelResponse
+
+        mock_provider = MagicMock()
+        mock_provider.complete = AsyncMock(
+            return_value=ModelResponse(
+                text="",
+                parsed={
+                    "thought_process": "Compare all newspapers for date 1/8/2026.",
+                    "archetype": "cross_newspaper_comparison",
+                    "primary_tool": "coverage_analysis",
+                    "arguments": {
+                        "issue_date": "2026-08-01",
+                        "query": "newspaper coverage comparison",
+                    },
+                    "include_secondary_hybrid_search": False,
+                },
+            )
+        )
+        planner = QueryPlanner(provider=mock_provider)
+        plan = await planner.plan_query_async("comapare all the available newspaper dated 1/8/2026")
+
+        assert plan.archetype == "cross_newspaper_comparison"
+        
+        # Verify sql_analytics issue_summary was injected for all newspapers on date
+        sql_summary = next((t for t in plan.tool_calls if t.tool_name == "sql_analytics" and t.arguments.get("analysis_type") == "issue_summary"), None)
+        assert sql_summary is not None
+        assert sql_summary.arguments.get("issue_date") == "2026-08-01"
+
+        # Verify hybrid_search received promoted dates
+        hybrid = next(t for t in plan.tool_calls if t.tool_name == "hybrid_search")
+        assert hybrid.arguments.get("date_from") == "2026-08-01"
+        assert hybrid.arguments.get("date_to") == "2026-08-01"
+
+        # Verify coverage_analysis received target_date
+        cov = next(t for t in plan.tool_calls if t.tool_name == "coverage_analysis")
+        assert cov.arguments.get("target_date") == "2026-08-01"
+
+    def test_plan_differential_coverage_in_x_but_not_in_y(self) -> None:
+        planner = QueryPlanner()
+        query = "List the news that are in the GOAN dated 1/8/2026 but not in he Morning Standard dated 1/8/2026"
+        plan = planner.plan_query(query)
+
+        assert plan.archetype == "cross_newspaper_comparison"
+        
+        # Verify coverage_difference tool was planned
+        diff_tool = next((t for t in plan.tool_calls if t.tool_name == "sql_analytics" and t.arguments.get("analysis_type") == "coverage_difference"), None)
+        assert diff_tool is not None, "Expected sql_analytics(coverage_difference) in planned tools!"
+        assert diff_tool.arguments.get("newspaper_name") == "The Goan"
+        assert diff_tool.arguments.get("comparison_newspaper") == "The Morning Standard"
+        assert diff_tool.arguments.get("issue_date") == "2026-08-01"
+
+        # Verify hybrid_search was planned for The Goan
+        hybrid_tool = next((t for t in plan.tool_calls if t.tool_name == "hybrid_search"), None)
+        assert hybrid_tool is not None
+        assert hybrid_tool.arguments.get("newspaper_name") == "The Goan"
+        assert hybrid_tool.arguments.get("date_from") == "2026-08-01"
+
+
+
 
 
 

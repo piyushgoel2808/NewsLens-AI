@@ -98,19 +98,43 @@ def is_ambiguous_standalone_query(query: str, chat_history: list[dict[str, Any]]
     return False
 
 
-def extract_active_issue_from_history(chat_history: list[dict[str, Any]]) -> dict[str, Any]:
-    """Scan chat history for previously mentioned newspaper names, issue IDs, and dates."""
+def extract_active_issue_from_history(
+    chat_history: list[dict[str, Any]],
+    current_query: str | None = None,
+) -> dict[str, Any]:
+    """Scan chat history for previously mentioned newspaper names, issue IDs, and dates.
+
+    Safeguards against context leakage:
+    - If current_query targets a cross-newspaper comparison or 'all newspapers', do not inherit a single newspaper.
+    - If current_query specifies its own date or date range, do not inherit stale issue_id/newspaper from a different date.
+    - If current_query specifies its own newspaper brand, do not inherit a different newspaper brand.
+    """
     res: dict[str, Any] = {}
     if not chat_history:
         return res
 
     from app.agent.planner import _KNOWN_BRANDS_PATTERNS, extract_parameters_from_query
 
+    q_lower = (current_query or "").lower()
+    is_cross_newspaper = bool(
+        re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff(?:erence[s]?|ering)?|versus|vs\.?)\b", q_lower)
+        or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper", "different newspaper"])
+    )
+    current_params = extract_parameters_from_query(current_query) if current_query else {}
+    current_date = current_params.get("issue_date")
+    current_np = current_params.get("newspaper_name")
+
     for turn in reversed(chat_history):
         content = str(turn.get("content", ""))
         params = extract_parameters_from_query(content)
         if params.get("newspaper_name") and not res.get("newspaper_name"):
             res["newspaper_name"] = params["newspaper_name"]
+        if params.get("comparison_newspaper") and not res.get("comparison_newspaper"):
+            res["comparison_newspaper"] = params["comparison_newspaper"]
+        if params.get("target_newspapers") and not res.get("target_newspapers"):
+            res["target_newspapers"] = params["target_newspapers"]
+        if params.get("is_differential") and not res.get("is_differential"):
+            res["is_differential"] = params["is_differential"]
         if params.get("issue_id") and not res.get("issue_id"):
             res["issue_id"] = params["issue_id"]
         if params.get("issue_date") and not res.get("issue_date"):
@@ -147,6 +171,22 @@ def extract_active_issue_from_history(chat_history: list[dict[str, Any]]) -> dic
 
         if res.get("newspaper_name") and res.get("issue_date"):
             break
+
+    # Guardrail 1: If current query is cross-newspaper comparison, do NOT constrain to a single newspaper
+    if is_cross_newspaper:
+        res.pop("newspaper_name", None)
+        res.pop("issue_id", None)
+
+    # Guardrail 2: If current query explicitly provides its own date, invalidate stale context if from different date
+    if current_date and res.get("issue_date") and res["issue_date"] != current_date:
+        res.pop("newspaper_name", None)
+        res.pop("issue_id", None)
+        res.pop("issue_date", None)
+
+    # Guardrail 3: If current query explicitly specifies its own newspaper, discard history newspaper
+    if current_np:
+        res.pop("newspaper_name", None)
+        res.pop("issue_id", None)
 
     return res
 
@@ -207,8 +247,14 @@ async def condense_conversational_query(
         resolved_provider = provider
 
     formatted_history = format_chat_history_for_prompt(chat_history)
+    comp_np = active_ctx.get("comparison_newspaper")
+    is_diff = active_ctx.get("is_differential")
     ctx_hint = ""
-    if np_name or iss_id:
+    if comp_np and np_name and is_diff:
+        ctx_hint = f" Active Differential Comparison: {np_name} vs {comp_np} (Stories in {np_name} but not in {comp_np})" + (f" dated {iss_date}" if iss_date else "") + "."
+    elif comp_np and np_name:
+        ctx_hint = f" Active Publication Comparison: {np_name} vs {comp_np}" + (f" dated {iss_date}" if iss_date else "") + "."
+    elif np_name or iss_id:
         ctx_hint = " Active Publication: " + (f"{np_name} " if np_name else "") + (f"(Issue {iss_id})" if iss_id else "") + (f" dated {iss_date}" if iss_date else "") + "."
 
     prompt = (
@@ -268,6 +314,24 @@ async def condense_conversational_query(
             )
 
     # Deterministic Heuristic Coreference Fallback:
+    if comp_np and np_name and is_diff:
+        dt_suffix = f" dated {iss_date}" if iss_date else ""
+        q_resolved = f"{query} in {np_name} but not in {comp_np}{dt_suffix}"
+        logger.info(
+            "Conversational query resolved via deterministic differential context heuristic",
+            extra={"original_query": query, "resolved_query": q_resolved},
+        )
+        return q_resolved
+
+    if comp_np and np_name:
+        dt_suffix = f" dated {iss_date}" if iss_date else ""
+        q_resolved = f"{query} comparing {np_name} and {comp_np}{dt_suffix}"
+        logger.info(
+            "Conversational query resolved via deterministic comparison context heuristic",
+            extra={"original_query": query, "resolved_query": q_resolved},
+        )
+        return q_resolved
+
     if np_name or iss_id:
         q_resolved = query
         parts = []

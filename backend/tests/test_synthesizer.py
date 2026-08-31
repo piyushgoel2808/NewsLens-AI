@@ -176,3 +176,75 @@ class TestAnswerSynthesizer:
         assert "October 26, 2023" not in cleaned
         assert cleaned.startswith("### ⚡ Executive Summary")
 
+    def test_conversation_history_publication_isolation(self) -> None:
+        synthesizer = AnswerSynthesizer()
+        evidence = [
+            {
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+                "headline": "Beware! AI-enabled traffic challans go live",
+                "snippet": "AI traffic challans in Goa started today.",
+                "pages": [1],
+                "source_tool": "sql_analytics",
+            },
+            {
+                "newspaper_name": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "headline": "Rapid rise of boxer Ankush",
+                "snippet": "Boxer Ankush from Haryana defeated his opponent.",
+                "pages": [12],
+                "source_tool": "hybrid_search",
+            },
+        ]
+        context = synthesizer._build_evidence_context(evidence)
+        prompt = synthesizer._build_synthesizer_user_prompt(
+            query="comapare all the available newspaper dated 1/8/2026",
+            archetype="cross_newspaper_comparison",
+            evidence_items=evidence,
+            context=context,
+        )
+
+        assert "The Goan" in prompt
+        assert "The Morning Standard" in prompt
+        assert "STRICT PUBLICATION & DATE ISOLATION:" in prompt
+        assert "You must ONLY report on and analyze the verified publications present in the current evidence (The Goan, The Morning Standard)" in prompt
+
+    def test_extract_active_issue_guardrails_prevent_leakage(self) -> None:
+        from app.agent.condenser import extract_active_issue_from_history
+
+        # Past chat history discussed The New York Times on August 26
+        history = [
+            {
+                "role": "user",
+                "content": "Tell me about LIV Golf in THE NEW YORK TIMES dated 2026-08-26",
+            },
+            {
+                "role": "assistant",
+                "content": "The New York Times reported on LIV Golf...",
+            },
+        ]
+
+        # Case 1: Cross-newspaper comparison on 2026-08-01 -> MUST NOT inherit The New York Times
+        ctx_compare = extract_active_issue_from_history(
+            history,
+            current_query="comapare all the available newspaper dated 1/8/2026",
+        )
+        assert ctx_compare.get("newspaper_name") is None
+        assert ctx_compare.get("issue_id") is None
+
+        # Case 2: New date provided (2026-08-01) -> MUST NOT inherit from 2026-08-26
+        ctx_date = extract_active_issue_from_history(
+            history,
+            current_query="What happened on 2026-08-01?",
+        )
+        assert ctx_date.get("newspaper_name") is None
+
+        # Case 3: Follow-up question without new date or comparative intent -> CAN inherit context
+        ctx_followup = extract_active_issue_from_history(
+            history,
+            current_query="What else did it say on page 3?",
+        )
+        assert ctx_followup.get("newspaper_name") == "The New York Times"
+        assert ctx_followup.get("issue_date") == "2026-08-26"
+
+

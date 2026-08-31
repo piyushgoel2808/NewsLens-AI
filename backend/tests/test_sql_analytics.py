@@ -313,3 +313,71 @@ async def test_list_issue_articles_secondary_topic_and_keyword_fallback() -> Non
     assert "Parliament Monsoon Session Concludes" not in headlines
 
 
+@pytest.mark.asyncio
+async def test_get_newspaper_coverage_difference() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    engine = SQLAnalyticsEngine(session_factory=MagicMock())
+
+    source_summary = {
+        "newspaper": "The Goan",
+        "issue_date": "2026-08-01",
+        "articles": [
+            {
+                "id": 1,
+                "headline": "Beware! AI-enabled traffic challans go live from today",
+                "section": "Front Page",
+                "page_number": 1,
+                "printed_page": "1",
+                "summary": "Goa traffic police launch AI challans.",
+            },
+            {
+                "id": 2,
+                "headline": "Modi, Burnham talk better bilateral ties",
+                "section": "National",
+                "page_number": 2,
+                "printed_page": "2",
+                "summary": "Prime Minister holds bilateral discussions.",
+            },
+        ],
+    }
+
+    comp_summary = {
+        "newspaper": "The Morning Standard",
+        "issue_date": "2026-08-01",
+        "articles": [
+            {
+                "id": 101,
+                "headline": "MODI, BURNHAM TALK BETTER TIES",
+                "section": "Front Page",
+                "page_number": 1,
+                "printed_page": "1",
+                "summary": "Talks on trade and ties.",
+            },
+            {
+                "id": 102,
+                "headline": "Mega allocation for offshore oil & gas exploration",
+                "section": "National",
+                "page_number": 3,
+                "printed_page": "3",
+                "summary": "Government announces energy investments.",
+            },
+        ],
+    }
+
+    with patch.object(engine, "list_issue_articles", AsyncMock(side_effect=[source_summary, comp_summary])):
+        diff = await engine.get_newspaper_coverage_difference(
+            source_newspaper="The Goan",
+            comparison_newspaper="The Morning Standard",
+            issue_date="2026-08-01",
+        )
+
+        assert diff["source_newspaper"] == "The Goan"
+        assert diff["comparison_newspaper"] == "The Morning Standard"
+        assert diff["exclusive_count"] == 1
+        assert diff["shared_count"] == 1
+        assert diff["exclusive_articles"][0]["headline"] == "Beware! AI-enabled traffic challans go live from today"
+        assert diff["shared_articles"][0]["source_headline"] == "Modi, Burnham talk better bilateral ties"
+
+
+

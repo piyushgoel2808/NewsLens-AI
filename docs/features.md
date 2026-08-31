@@ -41,8 +41,18 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * If a query compares multiple editions or dates of the *same* newspaper, the planner intelligently routes to targeted SQL issue summaries and scoped hybrid search instead of invoking an all-newspaper `coverage_analysis` across the entire database.
 * **Dynamic Brand-to-ID Filter Resolution**:
   * In `graph.py`, hybrid searches mentioning publication names (such as *"The Goan"*) dynamically query MySQL to resolve the exact `newspaper_id`, ensuring search results are strictly confined to the requested newspaper.
+* **Dynamic Publication & Date Isolation**:
+  * Employs query-aware guardrails in `extract_active_issue_from_history()` to drop stale publications or dates whenever a user switches to a different date or initiates a comparative query.
+  * Injects `Verified Available Publications for this Query` and strict isolation constraints into synthesizer prompts, guaranteeing that past conversation topics (e.g. LIV Golf, Ram Temple) never bleed into new dates.
+* **Multi-Brand Parameter Extraction & Typo Tolerance**:
+  * Parses multiple newspaper brand names from complex queries in token order without breaking on the first match.
+  * Detects differential exclusion syntax (`"but not in"`, `"not in"`, `"exclusive to"`, `"absent in"`).
+  * Tolerates natural user typos (e.g., `"he Morning Standard"` correctly maps to `The Morning Standard`).
+* **Conversational Follow-Up Enumeration**:
+  * Coreference resolution engine preserves differential comparison contexts across subsequent turns.
+  * Translates follow-up requests (e.g., *"list all those 11 articles"*) into fully specified standalone queries: *"list all those articles in The Goan but not in The Morning Standard dated 2026-08-01"*, eliminating count hallucinations and retrieving the full grounded manifest.
 * **Context Budgeting & Anti-Hallucination Memo Protection**:
-  * Caps evidence context to the top 12 items and truncates long excerpts to 1,200 characters, guaranteeing the synthesizer prompt stays within $\le 3,500$ tokens to prevent local LLM context overflow (`4096 tokens`).
+  * Caps evidence context items and selectively allocates up to 4,000 characters for relational issue manifests and coverage differences, guaranteeing the synthesizer receives complete article listings without token truncation.
   * Protects against pre-training knowledge cutoff date hallucinations (e.g., memorized 2023 dates) with negative prompt guards and regex post-cleaning.
 * **Corrupted Font CMap Recovery & High-Precision Image OCR Fallback**:
   * Employs automated `\ufffd` replacement character and gibberish ratio detection (`CorruptedPdfTextLayerError`).
@@ -119,6 +129,11 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * Automatically resolves queries even when user types an incorrect issue ID (e.g. querying `issue 84` when the database stores `Issue #88`) by falling back to `(newspaper_name, issue_date)`.
 * **Cross-Sectional Filtering**: Filter articles by physical page number, printed folio, newspaper section, or canonical category.
 * **Statistical Aggregations**: Compute article frequency trends, mention distributions, and front-page prominence ratios.
+* **Deterministic Cross-Newspaper Differential Coverage (`get_newspaper_coverage_difference`)**:
+  * Computes the exact set of articles present in publication $A$ but completely absent from publication $B$ on any shared publication date.
+  * Employs headline tokenization, stop-word reduction, and Jaccard overlap scoring against the comparison newspaper's manifest.
+  * Filters running page furniture ("SATURDAY", "IN SHORT >>", "PANAJI") to isolate genuine news reports.
+  * Outputs categorized manifests classifying articles into Hyperlocal/Regional Exclusives (e.g. Goa local administration, traffic challans, municipal infrastructure) and Distinct Editorial Exclusives.
 
 ---
 
@@ -150,6 +165,9 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 
 * **Multi-Broadsheet Coverage Matrix**: Compares how multiple newspapers (e.g. *The Economic Times*, *Mint*, *The Hindu*, *The New York Times*) covered the same event on the same date.
 * **Front-Page Lead Story Divergence**: Highlights differences in editorial priorities, tone, and lead headlines between publications.
+* **Differential Exclusives vs. Shared Wire Stories**:
+  * Identifies stories that were exclusive to a single broadsheet versus syndicated national wire stories (PTI, ANI, Reuters) covered universally across all newspapers.
+  * Provides granular page-by-page breakdown of regional news pages, editorial supplements, and local investigative scoops.
 
 ---
 

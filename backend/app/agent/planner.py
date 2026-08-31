@@ -61,6 +61,14 @@ class ExtractedToolArguments(BaseModel):
         default_factory=list,
         description="Specific list of dates mentioned for multi-issue comparisons",
     )
+    comparison_newspaper: str | None = Field(
+        None,
+        description="Secondary or reference newspaper brand for comparative queries (e.g. 'The Morning Standard')",
+    )
+    target_newspapers: list[str] = Field(
+        default_factory=list,
+        description="List of newspaper brands mentioned for multi-newspaper comparisons",
+    )
     issue_id: int | None = Field(
         None,
         description="Target issue ID integer if specified",
@@ -283,6 +291,21 @@ Output: {
   },
   "include_secondary_hybrid_search": false
 }
+
+Example 9:
+Query: "Compare all the available newspaper dated 1/8/2026"
+Output: {
+  "thought_process": "User wants to compare ALL available newspapers on a specific date (2026-08-01). This is a cross-newspaper comparison requiring coverage_analysis to audit which newspapers have coverage, combined with article manifests from each newspaper. The date 1/8/2026 must be extracted as 2026-08-01 and passed as issue_date. No specific newspaper is targeted.",
+  "archetype": "cross_newspaper_comparison",
+  "primary_tool": "coverage_analysis",
+  "arguments": {
+    "issue_date": "2026-08-01",
+    "date_from": "2026-08-01",
+    "date_to": "2026-08-01",
+    "query": "newspaper coverage comparison"
+  },
+  "include_secondary_hybrid_search": false
+}
 """
 
 
@@ -303,6 +326,7 @@ _KNOWN_BRANDS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(?:the\s+)?daily\s+tribune\b|\btribune\b", re.I), "The Daily Tribune"),
     (re.compile(r"\b(?:the\s+)?daily\s+chronicle\b|\bchronicle\b", re.I), "The Daily Chronicle"),
     (re.compile(r"\bdaily\s+broadsheet\b", re.I), "Daily Broadsheet"),
+    (re.compile(r"\b(?:(?:the|he)\s+)?morning\s+standard\b|\bmorning\s+standard\b", re.I), "The Morning Standard"),
 ]
 
 _SECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -328,11 +352,30 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
     if not query:
         return params
 
-    # 1. Newspaper Name Extraction
+    # 1. Multi-Newspaper Name Extraction (sorted by token position in query)
+    matched_brands: list[tuple[int, str]] = []
     for pat, brand in _KNOWN_BRANDS_PATTERNS:
-        if pat.search(query):
-            params["newspaper_name"] = brand
-            break
+        for m in pat.finditer(query):
+            matched_brands.append((m.start(), brand))
+
+    if matched_brands:
+        matched_brands.sort(key=lambda x: x[0])
+        ordered_brands: list[str] = []
+        for _, b in matched_brands:
+            if b not in ordered_brands:
+                ordered_brands.append(b)
+
+        params["target_newspapers"] = ordered_brands
+        params["newspaper_name"] = ordered_brands[0]
+        if len(ordered_brands) >= 2:
+            params["comparison_newspaper"] = ordered_brands[1]
+
+        # Check for differential / exclusion intent: "in X but not in Y", "exclusive to X"
+        q_lower = query.lower()
+        if any(w in q_lower for w in ["but not in", "not in", "absent in", "exclusive to", "omitted in"]):
+            params["is_differential"] = True
+            params["source_newspaper"] = ordered_brands[0]
+            params["comparison_newspaper"] = ordered_brands[1]
 
     # 2. Issue ID Extraction (e.g. "issue 84", "issue #84", "issue id 84")
     iss_match = re.search(r"\bissue\s*(?:id\s*[:=]?\s*|\#\s*|no\.?\s*|number\s*)?(\d+)\b", query, re.I)
@@ -608,11 +651,25 @@ class QueryPlanner:
         if extracted_params.get("target_dates") and not args.target_dates:
             args.target_dates = extracted_params["target_dates"]
 
-        # If user is asking to compare issues/dates of ONE specific newspaper,
-        # redirect from all-newspaper coverage_analysis to targeted multi-issue SQL summaries & scoped hybrid search
+        # CRITICAL: Promote single issue_date → date_from/date_to when no range is specified.
+        # This ensures all tools (hybrid_search, coverage_analysis, sql_analytics) filter
+        # to the exact target date instead of searching across the entire unfiltered archive.
+        if args.issue_date and not args.date_from and not args.date_to:
+            args.date_from = args.issue_date
+            args.date_to = args.issue_date
+
+        # Populate comparison newspaper and multi-newspaper targets if extracted
+        if extracted_params.get("comparison_newspaper") and not args.comparison_newspaper:
+            args.comparison_newspaper = extracted_params["comparison_newspaper"]
+        if extracted_params.get("target_newspapers") and not args.target_newspapers:
+            args.target_newspapers = extracted_params["target_newspapers"]
+
+        # If user is asking to compare issues/dates of ONE specific newspaper across MULTIPLE dates
         is_single_brand_multi_issue = (
             args.newspaper_name is not None
-            and (len(args.target_dates) >= 2 or (args.date_from and args.date_to))
+            and not args.comparison_newspaper
+            and len(args.target_newspapers) <= 1
+            and (len(args.target_dates) >= 2 or (args.date_from and args.date_to and args.date_from != args.date_to))
         )
 
         if plan_obj.primary_tool == "sql_analytics" or is_single_brand_multi_issue:
@@ -713,6 +770,66 @@ class QueryPlanner:
             )
 
         elif plan_obj.primary_tool == "coverage_analysis":
+            is_two_paper_compare = bool(args.newspaper_name and args.comparison_newspaper)
+            is_differential = bool(
+                extracted_params.get("is_differential")
+                or any(w in query.lower() for w in ["but not in", "not in", "absent in", "exclusive", "omitted"])
+            )
+
+            if is_two_paper_compare and is_differential:
+                # 1. Deterministic article difference: stories in source absent in comparison paper
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments={
+                            "analysis_type": "coverage_difference",
+                            "newspaper_name": args.newspaper_name,
+                            "comparison_newspaper": args.comparison_newspaper,
+                            "issue_date": args.issue_date or args.date_from,
+                            "query": args.query or query,
+                        },
+                        purpose=(
+                            f"Compute verified article difference: stories in {args.newspaper_name} "
+                            f"absent from {args.comparison_newspaper} on {args.issue_date or args.date_from}"
+                        ),
+                    )
+                )
+            elif is_two_paper_compare:
+                # Retrieve manifests for BOTH target newspapers
+                for np_target in [args.newspaper_name, args.comparison_newspaper]:
+                    tool_calls.append(
+                        PlannedToolCall(
+                            tool_name="sql_analytics",
+                            arguments={
+                                "analysis_type": "issue_summary",
+                                "newspaper_name": np_target,
+                                "issue_date": args.issue_date or args.date_from,
+                                "query": args.query or query,
+                            },
+                            purpose=f"Retrieve article manifest for {np_target} on {args.issue_date or args.date_from}",
+                        )
+                    )
+            else:
+                # When comparing all newspapers on a specific date, schedule per-newspaper
+                # SQL issue summaries so the synthesizer receives actual article manifests
+                is_all_newspaper_date_compare = (
+                    args.newspaper_name is None
+                    and args.issue_date is not None
+                )
+                if is_all_newspaper_date_compare:
+                    # Primary: SQL issue summary for ALL newspapers on target date (no newspaper filter)
+                    tool_calls.append(
+                        PlannedToolCall(
+                            tool_name="sql_analytics",
+                            arguments={
+                                "analysis_type": "issue_summary",
+                                "issue_date": args.issue_date,
+                                "query": args.query or query,
+                            },
+                            purpose=f"Retrieve complete article manifest for ALL newspapers on {args.issue_date}",
+                        )
+                    )
+
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="hybrid_search",
@@ -726,17 +843,35 @@ class QueryPlanner:
                     purpose="Retrieve diverse articles across multiple newspaper editions",
                 )
             )
+            # Pass target_date so coverage_analysis scopes its audit to the requested date window
+            cov_args: dict[str, Any] = {"query": args.query or query}
+            if args.issue_date:
+                cov_args["target_date"] = args.issue_date
+            elif args.date_from:
+                cov_args["target_date"] = args.date_from
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="coverage_analysis",
-                    arguments={"query": args.query or query},
+                    arguments=cov_args,
                     purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
                 )
             )
+            # Pass issue_date/date filters to sql_analytics(coverage_comparison) too
+            sql_cov_args: dict[str, Any] = {
+                "analysis_type": "coverage_comparison",
+                "query": args.query or query,
+            }
+            if args.issue_date:
+                sql_cov_args["issue_date"] = args.issue_date
+                sql_cov_args["target_date"] = args.issue_date
+            if args.date_from:
+                sql_cov_args["date_from"] = args.date_from
+            if args.date_to:
+                sql_cov_args["date_to"] = args.date_to
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="sql_analytics",
-                    arguments={"analysis_type": "coverage_comparison", "query": args.query or query},
+                    arguments=sql_cov_args,
                     purpose="Compare reporting sentiment, volume, and section prominence",
                 )
             )
@@ -869,17 +1004,35 @@ class QueryPlanner:
             ]
         )
 
-        # 5. Check for cross-newspaper comparison
-        is_comparison = any(
-            w in q_lower
-            for w in [
-                "compare",
-                "contrast",
-                "different papers",
-                "across newspapers",
-                "perspectives on",
-                "editorial perspectives",
-            ]
+        # 5. Check for cross-newspaper comparison or multi-date / multi-edition comparison
+        is_comparison = bool(
+            extracted_params.get("comparison_newspaper")
+            or extracted_params.get("is_differential")
+            or len(extracted_params.get("target_newspapers", [])) >= 2
+            or len(extracted_params.get("target_dates", [])) >= 2
+            or re.search(
+                r"\b(?:compa[a-z]*|contrast[a-z]*|diff(?:erence[s]?|ering)?|versus|vs\.?)\b",
+                q_lower,
+            )
+            or any(
+                phrase in q_lower
+                for phrase in [
+                    "different papers",
+                    "across newspapers",
+                    "perspectives on",
+                    "editorial perspectives",
+                    "all available newspaper",
+                    "all the available newspaper",
+                    "all available papers",
+                    "all newspapers",
+                    "both newspapers",
+                    "each newspaper",
+                    "across papers",
+                    "multi-newspaper",
+                    "but not in",
+                    "not in",
+                ]
+            )
         )
 
         # 6. Check for entity deep dive
@@ -949,9 +1102,17 @@ class QueryPlanner:
             )
 
         elif is_comparison:
+            comp_np = extracted_params.get("comparison_newspaper")
+            is_differential = bool(
+                extracted_params.get("is_differential")
+                or (comp_np and any(w in q_lower for w in ["but not in", "not in", "absent in", "exclusive", "omitted"]))
+            )
+
             is_single_brand_multi_issue = (
                 newspaper_name is not None
-                and (len(extracted_params.get("target_dates", [])) >= 2 or (extracted_params.get("date_from") and extracted_params.get("date_to")))
+                and not comp_np
+                and len(extracted_params.get("target_newspapers", [])) <= 1
+                and (len(extracted_params.get("target_dates", [])) >= 2 or (extracted_params.get("date_from") and extracted_params.get("date_to") and extracted_params.get("date_from") != extracted_params.get("date_to")))
             )
             if is_single_brand_multi_issue:
                 archetype = "quantitative_trend"
@@ -984,33 +1145,126 @@ class QueryPlanner:
                         purpose=f"Retrieve key articles from {newspaper_name} between {extracted_params.get('date_from')} and {extracted_params.get('date_to')}",
                     )
                 )
-            else:
+            elif comp_np and is_differential:
                 archetype = "cross_newspaper_comparison"
-                reasoning = "Query requested editorial perspective comparison across multiple broadsheet editions."
+                reasoning = f"Query requests exclusive articles in {newspaper_name} absent from {comp_np}."
+                target_dt = issue_date or extracted_params.get("date_from")
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments={
+                            "analysis_type": "coverage_difference",
+                            "newspaper_name": newspaper_name,
+                            "comparison_newspaper": comp_np,
+                            "issue_date": target_dt,
+                            "query": query,
+                        },
+                        purpose=f"Compute verified article difference: stories in {newspaper_name} absent from {comp_np} on {target_dt}",
+                    )
+                )
                 tool_calls.append(
                     PlannedToolCall(
                         tool_name="hybrid_search",
                         arguments={
                             "query": query,
                             "newspaper_name": newspaper_name,
-                            "date_from": extracted_params.get("date_from"),
-                            "date_to": extracted_params.get("date_to"),
+                            "date_from": target_dt,
+                            "date_to": target_dt,
+                            "top_k": 10,
+                        },
+                        purpose=f"Retrieve key articles and snippets from {newspaper_name}",
+                    )
+                )
+            elif comp_np:
+                archetype = "cross_newspaper_comparison"
+                reasoning = f"Query compares reporting between {newspaper_name} and {comp_np}."
+                target_dt = issue_date or extracted_params.get("date_from")
+                for np_target in [newspaper_name, comp_np]:
+                    tool_calls.append(
+                        PlannedToolCall(
+                            tool_name="sql_analytics",
+                            arguments={
+                                "analysis_type": "issue_summary",
+                                "newspaper_name": np_target,
+                                "issue_date": target_dt,
+                                "query": query,
+                            },
+                            purpose=f"Retrieve article manifest for {np_target} on {target_dt}",
+                        )
+                    )
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={
+                            "query": query,
+                            "date_from": target_dt,
+                            "date_to": target_dt,
+                            "top_k": 12,
+                        },
+                        purpose=f"Retrieve comparative articles across {newspaper_name} and {comp_np}",
+                    )
+                )
+            else:
+                archetype = "cross_newspaper_comparison"
+                reasoning = "Query requested editorial perspective comparison across multiple broadsheet editions."
+
+                # Promote single date to date range for tool filtering
+                date_from = extracted_params.get("date_from")
+                date_to = extracted_params.get("date_to")
+                target_date = issue_date
+                if issue_date and not date_from and not date_to:
+                    date_from = issue_date
+                    date_to = issue_date
+
+                # When no specific newspaper + a specific date → add SQL issue summaries for all newspapers
+                if not newspaper_name and issue_date:
+                    tool_calls.append(
+                        PlannedToolCall(
+                            tool_name="sql_analytics",
+                            arguments={
+                                "analysis_type": "issue_summary",
+                                "issue_date": issue_date,
+                                "query": query,
+                            },
+                            purpose=f"Retrieve complete article manifest for ALL newspapers on {issue_date}",
+                        )
+                    )
+
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="hybrid_search",
+                        arguments={
+                            "query": query,
+                            "newspaper_name": newspaper_name,
+                            "date_from": date_from,
+                            "date_to": date_to,
                             "top_k": 12,
                         },
                         purpose="Retrieve diverse articles across multiple newspaper editions",
                     )
                 )
+                cov_args: dict[str, Any] = {"query": query}
+                if target_date:
+                    cov_args["target_date"] = target_date
                 tool_calls.append(
                     PlannedToolCall(
                         tool_name="coverage_analysis",
-                        arguments={"query": query},
+                        arguments=cov_args,
                         purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
                     )
                 )
+                sql_cov_args: dict[str, Any] = {"analysis_type": "coverage_comparison", "query": query}
+                if target_date:
+                    sql_cov_args["target_date"] = target_date
+                    sql_cov_args["issue_date"] = target_date
+                if date_from:
+                    sql_cov_args["date_from"] = date_from
+                if date_to:
+                    sql_cov_args["date_to"] = date_to
                 tool_calls.append(
                     PlannedToolCall(
                         tool_name="sql_analytics",
-                        arguments={"analysis_type": "coverage_comparison", "query": query},
+                        arguments=sql_cov_args,
                         purpose="Compare reporting sentiment, volume, and section prominence",
                     )
                 )

@@ -42,6 +42,11 @@ CRITICAL ANALYTICAL GUIDELINES:
      * Explicitly inform the user that the requested publication/issue is not in the archive.
      * NEVER pretend that another newspaper's articles belong to the requested publication.
    - Do NOT synthesize from ungrounded pre-training memory; rely solely on the verified evidence.
+4. CONVERSATION HISTORY & PUBLICATION ISOLATION:
+   - The conversation history is ONLY for understanding conversational context and follow-up intent.
+   - Substantive facts, headlines, and analysis must be derived EXCLUSIVELY from the "Available Newspaper Evidence" for the CURRENT turn.
+   - NEVER carry over news stories, events, or newspaper titles from previous conversation turns into a new date-specific or comparative query.
+   - If the user asks to compare newspapers on a specific date, you must ONLY report on the publications explicitly present in the verified evidence for that date.
 
 REQUIRED RESPONSE STRUCTURE:
 1. ### ⚡ Executive Summary
@@ -240,9 +245,16 @@ class AnswerSynthesizer:
                 continue
             seen_keys.add(dedup_key)
 
-            # Truncate overly long text snippets to 1,200 chars to protect context size
-            if len(text) > 1200:
-                text = text[:1200].rstrip() + " ... [excerpt truncated for length]"
+            # Allow up to 4,000 chars for issue manifests, coverage audits, and exclusive coverage differences so full headline listings are preserved
+            is_manifest_or_matrix = (
+                item.get("source_tool") in ("sql_analytics", "coverage_analysis")
+                or "RELATIONAL ARCHIVE MANIFEST" in text
+                or "COVERAGE RECONCILIATION MATRIX" in text
+                or "VERIFIED EXCLUSIVE COVERAGE" in text
+            )
+            max_chars = 4000 if is_manifest_or_matrix else 1200
+            if len(text) > max_chars:
+                text = text[:max_chars].rstrip() + " ... [excerpt truncated for length]"
 
             idx = len(context_blocks) + 1
             if is_web:
@@ -276,6 +288,38 @@ class AnswerSynthesizer:
                     f"Content:\n{text}\n"
                 )
         return "\n".join(context_blocks)
+
+    def _build_synthesizer_user_prompt(
+        self,
+        query: str,
+        archetype: str,
+        evidence_items: list[dict[str, Any]],
+        context: str,
+    ) -> str:
+        """Construct grounded synthesizer prompt with explicit publication boundaries."""
+        verified_pubs = sorted(list({
+            str(item.get("newspaper_name", "")).strip() for item in evidence_items
+            if item.get("newspaper_name") and item.get("newspaper_name") not in (
+                "Multi-Newspaper Audit", "Aggregated Archive Analytics", "Archive", "Unknown Publication", "Live Web"
+            )
+        }))
+        pubs_note = f"Verified Available Publications for this Query: {', '.join(verified_pubs)}\n" if verified_pubs else ""
+        isolation_rule = (
+            f"STRICT PUBLICATION & DATE ISOLATION:\n"
+            f"- You must ONLY report on and analyze the verified publications present in the current evidence ({', '.join(verified_pubs)}).\n"
+            f"- NEVER mention, summarize, or cite articles from other publications or dates discussed in earlier conversation turns.\n\n"
+            if verified_pubs else ""
+        )
+
+        return (
+            f"User Research Query: {query}\n"
+            f"Query Archetype: {archetype}\n"
+            f"{pubs_note}"
+            f"{isolation_rule}"
+            f"Available Newspaper Evidence:\n"
+            f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
+            f"Synthesize an insightful, highly-structured executive intelligence response."
+        )
 
     def extract_citations(
         self,
@@ -410,12 +454,11 @@ class AnswerSynthesizer:
         citations = self.extract_citations("", evidence_items)
         context = self._build_evidence_context(evidence_items)
 
-        user_prompt = (
-            f"User Research Query: {query}\n"
-            f"Query Archetype: {archetype}\n\n"
-            f"Available Newspaper Evidence:\n"
-            f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
-            f"Synthesize an insightful, highly-structured executive intelligence response."
+        user_prompt = self._build_synthesizer_user_prompt(
+            query=query,
+            archetype=archetype,
+            evidence_items=evidence_items,
+            context=context,
         )
 
         messages = [Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT)]
@@ -479,12 +522,11 @@ class AnswerSynthesizer:
             return
 
         context = self._build_evidence_context(evidence_items)
-        user_prompt = (
-            f"User Research Query: {query}\n"
-            f"Query Archetype: {archetype}\n\n"
-            f"Available Newspaper Evidence:\n"
-            f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
-            f"Synthesize an insightful, highly-structured executive intelligence response."
+        user_prompt = self._build_synthesizer_user_prompt(
+            query=query,
+            archetype=archetype,
+            evidence_items=evidence_items,
+            context=context,
         )
 
         messages = [Message(role="system", content=SYNTHESIZER_SYSTEM_PROMPT)]

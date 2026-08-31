@@ -146,7 +146,7 @@ async def stream_query(
             tool_data = json.dumps({"evidence_count": 0, "tools": []})
             yield f"event: tool_results\ndata: {tool_data}\n\n"
         else:
-            active_ctx = extract_active_issue_from_history(chat_history)
+            active_ctx = extract_active_issue_from_history(chat_history, current_query=query)
             if chat_history and needs_condensation(query, chat_history):
                 yield f"event: stage\ndata: {json.dumps({'stage': 'condensing_query'})}\n\n"
                 condensed = await condense_conversational_query(
