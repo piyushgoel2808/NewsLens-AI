@@ -2,6 +2,8 @@
 
 This document outlines the complete data flows, state transitions, transformation matrices, and storage interactions across all NewsLens-AI subsystems.
 
+> **Note**: For exhaustive step-by-step traces containing exact concrete JSON payloads, SQL queries, table row values, and tool execution examples, refer to the companion document: [**End-to-End Data Flow & Data Structure Guide**](end_to_end_data_flow_guide.md).
+
 ---
 
 ## 1. End-to-End Broadsheet PDF Ingestion Flow
