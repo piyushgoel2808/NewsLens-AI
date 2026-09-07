@@ -212,6 +212,9 @@ class AgentWorkflow:
                                 "snippet": hr.snippet,
                                 "prominence_score": hr.prominence_score,
                                 "source_tool": "hybrid_search",
+                                "photos": hr.photos,
+                                "has_visual_data": hr.has_visual_data,
+                                "visual_type": hr.visual_type,
                             }
                         )
 

@@ -1,8 +1,19 @@
 import asyncio
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any
+
+REASONING_START_REGEX = re.compile(
+    r"^\s*(?:<think>|Here'?s a thinking process:?|Thinking Process:?|Thought:?)",
+    re.IGNORECASE,
+)
+
+ANSWER_TRANSITION_REGEX = re.compile(
+    r"\n\s*(?:#{1,4}\s+|Draft:\s*\n|Executive Summary:?\s*\n|Summary:\s*\n)",
+    re.IGNORECASE,
+)
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -213,6 +224,7 @@ async def stream_query(
         # 4. Synthesis & Reasoning Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
         in_think = False
+        is_plain_think = False
         raw_buffer = ""
         think_chunks: list[str] = []
         answer_chunks: list[str] = []
@@ -235,9 +247,20 @@ async def stream_query(
                             answer_chunks.append(pre)
                             yield f"event: token\ndata: {json.dumps({'delta': pre})}\n\n"
                         in_think = True
+                        is_plain_think = False
                         think_start_time = time.monotonic()
                         yield f"event: stage\ndata: {json.dumps({'stage': 'thinking'})}\n\n"
                         raw_buffer = post
+                    elif not answer_chunks and not think_chunks and REASONING_START_REGEX.match(raw_buffer):
+                        in_think = True
+                        is_plain_think = True
+                        think_start_time = time.monotonic()
+                        yield f"event: stage\ndata: {json.dumps({'stage': 'thinking'})}\n\n"
+                    elif not answer_chunks and not think_chunks and len(raw_buffer.strip()) < 28 and any(
+                        p.startswith(raw_buffer.strip().lower())
+                        for p in ["here's a thinking process:", "thinking process:", "<think>"]
+                    ):
+                        break
                     else:
                         is_partial = any(
                             raw_buffer.endswith("<think>"[:i])
@@ -249,7 +272,7 @@ async def stream_query(
                         yield f"event: token\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
                         raw_buffer = ""
                 else:
-                    if "</think>" in raw_buffer:
+                    if not is_plain_think and "</think>" in raw_buffer:
                         thought_piece, post = raw_buffer.split("</think>", 1)
                         if thought_piece:
                             think_chunks.append(thought_piece)
@@ -262,13 +285,37 @@ async def stream_query(
                         yield f"event: thought_done\ndata: {done_th}\n\n"
                         yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
                         raw_buffer = post.lstrip("\n ")
+                    elif (match := ANSWER_TRANSITION_REGEX.search(raw_buffer)):
+                        split_idx = match.start()
+                        thought_piece = raw_buffer[:split_idx]
+                        post = raw_buffer[split_idx:].lstrip("\n ")
+                        post = re.sub(r"^draft:\s*\n*", "", post, flags=re.IGNORECASE)
+                        if thought_piece:
+                            think_chunks.append(thought_piece)
+                            th_payload = json.dumps({"delta": thought_piece})
+                            yield f"event: thought\ndata: {th_payload}\n\n"
+                        in_think = False
+                        is_plain_think = False
+                        t_dur = round(time.monotonic() - (think_start_time or time.monotonic()), 1)
+                        full_th = "".join(think_chunks).strip()
+                        done_th = json.dumps({"thought": full_th, "duration_sec": t_dur})
+                        yield f"event: thought_done\ndata: {done_th}\n\n"
+                        yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
+                        raw_buffer = post
                     else:
-                        is_partial = any(
-                            raw_buffer.endswith("</think>"[:i])
-                            for i in range(1, len("</think>"))
-                        )
-                        if is_partial:
-                            break
+                        if not is_plain_think:
+                            is_partial = any(
+                                raw_buffer.endswith("</think>"[:i])
+                                for i in range(1, len("</think>"))
+                            )
+                            if is_partial:
+                                break
+                        else:
+                            if raw_buffer.endswith("\n") or any(
+                                raw_buffer.endswith(h)
+                                for h in ["\n#", "\n##", "\n###", "\nDraft", "\nSummary", "\nExecutive"]
+                            ):
+                                break
                         think_chunks.append(raw_buffer)
                         yield f"event: thought\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
                         raw_buffer = ""
@@ -283,36 +330,38 @@ async def stream_query(
                 answer_chunks.append(raw_buffer)
                 yield f"event: token\ndata: {json.dumps({'delta': raw_buffer})}\n\n"
 
-        # Robust recovery for reasoning models where answer may be trapped inside <think>
-        if not answer_chunks and think_chunks:
-            combined_raw = "".join(think_chunks)
-            parsed_thought, parsed_ans = parse_thought_and_answer(f"<think>{combined_raw}")
+        if in_think and think_chunks:
             t_dur = round(time.monotonic() - (think_start_time or t0), 1)
-            if parsed_ans:
-                full_thought = parsed_thought
+            full_th = "".join(think_chunks).strip()
+            done_th = json.dumps({"thought": full_th, "duration_sec": t_dur})
+            yield f"event: thought_done\ndata: {done_th}\n\n"
+
+        # Robust recovery for reasoning models where answer may be trapped inside <think> or scratchpad
+        full_thought_final = "".join(think_chunks).strip()
+        if not answer_chunks:
+            combined_raw = full_thought_final
+            parsed_thought, parsed_ans = parse_thought_and_answer(combined_raw)
+            t_dur = round(time.monotonic() - (think_start_time or t0), 1)
+            if parsed_ans.strip():
+                full_thought = parsed_thought or full_thought_final
                 full_answer = parsed_ans
                 done_th = json.dumps({"thought": full_thought, "duration_sec": t_dur})
                 yield f"event: thought_done\ndata: {done_th}\n\n"
                 yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
                 yield f"event: token\ndata: {json.dumps({'delta': full_answer})}\n\n"
             else:
-                # If cannot separate, emit as answer so response view is NEVER blank
-                full_answer = combined_raw
-                full_thought = ""
-                yield f"event: token\ndata: {json.dumps({'delta': full_answer})}\n\n"
-        elif in_think and think_chunks:
-            t_dur = round(time.monotonic() - (think_start_time or t0), 1)
-            full_th = "".join(think_chunks).strip()
-            done_th = json.dumps({"thought": full_th, "duration_sec": t_dur})
-            yield f"event: thought_done\ndata: {done_th}\n\n"
-
-        if answer_chunks:
-            full_answer = "".join(answer_chunks).strip()
-        elif not locals().get("full_answer"):
-            full_answer = workflow._synthesizer._generate_deterministic_summary(query, evidence)
-            yield f"event: token\ndata: {json.dumps({'delta': full_answer})}\n\n"
+                # If cannot separate or model only produced scratchpad / repetition loop,
+                # synthesize clean deterministic grounded brief so UI is never blank or corrupted
+                fallback_summary = workflow._synthesizer._generate_deterministic_summary(query, evidence)
+                full_thought = full_thought_final
+                done_th = json.dumps({"thought": full_thought, "duration_sec": t_dur})
+                yield f"event: thought_done\ndata: {done_th}\n\n"
+                yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
+                for word in fallback_summary.split(" "):
+                    yield f"event: token\ndata: {json.dumps({'delta': word + ' '})}\n\n"
+                full_answer = fallback_summary
         else:
-            full_answer = locals().get("full_answer", "")
+            full_answer = "".join(answer_chunks).strip()
 
         citations = workflow._synthesizer.extract_citations(full_answer, evidence)
         citations_list = [dict(c) for c in citations]

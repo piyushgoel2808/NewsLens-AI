@@ -11,6 +11,7 @@ import asyncio
 import io
 import json
 import re
+import time
 from typing import Any, Literal
 
 from PIL import Image
@@ -214,28 +215,83 @@ class VisualDataExtractor:
 
     def __init__(self, vision_provider: VisionModelProvider | None = None) -> None:
         self._provider = vision_provider
+        self._circuit_open_until: float = 0.0
+        self._circuit_broken_reason: str = ""
 
-    def _get_provider(self) -> VisionModelProvider:
-        """Resolve vision model provider from registry."""
+    def is_circuit_open(self) -> bool:
+        """Check if circuit breaker is actively tripped due to rate limits or upstream outage."""
+        return time.time() < self._circuit_open_until
+
+    def trip_circuit_breaker(self, duration_seconds: float = 120.0, reason: str = "") -> None:
+        """Trip circuit breaker to divert subsequent images away from failing providers."""
+        self._circuit_open_until = time.time() + duration_seconds
+        self._circuit_broken_reason = reason
+        logger.warning(
+            "VisualDataExtractor circuit breaker TRIPPED for %.1fs (Reason: %s). "
+            "Subsequent assets will immediately use deterministic OCR spatial matrix and heuristic fallback.",
+            duration_seconds,
+            reason,
+        )
+
+    def reset_circuit_breaker(self) -> None:
+        """Manually reset the circuit breaker."""
+        self._circuit_open_until = 0.0
+        self._circuit_broken_reason = ""
+
+    def _get_provider(self) -> VisionModelProvider | None:
+        """Resolve vision model provider from registry with circuit breaker and failover."""
         if self._provider:
             return self._provider
+
+        # If circuit breaker is open, bypass primary provider to avoid stalling
+        if self.is_circuit_open():
+            return self._get_secondary_fallback_provider()
+
         registry = get_registry()
         try:
             provider = registry.get_provider("visual_extraction")
             if isinstance(provider, VisionModelProvider):
+                # If provider is OpenRouter and all keys are currently rate-limited, trip circuit breaker immediately
+                if hasattr(provider, "are_all_keys_rate_limited") and provider.are_all_keys_rate_limited():
+                    self.trip_circuit_breaker(60.0, "All OpenRouter keys currently in cooldown (HTTP 429)")
+                    return self._get_secondary_fallback_provider()
                 return provider
         except Exception:
             pass
 
-        # Fallback to layout_analysis or vision provider
+        return self._get_secondary_fallback_provider()
+
+    def _get_secondary_fallback_provider(self) -> VisionModelProvider | None:
+        """Attempt to locate a secondary healthy vision provider (Gemini Vision or Ollama VLM)."""
         try:
-            fallback = registry.get_provider("layout_analysis")
-            if isinstance(fallback, VisionModelProvider):
-                return fallback
+            registry = get_registry()
+            # 1. Try Gemini Vision if configured
+            try:
+                gemini_prov = registry.get_provider_by_id("gemini_vision")
+                if isinstance(gemini_prov, VisionModelProvider):
+                    return gemini_prov
+            except Exception:
+                pass
+
+            # 2. Try Ollama local vision if available
+            try:
+                ollama_prov = registry.get_provider_by_id("ollama_qwen3vl")
+                if isinstance(ollama_prov, VisionModelProvider):
+                    return ollama_prov
+            except Exception:
+                pass
+
+            # 3. Try layout_analysis if it provides vision
+            try:
+                layout_prov = registry.get_provider("layout_analysis")
+                if isinstance(layout_prov, VisionModelProvider):
+                    return layout_prov
+            except Exception:
+                pass
         except Exception:
             pass
 
-        raise RuntimeError("No VisionModelProvider configured for visual_extraction")
+        return None
 
     # -----------------------------------------------------------------------
     # Stage 1: Fast Visual Triage Gate
@@ -268,43 +324,8 @@ class VisualDataExtractor:
         except Exception:
             return False
 
-    async def classify_visual_asset(
-        self,
-        image_bytes: bytes,
-    ) -> VisualClassification:
-        """Classify image type using lightweight VLM inference with strict timeout and JSON repair."""
-        if not self.is_candidate_data_image(image_bytes):
-            return VisualClassification(
-                visual_type="decorative",
-                confidence=1.0,
-                contains_data=False,
-            )
-
-        provider = self._get_provider()
-        try:
-            response = await asyncio.wait_for(
-                provider.analyze_image(
-                    image_bytes=image_bytes,
-                    prompt=TRIAGE_CLASSIFICATION_PROMPT,
-                    response_schema=None,
-                    max_tokens=1024,
-                ),
-                timeout=20.0,
-            )
-            raw_text = response.text.strip()
-            parsed = repair_and_parse_json(raw_text)
-            if parsed:
-                classification = VisualClassification(**parsed)
-                if classification.visual_type in {"data_chart", "table", "infographic"}:
-                    classification.contains_data = True
-                return classification
-        except Exception as e:
-            logger.warning(
-                "Visual triage classification fallback, checking OCR density",
-                extra={"error": str(e)},
-            )
-
-        # Tier 0/1 deterministic fallback via OCR density check
+    def _classify_via_ocr_density(self, image_bytes: bytes) -> VisualClassification:
+        """Deterministic fallback classification via OCR density and geometry checks (0ms network latency)."""
         try:
             import pytesseract
 
@@ -329,9 +350,66 @@ class VisualDataExtractor:
 
         return VisualClassification(
             visual_type="photo",
-            confidence=0.5,
+            confidence=0.6,
             contains_data=False,
         )
+
+    async def classify_visual_asset(
+        self,
+        image_bytes: bytes,
+    ) -> VisualClassification:
+        """Classify image type using lightweight VLM inference or immediate deterministic OCR triage."""
+        if not self.is_candidate_data_image(image_bytes):
+            return VisualClassification(
+                visual_type="decorative",
+                confidence=1.0,
+                contains_data=False,
+            )
+
+        # If circuit breaker is tripped, skip network inference immediately
+        if self.is_circuit_open():
+            logger.debug("Visual extraction circuit breaker is open; skipping VLM triage to avoid stall")
+            return self._classify_via_ocr_density(image_bytes)
+
+        provider = self._get_provider()
+        if not provider:
+            return self._classify_via_ocr_density(image_bytes)
+
+        from app.providers.openrouter_provider import RateLimitExhaustedError
+
+        try:
+            response = await asyncio.wait_for(
+                provider.analyze_image(
+                    image_bytes=image_bytes,
+                    prompt=TRIAGE_CLASSIFICATION_PROMPT,
+                    response_schema=None,
+                    max_tokens=1024,
+                ),
+                timeout=20.0,
+            )
+            raw_text = response.text.strip()
+            parsed = repair_and_parse_json(raw_text)
+            if parsed:
+                classification = VisualClassification(**parsed)
+                if classification.visual_type in {"data_chart", "table", "infographic"}:
+                    classification.contains_data = True
+                return classification
+        except RateLimitExhaustedError as rle:
+            wait_s = getattr(rle, "retry_after_seconds", 60.0) or 60.0
+            self.trip_circuit_breaker(wait_s, str(rle))
+            logger.warning(
+                "Rate limits exhausted during triage classification; tripping circuit breaker for %.1fs: %s",
+                wait_s,
+                rle,
+            )
+        except Exception as e:
+            logger.warning(
+                "Visual triage classification fallback, checking OCR density",
+                extra={"error": str(e)},
+            )
+
+        # Tier 0/1 deterministic fallback via OCR density check
+        return self._classify_via_ocr_density(image_bytes)
 
     # -----------------------------------------------------------------------
     # Stage 2: Structured VLM Extraction & Deterministic Spatial OCR Matrix
@@ -515,10 +593,22 @@ class VisualDataExtractor:
         visual_type: str = "data_chart",
     ) -> VisualExtractionResult:
         """Extract structured markdown table and metrics from a data-bearing visual asset."""
+        if self.is_circuit_open():
+            logger.info(
+                "Circuit breaker open; executing deterministic OCR spatial matrix reconstruction",
+                extra={"visual_type": visual_type},
+            )
+            return self.extract_table_via_spatial_ocr(image_bytes, visual_type=visual_type)
+
+        provider = self._get_provider()
+        if not provider:
+            return self.extract_table_via_spatial_ocr(image_bytes, visual_type=visual_type)
+
+        from app.providers.openrouter_provider import RateLimitExhaustedError
+
         prompt = STRUCTURED_EXTRACTION_PROMPT.replace("{visual_type}", visual_type)
 
         try:
-            provider = self._get_provider()
             response = await asyncio.wait_for(
                 provider.analyze_image(
                     image_bytes=image_bytes,
@@ -553,6 +643,14 @@ class VisualDataExtractor:
                     confidence=0.8,
                     visual_type=visual_type,
                 )
+        except RateLimitExhaustedError as rle:
+            wait_s = getattr(rle, "retry_after_seconds", 60.0) or 60.0
+            self.trip_circuit_breaker(wait_s, str(rle))
+            logger.warning(
+                "Rate limits exhausted during structured extraction; tripping circuit breaker for %.1fs: %s",
+                wait_s,
+                rle,
+            )
         except Exception as e:
             logger.warning(
                 "VLM structured visual extraction failed or empty, engaging deterministic spatial OCR fallback",
@@ -615,11 +713,33 @@ class VisualDataExtractor:
         caption: str = "",
     ) -> VisualExtractionResult:
         """Analyze editorial photograph to extract rich visual scene description and key subjects."""
+        if self.is_circuit_open():
+            summary = f"Editorial news photograph. {caption}".strip() if caption else "Editorial news photograph."
+            return VisualExtractionResult(
+                summary=summary,
+                markdown_table="",
+                key_metrics=[f"Caption: {caption}"] if caption else [],
+                confidence=0.6,
+                visual_type="photo",
+            )
+
+        provider = self._get_provider()
+        if not provider:
+            summary = f"Editorial news photograph. {caption}".strip() if caption else "Editorial news photograph."
+            return VisualExtractionResult(
+                summary=summary,
+                markdown_table="",
+                key_metrics=[f"Caption: {caption}"] if caption else [],
+                confidence=0.6,
+                visual_type="photo",
+            )
+
+        from app.providers.openrouter_provider import RateLimitExhaustedError
+
         caption_context = f"Published Newspaper Caption: \"{caption}\"" if caption else ""
         prompt = PHOTO_SCENE_ANALYSIS_PROMPT.replace("{caption_context}", caption_context)
 
         try:
-            provider = self._get_provider()
             response = await asyncio.wait_for(
                 provider.analyze_image(
                     image_bytes=image_bytes,
@@ -639,6 +759,14 @@ class VisualDataExtractor:
                     confidence=float(parsed.get("confidence", 0.9)),
                     visual_type="photo",
                 )
+        except RateLimitExhaustedError as rle:
+            wait_s = getattr(rle, "retry_after_seconds", 60.0) or 60.0
+            self.trip_circuit_breaker(wait_s, str(rle))
+            logger.warning(
+                "Rate limits exhausted during photo scene analysis; tripping circuit breaker for %.1fs: %s",
+                wait_s,
+                rle,
+            )
         except Exception as e:
             logger.warning(
                 "VLM photo scene analysis failed or timed out",

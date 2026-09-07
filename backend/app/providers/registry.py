@@ -94,6 +94,21 @@ class ModelRegistry:
                 model=model,
                 api_key=self._settings.openai_api_key,
             )
+        elif provider_type == "openrouter":
+            from app.providers.openrouter_provider import OpenRouterProvider
+
+            keys = self._settings.get_openrouter_keys()
+            if not keys:
+                raise ProviderError(
+                    "OpenRouter API keys not configured. Set OPENROUTER_API_KEYS in .env"
+                )
+            return OpenRouterProvider(
+                model=model,
+                api_keys=keys,
+                base_url=cfg.base_url or self._settings.openrouter_base_url,
+                supports_vision=cfg.supports_vision,
+                context_window=cfg.context_window,
+            )
         elif provider_type in ("google_cloud_vision", "gcp_vision", "google_vision"):
             from app.providers.google_vision_provider import GoogleCloudVisionOCR
 
@@ -103,11 +118,15 @@ class ModelRegistry:
             )
         elif provider_type == "local_sentence_transformers":
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
+        elif provider_type in ("docling", "docling_parser"):
+            from app.ingestion.docling_parser import DoclingLayoutParser
+
+            return DoclingLayoutParser()
         else:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
-                "Supported: gemini, google_cloud_vision, ollama, groq, anthropic, openai, "
-                "local_sentence_transformers"
+                "Supported: gemini, google_cloud_vision, ollama, groq, anthropic, openai, openrouter, "
+                "local_sentence_transformers, docling"
             )
 
     def get_provider(self, task: str) -> AnyProvider:
@@ -179,6 +198,15 @@ class ModelRegistry:
             "ollama_chat": "ollama_llama3",
             "ollama_llama": "ollama_llama3",
             "ollama_llama3": "ollama_llama3",
+            "llama": "ollama_llama3",
+            "llama3": "ollama_llama3",
+            "llama3.1": "ollama_llama3",
+            "ollama_qwen3vl": "ollama_qwen3vl",
+            "qwen3vl": "ollama_qwen3vl",
+            "qwen3-vl": "ollama_qwen3vl",
+            "ollama_vlm": "ollama_vlm",
+            "qwen": "ollama_vlm",
+            "qwen2.5vl": "ollama_vlm",
             "ollama_nemotron": "ollama_nemotron",
             "nemotron": "ollama_nemotron",
             "nvidia": "ollama_nemotron",
@@ -190,12 +218,16 @@ class ModelRegistry:
             "gpt4o": "openai_gpt4o",
             "gpt4o_mini": "openai_gpt4o_mini",
             "anthropic": "anthropic_sonnet",
-            "gemma": "ollama_gemma4_12b",
-            "gemma4": "ollama_gemma4_12b",
-            "gemma4:12b": "ollama_gemma4_12b",
-            "gemma4:26b": "ollama_gemma4_26b",
-            "ollama_gemma4_12b": "ollama_gemma4_12b",
-            "ollama_gemma4_26b": "ollama_gemma4_26b",
+            "gemma": "openrouter_gemma4_26b",
+            "gemma4": "openrouter_gemma4_26b",
+            "gemma4:12b": "openrouter_gemma4_26b",
+            "gemma4:26b": "openrouter_gemma4_26b",
+            "ollama_gemma4_12b": "openrouter_gemma4_26b",
+            "ollama_gemma4_26b": "openrouter_gemma4_26b",
+            "openrouter": "openrouter_gemma4_26b",
+            "openrouter_gemma": "openrouter_gemma4_26b",
+            "openrouter_gemma4_26b": "openrouter_gemma4_26b",
+            "openrouter_nemotron": "openrouter_nemotron",
         }
         if target_id.lower() in alias_map:
             resolved_id = alias_map[target_id.lower()]
@@ -205,7 +237,25 @@ class ModelRegistry:
                     return provider
 
         # 3. Dynamic provider instantiation based on prefix/content
-        if "gemma" in target_id.lower():
+        if "openrouter" in target_id.lower() or ("/" in target_id and not target_id.startswith("http")):
+            from app.providers.openrouter_provider import OpenRouterProvider
+
+            keys = self._settings.get_openrouter_keys()
+            if not keys:
+                raise ProviderError(
+                    "OpenRouter API keys not configured. Set OPENROUTER_API_KEYS in .env"
+                )
+            m_name = "google/gemma-4-26b-a4b-it:free"
+            if "nemotron" in target_id.lower():
+                m_name = "nvidia/nemotron-3.5-lightning:free"
+            elif "/" in target_id:
+                m_name = target_id
+            return OpenRouterProvider(
+                model=m_name,
+                api_keys=keys,
+                base_url=self._settings.openrouter_base_url,
+            )
+        elif "gemma" in target_id.lower():
             from app.providers.ollama_provider import OllamaProvider
 
             m_name = "gemma4:26b" if "26b" in target_id.lower() else "gemma4:12b"
@@ -255,6 +305,24 @@ class ModelRegistry:
             return OpenAIProvider(
                 model=m_name,
                 api_key=self._settings.openai_api_key,
+            )
+        elif "openrouter" in target_id.lower() or "/" in target_id:
+            from app.providers.openrouter_provider import OpenRouterProvider
+
+            keys = self._settings.get_openrouter_keys()
+            if not keys:
+                raise ProviderError(
+                    "OpenRouter API keys not configured. Set OPENROUTER_API_KEYS in .env"
+                )
+            m_name = "google/gemma-4-26b-a4b-it:free"
+            if "nemotron" in target_id.lower():
+                m_name = "nvidia/nemotron-3.5-lightning:free"
+            elif "/" in target_id:
+                m_name = target_id
+            return OpenRouterProvider(
+                model=m_name,
+                api_keys=keys,
+                base_url=self._settings.openrouter_base_url,
             )
         elif "ollama" in target_id.lower():
             from app.providers.ollama_provider import OllamaProvider
@@ -311,6 +379,10 @@ class ModelRegistry:
         Returns rich provider metadata with specific names, descriptions, and reachability.
         """
         display_names = {
+            "openrouter_gemma4_26b": "Google Gemma 4 26B (OpenRouter Dual-Key)",
+            "openrouter_nemotron": "NVIDIA Nemotron 3.5 Lightning (OpenRouter Dual-Key)",
+            "google_cloud_vision": "Google Cloud Vision OCR",
+            "ollama_qwen3vl": "Qwen 3 VL (Local Vision)",
             "gemini_flash": "Google Gemini 3.7 Flash (Grounding)",
             "gemini_pro": "Google Gemini Pro",
             "groq_compound": "Groq Compound AI (Ultra-Fast)",
@@ -368,13 +440,15 @@ class ModelRegistry:
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     r = await client.get(f"{base_url}/api/version")
                     return r.status_code == 200
+            elif provider_type == "openrouter":
+                return bool(self._settings.get_openrouter_keys())
             elif provider_type == "groq":
                 return bool(self._settings.groq_api_key)
             elif provider_type == "anthropic":
                 return bool(self._settings.anthropic_api_key)
             elif provider_type == "openai":
                 return bool(self._settings.openai_api_key)
-            elif provider_type in ("local_sentence_transformers", "tesseract"):
+            elif provider_type in ("local_sentence_transformers", "tesseract", "docling", "docling_parser"):
                 return True  # Always "reachable" (local, no network needed)
             else:
                 return None

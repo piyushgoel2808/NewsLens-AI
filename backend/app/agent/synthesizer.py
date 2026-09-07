@@ -75,9 +75,16 @@ CONVERSATIONAL & CITATION MEMORY RULES:
 1. If the user asks about previous messages, dates, newspapers, citations, or metadata
    (e.g. "which newspaper was this from?", "what was the date?"), directly and concisely
    answer using the conversation history and cited sources.
-2. STRICT NEGATIVE CONSTRAINTS:
+2. VISUAL ELEMENTS, PHOTOS & INFOGRAPHICS:
+   - When the user asks whether an article has a photo, image, graphic, chart, or infographic, ALWAYS inspect the "Attached Photos & Visual Elements" listed under that article in the evidence.
+   - If visual elements are present, explicitly state YES, describe what the image/figure portrays using its caption and visual scene description, and cite the article.
+   - If no attached visual elements are listed in the evidence for that article, state that none are attached.
+3. STRICT NEGATIVE CONSTRAINTS:
    - NEVER dump raw headers (e.g. `--- ARCHIVE EVIDENCE EXCERPT ---` or `[Evidence: ...]`).
    - NEVER output advertisement boilerplate, legal notices, or unrelated book/movie reviews.
+   - DIRECT RESPONSE & NO-SCRATCHPAD MANDATE:
+     * CRITICAL: Do NOT output internal scratchpad notes, planning thoughts, chain-of-thought analysis, or preamble such as "Here's a thinking process:".
+     * You MUST begin your response IMMEDIATELY with the first section header: "### ⚡ Executive Summary".
 """
 
 
@@ -98,19 +105,19 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
                 # If ans is empty but thought contains structured sections or draft
                 pattern = (
                     r"\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|"
-                    r"In summary|Summary:|Answer:|Draft:|Executive Summary)"
+                    r"In summary|Summary:|Answer:|Draft:\s*\n|Executive Summary)"
                 )
                 split_match = re.search(pattern, thought, flags=re.IGNORECASE)
                 if split_match:
                     s_idx = split_match.start()
                     return thought[:s_idx].strip(), thought[s_idx:].strip()
-                return "", thought
+                return thought, ""
         else:
             # Unclosed <think> tag
             after_think = text.split("<think>", 1)[1]
             pattern = (
                 r"\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|"
-                r"In summary|Summary:|Answer:|Draft:|Executive Summary)"
+                r"In summary|Summary:|Answer:|Draft:\s*\n|Executive Summary)"
             )
             split_match = re.search(pattern, after_think, flags=re.IGNORECASE)
             if split_match:
@@ -118,7 +125,7 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
                 thought = after_think[:split_idx].strip()
                 ans = after_think[split_idx:].strip()
                 return thought, ans
-            return "", after_think.strip()
+            return after_think.strip(), ""
 
     # 2. Heuristic for reasoning prefixes (e.g. "Thinking Process:" or "Here's a thinking process:")
     reasoning_prefix_match = re.match(
@@ -130,13 +137,17 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
     if reasoning_prefix_match:
         pattern = (
             r"\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|"
-            r"In summary|Summary:|Answer:|Draft:|Executive Summary)"
+            r"In summary|Summary:|Answer:|Draft:\s*\n|Executive Summary)"
         )
         split_match = re.search(pattern, text, flags=re.IGNORECASE)
         if split_match:
             s_idx = split_match.start()
-            ans_text = text[s_idx:].strip()
-            return text[:s_idx].strip(), ans_text
+            thought_part = text[:s_idx].strip()
+            ans_candidate = text[s_idx:].strip()
+            ans_candidate = re.sub(r"^Draft:\s*\n*", "", ans_candidate, flags=re.IGNORECASE).strip()
+            return thought_part, ans_candidate
+        # If no answer section was emitted, the whole output was reasoning
+        return text.strip(), ""
 
     # Post-clean: Strip hallucinated memo headers with arbitrary pre-training dates like "Date: October 26, 2023 (Current Analysis)"
     ans_text = re.sub(
@@ -201,15 +212,31 @@ class AnswerSynthesizer:
             seen_keys.add(p_ident)
 
         # 2. Resilient failover sequence from active registry
-        failover_keys = [
-            "ollama_gemma4_12b",
-            "ollama_gemma4_26b",
-            "groq_compound",
-            "gemini_flash",
-            "groq_qwen",
-            "ollama_llama3",
-            "ollama_deepseek",
-        ]
+        is_cloud_request = bool(
+            primary
+            and getattr(primary, "provider_name", "") in {"openrouter", "gemini", "groq", "openai"}
+        ) or (model_override and any(p in model_override for p in ["openrouter", "gemini", "groq", "openai"]))
+
+        if is_cloud_request:
+            failover_keys = [
+                "openrouter_nemotron",
+                "openrouter_gemma4_26b",
+                "gemini_flash",
+                "groq_compound",
+                "openai_gpt4o_mini",
+                "groq_qwen",
+                "ollama_llama3",
+                "ollama_deepseek",
+            ]
+        else:
+            failover_keys = [
+                "ollama_llama3",
+                "ollama_deepseek",
+                "openrouter_nemotron",
+                "openrouter_gemma4_26b",
+                "gemini_flash",
+                "groq_compound",
+            ]
         try:
             registry = get_registry()
             for key in failover_keys:
@@ -278,6 +305,18 @@ class AnswerSynthesizer:
                     f"[Evidence: {np_name}, {dt}, Page {pdf_page} "
                     f"(PDF Page {pdf_page}), Headline: \"{hl}\"]"
                 )
+                photos = item.get("photos") or []
+                photos_text = ""
+                if photos:
+                    photo_lines = []
+                    for p_idx, p in enumerate(photos, 1):
+                        p_type = p.get("visual_type") or "Photo"
+                        p_cap = p.get("caption") or "No printed caption"
+                        p_desc = p.get("vlm_description") or ""
+                        desc_str = f" | Visual Scene: {p_desc}" if p_desc else ""
+                        photo_lines.append(f"  * [{p_type} {p_idx}] Caption: \"{p_cap}\"{desc_str}")
+                    photos_text = "\nAttached Photos & Visual Elements:\n" + "\n".join(photo_lines) + "\n"
+
                 context_blocks.append(
                     f"--- ARCHIVE EVIDENCE EXCERPT [{idx}] ---\n"
                     f"{evidence_tag}\n"
@@ -286,6 +325,7 @@ class AnswerSynthesizer:
                     f"Page(s): Page {pdf_page} (PDF Page {pdf_page})\n"
                     f"Headline: {hl}\n"
                     f"Content:\n{text}\n"
+                    f"{photos_text}"
                 )
         return "\n".join(context_blocks)
 
@@ -481,8 +521,8 @@ class AnswerSynthesizer:
                     max_tokens=4096,
                     temperature=0.1,
                 )
-                _, cleaned_answer = parse_thought_and_answer(response.text)
-                answer_text = cleaned_answer if cleaned_answer else response.text
+                th_trace, cleaned_answer = parse_thought_and_answer(response.text)
+                answer_text = cleaned_answer if cleaned_answer else ("" if th_trace else response.text)
                 p_name = getattr(provider, "provider_name", "llm")
                 m_name = getattr(provider, "_model", getattr(provider, "model_name", "default"))
                 calc_cost = record_usage_and_cost(
@@ -494,6 +534,10 @@ class AnswerSynthesizer:
                 cost_usd = max(calc_cost, response.cost_usd)
                 if answer_text.strip():
                     return answer_text, citations, cost_usd
+                logger.warning(
+                    "Provider outputted reasoning without answer section, attempting failover candidate",
+                    extra={"provider": p_name, "model": m_name},
+                )
             except Exception as e:
                 logger.warning(
                     "LLM synthesis failed on provider, trying next candidate",

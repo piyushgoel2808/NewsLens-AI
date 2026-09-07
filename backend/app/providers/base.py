@@ -38,6 +38,7 @@ class ProviderType(StrEnum):
     GEMINI = "gemini"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    OPENROUTER = "openrouter"
     LOCAL_SENTENCE_TRANSFORMERS = "local_sentence_transformers"
     TESSERACT = "tesseract"
     PADDLE_OCR = "paddleocr"

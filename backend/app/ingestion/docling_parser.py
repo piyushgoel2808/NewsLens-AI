@@ -26,8 +26,10 @@ from app.ingestion.layout_analyzer import (
     is_syndication_or_agency_slug,
 )
 from app.ingestion.segmenter import (
+    DATELINE_CITIES,
     SECTION_HEADER_BLACKLIST,
     SegmentedArticle,
+    WIRE_AGENCIES,
     extract_kicker_and_clean_headline,
     is_valid_headline_candidate,
 )
@@ -434,26 +436,50 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                     _flush_current_article()
 
             next_txt = items[idx + 1].text.strip() if idx + 1 < total_items else ""
+            clean_txt_upper = re.sub(r"[^\w\s]", "", txt).strip().upper()
 
-            # Check if this element is an author byline (e.g. "BY LINDA QIU", "BY REIS THEBAULT", "Manu Pubby")
+            # Check if this element is an author byline or news agency stamp
             byline_inline_match = re.search(r"(?i)\bBY\s+([A-Z\s\.\-]{3,50})$", txt)
-            is_author_byline = bool(
-                is_syndication_or_agency_slug(txt)
+            is_wire_or_agency = bool(
+                clean_txt_upper in WIRE_AGENCIES
+                or is_syndication_or_agency_slug(txt)
                 or _AUTHOR_NAME_PATTERN.match(txt)
-                or (len(txt.split()) <= 5 and any(b_tag in txt for b_tag in ["Bureau", "Reporter", "Correspondent", "Special", "By"]))
+                or (len(txt.split()) <= 5 and any(b_tag in txt for b_tag in ["Bureau", "Reporter", "Correspondent", "Special", "By", "Network"]))
             )
 
-            # Check if this element or next element has a dateline (e.g. "New Delhi:", "WASHINGTON -")
-            has_following_dateline = bool(_DATELINE_PATTERN.match(next_txt) or re.match(r"^[A-Z\s]{3,20}\s*[-–—:]", next_txt))
+            # Check if this element is a standalone dateline city
+            is_dateline_city = bool(
+                clean_txt_upper in DATELINE_CITIES
+                or _DATELINE_PATTERN.match(txt)
+                or (len(txt.split()) <= 3 and re.match(r"^[A-Z\s]{2,25}\s*[-–—:]", txt))
+            )
 
-            # 1. Direct Author Byline handling
-            if is_author_byline or (has_following_dateline and len(txt.split()) <= 4 and not txt.isupper()):
+            # Check if next element has a dateline (e.g. "New Delhi:", "WASHINGTON -")
+            has_following_dateline = bool(
+                _DATELINE_PATTERN.match(next_txt)
+                or re.sub(r"[^\w\s]", "", next_txt).strip().upper() in DATELINE_CITIES
+                or re.match(r"^[A-Z\s]{3,20}\s*[-–—:]", next_txt)
+            )
+
+            # 1. Direct Author Byline / Agency handling
+            if is_wire_or_agency or (has_following_dateline and len(txt.split()) <= 4 and not txt.isupper()):
                 clean_byline = re.sub(r"(?i)^by\s+", "", txt).strip()
                 current_byline = clean_byline
                 current_bboxes.append(bbox)
                 continue
 
-            # 2. Section Header or Title
+            # 2. Standalone Dateline handling (e.g. "NEW YORK", "PANAJI", "MARGAO", "TASHKENT")
+            # Datelines belong to the active article's body and should NEVER become headlines!
+            if is_dateline_city:
+                if current_headline:
+                    current_body_parts.append(f"{txt} —")
+                    current_bboxes.append(bbox)
+                    continue
+                else:
+                    current_bboxes.append(bbox)
+                    continue
+
+            # 3. Section Header or Title
             if lbl in ("section_header", "title"):
                 # Check for running page section header banner (e.g. "SPORTS WORLD PLAY", "ET MARKETS", "OPINION")
                 is_section_banner = bool(
@@ -493,12 +519,13 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                 # If current_headline is already active BUT has NO body paragraphs yet:
                 if current_headline and not current_body_parts:
                     # Check if this new text is a deck/subheadline (a 1-3 line summary sentence expanding on the headline)
+                    # Notice: Broad-sheet subheadlines can be uppercase (e.g. "THE 39-YEAR-OLD SUFFERS...")
                     is_deck = bool(
-                        (not current_subheadline and len(txt.split()) >= 4 and not txt.isupper())
-                        or (len(txt.split()) > len(current_headline.split()) and not txt.isupper())
+                        (not current_subheadline and len(txt.split()) >= 4)
+                        or (len(txt.split()) > len(current_headline.split()))
                         or byline_inline_match
                     )
-                    if is_deck:
+                    if is_deck and not (is_valid_headline_candidate(txt) and current_bboxes and (bbox[1] - current_bboxes[-1][3] > height_px * 0.15)):
                         current_subheadline = txt
                         current_bboxes.append(bbox)
                         continue
@@ -509,10 +536,15 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                             current_headline = txt
                             current_bboxes.append(bbox)
                             continue
-                        else:
+                        elif is_valid_headline_candidate(txt):
                             # Genuine separate headline on the page
                             _flush_current_article()
                             current_headline = txt
+                            current_bboxes.append(bbox)
+                            continue
+                        else:
+                            # Not a valid headline candidate (e.g. label or summary fragment)
+                            current_body_parts.append(txt)
                             current_bboxes.append(bbox)
                             continue
 
@@ -530,7 +562,7 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                         current_body_parts.append(txt)
                     current_bboxes.append(bbox)
 
-            # 3. Body paragraphs & text
+            # 4. Body paragraphs & text
             elif lbl in ("text", "paragraph", "list_item"):
                 # Check for byline at start or end of paragraph
                 if byline_inline_match:
@@ -544,6 +576,16 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                     txt = "\n".join(lines)
 
                 if txt:
+                    clean_p_upper = re.sub(r"[^\w\s]", "", txt).strip().upper()
+                    if clean_p_upper in WIRE_AGENCIES:
+                        current_byline = txt
+                        current_bboxes.append(bbox)
+                        continue
+                    if clean_p_upper in DATELINE_CITIES:
+                        current_body_parts.append(f"{txt} —")
+                        current_bboxes.append(bbox)
+                        continue
+
                     # If we don't have a subheadline yet, have no body yet, and this paragraph is short/sentence-like without dateline
                     if current_headline and not current_subheadline and not current_body_parts and len(txt.split()) <= 30 and not _DATELINE_PATTERN.match(txt):
                         current_subheadline = txt

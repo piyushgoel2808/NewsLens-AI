@@ -170,19 +170,39 @@ async def run_ingestion_pipeline(
 
         if not is_docling_engine:
             # Step 4: Phase 1 Bounded Parallel Extraction (Page Skeletons & Layout)
-            # 4 concurrent requests for cloud Gemini, 1 for local Ollama
-            concurrency_limit = 1 if "gemma" in (parser_engine or "").lower() else 4
+            # 4 concurrent requests for cloud (Gemini / OpenRouter), 1 for local Ollama
+            is_local = "ollama" in (parser_engine or "").lower()
+            concurrency_limit = 1 if is_local else 4
             semaphore = asyncio.Semaphore(concurrency_limit)
 
             async def _extract_page_phase1(idx: int, rendered: RasterizedPage) -> tuple[int, PageLayoutExtraction]:
+                from app.providers.openrouter_provider import RateLimitExhaustedError
+
                 async with semaphore:
                     digital_hint = analysis_results[idx].full_text if idx < len(analysis_results) else None
-                    layout = await extractor_engine.extract_page_layout(
-                        page_number=rendered.page_number,
-                        image_bytes=rendered.image_bytes,
-                        digital_text_hint=digital_hint,
-                    )
-                    return (rendered.page_number, layout)
+                    max_attempts = 3
+                    for attempt in range(max_attempts):
+                        try:
+                            layout = await extractor_engine.extract_page_layout(
+                                page_number=rendered.page_number,
+                                image_bytes=rendered.image_bytes,
+                                digital_text_hint=digital_hint,
+                            )
+                            return (rendered.page_number, layout)
+                        except RateLimitExhaustedError as rle:
+                            if attempt == max_attempts - 1:
+                                logger.error(
+                                    "Rate limits exhausted on page %d after %d attempts: %s",
+                                    rendered.page_number, max_attempts, rle
+                                )
+                                raise
+                            wait_s = getattr(rle, "retry_after_seconds", 15.0) * (attempt + 1)
+                            logger.warning(
+                                "OpenRouter rate limits exhausted on page %d. Backing off for %.1fs (attempt %d/%d)...",
+                                rendered.page_number, wait_s, attempt + 1, max_attempts
+                            )
+                            await asyncio.sleep(wait_s)
+                    return (rendered.page_number, PageLayoutExtraction(page_number=rendered.page_number))
 
             phase1_tasks = [_extract_page_phase1(i, r) for i, r in enumerate(rendered_pages)]
             phase1_results_list = await asyncio.gather(*phase1_tasks)
@@ -342,14 +362,27 @@ async def run_ingestion_pipeline(
                             f"{skel.headline}\n\n{skel.subheadline}" if skel.subheadline else (skel.headline or "News item.")
                         )
                     else:
-                        # For LLM-based extraction (Gemini / Gemma), enrich major articles with VLM crop
+                        # For LLM-based extraction (Gemini / Gemma / OpenRouter), enrich major articles with VLM crop
+                        from app.providers.openrouter_provider import RateLimitExhaustedError
+
                         crop_bytes = extractor_engine.crop_article_image(rendered.image_bytes, bbox)
-                        enrichment = await extractor_engine.enrich_article(
-                            headline=skel.headline,
-                            article_crop_bytes=crop_bytes,
-                            digital_slice=analysis.full_text,
-                        )
-                        full_body = enrichment.body_text
+                        full_body = skel.body_text or skel.headline or "News item."
+                        for art_attempt in range(3):
+                            try:
+                                enrichment = await extractor_engine.enrich_article(
+                                    headline=skel.headline,
+                                    article_crop_bytes=crop_bytes,
+                                    digital_slice=analysis.full_text,
+                                )
+                                full_body = enrichment.body_text
+                                break
+                            except RateLimitExhaustedError as rle:
+                                if art_attempt == 2:
+                                    logger.warning("All keys exhausted for article %s, using skeleton text", skel.headline)
+                                    break
+                                wait_s = getattr(rle, "retry_after_seconds", 15.0) * (art_attempt + 1)
+                                logger.warning("Rate limits exhausted enriching article, sleeping %.1fs...", wait_s)
+                                await asyncio.sleep(wait_s)
 
                     # Convert normalized [ymin, xmin, ymax, xmax] (0..1000) to standard [x0, y0, x1, y1] pixels
                     if max(bbox) <= 1000.0 and (rendered.width_px > 1000 or rendered.height_px > 1000):
@@ -786,6 +819,28 @@ async def run_ingestion_pipeline(
         }
 
 
-def process_issue_ingestion_task(issue_id: int, pdf_bytes: bytes, dpi: int = 300) -> dict[str, Any]:
-    """Synchronous entry point for Celery worker."""
-    return asyncio.run(run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=pdf_bytes, dpi=dpi))
+from app.ingestion.celery_app import celery_app
+from app.providers.openrouter_provider import RateLimitExhaustedError
+
+
+@celery_app.task(
+    bind=True,
+    name="app.ingestion.tasks.process_issue_ingestion_task",
+    max_retries=3,
+    autoretry_for=(RateLimitExhaustedError,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+)
+def process_issue_ingestion_task(self, issue_id: int, pdf_bytes: bytes, dpi: int = 300) -> dict[str, Any]:
+    """Synchronous entry point for Celery worker with exponential backoff on total rate limit exhaustion."""
+    try:
+        return asyncio.run(run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=pdf_bytes, dpi=dpi))
+    except RateLimitExhaustedError as exc:
+        retries = getattr(self.request, "retries", 0) if hasattr(self, "request") else 0
+        logger.warning(
+            "Celery task hit RateLimitExhaustedError for issue %d, scheduling retry %d/3...",
+            issue_id,
+            retries + 1,
+        )
+        raise self.retry(exc=exc, countdown=min(60 * (2 ** retries), 300))

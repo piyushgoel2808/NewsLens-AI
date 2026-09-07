@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 
 const ActiveHighlightContext = createContext(null);
 
@@ -11,14 +11,110 @@ export function ActiveHighlightProvider({ children }) {
   const [isPulsing, setIsPulsing] = useState(false);
   const [hoveredArticleId, setHoveredArticleId] = useState(null);
 
-  // Persistent Selected LLM Model (Default: groq_qwen)
-  const [selectedModel, setSelectedModelState] = useState(() => {
-    return localStorage.getItem('newslens_selected_model') || 'groq_qwen';
+  // Synchronized Task Bindings State across all tabs
+  const [taskBindings, setTaskBindings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('newslens_task_bindings');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return {};
   });
 
-  const setSelectedModel = useCallback((model) => {
+  // Persistent Selected LLM Model (Default: openrouter_gemma4_26b or active answerer binding)
+  const [selectedModel, setSelectedModelState] = useState(() => {
+    return localStorage.getItem('newslens_selected_model') || 'openrouter_gemma4_26b';
+  });
+
+  // Refresh and synchronize task bindings from backend on mount
+  const refreshTaskBindings = useCallback(async () => {
+    try {
+      const res = await fetch('/api/settings/model-bindings');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.task_bindings) {
+          setTaskBindings(json.task_bindings);
+          try {
+            localStorage.setItem('newslens_task_bindings', JSON.stringify(json.task_bindings));
+          } catch {
+            // ignore
+          }
+
+          // If no explicitly saved model in localStorage, bind to backend answerer
+          const activeLlm = json.task_bindings.answerer || json.task_bindings.query_planner;
+          const storedModel = localStorage.getItem('newslens_selected_model');
+          if (!storedModel && activeLlm) {
+            setSelectedModelState(activeLlm);
+            localStorage.setItem('newslens_selected_model', activeLlm);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load initial model bindings in context:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshTaskBindings();
+  }, [refreshTaskBindings]);
+
+  // Synchronized updater called when presets or settings change
+  const updateTaskBindings = useCallback((newBindings, syncSelectedModel = true) => {
+    if (!newBindings || typeof newBindings !== 'object') return;
+    setTaskBindings((prev) => {
+      const merged = { ...prev, ...newBindings };
+      try {
+        localStorage.setItem('newslens_task_bindings', JSON.stringify(merged));
+      } catch {
+        // ignore
+      }
+      return merged;
+    });
+
+    if (syncSelectedModel) {
+      const nextModel = newBindings.answerer || newBindings.query_planner;
+      if (nextModel) {
+        setSelectedModelState(nextModel);
+        localStorage.setItem('newslens_selected_model', nextModel);
+      }
+    }
+  }, []);
+
+  // Set selected model and sync with backend bindings so all tabs stay in harmony
+  const setSelectedModel = useCallback((model, syncToBackend = true) => {
+    if (!model) return;
     setSelectedModelState(model);
     localStorage.setItem('newslens_selected_model', model);
+
+    // Update in-memory bindings for query planner & answerer
+    setTaskBindings((prev) => {
+      const updated = {
+        ...prev,
+        query_planner: model,
+        answerer: model,
+      };
+      try {
+        localStorage.setItem('newslens_task_bindings', JSON.stringify(updated));
+      } catch {
+        // ignore
+      }
+      return updated;
+    });
+
+    // Optionally propagate to backend settings
+    if (syncToBackend) {
+      fetch('/api/settings/model-bindings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task_bindings: {
+            query_planner: model,
+            answerer: model,
+          },
+        }),
+      }).catch((err) => console.warn('Failed to sync model binding to backend:', err));
+    }
   }, []);
 
   // Persistent Chat Messages across tab switches and reloads
@@ -105,6 +201,9 @@ export function ActiveHighlightProvider({ children }) {
         setHoveredArticleId,
         selectedModel,
         setSelectedModel,
+        taskBindings,
+        updateTaskBindings,
+        refreshTaskBindings,
         chatMessages,
         setChatMessages,
         timelineQuery,

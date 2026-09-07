@@ -26,22 +26,22 @@ async def test_runtime_model_swapping_live_update() -> None:
         assert reset_resp.status_code == 200
         data = reset_resp.json()
         assert data["task_bindings"]["layout_analysis"] == "google_cloud_vision"
-        assert data["task_bindings"]["query_planner"] == "ollama_gemma4_12b"
+        assert data["task_bindings"]["query_planner"] == "openrouter_gemma4_26b"
 
-        # 2. Swap layout_analysis to ollama_gemma4_26b
+        # 2. Swap layout_analysis to ollama_qwen3vl
         put_resp = await client.put(
             "/api/settings/model-bindings",
-            json={"task_bindings": {"layout_analysis": "ollama_gemma4_26b"}},
+            json={"task_bindings": {"layout_analysis": "ollama_qwen3vl"}},
         )
         assert put_resp.status_code == 200
         put_data = put_resp.json()
-        assert put_data["task_bindings"]["layout_analysis"] == "ollama_gemma4_26b"
+        assert put_data["task_bindings"]["layout_analysis"] == "ollama_qwen3vl"
 
         # Check that registry immediately yields the swapped provider
         reg = get_registry()
         swapped_prov = reg.get_provider("layout_analysis")
         assert isinstance(swapped_prov, OllamaProvider)
-        assert swapped_prov._model == "gemma4:26b"
+        assert swapped_prov._model == "qwen3-vl:latest"
 
         # 3. Reset back to defaults
         reset_back = await client.post("/api/settings/model-bindings/reset")

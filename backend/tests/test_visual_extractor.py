@@ -300,4 +300,75 @@ async def test_process_image_crop_handles_editorial_photos() -> None:
     assert len(extraction.key_metrics) == 2
 
 
+@pytest.mark.asyncio
+async def test_circuit_breaker_trips_on_rate_limit_exhausted_error() -> None:
+    """Verify that when RateLimitExhaustedError occurs, circuit breaker trips and returns OCR triage immediately."""
+    from app.providers.openrouter_provider import RateLimitExhaustedError
+
+    mock_provider = MagicMock(spec=VisionModelProvider)
+    mock_provider.analyze_image = AsyncMock(
+        side_effect=RateLimitExhaustedError("All 2 keys rate-limited", retry_after_seconds=30.0)
+    )
+
+    extractor = VisualDataExtractor(vision_provider=mock_provider)
+    assert not extractor.is_circuit_open()
+
+    test_bytes = create_test_image_bytes(width=500, height=400)
+    result = await extractor.classify_visual_asset(test_bytes)
+
+    # Circuit breaker must be open
+    assert extractor.is_circuit_open()
+    # Fallback to photo / ocr density succeeded
+    assert result.visual_type in {"photo", "table", "logo"}
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_open_bypasses_remote_provider_immediately() -> None:
+    """Verify that once circuit is open, subsequent images bypass remote network calls instantly."""
+    mock_provider = MagicMock(spec=VisionModelProvider)
+    mock_provider.analyze_image = AsyncMock(
+        side_effect=RuntimeError("Should NOT be called while circuit is open!")
+    )
+
+    extractor = VisualDataExtractor(vision_provider=mock_provider)
+    extractor.trip_circuit_breaker(duration_seconds=120.0, reason="Upstream pool 429")
+    assert extractor.is_circuit_open()
+
+    test_bytes = create_test_image_bytes(width=450, height=350)
+
+    # 1. Classification bypasses provider
+    classification = await extractor.classify_visual_asset(test_bytes)
+    assert classification.visual_type in {"photo", "table", "logo"}
+
+    # 2. Photo scene description bypasses provider
+    extraction = await extractor.describe_photo_scene(test_bytes, caption="Historic meeting in Panaji")
+    assert extraction.visual_type == "photo"
+    assert "Historic meeting in Panaji" in extraction.summary
+
+    # Provider was NEVER invoked
+    assert mock_provider.analyze_image.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_extract_structured_data_trips_circuit_breaker_and_falls_back() -> None:
+    """Verify extract_structured_data trips circuit breaker on RateLimitExhaustedError and falls back to spatial OCR."""
+    from app.providers.openrouter_provider import RateLimitExhaustedError
+
+    mock_provider = MagicMock(spec=VisionModelProvider)
+    mock_provider.analyze_image = AsyncMock(
+        side_effect=RateLimitExhaustedError("Upstream rate limits exhausted", retry_after_seconds=45.0)
+    )
+
+    extractor = VisualDataExtractor(vision_provider=mock_provider)
+    assert not extractor.is_circuit_open()
+
+    test_bytes = create_test_image_bytes(width=600, height=400)
+    result = await extractor.extract_structured_data(test_bytes, visual_type="data_chart")
+
+    assert extractor.is_circuit_open()
+    assert result is not None
+    assert result.confidence > 0.0
+
+
+
 

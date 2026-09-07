@@ -213,14 +213,41 @@ def is_garbled_ocr_noise(text: str) -> bool:
     return bool(re.search(r"[bcdfghjklmnpqrstvwxyz]{6,}", clean.lower()))
 
 
+DATELINE_CITIES = {
+    "NEW YORK", "WASHINGTON", "LONDON", "BEIJING", "MOSCOW", "TOKYO", "PARIS",
+    "BERLIN", "CANBERRA", "ISLAMABAD", "COLOMBO", "DHAKA", "KATHMANDU", "GENEVA",
+    "DUBAI", "DOHA", "RIYADH", "SINGAPORE", "BANGKOK", "TASHKENT", "SYDNEY",
+    "MELBOURNE", "TORONTO", "OTTAWA", "LOS ANGELES", "SAN FRANCISCO", "CHICAGO",
+    "PANAJI", "MARGAO", "VASCO", "MAPUSA", "PONDA", "VALPOI", "BICHOLIM",
+    "CURCHORHEM", "QUEPEM", "CANACONA", "PERNEM", "SANGUEM", "PORVORIM", "CALANGUTE",
+    "CANDOLIM", "SANQUELIM", "CORTALIM", "TIVIM", "CUNCOLIM", "BENAUDIM",
+    "NEW DELHI", "MUMBAI", "BENGALURU", "KOLKATA", "CHENNAI", "HYDERABAD",
+    "AHMEDABAD", "PUNE", "JAIPUR", "LUCKNOW", "CHANDIGARH", "PATNA", "BHOPAL",
+    "SRINAGAR", "JAMMU", "GUWAHATI", "KOCHI", "THIRUVANANTHAPURAM", "RANCHI",
+    "RAIPUR", "DEHRADUN", "SHIMLA", "AMRITSAR", "VARANASI", "AGRA", "INDORE",
+    "NAGPUR", "VISAKHAPATNAM", "BHUBANESWAR", "SURAT", "VADODARA", "MANGALORE",
+}
+
+WIRE_AGENCIES = {
+    "PTI", "AGENCIES", "THE GOAN I NETWORK", "THE GOAN NETWORK", "GOAN NETWORK",
+    "REUTERS", "AFP", "IANS", "UNI", "AP", "ANI", "BLOOMBERG", "TNN",
+    "EXPRESS NEWS SERVICE", "SPECIAL CORRESPONDENT", "STAFF REPORTER", "BUREAU",
+    "NEWS DESK", "PRESS TRUST OF INDIA", "UNITED NEWS OF INDIA",
+}
+
+
 def is_valid_headline_candidate(text: str) -> bool:
     """Ensure a block text is substantial enough to define an article headline."""
     cleaned = re.sub(r"[^\w\s]", "", text).strip()
     words = cleaned.split()
     if not words or len(words) < 2 or len(cleaned) < 8:
         return False
-    # Single words (e.g. "LIMITED", "ISSUE", "EQUITY") are never valid article headlines
+    # Single words (e.g. "LIMITED", "ISSUE", "EQUITY", "PANAJI") are never valid article headlines
     if len(words) == 1:
+        return False
+    # Standalone dateline cities or wire agencies are never article headlines
+    cleaned_upper = cleaned.upper()
+    if cleaned_upper in DATELINE_CITIES or cleaned_upper in WIRE_AGENCIES:
         return False
     # Filter out syndication slugs, wire stamps, and numbered subheadings
     if is_syndication_or_agency_slug(text):

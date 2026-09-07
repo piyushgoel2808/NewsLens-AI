@@ -73,6 +73,7 @@ class HybridSearchResult:
     parent_article_text: str | None = None
     has_visual_data: bool = False
     visual_type: str | None = None
+    photos: list[dict[str, Any]] = field(default_factory=list)
 
 
 
@@ -220,6 +221,7 @@ class HybridSearchEngine:
                 .options(
                     selectinload(Article.issue).selectinload(Issue.newspaper),
                     selectinload(Article.article_pages),
+                    selectinload(Article.photos),
                 )
             )
             db_articles_res = await db.execute(stmt)
@@ -322,9 +324,24 @@ class HybridSearchEngine:
                         elif isinstance(ap.bbox_json, dict):
                             bboxes_list.append(ap.bbox_json)
 
+            # Extract attached photos and visual assets
+            article_photos = [
+                {
+                    "id": p.id,
+                    "caption": p.caption or "",
+                    "visual_type": p.visual_type or "photo",
+                    "vlm_description": p.vlm_description or "",
+                    "object_key": p.object_key or "",
+                    "bbox": p.bbox_json if p.bbox_json is not None else [],
+                }
+                for p in (article.photos or [])
+            ]
+
             # Detect if matched chunks or article contain visual infographic / chart data
-            has_vis = any(c.get("has_visual_data") or c.get("chunk_type") == "visual" for c in score_info["chunks"])
+            has_vis = any(c.get("has_visual_data") or c.get("chunk_type") == "visual" for c in score_info["chunks"]) or bool(article_photos)
             v_type = next((c.get("visual_type") for c in score_info["chunks"] if c.get("visual_type")), None)
+            if not v_type and article_photos:
+                v_type = article_photos[0]["visual_type"]
 
             final_results.append(
                 HybridSearchResult(
@@ -349,6 +366,7 @@ class HybridSearchEngine:
                     parent_article_text=parent_full_text,
                     has_visual_data=has_vis,
                     visual_type=v_type,
+                    photos=article_photos,
                 )
             )
 

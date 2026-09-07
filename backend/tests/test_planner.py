@@ -413,6 +413,23 @@ class TestAgentWorkflowToolExecution:
         assert hybrid_tool.arguments.get("newspaper_name") == "The Goan"
         assert hybrid_tool.arguments.get("date_from") == "2026-08-01"
 
+    def test_extract_parameters_differential_single_brand_does_not_index_error(self) -> None:
+        """Verify queries with exclusion phrases like 'not in' and only 1 newspaper don't raise IndexError."""
+        from app.agent.planner import extract_parameters_from_query
+
+        # Query has "not in" but only 1 newspaper brand ("The Goan")
+        params = extract_parameters_from_query("Were there any articles not in The Goan?")
+        assert params["is_differential"] is True
+        assert params["source_newspaper"] == "The Goan"
+        assert "comparison_newspaper" not in params
+
+        # Query has "exclusive to" and 1 brand
+        params2 = extract_parameters_from_query("Stories exclusive to The Goan on 2026-08-05")
+        assert params2["is_differential"] is True
+        assert params2["source_newspaper"] == "The Goan"
+        assert "comparison_newspaper" not in params2
+
+
 
 
 

@@ -153,17 +153,9 @@ DEFAULT_PROVIDERS = {
         supports_vision=False,
         supports_tool_use=True,
     ),
-    "ollama_gemma4_26b": ProviderConfig(
+    "ollama_llama3": ProviderConfig(
         provider="ollama",
-        model="gemma4:26b",
-        base_url="http://localhost:11434",
-        context_window=128000,
-        supports_vision=True,
-        supports_tool_use=True,
-    ),
-    "ollama_gemma4_12b": ProviderConfig(
-        provider="ollama",
-        model="gemma4:12b",
+        model="llama3.1:8b",
         base_url="http://localhost:11434",
         context_window=128000,
         supports_vision=False,
@@ -171,8 +163,26 @@ DEFAULT_PROVIDERS = {
     ),
     "ollama_chat": ProviderConfig(
         provider="ollama",
-        model="llama3.2:3b",
+        model="llama3.1:8b",
         base_url="http://localhost:11434",
+        context_window=128000,
+        supports_vision=False,
+        supports_tool_use=True,
+    ),
+    "ollama_qwen3vl": ProviderConfig(
+        provider="ollama",
+        model="qwen3-vl:latest",
+        base_url="http://localhost:11434",
+        context_window=32768,
+        supports_vision=True,
+        supports_tool_use=True,
+    ),
+    "ollama_vlm": ProviderConfig(
+        provider="ollama",
+        model="qwen2.5vl:7b",
+        base_url="http://localhost:11434",
+        context_window=32768,
+        supports_vision=True,
         supports_tool_use=True,
     ),
     "ollama_embed": ProviderConfig(
@@ -181,10 +191,30 @@ DEFAULT_PROVIDERS = {
         base_url="http://localhost:11434",
         embedding_dim=768,
     ),
+    "openrouter_gemma4_26b": ProviderConfig(
+        provider="openrouter",
+        model="google/gemma-4-26b-a4b-it:free",
+        context_window=262144,
+        supports_vision=True,
+        supports_tool_use=True,
+    ),
+    "openrouter_nemotron": ProviderConfig(
+        provider="openrouter",
+        model="nvidia/nemotron-3.5-lightning:free",
+        context_window=1000000,
+        supports_vision=False,
+        supports_tool_use=True,
+    ),
     "local_embed_bge": ProviderConfig(
         provider="local_sentence_transformers",
         model="BAAI/bge-m3",
         embedding_dim=1024,
+    ),
+    "docling_parser": ProviderConfig(
+        provider="docling",
+        model="doclaynet-rapidocr",
+        supports_vision=True,
+        supports_tool_use=False,
     ),
 }
 
@@ -193,11 +223,12 @@ DEFAULT_TASK_BINDINGS = {
     "document_parser": "google_cloud_vision",
     "ocr": "google_cloud_vision",
     "embedding": "local_embed_bge",
-    "query_planner": "ollama_gemma4_12b",
-    "answerer": "ollama_gemma4_12b",
-    "metadata_extraction": "ollama_gemma4_12b",
-    "classification": "ollama_gemma4_12b",
-    "article_segmentation": "ollama_gemma4_12b",
+    "query_planner": "openrouter_gemma4_26b",
+    "answerer": "openrouter_gemma4_26b",
+    "metadata_extraction": "openrouter_gemma4_26b",
+    "classification": "openrouter_gemma4_26b",
+    "article_segmentation": "openrouter_gemma4_26b",
+    "visual_extraction": "openrouter_gemma4_26b",
 }
 
 
@@ -281,11 +312,15 @@ class Settings(BaseSettings):
     hf_token: str | None = None
     huggingface_token: str | None = None
 
+    openrouter_api_keys: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+
     @field_validator(
         "groq_api_key",
         "gemini_api_key",
         "anthropic_api_key",
         "openai_api_key",
+        "openrouter_api_keys",
         "google_api_key",
         "google_application_credentials",
         "gcp_service_account_key",
@@ -301,6 +336,12 @@ class Settings(BaseSettings):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+    def get_openrouter_keys(self) -> list[str]:
+        """Return parsed list of OpenRouter API keys for dual-account round-robin rotation."""
+        if not self.openrouter_api_keys:
+            return []
+        return [k.strip() for k in self.openrouter_api_keys.split(",") if k.strip()]
 
     # --- Internal: cached model config ---
     _model_config_data: ModelConfig | None = None

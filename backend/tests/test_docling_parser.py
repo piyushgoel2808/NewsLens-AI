@@ -246,3 +246,83 @@ class TestDoclingLayoutParser:
         num_replacement = sum(1 for c in all_text if c in ("\ufffd", "\ufeff"))
         replacement_ratio = num_replacement / max(len(all_text.replace(" ", "")), 1)
         assert replacement_ratio >= 0.03
+
+    def test_assemble_articles_coalesces_headline_deck_and_dateline_city(self) -> None:
+        """Verify that an all-caps subheadline, agency slug, and standalone dateline city coalesce into one article."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="section_header",
+                text="Novak Djokovic's US Open campaign ends in pain",
+                bbox=(5.0, 134.0, 737.0, 314.0),
+                page_number=14,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="THE 39 - YEAR - OLD SUFFERS HIS EARLIEST GRAND SLAM EXIT IN TWO DECADES AFTER BATTLING PHYSICAL PROBLEMS",
+                bbox=(5.0, 305.0, 710.0, 377.0),
+                page_number=14,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="PTI",
+                bbox=(5.0, 382.0, 23.0, 401.0),
+                page_number=14,
+            ),
+            DoclingParsedItem(
+                label="section_header",
+                text="NEW YORK",
+                bbox=(5.0, 412.0, 78.0, 431.0),
+                page_number=14,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="The 39-year-old is out of the U.S. Open after a first-round defeat to Mariano Navone on Sunday night, losing 7-6 (5), 5-7, 4-6, 6-2, 6-1 in a five-set marathon that lasted four hours and 36 minutes. It was the longest opening match of a Grand Slam in Djokovic's career and became his earliest exit in one in two decades, dating to the 2006 Australian Open.",
+                bbox=(5.0, 565.0, 176.0, 781.0),
+                page_number=14,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=14, items=items, width_px=1500, height_px=2400)
+        assert len(articles) == 1
+        assert articles[0].headline == "Novak Djokovic's US Open campaign ends in pain"
+        assert "THE 39 - YEAR - OLD SUFFERS" in articles[0].subheadline
+        assert articles[0].byline_author == "PTI"
+        assert "NEW YORK" in articles[0].body_text
+        assert "Mariano Navone" in articles[0].body_text
+        assert articles[0].word_count >= 80
+
+    def test_standalone_dateline_city_never_becomes_headline(self) -> None:
+        """Verify that dateline cities like PANAJI, MARGAO, or TASHKENT are never treated as article headlines."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="section_header",
+                text="Joshua, Vaishnavi triumph in Goa State U-17 chess championship in Valpoi",
+                bbox=(5.0, 1190.0, 743.0, 1315.0),
+                page_number=14,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="THE GOAN I NETWORK",
+                bbox=(5.0, 1326.0, 126.0, 1345.0),
+                page_number=14,
+            ),
+            DoclingParsedItem(
+                label="section_header",
+                text="PANAJI",
+                bbox=(5.0, 1356.0, 51.0, 1375.0),
+                page_number=14,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="The championship was organised by the Sattari Taluka Chess Association in collaboration with the Valpoi Education Society, under the aegis of the Goa Chess Association.",
+                bbox=(5.0, 1494.0, 178.0, 1588.0),
+                page_number=14,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=14, items=items, width_px=1500, height_px=2400)
+        assert len(articles) == 1
+        assert articles[0].headline == "Joshua, Vaishnavi triumph in Goa State U-17 chess championship in Valpoi"
+        assert articles[0].byline_author == "THE GOAN I NETWORK"
+        assert "PANAJI" in articles[0].body_text
+        assert "Sattari Taluka" in articles[0].body_text

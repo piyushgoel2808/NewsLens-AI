@@ -54,20 +54,6 @@ providers:
     supports_vision: false
     supports_tool_use: false
     embedding_dim: 1024
-  ollama_gemma4_26b:
-    provider: ollama
-    model: gemma4:26b
-    base_url: http://localhost:11434
-    context_window: 128000
-    supports_vision: true
-    supports_tool_use: true
-  ollama_gemma4_12b:
-    provider: ollama
-    model: gemma4:12b
-    base_url: http://localhost:11434
-    context_window: 128000
-    supports_vision: false
-    supports_tool_use: true
   google_cloud_vision:
     provider: google_cloud_vision
     supports_vision: true
@@ -108,14 +94,31 @@ providers:
     supports_vision: false
     supports_tool_use: false
     embedding_dim: 3072
+  openrouter_gemma4_26b:
+    provider: openrouter
+    model: google/gemma-4-26b-a4b-it:free
+    context_window: 262144
+    supports_vision: true
+    supports_tool_use: true
+  openrouter_nemotron:
+    provider: openrouter
+    model: nvidia/nemotron-3.5-lightning:free
+    context_window: 1000000
+    supports_vision: false
+    supports_tool_use: true
+  docling_parser:
+    provider: docling
+    model: doclaynet-rapidocr
+    supports_vision: true
+    supports_tool_use: false
 task_bindings:
   layout_analysis: google_cloud_vision
   document_parser: google_cloud_vision
   ocr: google_cloud_vision
   embedding: local_embed_bge
-  query_planner: ollama_gemma4_12b
-  answerer: ollama_gemma4_12b
-  metadata_extraction: ollama_gemma4_12b
-  classification: ollama_gemma4_12b
-  article_segmentation: ollama_gemma4_12b
-  visual_extraction: ollama_qwen3vl
+  query_planner: openrouter_gemma4_26b
+  answerer: openrouter_gemma4_26b
+  metadata_extraction: openrouter_gemma4_26b
+  classification: openrouter_gemma4_26b
+  article_segmentation: openrouter_gemma4_26b
+  visual_extraction: openrouter_gemma4_26b

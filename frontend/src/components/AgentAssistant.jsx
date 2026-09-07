@@ -22,6 +22,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
+import ModelSelector from './ModelSelector';
 
 // Custom dark-mode theme components for ReactMarkdown
 const markdownComponents = {
@@ -141,7 +142,7 @@ const splitThoughtAndAnswer = (text) => {
         if (splitMatch !== -1) {
           return [thought.slice(0, splitMatch).trim(), thought.slice(splitMatch).trim()];
         }
-        return ['', thought];
+        return [thought, ''];
       }
     } else {
       const parts = text.split('<think>');
@@ -155,7 +156,7 @@ const splitThoughtAndAnswer = (text) => {
           after.slice(splitMatch).trim(),
         ];
       }
-      return ['', after.trim()];
+      return [after.trim(), ''];
     }
   }
   const prefixMatch = text.match(/^(?:Here'?s a thinking process:?|Thinking Process:?|Thought:?)\s*/i);
@@ -164,8 +165,12 @@ const splitThoughtAndAnswer = (text) => {
       /\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|In summary|Summary:|Answer:|Draft:|Executive Summary)/i
     );
     if (splitMatch !== -1) {
-      return [text.slice(0, splitMatch).trim(), text.slice(splitMatch).trim()];
+      const thoughtPart = text.slice(0, splitMatch).trim();
+      const ansPart = text.slice(splitMatch).replace(/^(?:Draft:?\s*\n*)/i, '').trim();
+      return [thoughtPart, ansPart];
     }
+    // If no answer section header found yet, the text is purely reasoning
+    return [text.trim(), ''];
   }
   return ['', text.trim()];
 };
@@ -175,24 +180,38 @@ const sanitizeAnswerText = (text, fallbackThought = '') => {
   if (!text && fallbackThought) {
     const [, ans] = splitThoughtAndAnswer(fallbackThought);
     if (ans) return ans;
-    return fallbackThought;
+    return '';
   }
   if (!text) return '';
-  const cleaned = text
+
+  const [th, ans] = splitThoughtAndAnswer(text);
+  if (th && ans) {
+    return ans;
+  }
+  if (th && !ans) {
+    return '';
+  }
+
+  let cleaned = text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<think>[\s\S]*/gi, '')
     .trim();
-  if (!cleaned && text) {
-    const [, recovered] = splitThoughtAndAnswer(text);
-    return recovered || text;
-  }
+
+  cleaned = cleaned.replace(/^(?:Here'?s a thinking process:?|Thinking Process:?|Thought:?)\s*[\s\S]*?(?=\n#{1,4}\s+|$)/i, '').trim();
   return cleaned;
 };
 
 const extractFallbackThought = (text) => {
   if (!text) return '';
   const match = text.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
-  return match ? match[1].trim() : '';
+  if (match) return match[1].trim();
+
+  const prefixMatch = text.match(/^(?:Here'?s a thinking process:?|Thinking Process:?|Thought:?)\s*/i);
+  if (prefixMatch) {
+    const [thought] = splitThoughtAndAnswer(text);
+    return thought;
+  }
+  return '';
 };
 
 // Helper to extract follow-up exploration questions / angles from the assistant's answer
@@ -371,15 +390,12 @@ export default function AgentAssistant() {
                 current.isStreaming = false;
                 current.stage = 'completed';
 
-                // Safety fallback: if content is empty but thought exists, recover answer
+                // Safety fallback: if content is empty but thought exists, recover answer if an answer was drafted
                 if (!current.content && current.thought) {
                   const [th, ans] = splitThoughtAndAnswer(current.thought);
                   if (ans) {
                     current.thought = th;
                     current.content = ans;
-                  } else {
-                    current.content = current.thought;
-                    current.thought = '';
                   }
                 }
               }
@@ -458,46 +474,11 @@ export default function AgentAssistant() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Cpu className="w-3.5 h-3.5 text-emerald-400" />
-          <span className="text-slate-400 font-medium">LLM Model:</span>
-          <select
+          <ModelSelector
             value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="bg-slate-900 border border-emerald-500/50 rounded-lg px-2.5 py-1 text-emerald-300 font-medium text-xs outline-none cursor-pointer hover:border-emerald-400 focus:border-emerald-400 transition-colors"
-          >
-            <option value="gemini_flash">✨ Google / Gemini 3.7 Flash (Grounding)</option>
-            <option value="gemini_pro">✨ Google / Gemini Pro Latest</option>
-            <option value="groq_compound">⚡ Groq / Compound AI (Ultra-Fast)</option>
-            <option value="groq_qwen">⚡ Groq / Qwen 3.6 27B (Reasoning)</option>
-            <option value="groq_gpt_oss">⚡ Groq / GPT-OSS 120B</option>
-            <option value="ollama_nemotron">🟢 NVIDIA / Nemotron 3.5 Lightning (Local 25GB)</option>
-            <option value="ollama_deepseek">🟢 DeepSeek / R1 14B (Local Reasoning)</option>
-            <option value="ollama_llama3">🟢 Meta / Llama 3.1 8B (Local)</option>
-            <option value="openai_gpt4o">☁️ OpenAI / GPT-4o (Omni)</option>
-            <option value="openai_gpt4o_mini">☁️ OpenAI / GPT-4o Mini</option>
-            {availableModels
-              .filter(
-                (m) =>
-                  ![
-                    'gemini_flash',
-                    'gemini_pro',
-                    'groq_compound',
-                    'groq_qwen',
-                    'groq_gpt_oss',
-                    'ollama_nemotron',
-                    'ollama_deepseek',
-                    'ollama_llama3',
-                    'ollama_chat',
-                    'openai_gpt4o',
-                    'openai_gpt4o_mini',
-                  ].includes(m.id || m.name)
-              )
-              .map((m) => (
-                <option key={m.id || m.name} value={m.id || m.name}>
-                  {m.name || m.id} ({m.provider})
-                </option>
-              ))}
-          </select>
+            onChange={setSelectedModel}
+            availableModels={availableModels}
+          />
 
           {/* Live Web Search Grounding Toggle */}
           <button

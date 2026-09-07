@@ -447,7 +447,14 @@ class MediaExtractor:
                 'Output format: {"boxes": [{"label": "detailed description", "box_1000": [xmin, ymin, xmax, ymax]}]}'
             )
 
+            if getattr(self._visual_extractor, "is_circuit_open", lambda: False)() is True:
+                logger.info("Visual extractor circuit breaker is open; skipping VLM grounding sweep")
+                return []
+
             provider = self._visual_extractor._get_provider()
+            if not provider:
+                return []
+
             resp = await provider.analyze_image(
                 image_bytes=vlm_bytes,
                 prompt=prompt,
@@ -513,6 +520,10 @@ class MediaExtractor:
             )
             return deduped_boxes
         except Exception as ex:
+            from app.providers.openrouter_provider import RateLimitExhaustedError
+            if isinstance(ex, RateLimitExhaustedError):
+                wait_s = getattr(ex, "retry_after_seconds", 60.0) or 60.0
+                self._visual_extractor.trip_circuit_breaker(wait_s, str(ex))
             logger.warning("VLM Grounding sweep failed", extra={"error": str(ex)})
             return []
 

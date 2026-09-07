@@ -151,7 +151,7 @@ def test_repair_truncated_json_mid_sentence():
 
 
 def test_unified_extractor_engine_resolution():
-    """Verify UnifiedExtractor resolves google_cloud_vision and gemma engines correctly."""
+    """Verify UnifiedExtractor resolves google_cloud_vision, gemma (openrouter), and qwen (ollama) engines correctly."""
     # Engine name passed explicitly
     extractor_gcv = UnifiedExtractor(engine_name="google_cloud_vision")
     prov_gcv = extractor_gcv._get_provider()
@@ -159,7 +159,11 @@ def test_unified_extractor_engine_resolution():
 
     extractor_gemma = UnifiedExtractor(engine_name="gemma4:26b")
     prov_gemma = extractor_gemma._get_provider()
-    assert prov_gemma.provider_name == "ollama"
+    assert prov_gemma.provider_name == "openrouter"
+
+    extractor_qwen = UnifiedExtractor(engine_name="qwen3-vl:latest")
+    prov_qwen = extractor_qwen._get_provider()
+    assert prov_qwen.provider_name == "ollama"
 
     extractor_auto = UnifiedExtractor(engine_name="auto")
     prov_auto = extractor_auto._get_provider()

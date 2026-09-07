@@ -22,7 +22,7 @@ import UploadTrigger from './components/UploadTrigger';
 import RawDataViewer from './components/RawDataViewer';
 
 function MainApp() {
-  const { activeTab, setActiveTab } = useActiveHighlight();
+  const { activeTab, setActiveTab, selectedModel, taskBindings } = useActiveHighlight();
 
   const navigationTabs = [
     { id: 'reader', label: 'Broadsheet Reader', icon: Newspaper },
@@ -33,6 +33,15 @@ function MainApp() {
     { id: 'ingest', label: 'Ingestion Console', icon: UploadCloud },
     { id: 'settings', label: 'Model Settings & API', icon: Sliders },
   ];
+
+  // Derive active execution tier for global status badge
+  const activeLlm = selectedModel || taskBindings?.answerer || taskBindings?.query_planner || '';
+  const isCloudOR = activeLlm.startsWith('openrouter');
+  const isCloudDirect =
+    activeLlm.startsWith('gemini') ||
+    activeLlm.startsWith('groq') ||
+    activeLlm.startsWith('openai');
+  const isLocal = activeLlm.startsWith('ollama') || activeLlm.startsWith('local');
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col font-sans">
@@ -76,10 +85,29 @@ function MainApp() {
           })}
         </div>
 
-        {/* Status Pill */}
-        <div className="hidden lg:flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-full border border-slate-700 text-xs text-slate-300 font-mono">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span>Local Engine Active</span>
+        {/* Dynamic Global Execution Status Pill */}
+        <div
+          className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono shadow-sm transition-all duration-200 ${
+            isCloudOR
+              ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+              : isCloudDirect
+              ? 'bg-sky-950/40 border-sky-500/40 text-sky-300'
+              : 'bg-amber-950/40 border-amber-500/40 text-amber-300'
+          }`}
+          title={`Active Model Pipeline: ${activeLlm}`}
+        >
+          <span
+            className={`w-2 h-2 rounded-full animate-pulse ${
+              isCloudOR ? 'bg-emerald-400' : isCloudDirect ? 'bg-sky-400' : 'bg-amber-400'
+            }`}
+          />
+          <span>
+            {isCloudOR
+              ? '☁️ Cloud Dual-Key Active'
+              : isCloudDirect
+              ? '☁️ Cloud Direct Active'
+              : '🖥️ Local Hardware Active'}
+          </span>
         </div>
       </nav>
 

@@ -375,7 +375,8 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
         if any(w in q_lower for w in ["but not in", "not in", "absent in", "exclusive to", "omitted in"]):
             params["is_differential"] = True
             params["source_newspaper"] = ordered_brands[0]
-            params["comparison_newspaper"] = ordered_brands[1]
+            if len(ordered_brands) >= 2:
+                params["comparison_newspaper"] = ordered_brands[1]
 
     # 2. Issue ID Extraction (e.g. "issue 84", "issue #84", "issue id 84")
     iss_match = re.search(r"\bissue\s*(?:id\s*[:=]?\s*|\#\s*|no\.?\s*|number\s*)?(\d+)\b", query, re.I)
@@ -490,6 +491,64 @@ class QueryPlanner:
             logger.warning("Could not resolve LLM provider for QueryPlanner", extra={"error": str(e)})
         return None
 
+    def _get_provider_candidates(
+        self, model_override: str | None = None
+    ) -> list[ChatModelProvider]:
+        """Resolve LLM provider candidates for planning failover."""
+        if self._provider is not None and not model_override:
+            return [self._provider]
+
+        candidates: list[ChatModelProvider] = []
+        seen_keys: set[str] = set()
+
+        primary = self._get_provider(model_override)
+        if primary:
+            candidates.append(primary)
+            seen_keys.add(f"{getattr(primary, 'provider_name', '')}:{getattr(primary, '_model', '')}")
+
+        is_cloud_request = bool(
+            primary
+            and getattr(primary, "provider_name", "") in {"openrouter", "gemini", "groq", "openai"}
+        ) or (model_override and any(p in model_override for p in ["openrouter", "gemini", "groq", "openai"]))
+
+        if is_cloud_request:
+            failover_keys = [
+                "openrouter_nemotron",
+                "openrouter_gemma4_26b",
+                "gemini_flash",
+                "groq_compound",
+                "openai_gpt4o_mini",
+                "groq_qwen",
+                "ollama_llama3",
+                "ollama_deepseek",
+            ]
+        else:
+            failover_keys = [
+                "ollama_llama3",
+                "ollama_deepseek",
+                "openrouter_nemotron",
+                "openrouter_gemma4_26b",
+                "gemini_flash",
+                "groq_compound",
+            ]
+
+        try:
+            reg = get_registry()
+            for k in failover_keys:
+                try:
+                    p = reg.get_chat_provider(k)
+                    if p:
+                        ident = f"{getattr(p, 'provider_name', '')}:{getattr(p, '_model', '')}"
+                        if ident not in seen_keys:
+                            seen_keys.add(ident)
+                            candidates.append(p)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return candidates
+
     async def plan_query_async(
         self,
         query: str,
@@ -497,8 +556,8 @@ class QueryPlanner:
         model_override: str | None = None,
     ) -> PlanResult:
         """Plan query using LLM structured Chain-of-Thought reasoning with graceful heuristic fallback."""
-        provider = self._get_provider(model_override)
-        if provider is not None:
+        providers = self._get_provider_candidates(model_override)
+        for provider in providers:
             try:
                 plan_schema = QueryPlan.model_json_schema()
                 messages = [
@@ -534,11 +593,15 @@ class QueryPlanner:
                     )
             except Exception as ex:
                 logger.warning(
-                    "LLM Agentic Planning failed; falling back to cognitive semantic routing",
-                    extra={"query": query[:50], "error": str(ex)},
+                    "LLM Agentic Planning attempt failed on provider, trying failover candidate",
+                    extra={
+                        "query": query[:50],
+                        "provider": getattr(provider, "provider_name", ""),
+                        "error": str(ex),
+                    },
                 )
 
-        # Fallback if no LLM provider or LLM call failed
+        # Fallback if no LLM provider or all LLM calls failed
         return self._plan_query_heuristic(query, enable_web_search=enable_web_search)
 
     def plan_query(self, query: str, enable_web_search: bool = False) -> PlanResult:

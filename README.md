@@ -182,6 +182,7 @@ npm run build
 ## 📚 Documentation & Technical Deep-Dives
 
 - **[End-to-End Data Flow & Data Structure Guide](docs/end_to_end_data_flow_guide.md)**: Exhaustive walkthrough of every stage from raw PDF ingestion, Docling layout parsing, and 12+ SQL tables to query condensation, cognitive planning, all 6 tool executions, CRAG evaluation, Synthesizer prompt budgeting, SSE streaming, and IR evaluation metrics with concrete JSON and SQL examples.
+- **[Codebase Architecture & File Reference Guide](docs/codebase_directory_and_file_reference.md)**: Complete directory tree, folder responsibilities, and file-by-file technical reference detailing classes, functions, external tools/frameworks, and LLM/VLM models used.
 - **[Relational Database Schema & Manifest Reference](docs/database_schema.md)**: Deep dive into all 17 MySQL tables, relational invariants, foreign keys, spatial bounding boxes, and manifest queries.
 - **[System Architecture & Subsystems](docs/architecture.md)**: Full architecture breakdown covering the 9 micro-subsystems, LangGraph agent workflows, and performance profiles.
 - **[Feature Matrix & Capabilities](docs/features.md)**: Complete guide to all broadsheet capabilities, negative coverage audits, and VLM extraction.

@@ -20,7 +20,7 @@ import {
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
 
 export default function UploadTrigger() {
-  const { openIssueInReader } = useActiveHighlight();
+  const { openIssueInReader, taskBindings } = useActiveHighlight();
 
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [newspapers, setNewspapers] = useState([]);
@@ -412,12 +412,28 @@ export default function UploadTrigger() {
             <select
               value={parserEngine}
               onChange={(e) => setParserEngine(e.target.value)}
-              className="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-medium outline-none focus:border-emerald-400"
+              className="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-medium outline-none focus:border-emerald-400 cursor-pointer"
             >
-              <option value="auto">✨ Auto (Docling 2D Neural Layout + RapidOCR)</option>
-              <option value="docling">⚡ Docling 2D Neural Layout Parser (Recommended)</option>
-              <option value="google_cloud_vision">🔍 Google Cloud Vision API (Pure OCR Engine)</option>
-              <option value="gemma4:26b">🦙 Local Ollama Gemma 4 (26B)</option>
+              <optgroup label="⚡ Neural Layout Engines (Hybrid)" className="bg-slate-900 text-slate-400 font-semibold">
+                <option value="auto" className="bg-slate-900 text-slate-200 font-normal">
+                  ✨ Auto ({taskBindings?.layout_analysis === 'google_cloud_vision'
+                    ? 'Google Cloud Vision Pure OCR'
+                    : taskBindings?.layout_analysis === 'docling_parser'
+                    ? 'Docling 2D Neural Layout + RapidOCR'
+                    : taskBindings?.layout_analysis === 'ollama_qwen3vl'
+                    ? 'Local Qwen 3 VL'
+                    : taskBindings?.layout_analysis || 'Docling 2D Neural Layout'})
+                </option>
+                <option value="docling" className="bg-slate-900 text-slate-200 font-normal">⚡ Docling 2D Neural Layout Parser (Recommended)</option>
+              </optgroup>
+              <optgroup label="☁️ Cloud OCR Engines (Zero Local Stress)" className="bg-slate-900 text-slate-400 font-semibold">
+                <option value="google_cloud_vision" className="bg-slate-900 text-slate-200 font-normal">🔍 Google Cloud Vision API (Pure OCR Engine)</option>
+              </optgroup>
+              <optgroup label="🖥️ Local Hardware Inference" className="bg-slate-900 text-slate-400 font-semibold">
+                <option value="qwen3-vl:latest" className="bg-slate-900 text-slate-200 font-normal">👁️ Local Qwen 3 VL (Spatial Vision)</option>
+                <option value="qwen2.5vl:7b" className="bg-slate-900 text-slate-200 font-normal">👁️ Local Qwen 2.5 VL 7B (Lightweight Vision)</option>
+                <option value="llama3.1:8b" className="bg-slate-900 text-slate-200 font-normal">🦙 Local Llama 3.1 8B (Fast OCR/Text)</option>
+              </optgroup>
             </select>
           </div>
         </div>

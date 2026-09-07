@@ -247,4 +247,32 @@ class TestAnswerSynthesizer:
         assert ctx_followup.get("newspaper_name") == "The New York Times"
         assert ctx_followup.get("issue_date") == "2026-08-26"
 
+    def test_evidence_context_includes_attached_photos(self) -> None:
+        """Verify that attached photos with VLM descriptions are formatted into evidence context."""
+        synth = AnswerSynthesizer(provider=MagicMock())
+        evidence_items = [
+            {
+                "article_id": 41914,
+                "headline": "Novak Djokovic's US Open campaign ends in pain",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-09-01",
+                "pages": [14],
+                "snippet": "Novak Djokovic grinded through physical and internal ailments on Sunday night.",
+                "photos": [
+                    {
+                        "id": 8094,
+                        "caption": "Djokovic in despair",
+                        "visual_type": "photo",
+                        "vlm_description": "A male tennis player, identifiable as Novak Djokovic, displays visible frustration with his head in hands on a tennis court.",
+                    }
+                ],
+            }
+        ]
+        context = synth._build_evidence_context(evidence_items)
+        assert "Attached Photos & Visual Elements:" in context
+        assert "Djokovic in despair" in context
+        assert "A male tennis player, identifiable as Novak Djokovic" in context
+        assert "The Goan" in context
+
+
 
