@@ -495,6 +495,75 @@ class TestAgentWorkflowToolExecution:
         assert "health" in hs_tool.arguments.get("query", "").lower()
         assert hs_tool.arguments.get("query") != "newspaper coverage comparison"
 
+    def test_extract_parameters_brand_does_not_bleed_into_category(self) -> None:
+        """Verify brand name tokens like 'Economic' or 'Financial' do not bleed into category filters."""
+        from app.agent.planner import extract_parameters_from_query
+
+        # Mentioning The Economic Times should not trigger Economy & Policy filter
+        p1 = extract_parameters_from_query("Summarize the front page of The Economic Times dated 2026-08-01")
+        assert p1.get("newspaper_name") == "The Economic Times"
+        assert p1.get("category_filter") is None
+
+        # Explicitly mentioning economy and The Economic Times SHOULD trigger Economy & Policy
+        p2 = extract_parameters_from_query("list all economy news from The Economic Times dated 2026-08-01")
+        assert p2.get("newspaper_name") == "The Economic Times"
+        assert p2.get("category_filter") == "Economy & Policy"
+
+        # Mentioning Financial Times should not trigger Business & Markets category filter
+        p3 = extract_parameters_from_query("Summarize the front page of Financial Times dated 2026-08-01")
+        assert p3.get("newspaper_name") == "Financial Times"
+        assert p3.get("category_filter") is None
+
+        # Mentioning Business Standard should not trigger Business & Markets category filter
+        p4 = extract_parameters_from_query("Summarize the front page of Business Standard dated 2026-08-01")
+        assert p4.get("newspaper_name") == "Business Standard"
+        assert p4.get("category_filter") is None
+
+    def test_legacy_macro_summary_and_negative_audit_archetypes(self) -> None:
+        """Verify macro_summary and negative_coverage_audit validate and route cleanly."""
+        from app.agent.planner import ExtractedToolArguments, QueryPlan, QueryPlanner
+
+        planner = QueryPlanner()
+        q = "Summarize the entire newspaper of The Goan dated 2026-08-01"
+        plan1 = QueryPlan(
+            thought_process="Macro issue overview",
+            archetype="macro_summary",
+            primary_tool="sql_analytics",
+            arguments=ExtractedToolArguments(newspaper_name="The Goan", issue_date="2026-08-01"),
+        )
+        res1 = planner._build_plan_from_structured_model(q, plan1)
+        assert res1.archetype == "quantitative_trend"
+        assert any(t.tool_name == "sql_analytics" for t in res1.tool_calls)
+
+        q2 = "Audit what The Goan omitted compared to The Morning Standard on 2026-08-01"
+        plan2 = QueryPlan(
+            thought_process="Negative audit",
+            archetype="negative_coverage_audit",
+            primary_tool="sql_analytics",
+            arguments=ExtractedToolArguments(
+                newspaper_name="The Goan",
+                comparison_newspaper="The Morning Standard",
+                issue_date="2026-08-01",
+            ),
+        )
+        res2 = planner._build_plan_from_structured_model(q2, plan2)
+        assert res2.archetype == "cross_newspaper_comparison"
+        assert any(t.tool_name == "sql_analytics" and t.arguments.get("analysis_type") == "coverage_difference" for t in res2.tool_calls)
+
+        q3 = "Audit negative coverage omissions across all newspapers on 2026-08-01"
+        plan3 = QueryPlan(
+            thought_process="Archive-wide negative audit",
+            archetype="negative_coverage_audit",
+            primary_tool="coverage_analysis",
+            arguments=ExtractedToolArguments(
+                issue_date="2026-08-01",
+            ),
+        )
+        res3 = planner._build_plan_from_structured_model(q3, plan3)
+        assert res3.archetype == "cross_newspaper_comparison"
+        assert any(t.tool_name == "coverage_analysis" for t in res3.tool_calls)
+
+
 
 
 

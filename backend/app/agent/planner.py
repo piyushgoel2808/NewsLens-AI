@@ -28,6 +28,8 @@ QueryArchetype = Literal[
     "cross_newspaper_comparison",
     "entity_deep_dive",
     "article_catalog",
+    "macro_summary",
+    "negative_coverage_audit",
 ]
 
 PrimaryToolName = Literal[
@@ -141,6 +143,8 @@ _KNOWN_BRANDS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(?:the\s+)?daily\s+chronicle\b|\bchronicle\b", re.I), "The Daily Chronicle"),
     (re.compile(r"\bdaily\s+broadsheet\b", re.I), "Daily Broadsheet"),
     (re.compile(r"\b(?:(?:the|he)\s+)?morning\s+standard\b|\bmorning\s+standard\b", re.I), "The Morning Standard"),
+    (re.compile(r"\b(?:the\s+)?financial\s+chronicle\b", re.I), "Financial Chronicle"),
+    (re.compile(r"\b(?:the\s+)?daily\s+record\b", re.I), "The Daily Record"),
 ]
 
 _SECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -168,8 +172,8 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
     # 1. Multi-Newspaper Brand Extraction
     matched_brands: list[tuple[int, str]] = []
     for pat, brand in _KNOWN_BRANDS_PATTERNS:
-        for m in pat.finditer(query):
-            matched_brands.append((m.start(), brand))
+        for brand_m in pat.finditer(query):
+            matched_brands.append((brand_m.start(), brand))
 
     if matched_brands:
         matched_brands.sort(key=lambda x: x[0])
@@ -200,15 +204,15 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
     found_dates: list[str] = []
     # YYYY-MM-DD
     for iso_m in re.finditer(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", query):
-        y, m, d = int(iso_m.group(1)), int(iso_m.group(2)), int(iso_m.group(3))
-        iso_str = f"{y:04d}-{m:02d}-{d:02d}"
+        year_val, month_val, day_val = int(iso_m.group(1)), int(iso_m.group(2)), int(iso_m.group(3))
+        iso_str = f"{year_val:04d}-{month_val:02d}-{day_val:02d}"
         if iso_str not in found_dates:
             found_dates.append(iso_str)
 
     # DD/MM/YYYY or DD-MM-YYYY
     for dmy_m in re.finditer(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", query):
-        d, m, y = int(dmy_m.group(1)), int(dmy_m.group(2)), int(dmy_m.group(3))
-        iso_str = f"{y:04d}-{m:02d}-{d:02d}"
+        day_val, month_val, year_val = int(dmy_m.group(1)), int(dmy_m.group(2)), int(dmy_m.group(3))
+        iso_str = f"{year_val:04d}-{month_val:02d}-{day_val:02d}"
         if iso_str not in found_dates:
             found_dates.append(iso_str)
 
@@ -221,15 +225,15 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
     }
     for m1 in re.finditer(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zA-Z]+)(?:,)?\s+(\d{4})\b", query):
         if m1.group(2).lower() in month_map:
-            d, m, y = int(m1.group(1)), month_map[m1.group(2).lower()], int(m1.group(3))
-            iso_str = f"{y:04d}-{m:02d}-{d:02d}"
+            day_val, month_val, year_val = int(m1.group(1)), month_map[m1.group(2).lower()], int(m1.group(3))
+            iso_str = f"{year_val:04d}-{month_val:02d}-{day_val:02d}"
             if iso_str not in found_dates:
                 found_dates.append(iso_str)
 
     for m2 in re.finditer(r"\b([a-zA-Z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\b", query):
         if m2.group(1).lower() in month_map:
-            m, d, y = month_map[m2.group(1).lower()], int(m2.group(2)), int(m2.group(3))
-            iso_str = f"{y:04d}-{m:02d}-{d:02d}"
+            month_val, day_val, year_val = month_map[m2.group(1).lower()], int(m2.group(2)), int(m2.group(3))
+            iso_str = f"{year_val:04d}-{month_val:02d}-{day_val:02d}"
             if iso_str not in found_dates:
                 found_dates.append(iso_str)
 
@@ -241,9 +245,13 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
             params["date_from"] = sorted_dates[0]
             params["date_to"] = sorted_dates[-1]
 
-    # 4. Section / Category Extraction
+    # 4. Section / Category Extraction (mask matched brands to avoid false bleed like 'The Economic Times' matching 'Economy')
+    query_for_sections = query
+    for pat, _ in _KNOWN_BRANDS_PATTERNS:
+        query_for_sections = pat.sub(" ", query_for_sections)
+
     for pat, cat_name in _SECTION_PATTERNS:
-        if pat.search(query):
+        if pat.search(query_for_sections):
             params["category_filter"] = cat_name
             break
 
@@ -313,8 +321,8 @@ def resolve_tool_sequence(
 
     if is_single_brand_multi_issue:
         dates_to_query = target_dates or ([date_from, date_to] if date_from and date_to else [])
-        for target_dt in dates_to_query:
-            if not target_dt:
+        for single_dt in dates_to_query:
+            if not single_dt:
                 continue
             tool_calls.append(
                 PlannedToolCall(
@@ -322,10 +330,10 @@ def resolve_tool_sequence(
                     arguments={
                         "analysis_type": "issue_summary",
                         "newspaper_name": newspaper_name,
-                        "issue_date": target_dt,
+                        "issue_date": single_dt,
                         "query": query,
                     },
-                    purpose=f"Retrieve article manifest and headlines for {newspaper_name} on {target_dt}",
+                    purpose=f"Retrieve article manifest and headlines for {newspaper_name} on {single_dt}",
                 )
             )
         tool_calls.append(
@@ -342,13 +350,16 @@ def resolve_tool_sequence(
             )
         )
 
-    elif archetype == "article_catalog":
+    elif archetype in ("article_catalog", "macro_summary"):
         call_args: dict[str, Any] = {
-            "analysis_type": "issue_summary",
+            "analysis_type": analysis_type or "issue_summary",
             "newspaper_name": newspaper_name,
             "issue_date": issue_date,
+            "date_from": date_from,
+            "date_to": date_to,
             "issue_id": issue_id,
             "page_filter": page_filter,
+            "exclude_page_filter": exclude_page_filter,
             "category_filter": category_filter,
             "query": query,
         }
@@ -381,10 +392,17 @@ def resolve_tool_sequence(
             )
         )
         if page_filter and any(w in q_lower for w in ["list", "articles on", "stories on", "all articles", "what articles"]):
+            page_hs_args: dict[str, Any] = {"query": query, "page_filter": page_filter, "top_k": 6}
+            if newspaper_name:
+                page_hs_args["newspaper_name"] = newspaper_name
+            if date_from:
+                page_hs_args["date_from"] = date_from
+            if date_to:
+                page_hs_args["date_to"] = date_to
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="hybrid_search",
-                    arguments={"query": query, "page_filter": page_filter, "top_k": 6},
+                    arguments=page_hs_args,
                     purpose=f"Retrieve article content and snippets on Page {page_filter}",
                 )
             )
@@ -425,57 +443,64 @@ def resolve_tool_sequence(
             )
         )
 
-    elif archetype == "cross_newspaper_comparison":
+    elif archetype in ("cross_newspaper_comparison", "negative_coverage_audit"):
         is_two_paper = bool(newspaper_name and comparison_newspaper)
         is_diff = bool(is_differential or any(w in q_lower for w in ["but not in", "not in", "absent in", "exclusive", "omitted"]))
+        target_dt: str | None = issue_date or date_from
 
         if is_two_paper and is_diff:
-            target_dt = issue_date or date_from
+            diff_args: dict[str, Any] = {
+                "analysis_type": "coverage_difference",
+                "newspaper_name": newspaper_name,
+                "comparison_newspaper": comparison_newspaper,
+                "query": query,
+            }
+            if target_dt:
+                diff_args["issue_date"] = target_dt
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="sql_analytics",
-                    arguments={
-                        "analysis_type": "coverage_difference",
-                        "newspaper_name": newspaper_name,
-                        "comparison_newspaper": comparison_newspaper,
-                        "issue_date": target_dt,
-                        "query": query,
-                    },
-                    purpose=f"Compute verified article difference: stories in {newspaper_name} absent from {comparison_newspaper} on {target_dt}",
+                    arguments=diff_args,
+                    purpose=f"Compute verified article difference: stories in {newspaper_name} absent from {comparison_newspaper} on {target_dt or 'specified date'}",
                 )
             )
+            hs_diff_args: dict[str, Any] = {
+                "query": query,
+                "newspaper_name": newspaper_name,
+                "top_k": 10,
+            }
+            if target_dt:
+                hs_diff_args["date_from"] = target_dt
+                hs_diff_args["date_to"] = target_dt
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="hybrid_search",
-                    arguments={
-                        "query": query,
-                        "newspaper_name": newspaper_name,
-                        "date_from": target_dt,
-                        "date_to": target_dt,
-                        "top_k": 10,
-                    },
+                    arguments=hs_diff_args,
                     purpose=f"Retrieve key articles and snippets from {newspaper_name}",
                 )
             )
         elif is_two_paper:
-            target_dt = issue_date or date_from
             for np_target in [newspaper_name, comparison_newspaper]:
-                sql_args = {
+                sql_args: dict[str, Any] = {
                     "analysis_type": "issue_summary",
                     "newspaper_name": np_target,
-                    "issue_date": target_dt,
                     "query": query,
                 }
+                if target_dt:
+                    sql_args["issue_date"] = target_dt
                 if category_filter:
                     sql_args["category_filter"] = category_filter
                 tool_calls.append(
                     PlannedToolCall(
                         tool_name="sql_analytics",
                         arguments=sql_args,
-                        purpose=f"Retrieve article manifest for {np_target} on {target_dt}",
+                        purpose=f"Retrieve article manifest for {np_target} on {target_dt or 'specified date'}",
                     )
                 )
-            hs_args = {"query": query, "date_from": target_dt, "date_to": target_dt, "top_k": 12}
+            hs_args = {"query": query, "top_k": 12}
+            if target_dt:
+                hs_args["date_from"] = target_dt
+                hs_args["date_to"] = target_dt
             if category_filter:
                 hs_args["category_filter"] = category_filter
             tool_calls.append(
@@ -829,8 +854,14 @@ class QueryPlanner:
                 ).strip()
                 args.query = clean_q if clean_q else query
 
+        archetype = plan_obj.archetype
+        if archetype == "macro_summary":
+            archetype = "quantitative_trend"
+        elif archetype == "negative_coverage_audit":
+            archetype = "cross_newspaper_comparison"
+
         tool_calls = resolve_tool_sequence(
-            archetype=plan_obj.archetype,
+            archetype=archetype,
             query=args.query or query,
             newspaper_name=args.newspaper_name,
             comparison_newspaper=args.comparison_newspaper,
@@ -852,7 +883,7 @@ class QueryPlanner:
         )
 
         return PlanResult(
-            archetype=plan_obj.archetype,
+            archetype=archetype,
             reasoning=plan_obj.thought_process,
             tool_calls=tool_calls,
         )
@@ -876,12 +907,16 @@ class QueryPlanner:
 
         # Page token extraction
         page_num_str: str | None = None
-        for i, w in enumerate(words):
-            if w in ["page", "pg", "p."] and i + 1 < len(words):
-                cand = words[i + 1]
-                if cand.isdigit() or len(cand) <= 4:
-                    page_num_str = cand
-                    break
+        page_match = re.search(r"\b(?:page|pg|p\.?)\s*(\d{1,3})\b", q_lower)
+        if page_match:
+            page_num_str = page_match.group(1)
+        else:
+            for i, w in enumerate(words):
+                if w in ["page", "pg", "p."] and i + 1 < len(words):
+                    cand = words[i + 1]
+                    if cand.isdigit() or len(cand) <= 4:
+                        page_num_str = cand
+                        break
 
         is_timeline = any(w in q_lower for w in ["timeline", "chronology", "chronological", "evolution of", "evolution", "over time", "history of", "progression of", "progression"])
         is_comparison = bool(

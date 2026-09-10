@@ -2617,5 +2617,47 @@ Comprehensive architectural audit of `backend/app/agent/planner.py` (previously 
 - `backend/tests/test_nvidia_provider.py`: **7/7 tests passing (100% green)**
 - **Complete Test Suite**: **393/393 tests passing (100% green)** across all 57 test modules in 26.49s.
 
+---
+
+## Phase 9.21 — Deep Cross-Check: Brand Category Bleed Isolation, Mypy Strict Type Correctness, and Archetype Schema Resiliency
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Discovered During Comprehensive Cross-Check
+1. **Brand-to-Category Bleed Bug**: When extracting section filters via `_SECTION_PATTERNS`, brand names containing topical keywords (e.g. `"The Economic Times"`, `"Financial Times"`, `"Business Standard"`) inadvertently matched `"Economy & Policy"` or `"Business & Markets"`, falsely restricting non-business queries (e.g. front page news, sports) to business/economy sections.
+2. **Strict Mypy Type Conflicts**: Re-using match object `m` and date loop variable `target_dt` across different scopes caused 6 mypy typing errors (`Match[str]` vs `int`, and `str` vs `str | None`).
+3. **Archetype Schema Fragility**: `macro_summary` and `negative_coverage_audit` were missing from `QueryArchetype`, meaning any LLM output using those legacy terms would fail schema validation.
+4. **Missing Supported Brands**: `"Financial Chronicle"` and `"The Daily Record"` were present in tests and database fixtures but missing from `_KNOWN_BRANDS_PATTERNS`.
+5. **Asymmetric Parameter Handling**: `article_catalog` lacked `date_from`, `date_to`, and `exclude_page_filter` parameters, and page-specific hybrid search in `quantitative_trend` lacked brand and date bounds.
+
+### Architectural Fixes & Enhancements
+1. **Brand-Masked Category Extraction (`planner.py`)**:
+   - Masked all matched newspaper brand tokens with spaces before running `_SECTION_PATTERNS` regex matching.
+   - `"Summarize the front page of The Economic Times"` now correctly yields `category_filter: None`.
+   - `"list all economy articles from The Economic Times"` continues to correctly extract `category_filter: "Economy & Policy"`.
+2. **Strict Mypy Typing Compliance (`planner.py`)**:
+   - Renamed brand regex variable to `brand_m`, and date parsing variables to `year_val, month_val, day_val`.
+   - Scoped multi-date loop variable to `single_dt` and explicitly typed `target_dt: str | None = issue_date or date_from`.
+   - `mypy app/agent/planner.py`: **Success: no issues found in 1 source file (0 errors)**.
+3. **Archetype Schema Resiliency & Normalization (`planner.py`)**:
+   - Added `"macro_summary"` and `"negative_coverage_audit"` to `QueryArchetype`.
+   - In `_build_plan_from_structured_model()`, normalized `macro_summary` $\to$ `quantitative_trend` and `negative_coverage_audit` $\to$ `cross_newspaper_comparison`.
+4. **Added Supported Brands**:
+   - Added `Financial Chronicle` and `The Daily Record` to `_KNOWN_BRANDS_PATTERNS`.
+5. **Symmetric Tool Arguments & Bounded Page Hybrid Search**:
+   - Added `date_from`, `date_to`, `exclude_page_filter` support to `article_catalog`.
+   - Bounded page-specific hybrid search in `quantitative_trend` with `newspaper_name`, `date_from`, and `date_to`.
+   - Added regex page number extraction (`\b(?:page|pg|p\.?)\s*(\d{1,3})\b`) in `_plan_query_heuristic`.
+
+### Test Verification & Quality Gates
+- Added unit tests in `backend/tests/test_planner.py`:
+  - `test_extract_parameters_brand_does_not_bleed_into_category`
+  - `test_legacy_macro_summary_and_negative_audit_archetypes`
+- `backend/tests/test_planner.py`: **24/24 tests passing (100% green)**
+- `backend/tests/test_condenser.py`: **5/5 tests passing (100% green)**
+- **Complete Test Suite**: **395/395 tests passing (100% green)** across all 57 test modules in 24.56s.
+
+
 
 
