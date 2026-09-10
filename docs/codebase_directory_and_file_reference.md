@@ -162,25 +162,24 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 
 ##### [`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)
 * **What It Has**: 
-  - Data models: `PlanResult`, `PlannedToolCall`, `QueryPlan`, `ExtractedToolArguments`.
-  - `QueryPlanner` class.
-  - Core functions: `resolve_tool_sequence()`, `extract_parameters_from_query()`.
-  - Methods: `plan_query_async()`, `_plan_query_heuristic()`, `_build_plan_from_structured_model()`.
-  - Lean `PLANNER_SYSTEM_PROMPT` with 3 canonical few-shot examples.
+  - Data models: `PlanResult`, `PlannedToolCall`, `ToolCallSpec`, `AgentPlan` (with `QueryPlan` and `ExtractedToolArguments` aliases for backward compatibility).
+  - `QueryPlanner` class with true direct tool calling and deterministic fallback.
+  - Core functions: `resolve_tool_sequence()` (backward-compatible delegate), `extract_parameters_from_query()`.
+  - Methods: `plan_query_async()`, `plan_query()`, `classify_archetype()`, `_plan_query_heuristic()`, `_build_plan_from_structured_model()`.
+  - Lean `PLANNER_SYSTEM_PROMPT` with 3 canonical few-shot examples illustrating direct tool call generation.
 * **Work It Is Doing**:
-  - **Single-Source Tool Sequence Resolver**: Both LLM-driven planning (`_build_plan_from_structured_model`) and deterministic heuristic fallback (`_plan_query_heuristic`) delegate to the single shared function `resolve_tool_sequence()`, eliminating code duplication and behavioral drift.
-  - Classifies user queries into 1 of 7 query archetypes:
-    1. `factual_lookup` (specific quotes, events, people)
-    2. `cross_newspaper_comparison` (differential coverage, omissions, framing differences)
-    3. `thematic_timeline` (chronological progression across multiple dates)
-    4. `entity_deep_dive` (multi-hop entity network search)
-    5. `negative_coverage_audit` (verifying what a publication did NOT report)
-    6. `macro_summary` (broad overview of an edition)
-    7. `article_catalog` (ultra-fast listing and catalog manifest generation for specific dates and categories)
-  - **Ground-Truth Reconciliation & Hallucination Pruning**: Extracted query parameters (brand names, issue IDs, dates, page numbers) override any LLM hallucinations before tool sequence resolution.
-  - **Live Archive Grounding**: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories so it selects lean, non-hallucinated tool sequences.
-  - **Query Preservation & Generic Filler Sanitization**: In `_build_plan_from_structured_model()`, prevents few-shot prompt contamination by detecting generic filler phrases and restoring substantive user domain queries.
-  - **Minimal Sufficient Tool Scheduling**: Enforces conditional `coverage_analysis` (only dispatched when explicit omission/gap keywords are present or cross-issue comparison requires negative audit), avoiding unconstrained clustering overhead on domain-filtered date queries.
+  - **True Agentic Direct Tool Planning (Option 2)**: Directly prompts LLMs to schedule ordered tool calls (`[ToolCallSpec(tool_name, arguments, purpose)]`) inside `AgentPlan`, eliminating procedural indirection and boolean soup.
+  - **Lean Deterministic Heuristic Router**: Clean single-pass intent classifier mapping queries to 6 core archetypes:
+    1. `thematic_timeline` (chronological progression across multiple dates)
+    2. `entity_deep_dive` (multi-hop entity network search and profiling)
+    3. `cross_newspaper_comparison` (differential coverage, omissions, framing differences across broadsheets)
+    4. `quantitative_trend` (article counts, topic distributions, page-level article manifests, full issue overviews)
+    5. `article_catalog` (fast listing and catalog manifest generation for specific dates/sections)
+    6. `factual_lookup` (targeted semantic + keyword search for point-in-time facts and quotes)
+  - **Transparent Legacy Adapter**: Translates older mock objects and test fixtures (`QueryPlan`, `primary_tool`, `ExtractedToolArguments`) to direct tool calls with ground-truth parameter reconciliation.
+  - **Ground-Truth Reconciliation & Hallucination Pruning**: Extracted query parameters (brand names, issue IDs, dates, page numbers) override any LLM hallucinations.
+  - **Live Archive Grounding**: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories.
+  - **Query Preservation & Generic Filler Sanitization**: In `_build_plan_from_structured_model()`, detects generic filler phrases and restores substantive user domain queries.
   - **High-Throughput Cloud Failover**: Prioritizes `nvidia_nemotron` (<1s hosted inference with streaming reasoning) on cloud failover routes.
   - Employs typo-tolerant regex parameter extraction for newspaper names (e.g. "he Morning Standard" $\to$ "The Morning Standard") and publication dates.
   - Produces structured Chain-of-Thought reasoning traces and deterministically schedules 1 to 4 complementary tool calls (`sql_analytics`, `hybrid_search`, `entity_search`, `timeline_builder`, `coverage_analysis`, `web_search`).

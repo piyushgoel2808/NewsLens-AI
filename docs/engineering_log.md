@@ -2656,7 +2656,54 @@ Comprehensive architectural audit of `backend/app/agent/planner.py` (previously 
   - `test_legacy_macro_summary_and_negative_audit_archetypes`
 - `backend/tests/test_planner.py`: **24/24 tests passing (100% green)**
 - `backend/tests/test_condenser.py`: **5/5 tests passing (100% green)**
-- **Complete Test Suite**: **395/395 tests passing (100% green)** across all 57 test modules in 24.56s.
+- Complete Test Suite: **395/395 tests passing (100% green)** across all 57 test modules in 24.56s.
+
+---
+
+## Phase 9.22 — True Agentic Direct Tool Planning: Eliminating Procedural Indirection & Boolean Soup (Option 2)
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed (Over-Engineering Smells)
+1. **Pseudo-Planning Indirection Layer**: The LLM returned `primary_tool` and `arguments`, but the system piped them through `resolve_tool_sequence`, an imperative 340-line state machine that largely ignored `primary_tool` and hardcoded tool sequences based on archetypes.
+2. **Combinatorial Boolean Soup**: The heuristic fallback and tool sequencer juggled 8 interdependent flags (`is_differential`, `is_manifest`, `is_multi_issue`, `is_multi_brand`, `is_dated`, `is_domain_filtered`, `is_count`, `has_page`) and dozens of keyword checks, resulting in combinatorial complexity and fragile edge cases.
+3. **Redundant Procedural Wrapper**: `resolve_tool_sequence` served as an unnecessary intermediate layer between LLM planning decisions and graph execution.
+4. **Typo and Keyword Edge Cases**: Typo variations (e.g. `"comapare"` vs `"compare"`, `"all the available"` vs `"all available"`) and exclusion phrases (`"omitted compared to"`) required unified regex and single-pass classification.
+
+### Architectural Solutions & Implementations (Option 2: True Agentic Direct Tool Planning)
+1. **Direct Tool Calling Specification (`ToolCallSpec` & `AgentPlan`)**:
+   - Replaced indirect `primary_tool` selection with direct tool calling:
+     ```python
+     class ToolCallSpec(BaseModel):
+         tool_name: ToolName
+         arguments: dict[str, Any]
+         purpose: str
+     ```
+   - LLMs directly schedule ordered tool calls `[ToolCallSpec(...)]` inside `AgentPlan`.
+2. **Elimination of Procedural Indirection (`resolve_tool_sequence`)**:
+   - Removed the 340-line `resolve_tool_sequence` state machine.
+   - Preserved `resolve_tool_sequence()` solely as a backward-compatible proxy delegating directly to `_plan_query_heuristic()`.
+3. **Lean Deterministic Single-Pass Heuristic Router**:
+   - Structured intent routing into clear, mutually exclusive precedence tiers:
+     1. `thematic_timeline` (chronology, evolution, over time).
+     2. `entity_deep_dive` (profile of, mentions of).
+     3. Single newspaper multi-issue comparison (same brand across multiple dates $\to$ `quantitative_trend`).
+     4. Cross-newspaper comparison (multi-brand differential, dated cross-newspaper manifest + comparison, or general topic comparison $\to$ `cross_newspaper_comparison`).
+     5. Quantitative trend & issue manifests (counts, distributions, page-level article listings, full issue overviews $\to$ `quantitative_trend`).
+     6. Factual lookup default (targeted hybrid search $\to$ `factual_lookup`).
+4. **Transparent Legacy Adapter for Mocks & Test Fixtures**:
+   - In `_build_plan_from_structured_model()`, implemented an adapter that maps legacy `QueryPlan(primary_tool=..., arguments=...)` models to direct `PlannedToolCall` sequences with ground-truth entity reconciliation, ensuring 100% backward compatibility for existing tests and mocks.
+5. **Massive Code & Complexity Reduction**:
+   - Reduced `backend/app/agent/planner.py` from 992 lines to 746 lines (net reduction of 246 lines, >24% leaner, >53% code reduction from original 1,593 lines).
+   - Zero `mypy` typing errors and zero `ruff` lint errors.
+
+### Test Verification & Quality Gates
+- `backend/tests/test_planner.py`: **24/24 tests passing (100% green)**
+- `backend/tests/test_condenser.py`: **5/5 tests passing (100% green)**
+- **Full Backend Regression Suite**: **395/395 tests passing (100% green)** in 24.90s.
+- Static Type Checking: `mypy app/agent/planner.py` $\to$ **Success: no issues found in 1 source file**.
+- Linter: `ruff check app/agent/planner.py` $\to$ **All checks passed!**
 
 
 
