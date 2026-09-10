@@ -57,7 +57,7 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
 ### Evolution & Model Transitions
 1. **Local vs. Hosted Provider Flexibility**:
    - **Local Inference (Ollama & Sentence-Transformers)**: Supports privacy-conscious, offline deployments using `llama3.1:70b` / `llama3.2:3b` for planning and answer synthesis, `qwen2.5-vl` / `qwen3-vl` for visual layout triage, and `BAAI/bge-m3` for local dense embeddings.
-   - **Hosted Production Models (Anthropic, OpenAI, Google, Groq)**: Supports `claude-sonnet-4-5`, `gpt-4o`, `gemini-2.5-flash`, and Groq LPU inference for ultra-fast response times.
+   - **Hosted Production Models (NVIDIA NIM, Anthropic, OpenAI, Google, Groq, OpenRouter)**: Supports NVIDIA NIM (`nvidia/nemotron-3.5-lightning-30b-a3b` with native CoT reasoning streaming, `meta/llama-3.2-11b-vision-instruct` for multimodal layout analysis), `claude-sonnet-4-5`, `gpt-4o`, `gemini-3.7-flash`, and Groq LPU inference for ultra-fast response times.
 2. **Why `BAAI/bge-m3` as Default Embedding**:
    - 1024-dimensional dense representation.
    - 8,192-token context window (accommodates lengthy long-form newspaper articles without aggressive truncation).

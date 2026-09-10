@@ -205,6 +205,20 @@ DEFAULT_PROVIDERS = {
         supports_vision=False,
         supports_tool_use=True,
     ),
+    "nvidia_nemotron": ProviderConfig(
+        provider="nvidia",
+        model="nvidia/nemotron-3.5-lightning-30b-a3b",
+        context_window=128000,
+        supports_vision=False,
+        supports_tool_use=True,
+    ),
+    "nvidia_llama_vision": ProviderConfig(
+        provider="nvidia",
+        model="meta/llama-3.2-11b-vision-instruct",
+        context_window=128000,
+        supports_vision=True,
+        supports_tool_use=True,
+    ),
     "local_embed_bge": ProviderConfig(
         provider="local_sentence_transformers",
         model="BAAI/bge-m3",
@@ -315,12 +329,16 @@ class Settings(BaseSettings):
     openrouter_api_keys: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    nvidia_api_key: str | None = None
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+
     @field_validator(
         "groq_api_key",
         "gemini_api_key",
         "anthropic_api_key",
         "openai_api_key",
         "openrouter_api_keys",
+        "nvidia_api_key",
         "google_api_key",
         "google_application_credentials",
         "gcp_service_account_key",

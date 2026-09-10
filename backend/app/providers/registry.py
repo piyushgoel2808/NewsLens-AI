@@ -109,6 +109,16 @@ class ModelRegistry:
                 supports_vision=cfg.supports_vision,
                 context_window=cfg.context_window,
             )
+        elif provider_type in ("nvidia", "nvidia_nim"):
+            from app.providers.nvidia_provider import NvidiaProvider
+
+            return NvidiaProvider(
+                model=model,
+                api_key=self._settings.nvidia_api_key,
+                base_url=cfg.base_url or self._settings.nvidia_base_url,
+                supports_vision=cfg.supports_vision,
+                context_window=cfg.context_window,
+            )
         elif provider_type in ("google_cloud_vision", "gcp_vision", "google_vision"):
             from app.providers.google_vision_provider import GoogleCloudVisionOCR
 
@@ -125,7 +135,7 @@ class ModelRegistry:
         else:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
-                "Supported: gemini, google_cloud_vision, ollama, groq, anthropic, openai, openrouter, "
+                "Supported: gemini, google_cloud_vision, ollama, groq, anthropic, openai, openrouter, nvidia, "
                 "local_sentence_transformers, docling"
             )
 
@@ -395,6 +405,8 @@ class ModelRegistry:
             "ollama_vlm": "Qwen 2.5 VL 7B (Local Vision)",
             "openai_gpt4o": "OpenAI GPT-4o (Omni)",
             "openai_gpt4o_mini": "OpenAI GPT-4o Mini",
+            "nvidia_nemotron": "NVIDIA Nemotron 3.5 Lightning (Hosted NIM)",
+            "nvidia_llama_vision": "NVIDIA Meta Llama 3.2 11B Vision (Hosted NIM)",
             "docling_parser": "Docling Document Layout Engine",
             "mineru_parser": "MinerU Magic-PDF Layout Engine",
             "local_embed_bge": "BAAI BGE-M3 Multilingual Embedding",
@@ -448,6 +460,8 @@ class ModelRegistry:
                 return bool(self._settings.anthropic_api_key)
             elif provider_type == "openai":
                 return bool(self._settings.openai_api_key)
+            elif provider_type in ("nvidia", "nvidia_nim"):
+                return bool(self._settings.nvidia_api_key)
             elif provider_type in ("local_sentence_transformers", "tesseract", "docling", "docling_parser"):
                 return True  # Always "reachable" (local, no network needed)
             else:

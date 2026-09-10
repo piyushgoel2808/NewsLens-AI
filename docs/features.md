@@ -90,6 +90,10 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Strict Anti-Hallucination & Provenance Grounding**:
   * Every fact is tied to a verified citation in the format `[Newspaper, Issue Date, Page, "Headline"]`.
   * If no relevant facts exist in the database, the system executes an anti-hallucination hard stop rather than fabricating facts.
+* **NVIDIA NIM Hosted Acceleration (`nvidia_nemotron` & `nvidia_llama_vision`)**:
+  * Seamless integration with NVIDIA API Catalog / NIM endpoints (`https://integrate.api.nvidia.com/v1`).
+  * Delivers sub-second (~0.59s) reasoning completions with `nvidia/nemotron-3.5-lightning-30b-a3b`, streaming thinking deltas directly into the collapsible reasoning accordion.
+  * Powers multimodal vision reading with `meta/llama-3.2-11b-vision-instruct` for high-resolution newspaper charts and photojournalism.
 * **Server-Sent Events (SSE) Streaming**: Low-latency token streaming with live tool telemetry and reasoning traces.
 
 ---

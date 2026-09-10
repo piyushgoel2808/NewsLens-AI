@@ -2510,3 +2510,27 @@ Executed full repository pytest suite:
 - `backend/tests/test_condenser.py` & `test_query_condenser.py`: **17/17 passing**
 - **Complete Test Suite**: **379/379 tests passing (100% green)** in 26.37s.
 
+---
+
+## Phase 9.18 — NVIDIA NIM Provider Integration: Hosted Nemotron 3.5 Lightning & Llama 3.2 Vision
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Implementation & Architecture
+Integrated native hosted inference via the NVIDIA API Catalog / NVIDIA NIM (`https://integrate.api.nvidia.com/v1`):
+1. **NvidiaProvider (`backend/app/providers/nvidia_provider.py`)**:
+   - Implements both `ChatModelProvider` and `VisionModelProvider` protocols using `AsyncOpenAI`.
+   - **Native Reasoning Streaming**: Intercepts `reasoning_content` deltas from thinking models (e.g. `nvidia/nemotron-3.5-lightning-30b-a3b`) and encapsulates them inside `<think>...</think>` tags for live progressive rendering in the UI reasoning accordion.
+   - **Multimodal Vision Support**: Encodes image bytes as base64 data URIs for vision models (e.g. `meta/llama-3.2-11b-vision-instruct`).
+   - Structured JSON schema enforcement with robust fallback extraction.
+2. **Provider Registry & Settings Integration**:
+   - Added `nvidia_api_key` and `nvidia_base_url` to `Settings` in `backend/app/core/config.py`.
+   - Registered `nvidia_nemotron` and `nvidia_llama_vision` in `DEFAULT_PROVIDERS` and `model_config.yaml`.
+   - Extended `ModelRegistry._instantiate()` and `_check_reachable()` to authenticate and health-check NVIDIA NIM endpoints.
+   - Updated `.env.example` with `NVIDIA_API_KEY` and `NVIDIA_BASE_URL`.
+3. **Live Verification & Benchmarks**:
+   - `nvidia/nemotron-3.5-lightning-30b-a3b`: Verified planning/synthesis completions and reasoning stream (~0.59s latency).
+   - `meta/llama-3.2-11b-vision-instruct`: Verified multimodal image analysis and zero-shot chart reading (~0.69s latency).
+   - Unit tests added in `backend/tests/test_nvidia_provider.py` (7/7 tests passing).
+
