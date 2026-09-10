@@ -164,9 +164,11 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **What It Has**: 
   - Data models: `PlanResult`, `PlannedToolCall`, `QueryPlan`, `ExtractedToolArguments`.
   - `QueryPlanner` class.
-  - Methods: `plan_query_async()`, `_plan_query_heuristic()`, `extract_parameters_from_query()`.
-  - `PLANNER_SYSTEM_PROMPT` with strict tool boundary rules.
+  - Core functions: `resolve_tool_sequence()`, `extract_parameters_from_query()`.
+  - Methods: `plan_query_async()`, `_plan_query_heuristic()`, `_build_plan_from_structured_model()`.
+  - Lean `PLANNER_SYSTEM_PROMPT` with 3 canonical few-shot examples.
 * **Work It Is Doing**:
+  - **Single-Source Tool Sequence Resolver**: Both LLM-driven planning (`_build_plan_from_structured_model`) and deterministic heuristic fallback (`_plan_query_heuristic`) delegate to the single shared function `resolve_tool_sequence()`, eliminating code duplication and behavioral drift.
   - Classifies user queries into 1 of 7 query archetypes:
     1. `factual_lookup` (specific quotes, events, people)
     2. `cross_newspaper_comparison` (differential coverage, omissions, framing differences)
@@ -175,9 +177,10 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
     5. `negative_coverage_audit` (verifying what a publication did NOT report)
     6. `macro_summary` (broad overview of an edition)
     7. `article_catalog` (ultra-fast listing and catalog manifest generation for specific dates and categories)
-  - Live Archive Grounding: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories so it selects lean, non-hallucinated tool sequences.
-  - **Query Preservation & Generic Filler Sanitization**: In `_build_plan_from_structured_model()`, prevents few-shot prompt contamination (e.g. copying `"newspaper coverage comparison"`) by detecting generic filler phrases and restoring substantive user domain queries (e.g. `"health related news"`).
-  - **Minimal Sufficient Tool Scheduling**: Enforces conditional `coverage_analysis` (only dispatched when explicit omission/gap keywords are present or cross-issue comparison requires negative audit), avoiding 25s of unconstrained clustering overhead on domain-filtered date queries.
+  - **Ground-Truth Reconciliation & Hallucination Pruning**: Extracted query parameters (brand names, issue IDs, dates, page numbers) override any LLM hallucinations before tool sequence resolution.
+  - **Live Archive Grounding**: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories so it selects lean, non-hallucinated tool sequences.
+  - **Query Preservation & Generic Filler Sanitization**: In `_build_plan_from_structured_model()`, prevents few-shot prompt contamination by detecting generic filler phrases and restoring substantive user domain queries.
+  - **Minimal Sufficient Tool Scheduling**: Enforces conditional `coverage_analysis` (only dispatched when explicit omission/gap keywords are present or cross-issue comparison requires negative audit), avoiding unconstrained clustering overhead on domain-filtered date queries.
   - **High-Throughput Cloud Failover**: Prioritizes `nvidia_nemotron` (<1s hosted inference with streaming reasoning) on cloud failover routes.
   - Employs typo-tolerant regex parameter extraction for newspaper names (e.g. "he Morning Standard" $\to$ "The Morning Standard") and publication dates.
   - Produces structured Chain-of-Thought reasoning traces and deterministically schedules 1 to 4 complementary tool calls (`sql_analytics`, `hybrid_search`, `entity_search`, `timeline_builder`, `coverage_analysis`, `web_search`).

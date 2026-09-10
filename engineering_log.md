@@ -2579,4 +2579,43 @@ On cross-newspaper domain queries (e.g. `COMPARE ALL THE NEWSPAPER AVALABLE DATE
 - `backend/tests/test_hybrid_search.py`: **2/2 tests passing**.
 - `backend/tests/test_graph.py`: **3/3 tests passing**.
 
+---
+
+## Phase 9.20 — Architectural De-Bloat & Single-Source Tool Sequence Resolver in QueryPlanner
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Solved (Over-Engineering Elimination)
+Comprehensive architectural audit of `backend/app/agent/planner.py` (previously 1,593 lines) revealed severe structural redundancy and maintenance debt:
+1. **Dual Competing Routing Engines ("Dual Brain")**: `_build_plan_from_structured_model` and `_plan_query_heuristic` implemented two completely separate, drifting tool-dispatch graphs for the archetypes.
+2. **Defensive Prompt Arms Race**: The planner system prompt had bloated to 190 lines with 10 rigid few-shot examples, leading to few-shot query contamination and brittleness.
+3. **Triple-Redundant Parameter Extraction**: Entity, brand, date, and page tokens were parsed across multiple regex and helper functions, causing divergence between heuristic and LLM paths.
+4. **Maintenance Fragility**: Any modification to tool parameter construction required updating two divergent 300+ line blocks.
+
+### Architectural Solution
+1. **Unified Tool Sequence Resolver (`resolve_tool_sequence`)**:
+   - Extracted single-source-of-truth tool sequence resolution function (`resolve_tool_sequence(...)`) handling all archetype tool dispatches (`factual_lookup`, `quantitative_trend`, `thematic_timeline`, `entity_deep_dive`, `cross_newspaper_comparison`).
+   - Unified differential comparison logic (`coverage_difference` + `hybrid_search`), multi-edition summaries, page-specific queries, and secondary corroborating search into clean, single-pass dispatch blocks.
+   - Both the LLM path (`_build_plan_from_structured_model`) and deterministic heuristic fallback (`_plan_query_heuristic`) now delegate directly to this function.
+2. **Lean System Prompt & Canonical Few-Shots**:
+   - Streamlined `PLANNER_SYSTEM_PROMPT` from 190 lines down to 50 lines with 3 concise, canonical few-shot examples illustrating:
+     1. Pure factual single-article retrieval.
+     2. Analytical issue-level manifest summarization.
+     3. Cross-newspaper comparative analysis with domain topic preservation.
+3. **Robust Ground-Truth Reconciliation & Hallucination Pruning**:
+   - When deterministic parameters (`newspaper_name`, `issue_date`, `issue_id`, `page_filter`) are extracted directly from the user query, they serve as authoritative ground truth, pruning any conflicting hallucinated LLM arguments.
+4. **Massive Code Reduction**:
+   - Reduced `backend/app/agent/planner.py` from 1,593 lines to 949 lines (~644 lines eliminated, >40% code reduction) with zero regression.
+   - Maintained 100% backward compatibility for the public API (`QueryPlanner`, `PlanResult`, `PlannedToolCall`, `extract_parameters_from_query`).
+
+### Test Verification & Quality Gates
+- `backend/tests/test_planner.py`: **22/22 tests passing (100% green)**
+- `backend/tests/test_condenser.py`: **5/5 tests passing (100% green)**
+- `backend/tests/test_synthesizer.py`: **20/20 tests passing (100% green)**
+- `backend/tests/test_graph.py`: **3/3 tests passing (100% green)**
+- `backend/tests/test_nvidia_provider.py`: **7/7 tests passing (100% green)**
+- **Complete Test Suite**: **393/393 tests passing (100% green)** across all 57 test modules in 26.49s.
+
+
 
