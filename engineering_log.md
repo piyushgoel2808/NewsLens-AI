@@ -2736,6 +2736,42 @@ Comprehensive architectural audit of `backend/app/agent/planner.py` (previously 
 - Static Type Checking: `mypy app/agent/planner.py app/agent/extractor.py app/agent/models.py app/agent/tool_factory.py` $\to$ **Success: no issues found in 4 source files**.
 - Linter: `ruff check app/agent/planner.py app/agent/extractor.py app/agent/models.py app/agent/tool_factory.py` $\to$ **All checks passed!**
 
+---
+
+## Phase 9.24 — Query Planning Edge Case Resolution & Multi-Turn Context Retention
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Edge Case A: Heuristic Fallback Missing `article_catalog` Classification**:
+   - Queries requesting topical manifests (e.g. `"list all their health news"`, `"catalog of sports articles"`) were falling into Branch 5 of `_plan_query_heuristic` and unconditionally classified as `quantitative_trend`.
+   - *Downstream Impact*: In `synthesizer.py`, `quantitative_trend` generates high-level numerical summaries rather than rendering the comprehensive 7-column Markdown catalog table required for `article_catalog`.
+2. **Edge Case B: Heavy Unnecessary `coverage_analysis` on Undated Comparisons**:
+   - In Branch 4 of `_plan_query_heuristic`, undated comparative queries (e.g., `"Compare how different newspapers cover climate change"`) unconditionally scheduled `coverage_analysis`.
+   - *Downstream Impact*: Triggered slow 10–15s archive-wide semantic clustering when the user only desired comparative article excerpts via `hybrid_search`.
+3. **Edge Case C: Follow-Up Turn Working Context Pruning**:
+   - `reconcile_and_sanitize_arguments` pruned `newspaper_name` and `issue_date` parameters if they did not literally appear in the follow-up prompt tokens (e.g. `"What about on page 4?"`), even when they were active working context from preceding turns (`active_issue_date`, `active_newspapers`).
+
+### Architectural Solutions & Implementations
+1. **Deterministic `article_catalog` Disambiguation (`backend/app/agent/planner.py`)**:
+   - In Branch 5 of `_plan_query_heuristic`, introduced structural disambiguation logic between `article_catalog` (topic listings, category manifests without whole-issue/count constraints) and `quantitative_trend` (page bounds, count queries, and whole-paper overviews).
+2. **Conditional Omission Audit Tool Scheduling (`backend/app/agent/planner.py`)**:
+   - In Branch 4 of `_plan_query_heuristic`, undated cross-newspaper comparisons schedule `hybrid_search` by default, only scheduling `coverage_analysis` when explicit omission or audit terms (`"omit"`, `"miss"`, `"gap"`, `"audit"`, `"exclusive"`, `"unreported"`, `"coverage analysis"`) are present.
+3. **Active Multi-Turn Context Retention (`backend/app/agent/tool_factory.py`, `backend/app/agent/planner.py`)**:
+   - Updated `reconcile_and_sanitize_arguments` to accept `active_issue_date` and `active_newspapers`. Verified against active context before pruning non-literal prompt entities.
+   - Updated `_build_plan_from_structured_model` and `plan_query_async` to propagate active conversation context directly to the sanitizer.
+
+### Test Verification & Quality Gates
+- Added unit tests in `backend/tests/test_planner.py`:
+  - `test_edge_case_a_article_catalog_heuristic_classification`: Verifies topic manifests route to `article_catalog` with `sql_analytics` manifest tools.
+  - `test_edge_case_b_undated_cross_newspaper_coverage_suppression`: Verifies undated comparisons suppress `coverage_analysis` unless omission keywords are used.
+  - `test_edge_case_c_context_retention_reconcile_and_sanitize`: Verifies multi-turn active context brand and date are preserved without hallucination pruning.
+- `backend/tests/test_planner.py`: **27/27 tests passing (100% green)**
+- **Full Backend Regression Suite**: **398/398 tests passing (100% green)** in 24.88s.
+- Static Type Checking: `mypy app/agent/planner.py app/agent/extractor.py app/agent/models.py app/agent/tool_factory.py` $\to$ **Success: no issues found in 4 source files**.
+- Linter: `ruff check app/agent/planner.py app/agent/extractor.py app/agent/models.py app/agent/tool_factory.py` $\to$ **All checks passed!**
+
 
 
 

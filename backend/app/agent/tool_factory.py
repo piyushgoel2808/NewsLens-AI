@@ -43,28 +43,37 @@ def reconcile_and_sanitize_arguments(
     args: dict[str, Any],
     extracted: dict[str, Any],
     query: str,
+    active_issue_date: str | None = None,
+    active_newspapers: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Reconcile tool arguments against query ground truth and prune hallucinations."""
+    """Reconcile tool arguments against query ground truth and active context, pruning hallucinations."""
     sanitized = dict(args)
     q_lower = query.lower()
 
-    # 1. Newspaper Brand Ground Truth
+    # 1. Newspaper Brand Ground Truth & Active Context Retention
     if extracted.get("newspaper_name"):
         if sanitized.get("newspaper_name") and sanitized["newspaper_name"] != extracted["newspaper_name"]:
             sanitized["newspaper_name"] = extracted["newspaper_name"]
     elif sanitized.get("newspaper_name"):
-        brand_tokens = [w.lower() for w in str(sanitized["newspaper_name"]).split() if w.lower() not in {"the", "of", "and"}]
-        if not any(tok in q_lower for tok in brand_tokens):
-            sanitized.pop("newspaper_name", None)
+        is_active_brand = (
+            bool(active_newspapers)
+            and any(str(sanitized["newspaper_name"]).strip().lower() == str(an).strip().lower() for an in (active_newspapers or []))
+        )
+        if not is_active_brand:
+            brand_tokens = [w.lower() for w in str(sanitized["newspaper_name"]).split() if w.lower() not in {"the", "of", "and"}]
+            if not any(tok in q_lower for tok in brand_tokens):
+                sanitized.pop("newspaper_name", None)
 
-    # 2. Issue Date Ground Truth
+    # 2. Issue Date Ground Truth & Active Context Retention
     if extracted.get("issue_date"):
         if sanitized.get("issue_date") and sanitized["issue_date"] != extracted["issue_date"]:
             sanitized["issue_date"] = extracted["issue_date"]
     elif sanitized.get("issue_date"):
-        d_parts = str(sanitized["issue_date"]).split("-")
-        if not any(part in query for part in d_parts):
-            sanitized.pop("issue_date", None)
+        is_active_date = bool(active_issue_date) and str(sanitized["issue_date"]).strip() == str(active_issue_date).strip()
+        if not is_active_date:
+            d_parts = str(sanitized["issue_date"]).split("-")
+            if not any(part in query for part in d_parts):
+                sanitized.pop("issue_date", None)
 
     # 3. Page Filter Ground Truth
     if sanitized.get("page_filter") is not None:

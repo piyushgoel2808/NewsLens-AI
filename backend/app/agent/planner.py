@@ -185,6 +185,8 @@ class QueryPlanner:
                         query=query,
                         plan_obj=plan_obj,
                         enable_web_search=enable_web_search,
+                        active_issue_date=active_issue_date,
+                        active_newspapers=active_newspapers,
                     )
             except Exception as ex:
                 logger.warning(
@@ -254,6 +256,8 @@ class QueryPlanner:
         query: str,
         plan_obj: AgentPlan,
         enable_web_search: bool = False,
+        active_issue_date: str | None = None,
+        active_newspapers: list[str] | None = None,
     ) -> PlanResult:
         """Translate AgentPlan into PlanResult, executing direct tool calls or legacy adapter."""
         extracted = extract_parameters_from_query(query)
@@ -268,7 +272,14 @@ class QueryPlanner:
         # 1. Direct tool calling (Option 2)
         if plan_obj.tool_calls:
             for spec in plan_obj.tool_calls:
-                args = reconcile_and_sanitize_arguments(spec.tool_name, spec.arguments, extracted, query)
+                args = reconcile_and_sanitize_arguments(
+                    spec.tool_name,
+                    spec.arguments,
+                    extracted,
+                    query,
+                    active_issue_date=active_issue_date,
+                    active_newspapers=active_newspapers,
+                )
                 tool_calls.append(PlannedToolCall(tool_name=spec.tool_name, arguments=args, purpose=spec.purpose))
 
         # 2. Legacy adapter: if mock/LLM provided primary_tool or arguments without tool_calls
@@ -280,7 +291,14 @@ class QueryPlanner:
                 raw_args = plan_obj.arguments.model_dump(exclude_none=True)
 
             primary_tool_name = plan_obj.primary_tool or "hybrid_search"
-            args = reconcile_and_sanitize_arguments(primary_tool_name, raw_args, extracted, query)
+            args = reconcile_and_sanitize_arguments(
+                primary_tool_name,
+                raw_args,
+                extracted,
+                query,
+                active_issue_date=active_issue_date,
+                active_newspapers=active_newspapers,
+            )
 
             if archetype == "cross_newspaper_comparison":
                 target_dt = args.get("issue_date") or extracted.get("issue_date")
@@ -325,7 +343,12 @@ class QueryPlanner:
 
         # 3. Fallback if no tool calls produced
         if not tool_calls:
-            heur = self._plan_query_heuristic(query, enable_web_search=enable_web_search)
+            heur = self._plan_query_heuristic(
+                query,
+                enable_web_search=enable_web_search,
+                active_issue_date=active_issue_date,
+                active_newspapers=active_newspapers,
+            )
             tool_calls = heur.tool_calls
 
         if enable_web_search and not any(t.tool_name == "web_search" for t in tool_calls):
@@ -400,19 +423,20 @@ class QueryPlanner:
                 tool_calls.append(build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, category_filter=category, top_k=12, purpose=f"Comparative articles across {newspaper} and {comp_newspaper}"))
             elif not target_dt:
                 tool_calls.append(build_hybrid_search_tool(query=query, category_filter=category, top_k=12, purpose="Comparative articles across broadsheet editions"))
-                tool_calls.append(build_coverage_analysis_tool(query=query, purpose="Archive-wide coverage comparison"))
+                if any(w in q_lower for w in ["omit", "miss", "exclusive", "gap", "audit", "coverage analysis", "unreported"]):
+                    tool_calls.append(build_coverage_analysis_tool(query=query, purpose="Archive-wide coverage comparison"))
             else:
                 tool_calls.append(build_sql_summary_tool(issue_date=target_dt, category_filter=category, query=query, purpose=f"Manifest across all newspapers on {target_dt}"))
                 hs_page = "1" if not newspaper and target_dt and not category else None
                 tool_calls.append(build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, page_filter=hs_page, category_filter=category, top_k=12, purpose="Diverse articles across editions"))
 
-                if not category or any(w in q_lower for w in ["omission", "miss", "omitted", "exclusive", "gap", "audit"]):
+                if not category or any(w in q_lower for w in ["omit", "miss", "exclusive", "gap", "audit"]):
                     tool_calls.append(build_coverage_analysis_tool(query=query, target_date=target_dt))
 
                 if not category and not newspaper:
                     tool_calls.append(build_sql_coverage_comparison_tool(target_date=target_dt, query=query))
 
-        # 5. Quantitative Trend / Issue Manifest / Page Listings / Counts / Distribution
+        # 5. Quantitative Trend / Article Catalog / Issue Manifest / Page Listings / Counts
         elif (
             (page_filter and any(w in q_lower for w in ["article", "story", "stories", "no of", "how many", "list"]))
             or any(w in q_lower for w in [
@@ -422,8 +446,22 @@ class QueryPlanner:
             ])
             or (category and any(w in q_lower for w in ["news", "articles", "stories", "headlines"]))
         ):
-            archetype = "quantitative_trend"
             is_count = any(w in q_lower for w in ["how many", "total articles", "number of articles", "count of articles"]) and not page_filter
+            is_whole_issue_or_count = (
+                bool(page_filter)
+                or is_count
+                or any(w in q_lower for w in [
+                    "today's paper", "edition", "whole", "entire", "overview", "summarize",
+                    "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume",
+                ])
+            )
+            is_catalog_request = any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories"]) or bool(category)
+
+            if is_catalog_request and not is_whole_issue_or_count:
+                archetype = "article_catalog"
+            else:
+                archetype = "quantitative_trend"
+
             analysis_type = "count_articles" if is_count else "issue_summary"
 
             tool_calls.append(build_sql_summary_tool(

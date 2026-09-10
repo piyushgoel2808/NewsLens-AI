@@ -563,6 +563,80 @@ class TestAgentWorkflowToolExecution:
         assert res3.archetype == "cross_newspaper_comparison"
         assert any(t.tool_name == "coverage_analysis" for t in res3.tool_calls)
 
+    def test_edge_case_a_article_catalog_heuristic_classification(self) -> None:
+        """Verify heuristic fallback classifies topic listings as article_catalog instead of quantitative_trend."""
+        planner = QueryPlanner()
+        plan_health = planner.plan_query("list all their health news")
+        assert plan_health.archetype == "article_catalog"
+        assert len(plan_health.tool_calls) >= 1
+        assert plan_health.tool_calls[0].tool_name == "sql_analytics"
+        assert plan_health.tool_calls[0].arguments.get("category_filter") == "Health"
+        assert plan_health.tool_calls[0].arguments.get("analysis_type") == "issue_summary"
+
+        plan_catalog = planner.plan_query("catalog of sports articles")
+        assert plan_catalog.archetype == "article_catalog"
+        assert plan_catalog.tool_calls[0].arguments.get("category_filter") == "Sports"
+
+    def test_edge_case_b_undated_cross_newspaper_coverage_suppression(self) -> None:
+        """Verify general undated cross-newspaper comparison omits heavy coverage_analysis unless requested."""
+        planner = QueryPlanner()
+        # General comparison -> hybrid_search only, no coverage_analysis
+        plan_general = planner.plan_query("Compare how different newspapers cover climate change")
+        assert plan_general.archetype == "cross_newspaper_comparison"
+        tool_names = [t.tool_name for t in plan_general.tool_calls]
+        assert "hybrid_search" in tool_names
+        assert "coverage_analysis" not in tool_names
+
+        # Comparison with omission keyword -> includes coverage_analysis
+        plan_audit = planner.plan_query("What did different newspapers omit regarding the budget speech?")
+        assert plan_audit.archetype == "cross_newspaper_comparison"
+        tool_names_audit = [t.tool_name for t in plan_audit.tool_calls]
+        assert "hybrid_search" in tool_names_audit
+        assert "coverage_analysis" in tool_names_audit
+
+    def test_edge_case_c_context_retention_reconcile_and_sanitize(self) -> None:
+        """Verify active context brand and date are preserved during multi-turn follow-ups."""
+        from app.agent.models import AgentPlan, ToolCallSpec
+
+        planner = QueryPlanner()
+        follow_up_query = "What was reported on page 4?"
+        plan_obj = AgentPlan(
+            thought_process="Follow-up turn checking page 4 for the active newspaper and date",
+            archetype="factual_lookup",
+            tool_calls=[
+                ToolCallSpec(
+                    tool_name="hybrid_search",
+                    arguments={
+                        "query": "page 4 news",
+                        "newspaper_name": "The Goan",
+                        "date_from": "2026-08-01",
+                        "date_to": "2026-08-01",
+                        "page_filter": "4",
+                    },
+                    purpose="Search page 4 in active newspaper",
+                )
+            ],
+        )
+
+        # Passing active context preserves The Goan even though not in prompt
+        res = planner._build_plan_from_structured_model(
+            query=follow_up_query,
+            plan_obj=plan_obj,
+            active_issue_date="2026-08-01",
+            active_newspapers=["The Goan"],
+        )
+        assert len(res.tool_calls) == 1
+        args = res.tool_calls[0].arguments
+        assert args.get("newspaper_name") == "The Goan"
+        assert args.get("page_filter") == "4"
+
+        # Without active context, hallucinated brand (not in prompt) is pruned
+        res_no_ctx = planner._build_plan_from_structured_model(
+            query=follow_up_query,
+            plan_obj=plan_obj,
+        )
+        assert res_no_ctx.tool_calls[0].arguments.get("newspaper_name") is None
+
 
 
 
