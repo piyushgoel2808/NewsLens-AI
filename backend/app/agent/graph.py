@@ -238,18 +238,30 @@ class AgentWorkflow:
                         hybrid_results = fallback_results
                         hits_count = len(fallback_results)
 
+                from app.retrieval.sanitizer import repair_text_ligatures
+                from app.retrieval.sql_analytics import sanitize_headline
+
                 for hr in hybrid_results:
+                    clean_hl, eff_byline = sanitize_headline(
+                        hr.headline,
+                        subheadline=hr.subheadline,
+                        byline_author=hr.byline_author,
+                        snippet=hr.snippet,
+                    )
+                    clean_hl = repair_text_ligatures(clean_hl)
+                    clean_snip = repair_text_ligatures(hr.snippet)
                     evidence_items.append(
                         {
                             "article_id": hr.article_id,
                             "issue_id": hr.issue_id,
-                            "headline": hr.headline,
+                            "headline": clean_hl,
+                            "byline_author": eff_byline or hr.byline_author,
                             "newspaper_name": hr.newspaper_name,
                             "issue_date": hr.issue_date,
                             "pages": hr.pages,
                             "bboxes": hr.bboxes,
                             "printed_pages": hr.printed_pages,
-                            "snippet": hr.snippet,
+                            "snippet": clean_snip,
                             "prominence_score": hr.prominence_score,
                             "source_tool": "hybrid_search",
                             "photos": hr.photos,
@@ -434,8 +446,9 @@ class AgentWorkflow:
                                     author_info = (
                                         f" by {a['byline_author']}" if a.get("byline_author") else ""
                                     )
+                                    clean_a_hl = repair_text_ligatures(a["headline"])
                                     manifest_lines.append(
-                                        f'{idx}. [{a["section"]}] "{a["headline"]}" '
+                                        f'{idx}. [{a["section"]}] "{clean_a_hl}" '
                                         f"({folio_info}{author_info}, {a['word_count']} words)"
                                     )
                                 manifest_text = "\n".join(manifest_lines)
@@ -533,8 +546,9 @@ class AgentWorkflow:
                                 author_info = (
                                     f" by {a['byline_author']}" if a.get("byline_author") else ""
                                 )
+                                clean_a_hl = repair_text_ligatures(a["headline"])
                                 manifest_lines.append(
-                                    f'{idx}. [{a["section"]}] "{a["headline"]}" '
+                                    f'{idx}. [{a["section"]}] "{clean_a_hl}" '
                                     f"({folio_info}{author_info}, {a['word_count']} words)"
                                 )
                             manifest_text = "\n".join(manifest_lines)

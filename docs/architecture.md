@@ -226,6 +226,7 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │  • Real-time adaptive fallback on 0-hit category filters    │
    │  • Resilient multi-tier issue ID fallback in sql_analytics  │
    │  • Scoped coverage analyzer targeting active date editions  │
+   │  • Conditional coverage analysis (skips 25s audit unless gap keywords exist)│
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
@@ -245,6 +246,9 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │    - Edition Comparison: Page 1 Leads vs Section Breakdown  │
    │    - Article Catalog: Tabular manifest (Newspaper, Page...) │
    │    - Factual Lookup: 4-Tier structured executive synthesis  │
+   │  • Preserves cross-newspaper archetype in deterministic fallback│
+   │  • Granular domain token stem mapping (e.g. Health & Med)   │
+   │  • Broadsheet OCR font ligature repair (e  orts -> efforts)│
    │  • Headline sanitization cleans author boxes (Dr./Bylines)  │
    │  • Generates strict 1-shot citations: [Paper, Date, Page]   │
    │  • Enforces anti-repetition constraints across findings     │
@@ -320,6 +324,8 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 8: Slogan Bylines** | Corporate marketing taglines (*"By Innovation I Built For The Future"*) matched byline regexes and became author names. | Introduced `MARKETING_SLOGAN_REGEX` to validate author candidates against commercial buzzword filters. |
 | **Phase 9: Strict Issue IDs** | Users typing `"issue 84"` when the database stored `"Issue #88"` caused `sql_analytics` to return 0 results and poison chat context. | Upgraded `sql_analytics.py` with multi-tier fallback resolution matching by `(newspaper_name, issue_date)` when IDs mismatch. |
 | **Phase 9.17: Autonomous Reasoning & Concurrency** | Blind planning without live archive metadata caused tool hallucination; serial tool execution caused latency spikes; 0-hit category filters starved evidence; author boxes became fake headlines. | Grounded planner with `get_archive_metadata()`; added `article_catalog` archetype (<200ms); ran tools concurrently via `asyncio.gather`; added adaptive zero-hit category fallback; sanitized author/doctor boxes with `sanitize_headline()`. |
+| **Phase 9.18: NVIDIA NIM Hosted Acceleration** | Local LLMs struggled with 90s latency on long syntheses and lacked real-time thinking traces. | Integrated `NvidiaProvider` supporting `nvidia/nemotron-3.5-lightning` (<1s response, live `<think>` streaming) and `meta/llama-3.2-11b-vision`. |
+| **Phase 9.19: Topic Integrity & Font Ligature Recovery** | Few-shot contamination overwrote user topics with generic phrases; 25s unconstrained coverage audits delayed domain queries; synthesizer fallbacks dropped multi-newspaper tables; OCR dropped font ligatures (`e   orts`). | Dynamic filler sanitization in planner; conditional coverage analysis; explicit `archetype` preservation in deterministic synthesizer; granular domain token stem budgeting; and dedicated Unicode ligature decomposition engine (`repair_text_ligatures`). |
 
 ---
 

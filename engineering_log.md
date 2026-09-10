@@ -2534,3 +2534,49 @@ Integrated native hosted inference via the NVIDIA API Catalog / NVIDIA NIM (`htt
    - `meta/llama-3.2-11b-vision-instruct`: Verified multimodal image analysis and zero-shot chart reading (~0.69s latency).
    - Unit tests added in `backend/tests/test_nvidia_provider.py` (7/7 tests passing).
 
+---
+
+## Phase 9.19 — Autonomous Planner Query Preservation, Low-Latency Sizing, Synthesizer Archetype Preservation & Font Ligature Repair
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problem Identified
+On cross-newspaper domain queries (e.g. `COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news`), the agent took 99 seconds and produced degraded output:
+1. **Few-Shot Contamination**: Example 9 in `PLANNER_SYSTEM_PROMPT` had hardcoded `"query": "newspaper coverage comparison"`, overwriting `"health related news"`.
+2. **Cascading Tool Overhead**: `coverage_analysis` was invoked without domain awareness, clustering articles for `"newspaper coverage comparison"` across the archive (24.5s waste, 0 hits).
+3. **Slow Provider Failover**: `is_cloud_request` omitted `"nvidia"`, and `failover_keys` lacked `nvidia_nemotron`, causing timeouts or fallback to slow local models.
+4. **Deterministic Archetype Omission**: `synthesize()` line 853 called `_generate_deterministic_summary()` without passing `archetype=archetype`, forcing the multi-newspaper comparison into a single-newspaper lookup format.
+5. **OCR Ligatures & Raw Chunk Headline Leakage**: Photographer bylines (`"UTHAMA SANKARANARAYANAN"`) leaked into headlines, and font ligature corruptions (`e \ufffd orts` / `e   orts`) degraded readability.
+
+### Architectural Solutions & Enhancements
+1. **Planner Few-Shot Prompt & Generic Query Sanitization (`planner.py`)**:
+   - Updated Example 9 to broadsheet lead story scope (`"cross-edition frontpage and lead story comparison"`).
+   - Added Example 10 demonstrating domain-filtered date comparison (`query: "health related news"`, `category_filter: "Health"`).
+   - Added generic filler query sanitization in `_build_plan_from_structured_model`: automatically replaces generic few-shot filler phrases with the substantive domain topic or cleaned query.
+   - Enforced routing of `cross_newspaper_comparison` to the comparative tool scheduling block regardless of whether `primary_tool` was set to `sql_analytics` or `coverage_analysis`.
+2. **Minimal Sufficient Tool Scheduling (`planner.py`)**:
+   - Made `coverage_analysis` conditional on explicit negative audit intent (`"omission"`, `"miss"`, `"gap"`, `"absent"`, etc.) or non-domain comparisons.
+   - For domain comparisons with `category_filter`, `sql_analytics` fetches the complete 44-article manifest in 105ms and `hybrid_search` fetches key chunks in ~1s, eliminating 25s of unconstrained coverage analysis.
+3. **High-Throughput Cloud Provider Failover (`planner.py` & `synthesizer.py`)**:
+   - Added `"nvidia"` to `is_cloud_request` checks across planner and synthesizer.
+   - Added `nvidia_nemotron` as the premier entry in `failover_keys` for sub-second (<1s) hosted inference with native reasoning streams.
+4. **Synthesizer Archetype Preservation & Domain Token Budgeting (`synthesizer.py`)**:
+   - Fixed `synthesizer.py` line 853: passed `archetype=archetype` into `_generate_deterministic_summary(query, evidence_items, archetype=archetype)`.
+   - In cross-newspaper deterministic summary, preserved all publications in `pub_groups` without dropping them via strict query string filters.
+   - Expanded `_build_evidence_context` domain scoring to map domains like `"Health & Medicine"` to individual keyword stems (`["health", "hospital", "pharma", "medicine", "doctor", ...]`), ensuring medical articles receive top priority in evidence budgeting.
+5. **In-Place Headline Sanitization & Font Ligature Repair (`sanitizer.py`, `hybrid_search.py`, `graph.py`)**:
+   - Created `backend/app/retrieval/sanitizer.py` implementing `repair_text_ligatures(text: str) -> str`:
+     - Decomposes Unicode typographic ligatures (`\ufb00`–`\ufb06`).
+     - Repairs broadsheet OCR dropouts (`e \ufffd orts` / `e   orts` -> `efforts`, `in \ufffd ation` -> `inflation`, `di \ufffd erent` -> `different`, `sta\ufffd` -> `staff`, etc.).
+   - Sanitized headlines in-place on all `HybridSearchResult` objects before ingestion into agent state.
+   - Applied `repair_text_ligatures` across evidence snippets, headlines, and SQL manifest lines.
+
+### Test Verification & Quality Gates
+- `backend/tests/test_sanitizer.py`: **8/8 tests passing** (added ff, fi/fl, unicode decomposition tests).
+- `backend/tests/test_planner.py`: **22/22 tests passing** (added domain preservation & filler sanitization tests).
+- `backend/tests/test_synthesizer.py`: **20/20 tests passing** (added archetype preservation & domain token matching tests).
+- `backend/tests/test_hybrid_search.py`: **2/2 tests passing**.
+- `backend/tests/test_graph.py`: **3/3 tests passing**.
+
+

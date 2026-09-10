@@ -69,3 +69,36 @@ class TestRegexSanitizer:
         assert "Whatsapp" not in cleaned
         assert "A ND-NDE C M Y K" not in cleaned
         assert "3c2f1b0a" not in cleaned
+
+
+class TestLigatureRepair:
+    """Test OCR font ligature repair and dropout recovery."""
+
+    def test_repair_ff_ligatures(self) -> None:
+        from app.retrieval.sanitizer import repair_text_ligatures
+
+        assert repair_text_ligatures("e \ufffd orts") == "efforts"
+        assert repair_text_ligatures("e   orts") == "efforts"
+        assert repair_text_ligatures("di \ufffd erent") == "different"
+        assert repair_text_ligatures("di  erent") == "different"
+        assert repair_text_ligatures("o \ufffd cer") == "officer"
+        assert repair_text_ligatures("sta\ufffd report") == "staff report"
+        assert repair_text_ligatures("sta   briefing") == "staff briefing"
+
+    def test_repair_fi_and_fl_ligatures(self) -> None:
+        from app.retrieval.sanitizer import repair_text_ligatures
+
+        assert repair_text_ligatures("in \ufffd ation rate") == "inflation rate"
+        assert repair_text_ligatures("in  ation rate") == "inflation rate"
+        assert repair_text_ligatures("signi \ufffd cant") == "significant"
+        assert repair_text_ligatures("signi  cant") == "significant"
+        assert repair_text_ligatures("bene \ufffd t") == "benefit"
+        assert repair_text_ligatures("de \ufffd cit") == "deficit"
+
+    def test_unicode_ligature_decomposition(self) -> None:
+        from app.retrieval.sanitizer import repair_text_ligatures
+
+        assert repair_text_ligatures("e\ufb00ect") == "effect"
+        assert repair_text_ligatures("\ufb01nancial") == "financial"
+        assert repair_text_ligatures("\ufb02oating") == "floating"
+

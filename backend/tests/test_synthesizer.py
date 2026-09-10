@@ -406,6 +406,70 @@ class TestAnswerSynthesizer:
         context = synth._build_evidence_context(evidence)
         assert "Skin Cancer Prevention Tips" in context
 
+    @pytest.mark.asyncio
+    async def test_deterministic_summary_preserves_cross_newspaper_archetype(self) -> None:
+        """Verify fallback deterministic summary preserves cross_newspaper_comparison matrix format."""
+        from unittest.mock import AsyncMock, MagicMock
+        mock_p = MagicMock()
+        mock_p.provider_name = "mock"
+        mock_p._model = "mock_model"
+        mock_p.complete = AsyncMock(side_effect=RuntimeError("Provider offline"))
+        synth = AnswerSynthesizer(provider=mock_p)
+        evidence = [
+            {
+                "article_id": 1,
+                "headline": "New Hospital Wing Opens in Panaji",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+                "pages": [3],
+                "snippet": "Health Minister inaugurated the modern 200-bed facility.",
+            },
+            {
+                "article_id": 2,
+                "headline": "Pharma Sector Subsidies Announced",
+                "newspaper_name": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "pages": [5],
+                "snippet": "New government incentives aim to boost domestic drug production.",
+            },
+        ]
+        text, citations, _ = await synth.synthesize(
+            query="COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news",
+            archetype="cross_newspaper_comparison",
+            evidence_items=evidence,
+        )
+        # Must produce comparison matrix, NOT "Key broadsheet reporting regarding..." single-newspaper template
+        assert "Cross-Newspaper Health & Medicine Comparison Matrix" in text or "Comparison Matrix" in text
+        assert "| **The Goan** |" in text
+        assert "| **The Morning Standard** |" in text
+        assert "Key broadsheet reporting regarding" not in text
+
+    def test_domain_terms_health_matches_individual_medical_tokens(self) -> None:
+        """Verify individual terms like 'hospital', 'doctor', 'pharma' score high for Health domain."""
+        synth = AnswerSynthesizer()
+        evidence = [
+            {
+                "article_id": 1,
+                "headline": "New Orthopedic Clinic Launched",
+                "snippet": "Local doctors and surgeons established a new patient care facility.",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+            },
+            {
+                "article_id": 2,
+                "headline": "City Pothole Repair Work Underway",
+                "snippet": "Road engineers filled potholes on the highway.",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+            },
+        ]
+        context = synth._build_evidence_context(
+            evidence,
+            query="COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news",
+        )
+        assert "Orthopedic Clinic" in context
+
+
 
 
 

@@ -364,19 +364,33 @@ class HybridSearchEngine:
             if not v_type and article_photos:
                 v_type = article_photos[0]["visual_type"]
 
+            # Sanitize headline and repair OCR font ligatures
+            from app.retrieval.sanitizer import repair_text_ligatures
+            from app.retrieval.sql_analytics import sanitize_headline
+
+            raw_hl = article.headline or "Untitled"
+            clean_hl, eff_byline = sanitize_headline(
+                raw_hl,
+                subheadline=article.subheadline,
+                byline_author=article.byline_author,
+                snippet=snippet,
+            )
+            clean_hl = repair_text_ligatures(clean_hl)
+            clean_snippet = repair_text_ligatures(snippet)
+
             final_results.append(
                 HybridSearchResult(
                     article_id=article.id,
-                    headline=article.headline or "Untitled",
+                    headline=clean_hl,
                     subheadline=article.subheadline,
-                    byline_author=article.byline_author,
+                    byline_author=eff_byline or article.byline_author,
                     section=article.section,
                     article_type=article.article_type,
                     prominence_score=article.prominence_score,
                     rrf_score=round(score_info["rrf_score"], 6),
                     vector_rank=score_info["vector_rank"],
                     keyword_rank=score_info["keyword_rank"],
-                    snippet=snippet,
+                    snippet=clean_snippet,
                     newspaper_name=np_name,
                     issue_date=issue_date,
                     pages=pages_list,

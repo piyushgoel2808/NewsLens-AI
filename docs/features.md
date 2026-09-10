@@ -48,6 +48,21 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Editorial Headline Cleansing & Author Box Sanitization (`sanitize_headline`)**:
   * Automatically detects author/doctor profile name boxes (e.g. `Dr. Smriti Naswa Singh`, `UTHAMA SANKARANARAYANAN`) mistakenly extracted as headlines and converts them into descriptive topical feature labels.
   * Employs common news vocabulary safeguards (`_COMMON_HEADLINE_VOCAB`) to protect genuine all-caps headlines (e.g. `TECH STOCKS RALLY`).
+* **Broadsheet OCR Font Ligature Repair Engine (`repair_text_ligatures`)**:
+  * Decomposes Unicode typographic ligatures (`\ufb00`–`\ufb06` $\to$ `ff`, `fi`, `fl`, `ffi`, `ffl`, `ft`, `st`).
+  * Repairs broadsheet OCR dropout patterns where font ligatures collapsed into replacement glyphs or multi-space gaps (e.g. `e \ufffd orts` / `e   orts` $\to$ `efforts`, `in \ufffd ation` $\to$ `inflation`, `di \ufffd erent` $\to$ `different`, `sta\ufffd` $\to$ `staff`, `o\ufffd cial` $\to$ `official`).
+  * Applied in-place across search result headlines, evidence snippets, and SQL manifest strings.
+* **Autonomous Query Topic Preservation & Generic Filler Sanitization**:
+  * Protects user domain queries from few-shot prompt contamination in the planner LLM.
+  * In `_build_plan_from_structured_model()`, automatically detects generic filler phrases (e.g. `"newspaper coverage comparison"`) and restores substantive domain topics (e.g. `"health related news"`).
+* **Minimal Sufficient Tool Scheduling & Conditional Coverage Analysis**:
+  * Intelligently skips unconstrained 25-second `coverage_analysis` on domain comparison queries unless explicit negative audit/omission keywords (`omission`, `miss`, `gap`, `absent`) are specified.
+  * For domain comparisons with category filters, relies on ultra-fast `sql_analytics` manifest (105ms) and targeted `hybrid_search` (1s), cutting overall execution latency by >90%.
+* **Archetype Preservation in Deterministic Fallbacks**:
+  * Ensures deterministic fallback generation in `synthesizer.py` respects the active `QueryArchetype`, preventing cross-newspaper comparative queries from downgrading into single-newspaper lookups.
+  * Preserves all planned newspaper publications in the structured comparison tables.
+* **Granular Domain Token Stem Budgeting**:
+  * Maps composite domain labels (e.g. `Health & Medicine`) to granular keyword stems (`["health", "hospital", "pharma", "medicine", "doctor", ...]`), guaranteeing domain articles receive top priority during context token budgeting.
 * **Domain-Adaptive Comparative Synthesis**:
   * Dynamically adapts comparison table headers to the query domain:
     * **Health & Medicine**: `Key Findings & Medical Focus`

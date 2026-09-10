@@ -315,18 +315,37 @@ Output: {
 Example 9:
 Query: "Compare all the available newspaper dated 1/8/2026"
 Output: {
-  "thought_process": "User wants to compare ALL available newspapers on a specific date (2026-08-01). This is a cross-newspaper comparison requiring coverage_analysis to audit which newspapers have coverage, combined with article manifests from each newspaper. The date 1/8/2026 must be extracted as 2026-08-01 and passed as issue_date. No specific newspaper is targeted.",
+  "thought_process": "User wants to compare ALL available newspapers on a specific date (2026-08-01). This is a cross-newspaper comparison requiring article manifests from each newspaper on that date and frontpage lead stories. The date 1/8/2026 must be extracted as 2026-08-01 and passed as issue_date. No specific newspaper is targeted.",
   "archetype": "cross_newspaper_comparison",
-  "primary_tool": "coverage_analysis",
+  "primary_tool": "sql_analytics",
   "arguments": {
     "issue_date": "2026-08-01",
     "date_from": "2026-08-01",
     "date_to": "2026-08-01",
-    "query": "newspaper coverage comparison"
+    "query": "cross-edition frontpage and lead story comparison",
+    "analysis_type": "issue_summary"
+  },
+  "include_secondary_hybrid_search": false
+}
+
+Example 10:
+Query: "Compare all the newspaper available dated 1/8/2026 on health related news"
+Output: {
+  "thought_process": "User wants to compare all available newspapers on a specific date (2026-08-01) specifically on health related news. This is a cross-newspaper comparison with a domain focus on Health. We preserve the domain topic 'health related news' for semantic search and issue manifest filtering.",
+  "archetype": "cross_newspaper_comparison",
+  "primary_tool": "sql_analytics",
+  "arguments": {
+    "issue_date": "2026-08-01",
+    "date_from": "2026-08-01",
+    "date_to": "2026-08-01",
+    "query": "health related news",
+    "category_filter": "Health",
+    "analysis_type": "issue_summary"
   },
   "include_secondary_hybrid_search": false
 }
 """
+
 
 
 _KNOWN_BRANDS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -526,11 +545,12 @@ class QueryPlanner:
 
         is_cloud_request = bool(
             primary
-            and getattr(primary, "provider_name", "") in {"openrouter", "gemini", "groq", "openai"}
-        ) or (model_override and any(p in model_override for p in ["openrouter", "gemini", "groq", "openai"]))
+            and getattr(primary, "provider_name", "") in {"openrouter", "gemini", "groq", "openai", "nvidia"}
+        ) or (model_override and any(p in model_override for p in ["openrouter", "gemini", "groq", "openai", "nvidia"]))
 
         if is_cloud_request:
             failover_keys = [
+                "nvidia_nemotron",
                 "openrouter_nemotron",
                 "openrouter_gemma4_26b",
                 "gemini_flash",
@@ -542,6 +562,7 @@ class QueryPlanner:
             ]
         else:
             failover_keys = [
+                "nvidia_nemotron",
                 "ollama_llama3",
                 "ollama_deepseek",
                 "openrouter_nemotron",
@@ -728,6 +749,29 @@ class QueryPlanner:
         if extracted_params.get("category_filter") and not args.category_filter:
             args.category_filter = extracted_params["category_filter"]
 
+        # Sanitization: Detect if LLM emitted a generic filler query (e.g. copied from few-shot examples)
+        generic_fillers = {
+            "newspaper coverage comparison",
+            "coverage comparison",
+            "coverage analysis",
+            "newspaper comparison",
+            "compare newspapers",
+            "all available newspapers",
+            "all newspaper",
+            "cross newspaper comparison",
+            "cross-edition frontpage and lead story comparison",
+        }
+        if args.query and args.query.strip().lower() in generic_fillers:
+            if args.category_filter:
+                args.query = f"{args.category_filter.lower()} related news"
+            else:
+                clean_q = re.sub(
+                    r"(?i)^(?:compare|summarize|list|show)\s+(?:all\s+)?(?:the\s+)?(?:available\s+)?newspapers?\s+(?:dated\s+[\d\/\-]+)?\s*(?:on|about|regarding)?\s*",
+                    "",
+                    query,
+                ).strip()
+                args.query = clean_q if clean_q else query
+
         # Hallucination Guardrails:
         # 1. Page filter: Only permit page_filter if the page number was explicitly in query
         if args.page_filter is not None:
@@ -824,7 +868,7 @@ class QueryPlanner:
                 ],
             )
 
-        if plan_obj.primary_tool == "sql_analytics" or is_single_brand_multi_issue:
+        if (plan_obj.primary_tool == "sql_analytics" and plan_obj.archetype != "cross_newspaper_comparison") or is_single_brand_multi_issue:
             if is_single_brand_multi_issue and plan_obj.primary_tool == "coverage_analysis":
                 plan_obj.primary_tool = "sql_analytics"
                 # Schedule targeted SQL summaries for the requested dates of that newspaper
@@ -921,7 +965,7 @@ class QueryPlanner:
                 )
             )
 
-        elif plan_obj.primary_tool == "coverage_analysis":
+        elif plan_obj.primary_tool == "coverage_analysis" or plan_obj.archetype == "cross_newspaper_comparison":
             is_two_paper_compare = bool(args.newspaper_name and args.comparison_newspaper)
             is_differential = bool(
                 extracted_params.get("is_differential")
@@ -1014,11 +1058,19 @@ class QueryPlanner:
                 )
             )
             # Schedule coverage_analysis when requested as primary tool, for all-newspaper date comparisons, or explicit negative audit
+            has_explicit_audit_intent = any(
+                w in query.lower()
+                for w in [
+                    "omission", "miss", "missed", "omitted", "exclusive", "gap", "absent",
+                    "fail to report", "coverage matrix", "coverage reconciliation",
+                ]
+            )
+            has_domain_filter = bool(args.category_filter)
             needs_negative_audit = (
-                plan_obj.primary_tool == "coverage_analysis"
-                or is_differential
-                or is_all_newspaper_date_compare
-                or any(w in query.lower() for w in ["omission", "miss", "missed", "omitted", "exclusive", "gap", "absent", "fail to report", "all available", "coverage comparison", "coverage matrix"])
+                is_differential
+                or has_explicit_audit_intent
+                or (plan_obj.primary_tool == "coverage_analysis" and not has_domain_filter)
+                or (is_all_newspaper_date_compare and not has_domain_filter and any(w in query.lower() for w in ["coverage comparison", "coverage audit", "coverage matrix"]))
             )
             if needs_negative_audit:
                 cov_args: dict[str, Any] = {"query": args.query or query}

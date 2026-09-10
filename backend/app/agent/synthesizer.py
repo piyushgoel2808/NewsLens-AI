@@ -245,11 +245,12 @@ class AnswerSynthesizer:
         # 2. Resilient failover sequence from active registry
         is_cloud_request = bool(
             primary
-            and getattr(primary, "provider_name", "") in {"openrouter", "gemini", "groq", "openai"}
-        ) or (model_override and any(p in model_override for p in ["openrouter", "gemini", "groq", "openai"]))
+            and getattr(primary, "provider_name", "") in {"openrouter", "gemini", "groq", "openai", "nvidia"}
+        ) or (model_override and any(p in model_override for p in ["openrouter", "gemini", "groq", "openai", "nvidia"]))
 
         if is_cloud_request:
             failover_keys = [
+                "nvidia_nemotron",
                 "openrouter_nemotron",
                 "openrouter_gemma4_26b",
                 "gemini_flash",
@@ -261,6 +262,7 @@ class AnswerSynthesizer:
             ]
         else:
             failover_keys = [
+                "nvidia_nemotron",
                 "ollama_llama3",
                 "ollama_deepseek",
                 "openrouter_nemotron",
@@ -290,9 +292,32 @@ class AnswerSynthesizer:
         context_blocks: list[str] = []
         domain_name = _detect_domain_from_query(query, evidence_items) if query else None
         if domain_name and evidence_items:
-            domain_terms = [
-                "econom", "financ", "business", "market", "trade", "tax", "solar", "power", "seabed", "fund", "money"
-            ] if "econom" in domain_name.lower() else [domain_name.lower()]
+            domain_stem_map: dict[str, list[str]] = {
+                "Economics & Finance": [
+                    "econom", "financ", "business", "market", "trade", "tax", "solar",
+                    "power", "seabed", "fund", "money", "bank", "stock", "rupee", "dollar", "gdp"
+                ],
+                "Health & Medicine": [
+                    "health", "hospital", "pharma", "medicine", "doctor", "patient",
+                    "disease", "vaccin", "virus", "treatment", "care", "clinic", "surgery", "drug", "medical"
+                ],
+                "Sports": [
+                    "sport", "cricket", "football", "tennis", "olympic", "tournament", "match", "boxing", "player", "game"
+                ],
+                "Politics & Governance": [
+                    "politic", "election", "parliament", "assembly", "minister", "cabinet", "governance", "policy", "bill", "party", "vote"
+                ],
+                "Crime & Law": [
+                    "crime", "court", "legal", "law", "police", "arrest", "investigation", "verdict", "bail", "judge", "jail"
+                ],
+                "Technology & AI": [
+                    "tech", "technology", "ai", "artificial intelligence", "cyber", "software", "digital", "chip"
+                ],
+            }
+            domain_terms = domain_stem_map.get(
+                domain_name,
+                [w.lower() for w in re.findall(r"\b\w{3,}\b", domain_name.lower()) if w.lower() not in {"and", "the", "for"}]
+            )
 
             def _domain_score(it: dict[str, Any]) -> int:
                 t = (it.get("headline", "") + " " + it.get("snippet", "") + " " + it.get("summary", "")).lower()
@@ -309,6 +334,7 @@ class AnswerSynthesizer:
 
         seen_keys: set[str] = set()
 
+        from app.retrieval.sanitizer import repair_text_ligatures
         from app.retrieval.sql_analytics import sanitize_headline
 
         for item in budgeted_items:
@@ -317,8 +343,15 @@ class AnswerSynthesizer:
             sub_hl = item.get("subheadline")
             byline = item.get("byline_author")
             snip = item.get("snippet") or item.get("summary") or item.get("full_text") or ""
-            hl, _ = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
-            text = (item.get("snippet") or item.get("full_text") or item.get("summary") or "").strip()
+            hl, eff_byline = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
+            hl = repair_text_ligatures(hl)
+            item["headline"] = hl
+            if eff_byline:
+                item["byline_author"] = eff_byline
+
+            raw_text = (item.get("snippet") or item.get("full_text") or item.get("summary") or "").strip()
+            text = repair_text_ligatures(raw_text)
+            item["snippet"] = text
 
             # Deduplication key across items
             dedup_key = f"{hl.lower().strip()}_{text[:80].lower().strip()}"
@@ -817,7 +850,7 @@ ANTI-REPETITION CONSTRAINT:
                 )
 
         # Fallback if all providers fail
-        answer_text = self._generate_deterministic_summary(query, evidence_items)
+        answer_text = self._generate_deterministic_summary(query, evidence_items, archetype=archetype)
         return answer_text, citations, cost_usd
 
     async def synthesize_stream(
@@ -895,19 +928,50 @@ ANTI-REPETITION CONSTRAINT:
         if not self._has_valid_evidence(evidence_items):
             return EMPTY_EVIDENCE_RESPONSE
 
-        # Filter out obvious noise items if other items have keyword overlap
-        query_words = {w.lower() for w in query.split() if len(w) > 3}
-        relevant_items = []
+        # Sanitize all evidence headlines and repair font ligatures
+        from app.retrieval.sanitizer import repair_text_ligatures
+        from app.retrieval.sql_analytics import sanitize_headline
+
         for item in evidence_items:
-            text_corpus = (
-                item.get("headline", "")
-                + " "
-                + item.get("snippet", "")
-                + " "
-                + item.get("summary", "")
-            ).lower()
-            if not query_words or any(qw in text_corpus for qw in query_words):
-                relevant_items.append(item)
+            raw_hl = item.get("headline", "Untitled Article")
+            sub_hl = item.get("subheadline")
+            byline = item.get("byline_author")
+            snip = item.get("snippet") or item.get("summary") or item.get("full_text") or ""
+            hl, eff_byline = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
+            hl = repair_text_ligatures(hl)
+            item["headline"] = hl
+            if eff_byline:
+                item["byline_author"] = eff_byline
+            if item.get("snippet"):
+                item["snippet"] = repair_text_ligatures(item["snippet"])
+
+        domain = _detect_domain_from_query(query, evidence_items)
+        query_words = {w.lower() for w in query.split() if len(w) > 3}
+        if domain:
+            domain_stem_map = {
+                "Economics & Finance": ["econom", "financ", "business", "market", "trade", "tax", "solar", "fund", "money", "bank", "stock", "gdp", "rupee"],
+                "Health & Medicine": ["health", "hospital", "pharma", "medicine", "doctor", "patient", "disease", "vaccin", "drug", "care", "clinic", "surgery", "medical"],
+                "Sports": ["sport", "cricket", "football", "tennis", "olympic", "match", "boxing"],
+                "Politics & Governance": ["politic", "election", "parliament", "minister", "cabinet", "policy", "bill", "party"],
+                "Crime & Law": ["crime", "court", "legal", "law", "police", "arrest", "verdict", "bail", "judge"],
+                "Technology & AI": ["tech", "ai", "cyber", "software", "digital", "chip"],
+            }
+            query_words.update(domain_stem_map.get(domain, []))
+
+        if archetype == "cross_newspaper_comparison":
+            relevant_items = evidence_items
+        else:
+            relevant_items = []
+            for item in evidence_items:
+                text_corpus = (
+                    item.get("headline", "")
+                    + " "
+                    + item.get("snippet", "")
+                    + " "
+                    + item.get("summary", "")
+                ).lower()
+                if not query_words or any(qw in text_corpus for qw in query_words):
+                    relevant_items.append(item)
 
         filtered_evidence = relevant_items if relevant_items else evidence_items
         first = filtered_evidence[0]
@@ -970,6 +1034,7 @@ ANTI-REPETITION CONSTRAINT:
             snip = item.get("snippet") or item.get("summary") or ""
             clean_snip = re.sub(r"\[Newspaper:.*?\]", "", snip).strip()
             clean_snip = re.sub(r"\[Page\(s\):.*?\]", "", clean_snip).strip()
+            clean_snip = repair_text_ligatures(clean_snip)
             lines.append(
                 f'- **{hl}**: {clean_snip[:180]}... [{np_name}, {dt}, {page_str}, "{hl}"]'
             )

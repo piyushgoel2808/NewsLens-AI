@@ -175,12 +175,15 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
     5. `negative_coverage_audit` (verifying what a publication did NOT report)
     6. `macro_summary` (broad overview of an edition)
     7. `article_catalog` (ultra-fast listing and catalog manifest generation for specific dates and categories)
-  - **Live Archive Grounding**: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories so it selects lean, non-hallucinated tool sequences.
+  - Live Archive Grounding: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories so it selects lean, non-hallucinated tool sequences.
+  - **Query Preservation & Generic Filler Sanitization**: In `_build_plan_from_structured_model()`, prevents few-shot prompt contamination (e.g. copying `"newspaper coverage comparison"`) by detecting generic filler phrases and restoring substantive user domain queries (e.g. `"health related news"`).
+  - **Minimal Sufficient Tool Scheduling**: Enforces conditional `coverage_analysis` (only dispatched when explicit omission/gap keywords are present or cross-issue comparison requires negative audit), avoiding 25s of unconstrained clustering overhead on domain-filtered date queries.
+  - **High-Throughput Cloud Failover**: Prioritizes `nvidia_nemotron` (<1s hosted inference with streaming reasoning) on cloud failover routes.
   - Employs typo-tolerant regex parameter extraction for newspaper names (e.g. "he Morning Standard" $\to$ "The Morning Standard") and publication dates.
   - Produces structured Chain-of-Thought reasoning traces and deterministically schedules 1 to 4 complementary tool calls (`sql_analytics`, `hybrid_search`, `entity_search`, `timeline_builder`, `coverage_analysis`, `web_search`).
   - Includes `_plan_query_heuristic()` for instantaneous zero-latency local fallback if LLM generation encounters timeouts.
 * **Important Tools / Frameworks**: Pydantic v2 schemas, Structured Outputs (`response_schema`), Regular Expressions.
-* **LLM / VLM / Embedding Models**: `ollama_gemma4_12b` (Ollama), `groq_llama` (Groq), or `gemini_flash` (Gemini).
+* **LLM / VLM / Embedding Models**: `nvidia_nemotron` (NVIDIA NIM), `ollama_gemma4_12b` (Ollama), `groq_llama` (Groq), or `gemini_flash` (Gemini).
 
 ##### [`backend/app/agent/state.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/state.py)
 * **What It Has**: `AgentState` TypedDict, `EvidenceItem` dataclass, `AgentCitation` dataclass.
@@ -213,7 +216,9 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Work It Is Doing**:
   - Generates authoritative, highly readable executive intelligence briefs.
   - **Domain-Adaptive Synthesis**: Dynamically adapts comparison table structures based on topic domain (`Key Findings & Medical Focus` for health, `Key Figures & Metrics` for finance, `Key Policy Decisions & Statements` for politics) and outputs dedicated table manifests for `article_catalog` queries.
-  - **Headline Cleansing Integration**: Sanitizes author/doctor byline boxes into descriptive feature labels while protecting real all-caps news headlines.
+  - **Archetype Preservation in Fallbacks**: Passes explicit `archetype` to `_generate_deterministic_summary()`, ensuring cross-newspaper comparisons preserve multi-edition publication tables without dropping scheduled editions or degrading into single-paper templates.
+  - **Granular Domain Stem Budgeting**: Maps composite domain labels (e.g. `Health & Medicine`) to granular search token stems (`["health", "hospital", "pharma", "medicine", "doctor", ...]`), ensuring health articles receive top relevance ranking in evidence budget limits.
+  - **Headline Cleansing & OCR Font Ligature Repair Integration**: Sanitizes author/doctor byline boxes into descriptive feature labels while protecting real all-caps news headlines, and runs `repair_text_ligatures()` across all evidence and headlines.
   - **Evidence Context Budgeting**: Slices evidence to Top 12 items and enforces context caps (up to 4,000 characters for manifests/matrices, 1,200 characters for standard articles).
   - **Critical Publication Scoping Barrier**: Injects explicit constraints listing verified available publications, forbidding the model from hallucinating or citing absent newspapers.
   - **Reasoning Stream Parsing**: Separates model reasoning traces (`<think>...</think>` or `<thought>...</thought>`) from the final response text.
@@ -665,7 +670,15 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 #### Files in `backend/app/retrieval/`:
 
 ##### [`backend/app/retrieval/__init__.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/__init__.py)
-* **What It Has**: Package initialization, re-exports for `HybridSearchEngine`, `SQLAnalyticsEngine`, `CoverageAnalyzer`, `TimelineBuilder`, `EntitySearchEngine`, `CrossEncoderReranker`.
+* **What It Has**: Package initialization, re-exports for `HybridSearchEngine`, `SQLAnalyticsEngine`, `CoverageAnalyzer`, `TimelineBuilder`, `EntitySearchEngine`, `CrossEncoderReranker`, and `repair_text_ligatures`.
+
+##### [`backend/app/retrieval/sanitizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/sanitizer.py)
+* **What It Has**: `repair_text_ligatures()`, `_LIGATURE_REPLACEMENTS`, `_REGEX_LIGATURE_REPAIRS`.
+* **Work It Is Doing**:
+  - Decomposes typographic Unicode ligatures (`\ufb00` = `ff`, `\ufb01` = `fi`, `\ufb02` = `fl`, `\ufb03` = `ffi`, `\ufb04` = `ffl`, `\ufb05` = `ft`, `\ufb06` = `st`).
+  - Repairs broadsheet OCR font dropout patterns where ligature glyphs were dropped or mapped to replacement characters or multiple spaces (e.g. `e \ufffd orts` / `e   orts` $\to$ `efforts`, `in \ufffd ation` $\to$ `inflation`, `di \ufffd erent` $\to$ `different`, `sta\ufffd` $\to$ `staff`, `o\ufffd cial` $\to$ `official`).
+* **Important Tools / Frameworks**: Regular Expressions (`re`).
+* **LLM / VLM / Embedding Models**: None (Deterministic Typographic Text Repair).
 
 ##### [`backend/app/retrieval/hybrid_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/hybrid_search.py)
 * **What It Has**: `HybridSearchEngine` class, `SearchFilter`, `HybridSearchResult`.

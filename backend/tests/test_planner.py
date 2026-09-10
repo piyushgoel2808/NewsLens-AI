@@ -429,6 +429,73 @@ class TestAgentWorkflowToolExecution:
         assert params2["source_newspaper"] == "The Goan"
         assert "comparison_newspaper" not in params2
 
+    def test_cross_newspaper_domain_comparison_preserves_topic(self) -> None:
+        """Verify cross-newspaper domain comparisons preserve query topic and avoid heavy coverage analysis."""
+        from app.agent.planner import ExtractedToolArguments, QueryPlan, QueryPlanner
+
+        planner = QueryPlanner()
+        q = "COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news"
+        raw_plan = QueryPlan(
+            thought_process="Cross newspaper comparison on health",
+            archetype="cross_newspaper_comparison",
+            primary_tool="sql_analytics",
+            arguments=ExtractedToolArguments(
+                issue_date="2026-08-01",
+                query="health related news",
+                category_filter="Health",
+                analysis_type="issue_summary",
+            ),
+            include_secondary_hybrid_search=False,
+        )
+
+        plan = planner._build_plan_from_structured_model(q, raw_plan)
+        assert plan.archetype == "cross_newspaper_comparison"
+
+        # Verify SQL analytics is scheduled for all newspapers with Health category
+        sql_tool = next((t for t in plan.tool_calls if t.tool_name == "sql_analytics"), None)
+        assert sql_tool is not None
+        assert sql_tool.arguments.get("issue_date") == "2026-08-01"
+        assert sql_tool.arguments.get("category_filter") == "Health"
+        assert sql_tool.arguments.get("newspaper_name") is None  # all newspapers
+
+        # Verify hybrid search is scheduled with Health category filter
+        hs_tool = next((t for t in plan.tool_calls if t.tool_name == "hybrid_search"), None)
+        assert hs_tool is not None
+        assert hs_tool.arguments.get("category_filter") == "Health"
+        assert hs_tool.arguments.get("query") == "health related news"
+
+        # Verify coverage_analysis is NOT scheduled for domain-filtered comparison without explicit audit
+        cov_tool = next((t for t in plan.tool_calls if t.tool_name == "coverage_analysis"), None)
+        assert cov_tool is None, "Coverage analysis should NOT be scheduled when domain filter is present!"
+
+    def test_generic_filler_query_sanitized_to_domain_topic(self) -> None:
+        """Verify filler queries like 'newspaper coverage comparison' are cleaned to domain topics."""
+        from app.agent.planner import ExtractedToolArguments, QueryPlan, QueryPlanner
+
+        planner = QueryPlanner()
+        q = "COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news"
+        # Simulate LLM copying Example 9 filler query
+        raw_plan = QueryPlan(
+            thought_process="Copied example 9 filler query",
+            archetype="cross_newspaper_comparison",
+            primary_tool="coverage_analysis",
+            arguments=ExtractedToolArguments(
+                issue_date="2026-08-01",
+                query="newspaper coverage comparison",
+                category_filter="Health",
+            ),
+            include_secondary_hybrid_search=False,
+        )
+
+        plan = planner._build_plan_from_structured_model(q, raw_plan)
+
+        # args.query should be automatically cleaned to health related news
+        hs_tool = next((t for t in plan.tool_calls if t.tool_name == "hybrid_search"), None)
+        assert hs_tool is not None
+        assert "health" in hs_tool.arguments.get("query", "").lower()
+        assert hs_tool.arguments.get("query") != "newspaper coverage comparison"
+
+
 
 
 
