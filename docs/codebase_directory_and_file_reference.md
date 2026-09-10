@@ -160,15 +160,39 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Important Tools / Frameworks**: Python AsyncIO, Regular Expressions (`re`), Pydantic.
 * **LLM / VLM / Embedding Models**: Invokes the configured `query_planner` LLM (e.g. `gemma4:12b`, `llama3.1:8b`, or `gpt-4o-mini`).
 
+##### [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)
+* **What It Has**: 
+  - Domain Data Models: `ToolName`, `QueryArchetype`, `PlannedToolCall`, `PlanResult`, `ToolCallSpec`, `AgentPlan`.
+  - Backward compatibility aliases and containers: `QueryPlan`, `ExtractedToolArguments`.
+* **Work It Is Doing**:
+  - Defines the core type-safe schema contracts for agentic query planning and tool execution.
+  - Decouples Pydantic models and dataclasses from orchestration logic for zero-dependency reuse across retrieval and graph nodes.
+
+##### [`backend/app/agent/extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py)
+* **What It Has**: 
+  - Regex patterns: `_KNOWN_BRANDS_PATTERNS`, `_SECTION_PATTERNS`.
+  - Core functions: `extract_parameters_from_query()`, `build_targeted_web_query()`, `_build_targeted_web_query`.
+* **Work It Is Doing**:
+  - **Named Entity Recognition (NER) & Parameter Extraction**: Deterministically extracts publication brands, publication dates (ISO, DMY, and named months), issue IDs, page filters, and categories from natural language queries.
+  - **Brand-Masked Categorization**: Masks brand tokens to prevent brand names (e.g. "The Economic Times") from falsely triggering section categories (e.g. "Economy & Policy").
+  - **Conversational Prefix Stripping**: Cleans user queries for high-precision search.
+
+##### [`backend/app/agent/tool_factory.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_factory.py)
+* **What It Has**: 
+  - Canonical Tool Builders: `build_sql_summary_tool()`, `build_sql_difference_tool()`, `build_sql_coverage_comparison_tool()`, `build_hybrid_search_tool()`, `build_coverage_analysis_tool()`, `build_timeline_tool()`, `build_entity_search_tool()`, `build_web_search_tool()`.
+  - Reconcilers: `reconcile_and_sanitize_arguments()`, `sanitize_generic_filler_query()`.
+* **Work It Is Doing**:
+  - **Single Source of Truth for Tool Construction**: Centralizes the generation of `PlannedToolCall` objects with clean parameter filtering.
+  - **Hallucination Pruner**: Checks LLM-generated arguments against query ground truth and prunes hallucinated brand names, dates, or page numbers.
+  - **Filler Sanitization**: Detects few-shot prompt contamination and restores substantive user domain queries.
+
 ##### [`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)
 * **What It Has**: 
-  - Data models: `PlanResult`, `PlannedToolCall`, `ToolCallSpec`, `AgentPlan` (with `QueryPlan` and `ExtractedToolArguments` aliases for backward compatibility).
-  - `QueryPlanner` class with true direct tool calling and deterministic fallback.
-  - Core functions: `resolve_tool_sequence()` (backward-compatible delegate), `extract_parameters_from_query()`.
-  - Methods: `plan_query_async()`, `plan_query()`, `classify_archetype()`, `_plan_query_heuristic()`, `_build_plan_from_structured_model()`.
-  - Lean `PLANNER_SYSTEM_PROMPT` with 3 canonical few-shot examples illustrating direct tool call generation.
+  - `QueryPlanner` class coordinating direct tool planning and fallback.
+  - Re-exports of `models`, `extractor`, and `tool_factory` symbols via `__all__` for 100% backward compatibility.
+  - Lean `PLANNER_SYSTEM_PROMPT` with 3 canonical few-shot examples.
 * **Work It Is Doing**:
-  - **True Agentic Direct Tool Planning (Option 2)**: Directly prompts LLMs to schedule ordered tool calls (`[ToolCallSpec(tool_name, arguments, purpose)]`) inside `AgentPlan`, eliminating procedural indirection and boolean soup.
+  - **True Agentic Direct Tool Planning (Option 2)**: Directly prompts LLMs to schedule ordered tool calls (`[ToolCallSpec(tool_name, arguments, purpose)]`) inside `AgentPlan`.
   - **Lean Deterministic Heuristic Router**: Clean single-pass intent classifier mapping queries to 6 core archetypes:
     1. `thematic_timeline` (chronological progression across multiple dates)
     2. `entity_deep_dive` (multi-hop entity network search and profiling)
@@ -176,14 +200,9 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
     4. `quantitative_trend` (article counts, topic distributions, page-level article manifests, full issue overviews)
     5. `article_catalog` (fast listing and catalog manifest generation for specific dates/sections)
     6. `factual_lookup` (targeted semantic + keyword search for point-in-time facts and quotes)
-  - **Transparent Legacy Adapter**: Translates older mock objects and test fixtures (`QueryPlan`, `primary_tool`, `ExtractedToolArguments`) to direct tool calls with ground-truth parameter reconciliation.
-  - **Ground-Truth Reconciliation & Hallucination Pruning**: Extracted query parameters (brand names, issue IDs, dates, page numbers) override any LLM hallucinations.
+  - **Transparent Legacy Adapter**: Translates older mock objects and test fixtures (`QueryPlan`, `primary_tool`, `ExtractedToolArguments`) to direct tool calls via `tool_factory`.
   - **Live Archive Grounding**: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories.
-  - **Query Preservation & Generic Filler Sanitization**: In `_build_plan_from_structured_model()`, detects generic filler phrases and restores substantive user domain queries.
   - **High-Throughput Cloud Failover**: Prioritizes `nvidia_nemotron` (<1s hosted inference with streaming reasoning) on cloud failover routes.
-  - Employs typo-tolerant regex parameter extraction for newspaper names (e.g. "he Morning Standard" $\to$ "The Morning Standard") and publication dates.
-  - Produces structured Chain-of-Thought reasoning traces and deterministically schedules 1 to 4 complementary tool calls (`sql_analytics`, `hybrid_search`, `entity_search`, `timeline_builder`, `coverage_analysis`, `web_search`).
-  - Includes `_plan_query_heuristic()` for instantaneous zero-latency local fallback if LLM generation encounters timeouts.
 * **Important Tools / Frameworks**: Pydantic v2 schemas, Structured Outputs (`response_schema`), Regular Expressions.
 * **LLM / VLM / Embedding Models**: `nvidia_nemotron` (NVIDIA NIM), `ollama_gemma4_12b` (Ollama), `groq_llama` (Groq), or `gemini_flash` (Gemini).
 

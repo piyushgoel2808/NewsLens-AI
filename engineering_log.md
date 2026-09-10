@@ -2705,6 +2705,37 @@ Comprehensive architectural audit of `backend/app/agent/planner.py` (previously 
 - Static Type Checking: `mypy app/agent/planner.py` $\to$ **Success: no issues found in 1 source file**.
 - Linter: `ruff check app/agent/planner.py` $\to$ **All checks passed!**
 
+---
+
+## Phase 9.23 — Enterprise Clean Architecture & Modular Decoupling for Query Planning
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Architectural Smells
+1. **Conflated Responsibilities in `planner.py`**: Prior to this refactoring, `planner.py` combined Named Entity Recognition (NER), brand and section regex dictionaries, date parsing, web search query rewriting, domain data models, tool call dictionary building, parameter reconciliation, and LLM planning orchestration all in one file.
+2. **Duplicated Tool Call Dictionary Building (DRY violation)**: `PlannedToolCall` invocations for `sql_analytics`, `hybrid_search`, and `coverage_analysis` were constructed inline with dictionary literals in over 15 locations across `_build_plan_from_structured_model` and `_plan_query_heuristic`.
+3. **Duplicated Argument Reconciler & Hallucination Pruner**: Parameter reconciliation (checking brand names, dates, and page filters against query ground truth) was copy-pasted across both direct tool calls and legacy adapter paths.
+
+### Architectural Solutions & Implementations
+1. **Extracted Dedicated Domain Models (`backend/app/agent/models.py`)**:
+   - Isolated `ToolCallSpec`, `AgentPlan`, `PlannedToolCall`, `PlanResult`, `ExtractedToolArguments`, `QueryPlan`, `ToolName`, and `QueryArchetype` into a clean, zero-dependency model module.
+2. **Extracted Dedicated NER & Parameter Extractor (`backend/app/agent/extractor.py`)**:
+   - Decoupled `_KNOWN_BRANDS_PATTERNS`, `_SECTION_PATTERNS`, `extract_parameters_from_query()`, and `build_targeted_web_query()` into an isolated, single-responsibility module.
+3. **Canonical Tool Factory & Parameter Reconciler (`backend/app/agent/tool_factory.py`)**:
+   - Created reusable builder functions (`build_sql_summary_tool`, `build_sql_difference_tool`, `build_sql_coverage_comparison_tool`, `build_hybrid_search_tool`, `build_coverage_analysis_tool`, `build_timeline_tool`, `build_entity_search_tool`, `build_web_search_tool`).
+   - Centralized hallucination pruning and parameter ground truth reconciliation in `reconcile_and_sanitize_arguments()` and generic filler query sanitization in `sanitize_generic_filler_query()`.
+4. **Lean, High-Cohesion QueryPlanner (`backend/app/agent/planner.py`)**:
+   - Reduced `planner.py` to a lean coordinator focused entirely on LLM orchestration, prompt dispatch, and fallback heuristic planning.
+   - Guaranteed 100% backward compatibility via `__all__` re-exports for all legacy imports and tests.
+
+### Test Verification & Quality Gates
+- `backend/tests/test_planner.py`: **24/24 tests passing (100% green)**
+- `backend/tests/test_condenser.py`: **5/5 tests passing (100% green)**
+- **Full Backend Regression Suite**: **395/395 tests passing (100% green)** in 24.22s.
+- Static Type Checking: `mypy app/agent/planner.py app/agent/extractor.py app/agent/models.py app/agent/tool_factory.py` $\to$ **Success: no issues found in 4 source files**.
+- Linter: `ruff check app/agent/planner.py app/agent/extractor.py app/agent/models.py app/agent/tool_factory.py` $\to$ **All checks passed!**
+
 
 
 
