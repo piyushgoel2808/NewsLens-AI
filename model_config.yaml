@@ -124,13 +124,13 @@ providers:
     supports_vision: true
     supports_tool_use: false
 task_bindings:
-  layout_analysis: google_cloud_vision
-  document_parser: google_cloud_vision
-  ocr: google_cloud_vision
+  layout_analysis: docling_parser
+  document_parser: docling_parser
+  ocr: docling_parser
   embedding: local_embed_bge
-  query_planner: openrouter_gemma4_26b
-  answerer: openrouter_gemma4_26b
-  metadata_extraction: openrouter_gemma4_26b
-  classification: openrouter_gemma4_26b
-  article_segmentation: openrouter_gemma4_26b
-  visual_extraction: openrouter_gemma4_26b
+  query_planner: nvidia_nemotron
+  answerer: nvidia_nemotron
+  metadata_extraction: ollama_llama3
+  classification: ollama_llama3
+  article_segmentation: ollama_deepseek
+  visual_extraction: ollama_qwen3vl
