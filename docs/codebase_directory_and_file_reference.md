@@ -214,19 +214,38 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Important Tools / Frameworks**: Python `typing.TypedDict`, `typing.Annotated`, Pydantic models.
 * **LLM / VLM / Embedding Models**: None (State Definition).
 
+##### [`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)
+* **What It Has**: `ToolExecutor` class, presentation formatting helpers (`format_issue_manifest()`, `format_coverage_matrix_snippet()`, `format_coverage_difference_snippet()`).
+* **Work It Is Doing**:
+  - Encapsulates isolated, concurrent tool dispatch for all planned tool calls (`hybrid_search`, `sql_analytics`, `entity_search`, `web_search`) via `asyncio.gather(*tasks, return_exceptions=True)`.
+  - **Zero Dynamic Imports**: Eliminates Python import-lock contention (`_ModuleLock`) during high-concurrency coroutine execution.
+  - **Single-Source Formatters**: Unifies relational SQL manifests and coverage matrix text representations to ensure clean separation of concerns.
+  - **Date Normalization & Zero-Hit Fallback**: Normalizes non-ISO dates and transparently falls back when category constraints yield zero hits.
+* **Important Tools / Frameworks**: Python AsyncIO, SQLAlchemy Async Engine, Retrieval Engine Tools.
+* **LLM / VLM / Embedding Models**: None (Execution Tier).
+
+##### [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)
+* **What It Has**: `EvidenceEvaluator` class, `_stem()`, `_stem_phrase()`, `is_structural_or_relevant_evidence()`.
+* **Work It Is Doing**:
+  - Encapsulates Corrective RAG (CRAG) grading, noise filtering, and corrective fallback decisions.
+  - **Semantic Hit Protection**: Protects high-confidence dense vector hits (`prominence_score >= 0.65`) from naive token stem pruning when lexical stems don't match conceptually similar queries (e.g., "pharmaceuticals" $\to$ "drugs"/"vaccines").
+  - **Structural Archetype Protection**: Safeguards macro manifests and cross-newspaper comparison tables with 1.0 relevance scores.
+  - **Corrective Fallback Routing**: Determines when retrieval results are insufficient, triggering secondary fallback tools.
+* **Important Tools / Frameworks**: Deterministic Stemming, Vector Hit Safeguards, CRAG Rules.
+* **LLM / VLM / Embedding Models**: Deterministic algorithms.
+
 ##### [`backend/app/agent/graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py)
 * **What It Has**: 
   - `AgentGraph` class.
-  - LangGraph node implementations: `_plan_query_node()`, `_execute_tools_node()`, `_evaluate_evidence_node()`, `_synthesize_answer_node()`, `_corrective_fallback_node()`.
-  - Workflow graph compilation with conditional edges.
+  - State machine compilation using LangGraph `StateGraph`.
+  - Lean node handlers (`_classify_and_plan_node()`, `_execute_tools_node()`, `_evaluate_evidence_node()`, `_synthesize_answer_node()`, `_corrective_fallback_node()`, `_log_query_node()`).
+  - Native LangGraph conditional edge router: `_route_after_planning()`.
 * **Work It Is Doing**:
-  - Orchestrates the state machine workflow: Plan $\to$ Execute Tools $\to$ Evaluate Evidence (CRAG) $\to$ Synthesize Answer.
-  - **Concurrent Tool Execution**: Dispatches planned tool calls concurrently via `asyncio.gather(*tasks, return_exceptions=True)`, reducing multi-tool query latency by 40–60%.
-  - **Adaptive Zero-Hit Fallback**: In `_execute_single_tool`, if `hybrid_search` or `sql_analytics(issue_summary)` with a category filter returns 0 articles, automatically retries without the category constraint to prevent empty retrieval.
-  - **Corrective RAG (CRAG) Gate**: Scores evidence relevance against stemmed query tokens, strips irrelevant distractors, and triggers fallback searches (`entity_search` or `web_search`) if grounded evidence is empty.
-  - **Macro Manifest Protection**: Grants relational SQL manifests an automatic relevance score of $1.0$, guaranteeing that comprehensive exclusion lists and article counts are never pruned.
-* **Important Tools / Frameworks**: LangGraph, Python AsyncIO, SQLAlchemy Async Session Factory.
-* **LLM / VLM / Embedding Models**: Orchestrates planning and synthesis models; executes deterministic stemming algorithms.
+  - Orchestrates the full conversational RAG lifecycle in ~260 lines of clean code by delegating to `ToolExecutor` and `EvidenceEvaluator`.
+  - **Native Conditional Edge Routing**: Short-circuits directly from `classify_and_plan` to `log_query` (for `clarification_needed`) or to `synthesize_answer` (for `conversational_meta_query`), completely bypassing tool execution and CRAG evaluation.
+  - **Direct State Context Propagation**: Eliminates redundant history re-parsing in intermediate nodes by reading active issue context directly from `AgentState`.
+* **Important Tools / Frameworks**: LangGraph `StateGraph`, Python AsyncIO.
+* **LLM / VLM / Embedding Models**: Orchestrates planning and synthesis models.
 
 ##### [`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)
 * **What It Has**: 

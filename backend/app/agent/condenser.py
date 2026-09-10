@@ -65,10 +65,7 @@ def needs_condensation(query: str, chat_history: list[dict[str, Any]]) -> bool:
     if len(words) <= 6 and GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
         return True
 
-    if bool(AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean)):
-        return True
-
-    return False
+    return bool(AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean))
 
 
 def is_ambiguous_standalone_query(query: str, chat_history: list[dict[str, Any]]) -> bool:

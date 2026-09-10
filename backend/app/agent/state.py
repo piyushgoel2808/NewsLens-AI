@@ -47,7 +47,7 @@ class AgentState(TypedDict):
     user_id: str | None
     model_override: str | None
     enable_web_search: bool
-    web_search_results: list[dict[str, Any]]
+    web_search_results: list[dict[str, Any]]  # Maintained for API compatibility (web evidence is collected in evidence_items)
     active_issue_id: int | None
     active_newspaper_name: str | None
     active_issue_date: str | None

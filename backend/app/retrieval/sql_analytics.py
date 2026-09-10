@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.core.logging import get_logger
 from app.models.article import Article, ArticlePage
 from app.models.entity import ArticleEntity, ArticleTopic, Entity
-from app.models.newspaper import Issue
+from app.models.newspaper import Issue, Newspaper
 
 logger = get_logger(__name__)
 
@@ -98,17 +98,20 @@ def sanitize_headline(
 
     # 3. All-caps 2 or 3 word person name without verbs or news terms (e.g. 'UTHAMA SANKARANARAYANAN')
     words = hl.split()
-    if 2 <= len(words) <= 3 and hl.isupper() and all(w.isalpha() for w in words):
-        # If headline contains common news vocabulary, it's an all-caps headline, not a person name
-        if not any(w.lower() in _COMMON_HEADLINE_VOCAB for w in words):
-            if snip:
-                first_sent = re.split(r"[.\n]", snip)[0].strip()
-                if len(first_sent) > 15:
-                    topic = re.sub(r"^(?:A|The)\s+", "", first_sent, flags=re.IGNORECASE)
-                    topic = topic[:70].strip()
-                    eff_byline = f"{hl} / {byline}" if byline else hl
-                    return (f"{topic.capitalize()}", eff_byline)
-            return (f"Special Feature: {hl.title()}", byline or hl.title())
+    if (
+        2 <= len(words) <= 3
+        and hl.isupper()
+        and all(w.isalpha() for w in words)
+        and not any(w.lower() in _COMMON_HEADLINE_VOCAB for w in words)
+    ):
+        if snip:
+            first_sent = re.split(r"[.\n]", snip)[0].strip()
+            if len(first_sent) > 15:
+                topic = re.sub(r"^(?:A|The)\s+", "", first_sent, flags=re.IGNORECASE)
+                topic = topic[:70].strip()
+                eff_byline = f"{hl} / {byline}" if byline else hl
+                return (f"{topic.capitalize()}", eff_byline)
+        return (f"Special Feature: {hl.title()}", byline or hl.title())
 
     return (hl, byline)
 
@@ -289,9 +292,14 @@ class SQLAnalyticsEngine:
                 res = await db.execute(stmt)
                 issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
                 # If issue found, but newspaper_name was also specified and does not match:
-                if issue and newspaper_name and issue.newspaper:
-                    if newspaper_name.lower() not in issue.newspaper.name.lower() and issue.newspaper.name.lower() not in newspaper_name.lower():
-                        issue = None
+                if (
+                    issue
+                    and newspaper_name
+                    and issue.newspaper
+                    and newspaper_name.lower() not in issue.newspaper.name.lower()
+                    and issue.newspaper.name.lower() not in newspaper_name.lower()
+                ):
+                    issue = None
 
             # Fallback 1: Resolve by (newspaper_name, issue_date)
             if not issue and newspaper_name and issue_date:
@@ -413,7 +421,7 @@ class SQLAnalyticsEngine:
                     a.headline,
                     a.subheadline,
                     a.byline_author,
-                    a.full_text[:300] if getattr(a, "full_text", None) else None,
+                    (a.full_text[:300] if a.full_text else None),
                 )
 
                 manifest.append(
@@ -457,10 +465,7 @@ class SQLAnalyticsEngine:
                         (c for c in _CANONICAL_CATEGORIES if c.lower() in (cat_raw, resolved_cat)),
                         None,
                     )
-                    if canon_key:
-                        target_canons = [canon_key]
-                    else:
-                        target_canons = [cat_raw]
+                    target_canons = [canon_key] if canon_key else [cat_raw]
 
                 kw_cluster: list[str] = []
                 for c_name in target_canons:
@@ -692,4 +697,47 @@ class SQLAnalyticsEngine:
             "exclusive_articles": exclusive_articles,
             "shared_articles": shared_articles[:10],
         }
+
+    async def get_issues_by_date(self, issue_date: str) -> list[Issue]:
+        """Retrieve all newspaper issues for a given date with eager newspaper and page relationships."""
+        normalized_date = normalize_date_to_iso(issue_date) or issue_date
+        async with self._session_factory() as db:
+            stmt = (
+                select(Issue)
+                .where(Issue.issue_date == normalized_date)
+                .options(
+                    selectinload(Issue.newspaper),
+                    selectinload(Issue.pages),
+                )
+                .order_by(Issue.id)
+            )
+            res = await db.execute(stmt)
+            return list(res.scalars().all())
+
+    async def get_newspaper_id_by_name(self, newspaper_name: str) -> int | None:
+        """Resolve newspaper_name to primary key ID via case-insensitive lookup."""
+        if not newspaper_name:
+            return None
+        async with self._session_factory() as db:
+            stmt = select(Newspaper.id).where(Newspaper.name.ilike(f"%{newspaper_name.strip()}%")).limit(1)
+            res = await db.execute(stmt)
+            return res.scalar_one_or_none()
+
+
+def normalize_date_to_iso(date_str: str | None) -> str | None:
+    """Normalize user or parameter dates (YYYY-MM-DD, DD/MM/YYYY, D/M/YYYY) to ISO format."""
+    if not date_str:
+        return None
+    s = date_str.strip()
+    if re.match(r"^\d{4}-\d{1,2}-\d{1,2}$", s):
+        parts = s.split("-")
+        return f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+    m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", s)
+    if m:
+        day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if month > 12 and day <= 12:
+            day, month = month, day
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    return s
+
 

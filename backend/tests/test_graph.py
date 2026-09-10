@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.agent.graph import AgentWorkflow
+from app.agent.state import AgentState
 from app.providers.base import ModelResponse
 from app.retrieval.hybrid_search import HybridSearchResult
 
@@ -164,3 +166,104 @@ class TestAgentWorkflow:
         assert record["results_count"] == 1
         assert len(items) == 1
         assert items[0]["headline"] == "Unconstrained Result Found"
+
+    @pytest.mark.asyncio
+    async def test_crag_semantic_hit_protection(self) -> None:
+        """Verify CRAG evaluator preserves vector search hits (prominence >= 0.65) without lexical overlap."""
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+
+        # Query asks about 'pharmaceuticals', evidence contains 'vaccines' and 'drugs' (no stem match)
+        evidence = [
+            {
+                "article_id": 42,
+                "headline": "New Vaccine Distributed Across Clinics",
+                "snippet": "Health authorities released clinical supplies of essential drugs.",
+                "prominence_score": 0.85,
+                "source_tool": "hybrid_search",
+            },
+            {
+                "article_id": 99,
+                "headline": "Sports Match Rescheduled",
+                "snippet": "The tournament has been moved to next weekend due to rain.",
+                "prominence_score": 0.20,
+                "source_tool": "hybrid_search",
+            },
+        ]
+        state = {
+            "query": "Show me reports about pharmaceuticals",
+            "archetype": "factual_lookup",
+            "evidence_items": evidence,
+            "tool_executions": [],
+        }
+
+        res = await workflow._evaluate_and_fallback_node(state)  # type: ignore[arg-type]
+        filtered = res["evidence_items"]
+
+        # High-confidence vector hit (0.85) should be preserved despite 0 lexical token overlap
+        assert any(item["article_id"] == 42 for item in filtered)
+        # Irrelevant low-prominence hit (0.20) with no lexical overlap should be pruned
+        assert not any(item["article_id"] == 99 for item in filtered)
+
+    def test_conditional_edge_short_circuit_routing(self) -> None:
+        """Verify _route_after_planning correctly determines next node."""
+        # 1. Clarification needed skips to log_query
+        assert AgentWorkflow._route_after_planning(cast(AgentState, {"archetype": "clarification_needed"})) == "log_query"
+
+        # 2. Conversational meta query skips to synthesize_answer
+        assert AgentWorkflow._route_after_planning(cast(AgentState, {"archetype": "conversational_meta_query"})) == "synthesize_answer"
+
+        # 3. Empty plan skips to synthesize_answer
+        assert AgentWorkflow._route_after_planning(cast(AgentState, {"archetype": "factual_lookup", "plan": []})) == "synthesize_answer"
+
+        # 4. Standard plan routes to execute_tools
+        assert AgentWorkflow._route_after_planning(cast(AgentState, {
+            "archetype": "factual_lookup",
+            "plan": [{"tool_name": "hybrid_search", "arguments": {}}],
+        })) == "execute_tools"
+
+    def test_date_normalization_multi_issue(self) -> None:
+        """Verify normalize_date_to_iso handles slash dates and returns clean ISO format."""
+        from app.retrieval.sql_analytics import normalize_date_to_iso
+
+        assert normalize_date_to_iso("1/8/2026") == "2026-08-01"
+        assert normalize_date_to_iso("28/08/2026") == "2026-08-28"
+        assert normalize_date_to_iso("2026-08-01") == "2026-08-01"
+        assert normalize_date_to_iso(None) is None
+
+    def test_format_issue_manifest_deduplication(self) -> None:
+        """Verify format_issue_manifest generates structured broadsheet text."""
+        from app.agent.executor import format_issue_manifest
+
+        summary = {
+            "newspaper": "The Daily Star",
+            "issue_date": "2026-08-01",
+            "total_articles": 2,
+            "total_pages": 4,
+            "section_breakdown": {"Finance": 1, "Sports": 1},
+            "articles": [
+                {
+                    "headline": "MARKET HIGHS REACHED",
+                    "byline_author": "John Doe",
+                    "section": "Finance",
+                    "page_number": 1,
+                    "printed_page": "1",
+                    "word_count": 250,
+                },
+                {
+                    "headline": "LOCAL TEAM WINS",
+                    "byline_author": None,
+                    "section": "Sports",
+                    "page_number": 3,
+                    "printed_page": "3",
+                    "word_count": 180,
+                },
+            ],
+        }
+
+        manifest = format_issue_manifest(summary, category_filter="Finance")
+        assert "=== RELATIONAL ARCHIVE MANIFEST FOR The Daily Star (2026-08-01) - CATEGORY: Finance ===" in manifest
+        assert "Total Articles Ingested: 2" in manifest
+        assert "1. [Finance] \"MARKET HIGHS REACHED\" (Page 1 by John Doe, 250 words)" in manifest
+        assert "2. [Sports] \"LOCAL TEAM WINS\" (Page 3, 180 words)" in manifest
+

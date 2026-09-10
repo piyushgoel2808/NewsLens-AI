@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import re
 import time
 from typing import Any
 
@@ -17,16 +15,17 @@ from app.agent.condenser import (
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
 )
+from app.agent.evaluator import EvidenceEvaluator
+from app.agent.executor import ToolExecutor
 from app.agent.planner import QueryPlanner
 from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.synthesizer import AnswerSynthesizer
 from app.core.logging import get_logger
 from app.core.metrics import record_agent_query
-from app.models.newspaper import Issue, Newspaper
 from app.models.query import QueryLog
 from app.retrieval.coverage_analyzer import CoverageAnalyzer
 from app.retrieval.entity_filter import EntitySearchEngine
-from app.retrieval.hybrid_search import HybridSearchEngine, SearchFilter
+from app.retrieval.hybrid_search import HybridSearchEngine
 from app.retrieval.sql_analytics import SQLAnalyticsEngine
 from app.retrieval.timeline_builder import TimelineBuilder
 from app.retrieval.web_search import WebSearchEngine
@@ -53,6 +52,21 @@ class AgentWorkflow:
         self._web_search = WebSearchEngine()
         self._cache = CacheStore()
 
+        # Modular Tool Execution and Evidence Evaluation Engines
+        self._executor = ToolExecutor(
+            session_factory=session_factory,
+            hybrid_search=self._hybrid_search,
+            entity_search=self._entity_search,
+            timeline_builder=self._timeline_builder,
+            sql_analytics=self._sql_analytics,
+            coverage_analyzer=self._coverage_analyzer,
+            web_search=self._web_search,
+        )
+        self._evaluator = EvidenceEvaluator(
+            entity_search=self._entity_search,
+            web_search=self._web_search,
+        )
+
         # Build Graph
         self._graph = self._build_graph()
 
@@ -66,13 +80,33 @@ class AgentWorkflow:
         workflow.add_node("log_query", self._log_query_node)
 
         workflow.add_edge(START, "classify_and_plan")
-        workflow.add_edge("classify_and_plan", "execute_tools")
+
+        # Native conditional routing after planning
+        workflow.add_conditional_edges(
+            "classify_and_plan",
+            self._route_after_planning,
+            {
+                "execute_tools": "execute_tools",
+                "synthesize_answer": "synthesize_answer",
+                "log_query": "log_query",
+            },
+        )
         workflow.add_edge("execute_tools", "evaluate_and_fallback")
         workflow.add_edge("evaluate_and_fallback", "synthesize_answer")
         workflow.add_edge("synthesize_answer", "log_query")
         workflow.add_edge("log_query", END)
 
         return workflow.compile()
+
+    @staticmethod
+    def _route_after_planning(state: AgentState) -> str:
+        """Route conditionally based on planning outcome to prevent unnecessary node execution."""
+        archetype = state.get("archetype")
+        if archetype == "clarification_needed":
+            return "log_query"
+        if archetype == "conversational_meta_query" or not state.get("plan"):
+            return "synthesize_answer"
+        return "execute_tools"
 
     async def _classify_and_plan_node(self, state: AgentState) -> dict[str, Any]:
         """Classify archetype and produce multi-step tool execution plan."""
@@ -102,11 +136,10 @@ class AgentWorkflow:
                 "evidence_items": [],
             }
 
-        # Coreference Resolution & Query Condensation for follow-up turns
-        active_ctx = extract_active_issue_from_history(chat_history)
-        active_issue_id = state.get("active_issue_id") or active_ctx.get("issue_id")
-        active_newspaper_name = state.get("active_newspaper_name") or active_ctx.get("newspaper_name")
-        active_issue_date = state.get("active_issue_date") or active_ctx.get("issue_date")
+        # Use working context already initialized in state with current_query grounding
+        active_issue_id = state.get("active_issue_id")
+        active_newspaper_name = state.get("active_newspaper_name")
+        active_issue_date = state.get("active_issue_date")
         active_newspapers = [active_newspaper_name] if active_newspaper_name else []
 
         condensed_query = await condense_conversational_query(
@@ -125,7 +158,7 @@ class AgentWorkflow:
             if available_dates:
                 dates_info = [f"- {dt}: {', '.join(nps)}" for dt, nps in list(available_dates.items())[:10]]
                 cats_info = ", ".join(meta.get("categories", []))
-                archive_context_str = f"Available Issues:\n" + "\n".join(dates_info) + f"\nCanonical Categories: {cats_info}"
+                archive_context_str = "Available Issues:\n" + "\n".join(dates_info) + f"\nCanonical Categories: {cats_info}"
         except Exception as e:
             logger.warning("Failed to fetch archive metadata for planner", extra={"error": str(e)})
 
@@ -159,665 +192,11 @@ class AgentWorkflow:
         call: dict[str, Any],
         state: AgentState,
     ) -> tuple[list[dict[str, Any]], ToolExecutionRecord, dict[str, Any]]:
-        """Execute an individual planned tool call with resilience and local fallback."""
-        t_start = time.monotonic()
-        name = call.get("tool_name")
-        args = call.get("arguments", {})
-        hits_count = 0
-        evidence_items: list[dict[str, Any]] = []
-        context_updates: dict[str, Any] = {}
-        active_issue_id: int | None = state.get("active_issue_id")
-        active_newspaper_name: str | None = state.get("active_newspaper_name")
-        active_issue_date: str | None = state.get("active_issue_date")
-
-        try:
-            if name == "hybrid_search":
-                filters = None
-                np_id = args.get("newspaper_id")
-                np_name = args.get("newspaper_name")
-                if not np_id and np_name:
-                    try:
-                        from sqlalchemy import select
-                        async with self._session_factory() as db:
-                            stmt = select(Newspaper.id).where(Newspaper.name.ilike(f"%{np_name}%")).limit(1)
-                            res = await db.execute(stmt)
-                            np_id = res.scalar_one_or_none()
-                    except Exception as e:
-                        logger.warning("Could not resolve newspaper_id by name in hybrid_search", extra={"name": np_name, "error": str(e)})
-
-                filter_keys = (
-                    "newspaper_id",
-                    "newspaper_name",
-                    "date_from",
-                    "date_to",
-                    "page_filter",
-                    "page_number",
-                    "printed_page",
-                    "category_filter",
-                    "category_name",
-                )
-                has_filter = any(k in args for k in filter_keys) or (np_id is not None)
-                if has_filter:
-                    p_filt = args.get("page_filter") or args.get("printed_page")
-                    p_num = args.get("page_number")
-                    if p_filt and not p_num and str(p_filt).isdigit():
-                        p_num = int(p_filt)
-                    filters = SearchFilter(
-                        newspaper_id=np_id,
-                        date_from=args.get("date_from"),
-                        date_to=args.get("date_to"),
-                        page_number=p_num,
-                        printed_page=str(p_filt) if p_filt else None,
-                        category_name=args.get("category_filter") or args.get("category_name"),
-                    )
-                hybrid_results = await self._hybrid_search.search(
-                    query=args.get("query", ""),
-                    top_k=args.get("top_k", 6),
-                    filters=filters,
-                )
-                hits_count = len(hybrid_results)
-
-                # Adaptive Fallback: If filtered hybrid search returned 0 results and category filter was active,
-                # retry unconstrained search without the category filter to prevent false negative drops
-                if hits_count == 0 and filters and filters.category_name:
-                    logger.info("Hybrid search with category '%s' returned 0 hits, retrying without category filter", filters.category_name)
-                    filters_no_cat = SearchFilter(
-                        newspaper_id=filters.newspaper_id,
-                        date_from=filters.date_from,
-                        date_to=filters.date_to,
-                        page_number=filters.page_number,
-                        printed_page=filters.printed_page,
-                        category_name=None,
-                    )
-                    fallback_results = await self._hybrid_search.search(
-                        query=args.get("query", ""),
-                        top_k=args.get("top_k", 6),
-                        filters=filters_no_cat,
-                    )
-                    if fallback_results:
-                        hybrid_results = fallback_results
-                        hits_count = len(fallback_results)
-
-                from app.retrieval.sanitizer import repair_text_ligatures
-                from app.retrieval.sql_analytics import sanitize_headline
-
-                for hr in hybrid_results:
-                    clean_hl, eff_byline = sanitize_headline(
-                        hr.headline,
-                        subheadline=hr.subheadline,
-                        byline_author=hr.byline_author,
-                        snippet=hr.snippet,
-                    )
-                    clean_hl = repair_text_ligatures(clean_hl)
-                    clean_snip = repair_text_ligatures(hr.snippet)
-                    evidence_items.append(
-                        {
-                            "article_id": hr.article_id,
-                            "issue_id": hr.issue_id,
-                            "headline": clean_hl,
-                            "byline_author": eff_byline or hr.byline_author,
-                            "newspaper_name": hr.newspaper_name,
-                            "issue_date": hr.issue_date,
-                            "pages": hr.pages,
-                            "bboxes": hr.bboxes,
-                            "printed_pages": hr.printed_pages,
-                            "snippet": clean_snip,
-                            "prominence_score": hr.prominence_score,
-                            "source_tool": "hybrid_search",
-                            "photos": hr.photos,
-                            "has_visual_data": hr.has_visual_data,
-                            "visual_type": hr.visual_type,
-                        }
-                    )
-
-            elif name == "entity_search":
-                entity_results = await self._entity_search.search_by_entity(
-                    entity_name=args.get("entity_name"),
-                    entity_type=args.get("entity_type"),
-                    top_k=args.get("top_k", 10),
-                )
-                hits_count = len(entity_results)
-                for er in entity_results:
-                    snip_str = (
-                        f"Entity [{er.entity_name} ({er.entity_type}) - "
-                        f"Salience {er.salience_score}]: {er.summary}"
-                    )
-                    evidence_items.append(
-                        {
-                            "article_id": er.article_id,
-                            "issue_id": er.issue_id,
-                            "headline": er.headline,
-                            "newspaper_name": er.newspaper_name,
-                            "issue_date": er.issue_date,
-                            "pages": er.pages,
-                            "bboxes": er.bboxes,
-                            "snippet": snip_str,
-                            "prominence_score": er.prominence_score,
-                            "source_tool": "entity_search",
-                        }
-                    )
-
-            elif name == "timeline_builder":
-                tl_result = await self._timeline_builder.build_timeline(
-                    query=args.get("query"),
-                    limit=args.get("limit", 20),
-                )
-                hits_count = tl_result.total_articles
-                for g in tl_result.date_groups:
-                    for m in g.milestones:
-                        evidence_items.append(
-                            {
-                                "article_id": m.article_id,
-                                "issue_id": m.issue_id,
-                                "headline": m.headline,
-                                "newspaper_name": g.newspaper_name,
-                                "issue_date": g.date,
-                                "pages": m.pages,
-                                "bboxes": m.bboxes,
-                                "snippet": f"Timeline Event ({g.date}): {m.summary}",
-                                "prominence_score": m.prominence_score,
-                                "source_tool": "timeline_builder",
-                            }
-                        )
-
-            elif name == "sql_analytics":
-                analysis_type = args.get("analysis_type")
-                if analysis_type == "entity_trends":
-                    trends = await self._sql_analytics.get_entity_mention_trends(
-                        entity_name=args.get("term", ""),
-                    )
-                    hits_count = len(trends)
-                    trend_items = [
-                        f"{t['date']}: {t['article_count']} articles "
-                        f"({t['total_mentions']} mentions)"
-                        for t in trends[:5]
-                    ]
-                    summary_str = f"Mention Trends for '{args.get('term')}': " + ", ".join(
-                        trend_items
-                    )
-                    evidence_items.append(
-                        {
-                            "article_id": 0,
-                            "headline": f"Statistical Trends: {args.get('term')}",
-                            "newspaper_name": "Aggregated Archive Analytics",
-                            "issue_date": trends[0]["date"] if trends else "Overview",
-                            "pages": [1],
-                            "snippet": summary_str,
-                            "source_tool": "sql_analytics",
-                        }
-                    )
-                elif analysis_type == "issue_summary":
-                    page_filter = args.get("page_filter")
-                    
-                    # Context inheritance guardrails:
-                    # 1. Do NOT inherit newspaper_name from chat history if query is cross-newspaper comparison
-                    #    or if this tool call explicitly targets all newspapers on an issue_date.
-                    # 2. Do NOT inherit newspaper_name or issue_id if the tool call specifies an issue_date
-                    #    that differs from the active_issue_date in history.
-                    is_comparative = (
-                        state.get("archetype") == "cross_newspaper_comparison"
-                        or any(w in str(state.get("query", "")).lower() for w in ["all available", "all newspaper", "across newspaper", "both newspaper", "different newspaper"])
-                    )
-                    date_mismatch = bool(args.get("issue_date") and active_issue_date and args.get("issue_date") != active_issue_date)
-                    target_all_on_date = bool(args.get("issue_date") and not args.get("newspaper_name"))
-                    inherit_history = not is_comparative and not date_mismatch and not target_all_on_date
-
-                    np_arg = args.get("newspaper_name") or (active_newspaper_name if inherit_history else None)
-                    iss_d_arg = args.get("issue_date") or active_issue_date
-                    iss_id_arg = args.get("issue_id") or (active_issue_id if inherit_history else None)
-
-                    # Multi-issue mode: when issue_date is specified without newspaper_name,
-                    # retrieve ALL issues on that date for cross-newspaper comparison
-                    is_multi_issue_date = (
-                        iss_d_arg
-                        and not np_arg
-                        and not iss_id_arg
-                    )
-
-                    if is_multi_issue_date:
-                        from sqlalchemy import select as sa_select
-                        from sqlalchemy.orm import selectinload as sa_selectinload
-                        async with self._session_factory() as db:
-                            stmt = (
-                                sa_select(Issue)
-                                .where(Issue.issue_date == iss_d_arg)
-                                .options(
-                                    sa_selectinload(Issue.newspaper),
-                                    sa_selectinload(Issue.pages),
-                                )
-                                .order_by(Issue.id)
-                            )
-                            res = await db.execute(stmt)
-                            date_issues = res.scalars().all()
-
-                        if date_issues:
-                            summaries_collected = []
-                            total_found = 0
-                            for di in date_issues:
-                                summary = await self._sql_analytics.get_issue_summary(
-                                    issue_id=di.id,
-                                    query=args.get("query", state["query"]),
-                                    page_filter=page_filter,
-                                    exclude_page_filter=args.get("exclude_page_filter"),
-                                    category_filter=args.get("category_filter"),
-                                )
-                                if "error" not in summary:
-                                    summaries_collected.append(summary)
-                                    total_found += summary.get("total_articles", 0)
-
-                            # Adaptive Fallback: If category filter produced 0 hits, retry unconstrained
-                            if total_found == 0 and args.get("category_filter"):
-                                logger.info("SQL analytics category '%s' returned 0 articles across %s; retrying unconstrained", args.get("category_filter"), iss_d_arg)
-                                summaries_collected = []
-                                for di in date_issues:
-                                    summary = await self._sql_analytics.get_issue_summary(
-                                        issue_id=di.id,
-                                        query=args.get("query", state["query"]),
-                                        page_filter=page_filter,
-                                        exclude_page_filter=args.get("exclude_page_filter"),
-                                        category_filter=None,
-                                    )
-                                    if "error" not in summary:
-                                        summaries_collected.append(summary)
-                                        total_found += summary.get("total_articles", 0)
-
-                            for summary in summaries_collected:
-                                total_arts = summary.get("total_articles", 0)
-                                total_pgs = summary.get("total_pages", 0)
-                                sec_breakdown = ", ".join(
-                                    f"{k}: {v}" for k, v in summary.get("section_breakdown", {}).items()
-                                )
-                                articles_list = summary.get("articles", [])
-                                hits_count += total_arts
-
-                                manifest_lines = []
-                                for idx, a in enumerate(articles_list[:30], 1):
-                                    pr_page = str(a.get("printed_page") or "").strip()
-                                    pg_num = a.get("page_number", 1)
-                                    if (
-                                        pr_page
-                                        and not pr_page.startswith("Unnumbered")
-                                        and not pr_page.startswith("PDF p.")
-                                        and pr_page != str(pg_num)
-                                    ):
-                                        folio_info = f"Page {pr_page} (PDF p.{pg_num})"
-                                    else:
-                                        folio_info = f"Page {pg_num}"
-                                    author_info = (
-                                        f" by {a['byline_author']}" if a.get("byline_author") else ""
-                                    )
-                                    clean_a_hl = repair_text_ligatures(a["headline"])
-                                    manifest_lines.append(
-                                        f'{idx}. [{a["section"]}] "{clean_a_hl}" '
-                                        f"({folio_info}{author_info}, {a['word_count']} words)"
-                                    )
-                                manifest_text = "\n".join(manifest_lines)
-
-                                np_title = summary.get("newspaper", "Archive")
-                                iss_d = summary.get("issue_date", "")
-                                cat_hdr = f" - CATEGORY: {args.get('category_filter')}" if args.get("category_filter") else ""
-                                summary_str = (
-                                    f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
-                                    f"({iss_d}){cat_hdr} ===\n"
-                                    f"• Total Articles Ingested: {total_arts}\n"
-                                    f"• Total Issue Pages: {total_pgs}\n"
-                                    f"• Sections Breakdown: {sec_breakdown}\n\n"
-                                    f"Article Manifest:\n{manifest_text}"
-                                )
-                                evidence_items.append(
-                                    {
-                                        "article_id": 0,
-                                        "headline": (
-                                            f"Issue Manifest: {np_title} ({iss_d})"
-                                        ),
-                                        "newspaper_name": np_title,
-                                        "issue_date": iss_d,
-                                        "pages": [1],
-                                        "snippet": summary_str,
-                                        "prominence_score": 1.0,
-                                        "source_tool": "sql_analytics",
-                                    }
-                                )
-                        else:
-                            evidence_items.append(
-                                {
-                                    "article_id": 0,
-                                    "headline": f"No issues found for date {iss_d_arg}",
-                                    "newspaper_name": "Archive",
-                                    "issue_date": iss_d_arg,
-                                    "pages": [1],
-                                    "snippet": f"⚠️ No newspaper issues were found in the archive for date {iss_d_arg}.",
-                                    "prominence_score": 1.0,
-                                    "source_tool": "sql_analytics",
-                                }
-                            )
-                    else:
-                        # Standard single-issue summary
-                        summary = await self._sql_analytics.get_issue_summary(
-                            newspaper_name=np_arg,
-                            issue_date=iss_d_arg,
-                            issue_id=iss_id_arg,
-                            page_filter=page_filter,
-                            exclude_page_filter=args.get("exclude_page_filter"),
-                            category_filter=args.get("category_filter"),
-                            query=args.get("query", state["query"]),
-                        )
-                        # Adaptive Fallback: If category filter yielded 0 articles, retry unconstrained
-                        if "error" not in summary and summary.get("total_articles", 0) == 0 and args.get("category_filter"):
-                            logger.info("Single issue summary with category '%s' returned 0 articles; retrying unconstrained", args.get("category_filter"))
-                            summary = await self._sql_analytics.get_issue_summary(
-                                newspaper_name=np_arg,
-                                issue_date=iss_d_arg,
-                                issue_id=iss_id_arg,
-                                page_filter=page_filter,
-                                exclude_page_filter=args.get("exclude_page_filter"),
-                                category_filter=None,
-                                query=args.get("query", state["query"]),
-                            )
-
-                        if "error" in summary:
-                            summary_str = f"⚠️ {summary['error']}"
-                            hits_count = 0
-                        else:
-                            context_updates["active_issue_id"] = summary.get("issue_id")
-                            context_updates["active_newspaper_name"] = summary.get("newspaper")
-                            context_updates["active_issue_date"] = summary.get("issue_date")
-                            total_arts = summary.get("total_articles", 0)
-                            total_pgs = summary.get("total_pages", 0)
-                            sec_breakdown = ", ".join(
-                                f"{k}: {v}" for k, v in summary.get("section_breakdown", {}).items()
-                            )
-                            articles_list = summary.get("articles", [])
-                            hits_count = total_arts
-
-                            manifest_lines = []
-                            for idx, a in enumerate(articles_list[:50], 1):
-                                pr_page = str(a.get("printed_page") or "").strip()
-                                pg_num = a.get("page_number", 1)
-                                if (
-                                    pr_page
-                                    and not pr_page.startswith("Unnumbered")
-                                    and not pr_page.startswith("PDF p.")
-                                    and pr_page != str(pg_num)
-                                ):
-                                    folio_info = f"Page {pr_page} (PDF p.{pg_num})"
-                                else:
-                                    folio_info = f"Page {pg_num}"
-                                author_info = (
-                                    f" by {a['byline_author']}" if a.get("byline_author") else ""
-                                )
-                                clean_a_hl = repair_text_ligatures(a["headline"])
-                                manifest_lines.append(
-                                    f'{idx}. [{a["section"]}] "{clean_a_hl}" '
-                                    f"({folio_info}{author_info}, {a['word_count']} words)"
-                                )
-                            manifest_text = "\n".join(manifest_lines)
-
-                            np_title = summary.get("newspaper", "Archive")
-                            iss_d = summary.get("issue_date", "")
-                            if page_filter:
-                                no_arts_msg = (
-                                    "No editorial articles found on this page "
-                                    "(Page may be a full-page advertisement, "
-                                    "photo gallery, or unindexed wrap)."
-                                )
-                                body_content = manifest_text if manifest_lines else no_arts_msg
-                                summary_str = (
-                                    f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
-                                    f"({iss_d}) - PAGE {page_filter} ===\n"
-                                    f"• Total Articles on Page {page_filter}: {total_arts}\n"
-                                    f"• Total Issue Pages: {total_pgs}\n\n"
-                                    f"Articles on Page {page_filter}:\n{body_content}"
-                                )
-                            else:
-                                cat_hdr = f" - CATEGORY: {args.get('category_filter')}" if args.get("category_filter") else ""
-                                summary_str = (
-                                    f"=== RELATIONAL ARCHIVE MANIFEST FOR {np_title} "
-                                    f"({iss_d}){cat_hdr} ===\n"
-                                    f"• Total Articles Ingested: {total_arts}\n"
-                                    f"• Total Issue Pages: {total_pgs}\n"
-                                    f"• Sections Breakdown: {sec_breakdown}\n\n"
-                                    f"Article Manifest:\n{manifest_text}"
-                                )
-
-                        evidence_items.append(
-                            {
-                                "article_id": 0,
-                                "headline": (
-                                    f"Issue Manifest: {summary.get('newspaper', 'Archive')} "
-                                    f"({summary.get('issue_date', '')})"
-                                ),
-                                "newspaper_name": summary.get("newspaper", "Archive"),
-                                "issue_date": summary.get("issue_date", "Overview"),
-                                "pages": [1],
-                                "snippet": summary_str,
-                                "prominence_score": 1.0,
-                                "source_tool": "sql_analytics",
-                            }
-                        )
-
-                elif analysis_type == "count_articles":
-                    count_res = await self._sql_analytics.count_articles(
-                        newspaper_name=args.get("newspaper_name"),
-                        issue_date=args.get("issue_date"),
-                        section=args.get("section") or args.get("category_filter"),
-                        article_type=args.get("article_type"),
-                    )
-                    c_val = count_res.get("count", 0)
-                    hits_count = c_val
-                    filt_info = ", ".join(f"{k}: {v}" for k, v in count_res.get("filters", {}).items() if v)
-                    summary_str = (
-                        f"=== RELATIONAL ARTICLE COUNT AUDIT ===\n"
-                        f"• Total Matching Articles: {c_val}\n"
-                        f"• Active Filters: {filt_info or 'None (Total Ingested)'}\n"
-                    )
-                    evidence_items.append(
-                        {
-                            "article_id": 0,
-                            "headline": f"Article Count Analysis: {c_val} articles found",
-                            "newspaper_name": args.get("newspaper_name") or "Archive",
-                            "issue_date": args.get("issue_date") or "Overview",
-                            "pages": [1],
-                            "snippet": summary_str,
-                            "prominence_score": 1.0,
-                            "source_tool": "sql_analytics",
-                        }
-                    )
-                elif analysis_type == "topic_distribution":
-                    topics_dist = await self._sql_analytics.get_topic_distribution()
-                    hits_count = len(topics_dist)
-                    top_lines = [
-                        f"• [{t['section']} / {t['article_type']}]: {t['count']} articles (avg prominence: {t['avg_prominence']})"
-                        for t in topics_dist[:10]
-                    ]
-                    summary_str = "=== TOPIC & SECTION DISTRIBUTION ===\n" + "\n".join(top_lines)
-                    evidence_items.append(
-                        {
-                            "article_id": 0,
-                            "headline": "Archive Topic & Section Breakdown",
-                            "newspaper_name": "Aggregated Archive Analytics",
-                            "issue_date": "Overview",
-                            "pages": [1],
-                            "snippet": summary_str,
-                            "prominence_score": 1.0,
-                            "source_tool": "sql_analytics",
-                        }
-                    )
-                elif analysis_type == "frontpage_ratio":
-                    ratio_res = await self._sql_analytics.get_frontpage_prominence_ratio()
-                    hits_count = ratio_res.get("total_articles", 0)
-                    summary_str = (
-                        f"=== FRONTPAGE PROMINENCE RATIO ===\n"
-                        f"• Total Articles: {ratio_res.get('total_articles')}\n"
-                        f"• Frontpage Articles (Page 1): {ratio_res.get('frontpage_articles')}\n"
-                        f"• Frontpage Ratio: {round(ratio_res.get('frontpage_ratio', 0) * 100, 2)}%\n"
-                    )
-                    evidence_items.append(
-                        {
-                            "article_id": 0,
-                            "headline": "Frontpage Prominence Analysis",
-                            "newspaper_name": "Aggregated Archive Analytics",
-                            "issue_date": "Overview",
-                            "pages": [1],
-                            "snippet": summary_str,
-                            "prominence_score": 1.0,
-                            "source_tool": "sql_analytics",
-                        }
-                    )
-                elif analysis_type == "coverage_comparison":
-                    cov_matrix = await self._coverage_analyzer.generate_coverage_matrix(
-                        query_or_event=args.get("query", state["query"]),
-                        target_date=args.get("target_date") or args.get("issue_date"),
-                    )
-                    hits_count = cov_matrix.covered_count
-                    lines = [
-                        f"=== 3-TIER COVERAGE RECONCILIATION MATRIX: '{cov_matrix.target_query_or_event}' ===",
-                        f"• Total Publications Audited: {cov_matrix.total_publications}",
-                        f"• Confirmed Coverage: {cov_matrix.covered_count}",
-                        f"• Confirmed Omissions (Not Found): {cov_matrix.not_found_count}",
-                        f"• Uncertain / Borderline: {cov_matrix.uncertain_count}",
-                        f"• Processing Errors / Incomplete: {cov_matrix.processing_error_count}\n",
-                    ]
-                    for pub_name, rep in cov_matrix.reports.items():
-                        hls = f" (Headlines: {', '.join(rep.matched_headlines[:2])})" if rep.matched_headlines else ""
-                        lines.append(f"• {pub_name}: [{rep.status}] Confidence {round(rep.confidence * 100, 1)}%{hls} - {rep.audit_notes}")
-                    evidence_items.append(
-                        {
-                            "article_id": 0,
-                            "headline": f"Coverage Audit: {cov_matrix.target_query_or_event}",
-                            "newspaper_name": "Multi-Newspaper Audit",
-                            "issue_date": "Comparative Matrix",
-                            "pages": [1],
-                            "snippet": "\n".join(lines),
-                            "prominence_score": 1.0,
-                            "source_tool": "sql_analytics",
-                        }
-                    )
-                elif analysis_type == "coverage_difference":
-                    src_np = args.get("newspaper_name") or args.get("source_newspaper")
-                    cmp_np = args.get("comparison_newspaper")
-                    iss_dt = args.get("issue_date") or args.get("target_date") or active_issue_date
-
-                    diff_res = await self._sql_analytics.get_newspaper_coverage_difference(
-                        source_newspaper=src_np,
-                        comparison_newspaper=cmp_np,
-                        issue_date=iss_dt,
-                    )
-                    if "error" in diff_res:
-                        evidence_items.append(
-                            {
-                                "article_id": 0,
-                                "headline": f"Coverage Difference Error: {diff_res['error']}",
-                                "newspaper_name": src_np or "Archive",
-                                "issue_date": iss_dt or "Overview",
-                                "pages": [1],
-                                "snippet": f"⚠️ {diff_res['error']}",
-                                "prominence_score": 1.0,
-                                "source_tool": "sql_analytics",
-                            }
-                        )
-                    else:
-                        exclusives = diff_res.get("exclusive_articles", [])
-                        hits_count = len(exclusives)
-
-                        ex_lines = []
-                        for idx, ex in enumerate(exclusives[:40], 1):
-                            p_str = f"Page {ex.get('page_number')} (PDF Page {ex.get('page_number')})"
-                            ex_lines.append(
-                                f"{idx}. [{p_str}] ({ex.get('section')}) \"{ex.get('headline')}\""
-                            )
-
-                        diff_manifest_text = "\n".join(ex_lines)
-                        summary_str = (
-                            f"=== VERIFIED EXCLUSIVE COVERAGE: {diff_res['source_newspaper']} "
-                            f"({diff_res['issue_date']}) NOT PRESENT IN {diff_res['comparison_newspaper']} ===\n"
-                            f"• Total Source Articles: {diff_res['total_source_articles']}\n"
-                            f"• Total Comparison Articles: {diff_res['total_comparison_articles']}\n"
-                            f"• Verified Exclusive Articles to {diff_res['source_newspaper']}: {diff_res['exclusive_count']}\n"
-                            f"• Shared Cross-Newspaper Stories: {diff_res['shared_count']}\n\n"
-                            f"Exclusive Articles Manifest:\n{diff_manifest_text}"
-                        )
-                        evidence_items.append(
-                            {
-                                "article_id": 0,
-                                "headline": (
-                                    f"Verified Exclusive Articles: {diff_res['source_newspaper']} vs {diff_res['comparison_newspaper']}"
-                                ),
-                                "newspaper_name": diff_res["source_newspaper"],
-                                "issue_date": diff_res["issue_date"],
-                                "pages": [1],
-                                "snippet": summary_str,
-                                "prominence_score": 1.0,
-                                "source_tool": "sql_analytics",
-                            }
-                        )
-
-            elif name == "coverage_analysis":
-                cov_matrix = await self._coverage_analyzer.generate_coverage_matrix(
-                    query_or_event=args.get("query", state["query"]),
-                    target_date=args.get("target_date"),
-                )
-                hits_count = cov_matrix.covered_count
-                lines = [
-                    f"=== 3-TIER COVERAGE RECONCILIATION MATRIX: '{cov_matrix.target_query_or_event}' ===",
-                    f"• Total Publications Audited: {cov_matrix.total_publications}",
-                    f"• Confirmed Coverage: {cov_matrix.covered_count}",
-                    f"• Confirmed Omissions (Not Found): {cov_matrix.not_found_count}",
-                    f"• Uncertain / Borderline: {cov_matrix.uncertain_count}",
-                    f"• Processing Errors / Incomplete: {cov_matrix.processing_error_count}\n",
-                ]
-                for pub_name, rep in cov_matrix.reports.items():
-                    hls = f" (Headlines: {', '.join(rep.matched_headlines[:2])})" if rep.matched_headlines else ""
-                    lines.append(f"• {pub_name}: [{rep.status}] Confidence {round(rep.confidence * 100, 1)}%{hls} - {rep.audit_notes}")
-                evidence_items.append(
-                    {
-                        "article_id": 0,
-                        "headline": f"Coverage Matrix: {cov_matrix.target_query_or_event}",
-                        "newspaper_name": "Multi-Newspaper Audit",
-                        "issue_date": "Comparative Matrix",
-                        "pages": [1],
-                        "snippet": "\n".join(lines),
-                        "prominence_score": 1.0,
-                        "source_tool": "coverage_analysis",
-                    }
-                )
-
-            elif name == "web_search":
-                web_results = await self._web_search.search(
-                    query=args.get("query", state["query"]),
-                    num_results=args.get("num_results", 5),
-                )
-                hits_count = len(web_results)
-                for wr in web_results:
-                    evidence_items.append(
-                        {
-                            "article_id": 0,
-                            "headline": wr.title,
-                            "newspaper_name": wr.source,
-                            "issue_date": wr.published_date or "Live Web",
-                            "pages": [1],
-                            "snippet": wr.snippet,
-                            "url": wr.url,
-                            "is_web": True,
-                            "prominence_score": 0.8,
-                            "source_tool": "web_search",
-                        }
-                    )
-
-        except Exception as e:
-            logger.error(f"Error executing tool '{name}'", extra={"error": str(e)})
-
-        dur_ms = round((time.monotonic() - t_start) * 1000)
-        tool_record = ToolExecutionRecord(
-            tool_name=name or "unknown",
-            tool_input=args,
-            results_count=hits_count,
-            execution_time_ms=dur_ms,
-        )
-        return evidence_items, tool_record, context_updates
+        """Backward-compatible proxy delegating to ToolExecutor."""
+        return await self._executor.execute_single_tool(call, state)
 
     async def _execute_tools_node(self, state: AgentState) -> dict[str, Any]:
-        """Execute scheduled tools concurrently via asyncio.gather and collect evidence items."""
+        """Execute scheduled tools concurrently via ToolExecutor."""
         if state.get("archetype") == "clarification_needed" or not state.get("plan"):
             return {
                 "evidence_items": [],
@@ -825,205 +204,26 @@ class AgentWorkflow:
             }
 
         plan = state.get("plan", [])
-        evidence_items: list[dict[str, Any]] = []
-        tool_records: list[ToolExecutionRecord] = []
-        active_issue_id: int | None = state.get("active_issue_id")
-        active_newspaper_name: str | None = state.get("active_newspaper_name")
-        active_issue_date: str | None = state.get("active_issue_date")
-
-        tasks = [self._execute_single_tool(call, state) for call in plan]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for call, res in zip(plan, results):
-            if isinstance(res, Exception):
-                logger.error(
-                    f"Error in parallel execution of tool '{call.get('tool_name')}'",
-                    extra={"error": str(res)},
-                )
-                tool_records.append(
-                    ToolExecutionRecord(
-                        tool_name=call.get("tool_name") or "unknown",
-                        tool_input=call.get("arguments", {}),
-                        results_count=0,
-                        execution_time_ms=0,
-                    )
-                )
-            else:
-                items, record, ctx_updates = res
-                evidence_items.extend(items)
-                tool_records.append(record)
-                if ctx_updates.get("active_issue_id"):
-                    active_issue_id = ctx_updates["active_issue_id"]
-                if ctx_updates.get("active_newspaper_name"):
-                    active_newspaper_name = ctx_updates["active_newspaper_name"]
-                if ctx_updates.get("active_issue_date"):
-                    active_issue_date = ctx_updates["active_issue_date"]
+        evidence_items, tool_records, ctx_updates = await self._executor.execute_tools(plan, state)
 
         return {
             "evidence_items": evidence_items,
             "tool_executions": tool_records,
-            "active_issue_id": active_issue_id,
-            "active_newspaper_name": active_newspaper_name,
-            "active_issue_date": active_issue_date,
+            "active_issue_id": ctx_updates.get("active_issue_id", state.get("active_issue_id")),
+            "active_newspaper_name": ctx_updates.get("active_newspaper_name", state.get("active_newspaper_name")),
+            "active_issue_date": ctx_updates.get("active_issue_date", state.get("active_issue_date")),
         }
 
     async def _evaluate_and_fallback_node(self, state: AgentState) -> dict[str, Any]:
         """Corrective RAG (CRAG) Node: Grade retrieval quality and execute corrective fallback if needed."""
         evidence = state.get("evidence_items", [])
-        archetype = state.get("archetype", "factual_lookup")
         tool_records = list(state.get("tool_executions", []))
 
-        # Skip fallback evaluation for meta queries or user clarification states
-        if archetype in ("clarification_needed", "conversational_meta_query"):
-            return {"evidence_items": evidence, "tool_executions": tool_records}
-
-        # Stop-words to exclude from core query terms
-        stop_words = {
-            "a", "an", "the", "and", "or", "but", "if", "then", "else", "when",
-            "at", "by", "for", "with", "about", "against", "between", "into",
-            "through", "during", "before", "after", "above", "below", "to", "from",
-            "up", "down", "in", "out", "on", "off", "over", "under", "again",
-            "further", "once", "here", "there", "all", "any", "both",
-            "each", "few", "more", "most", "other", "some", "such", "no", "nor",
-            "not", "only", "own", "same", "so", "than", "too", "very", "can",
-            "will", "just", "should", "now", "tell", "what", "which", "who",
-            "whom", "this", "that", "these", "those", "have", "has", "had",
-            "give", "details", "information", "report", "news", "articles", "anything",
-            "something", "know", "find", "show", "read", "say", "said",
+        filtered_evidence, fallback_records = await self._evaluator.evaluate_and_fallback(evidence, state)
+        return {
+            "evidence_items": filtered_evidence,
+            "tool_executions": tool_records + fallback_records,
         }
-        raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", state["query"].lower())
-        query_tokens = [w for w in raw_query_words if w not in stop_words]
-
-        def _stem(word: str) -> str:
-            w = word.lower()
-            if len(w) > 4 and w.endswith("es"):
-                return w[:-2]
-            if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
-                return w[:-1]
-            if len(w) > 5 and w.endswith("ing"):
-                return w[:-3]
-            if len(w) > 4 and w.endswith("ed"):
-                return w[:-2]
-            return w
-
-        def _score_relevance(item: dict[str, Any]) -> float:
-            if not query_tokens:
-                return 1.0
-            hl = (item.get("headline") or "").lower()
-            snip = (item.get("snippet") or item.get("full_text") or item.get("summary") or "").lower()
-            combined = f"{hl} {snip}"
-            corpus_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", combined))
-            corpus_stems = {_stem(w) for w in corpus_words}
-
-            matches = 0.0
-            for qt in query_tokens:
-                stem = _stem(qt)
-                if qt in hl or stem in hl:
-                    matches += 2.0
-                elif qt in combined or stem in corpus_stems:
-                    matches += 1.0
-
-            return matches / max(1.0, float(len(query_tokens)))
-
-        # For macro-structural tools or cross-newspaper comparative archetypes,
-        # structured manifests and audit matrices must never be thrown away by lexical query matching.
-        def _is_structural_or_macro_evidence(item: dict[str, Any]) -> bool:
-            return (
-                archetype in ("cross_newspaper_comparison", "quantitative_trend")
-                or item.get("source_tool") in ("sql_analytics", "coverage_analysis")
-                or item.get("article_id") == 0
-            )
-
-        # Retain evidence items that have positive relevance to query tokens OR are structural manifests
-        filtered_evidence = [
-            item for item in evidence
-            if _is_structural_or_macro_evidence(item) or _score_relevance(item) > 0.0
-        ]
-        filtered_evidence.sort(key=lambda it: (1.0 if _is_structural_or_macro_evidence(it) else _score_relevance(it)), reverse=True)
-
-        # Check if retrieval yielded grounded items matching query
-        has_grounded_content = bool(
-            filtered_evidence and any(len((item.get("snippet") or "").strip()) >= 20 for item in filtered_evidence)
-        )
-
-        if not has_grounded_content:
-            logger.info("CRAG triggered: 0 high-confidence articles retrieved, attempting corrective fallback")
-            t_start = time.monotonic()
-            fallback_items: list[dict[str, Any]] = list(filtered_evidence)
-
-            # 1. Fallback: Entity Graph / Taxonomy Search if a prominent entity is detected in the query
-            query_terms = [w.strip() for w in state["query"].split() if len(w) > 3 and w[0].isupper()]
-            if query_terms:
-                ent_target = query_terms[0]
-                ent_res = await self._entity_search.search_by_entity(
-                    entity_name=ent_target,
-                    top_k=5,
-                )
-                if ent_res:
-                    for er in ent_res:
-                        fallback_items.append(
-                            {
-                                "article_id": er.article_id,
-                                "issue_id": er.issue_id,
-                                "headline": er.headline,
-                                "newspaper_name": er.newspaper_name,
-                                "issue_date": er.issue_date,
-                                "pages": er.pages,
-                                "bboxes": er.bboxes,
-                                "snippet": f"[CRAG Entity Fallback - {er.entity_name}]: {er.summary}",
-                                "prominence_score": er.prominence_score,
-                                "source_tool": "crag_entity_fallback",
-                            }
-                        )
-                    dur_ms = round((time.monotonic() - t_start) * 1000)
-                    tool_records.append(
-                        ToolExecutionRecord(
-                            tool_name="crag_entity_fallback",
-                            tool_input={"entity_name": ent_target},
-                            results_count=len(ent_res),
-                            execution_time_ms=dur_ms,
-                        )
-                    )
-
-            # 2. Fallback: Live Web Search if web search is enabled and archive is empty
-            if not fallback_items and state.get("enable_web_search", False):
-                t_web = time.monotonic()
-                web_res = await self._web_search.search(
-                    query=state["query"],
-                    num_results=4,
-                )
-                if web_res:
-                    for wr in web_res:
-                        fallback_items.append(
-                            {
-                                "article_id": 0,
-                                "headline": wr.title,
-                                "newspaper_name": wr.source,
-                                "issue_date": wr.published_date or "Live Web",
-                                "pages": [1],
-                                "snippet": f"[CRAG Web Fallback]: {wr.snippet}",
-                                "url": wr.url,
-                                "is_web": True,
-                                "prominence_score": 0.8,
-                                "source_tool": "crag_web_fallback",
-                            }
-                        )
-                    dur_ms = round((time.monotonic() - t_web) * 1000)
-                    tool_records.append(
-                        ToolExecutionRecord(
-                            tool_name="crag_web_fallback",
-                            tool_input={"query": state["query"]},
-                            results_count=len(web_res),
-                            execution_time_ms=dur_ms,
-                        )
-                    )
-
-            return {
-                "evidence_items": fallback_items,
-                "tool_executions": tool_records,
-            }
-
-        return {"evidence_items": filtered_evidence, "tool_executions": tool_records}
 
     async def _synthesize_answer_node(self, state: AgentState) -> dict[str, Any]:
         """Formulate grounded answer with source citations."""
@@ -1098,7 +298,6 @@ class AgentWorkflow:
                 model=model_override or "default",
                 duration_seconds=dur,
             )
-            # Reconstruct typed AgentState from cached dict
             return cached_result  # type: ignore[return-value]
 
         active_ctx = extract_active_issue_from_history(history, current_query=query)

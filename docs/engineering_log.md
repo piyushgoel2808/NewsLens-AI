@@ -2772,6 +2772,54 @@ Comprehensive architectural audit of `backend/app/agent/planner.py` (previously 
 - Static Type Checking: `mypy app/agent/planner.py app/agent/extractor.py app/agent/models.py app/agent/tool_factory.py` $\to$ **Success: no issues found in 4 source files**.
 - Linter: `ruff check app/agent/planner.py app/agent/extractor.py app/agent/models.py app/agent/tool_factory.py` $\to$ **All checks passed!**
 
+---
+
+## Phase 9.25 — Agent State Machine Modular Decoupling & Bug Resolution
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Architectural Smells
+1. **1,153-Line Monolithic God Object (`graph.py`)**: `graph.py` combined state machine routing, direct database ORM operations, 8-branch tool execution, result serialization, presentation manifest building, and 150 lines of custom lexical stemming and scoring.
+2. **Pseudo-Graph with Zero Conditional Edges**: `graph.py` created a linear pipeline with defensive `if/else` pass-throughs across every downstream node rather than utilizing native LangGraph conditional branching.
+3. **In-Place Dynamic Imports in Coroutines**: `_execute_single_tool` dynamically imported SQLAlchemy and sanitizers inside `asyncio.gather()` loops, repeatedly acquiring Python's module import lock and creating thread latency jitter.
+4. **Manifest and Matrix DRY Violations**: 22 lines of article manifest formatting and 12 lines of 3-tier coverage matrix building were copy-pasted across multiple locations.
+5. **CRAG Stemmer Discarding Semantic Vector Hits**: The naive 4-rule stemmer evaluated query token overlap strictly lexically, assigning a `0.0` score and discarding valid dense vector search hits (e.g. "pharmaceuticals" matching "vaccine" or "drugs").
+6. **Inconsistent Working Context Extraction**: `_classify_and_plan_node` re-called `extract_active_issue_from_history(chat_history)` without `current_query=query`, inadvertently dropping differential context already resolved by `run()`.
+7. **Unhandled Date Mismatch on Multi-Newspaper Iteration**: Direct SQL execution for multiple issues did not normalize dates to ISO-8601 (`YYYY-MM-DD`), causing slash dates (e.g. `1/8/2026`) to fail database queries and inject false "No issues found" warnings.
+
+### Architectural Solutions & Implementations
+1. **Dedicated Tool Execution Engine (`backend/app/agent/executor.py`)**:
+   - Created `ToolExecutor` class encapsulating concurrent tool execution via `asyncio.gather(..., return_exceptions=True)`.
+   - All imports statically placed at top-of-file.
+   - Unified presentation formatters: `format_issue_manifest()`, `format_coverage_matrix_snippet()`, and `format_coverage_difference_snippet()`.
+2. **Dedicated Evidence Evaluator & CRAG Engine (`backend/app/agent/evaluator.py`)**:
+   - Created `EvidenceEvaluator` class encapsulating relevance grading and corrective fallback.
+   - Implemented Semantic Hit Protection: `is_structural_or_relevant_evidence()` protects vector hits with `prominence_score >= 0.65` and structural archetypes (`cross_newspaper_comparison`, `quantitative_trend`, `article_catalog`) from naive stem pruning.
+3. **Encapsulated Data Layer (`backend/app/retrieval/sql_analytics.py`)**:
+   - Added `get_issues_by_date(issue_date)` with automatic ISO date normalization (`normalize_date_to_iso`).
+   - Added `get_newspaper_id_by_name(newspaper_name)`.
+   - Completely eliminated direct SQLAlchemy queries from the agent workflow.
+4. **Lean LangGraph State Machine (`backend/app/agent/graph.py`)**:
+   - Reduced `graph.py` from 1,153 lines to 267 lines.
+   - Implemented native LangGraph conditional edge routing (`_route_after_planning`):
+     - `clarification_needed` routes directly to `log_query`.
+     - `conversational_meta_query` routes directly to `synthesize_answer`.
+     - Active working context read directly from `state` without redundant re-parsing.
+
+### Test Verification & Quality Gates
+- Added unit tests in `backend/tests/test_graph.py`:
+  - `test_crag_semantic_hit_protection`: Verifies dense vector hits with prominence $\ge 0.65$ are preserved without lexical stem matches.
+  - `test_conditional_edge_short_circuit_routing`: Verifies native LangGraph conditional routing for clarification and conversational queries.
+  - `test_date_normalization_multi_issue`: Verifies slash dates normalize cleanly to ISO format.
+  - `test_format_issue_manifest_deduplication`: Verifies deduplicated manifest formatting.
+- `backend/tests/test_graph.py`: **7/7 tests passing (100% green)** in 1.14s.
+- `backend/tests/test_planner.py`: **27/27 tests passing (100% green)** in 1.07s.
+- `backend/tests/test_query_condenser.py`: **12/12 tests passing (100% green)** in 0.85s.
+- **Full Backend Regression Suite**: **402/402 tests passing (100% green)** in 23.83s.
+- Static Type Checking: `mypy app/agent/ app/retrieval/sql_analytics.py` $\to$ **Success: no issues found in 12 source files**.
+- Linter: `ruff check app/agent/` $\to$ **All checks passed!**
+
 
 
 
