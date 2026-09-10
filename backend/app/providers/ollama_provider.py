@@ -118,15 +118,14 @@ class OllamaProvider:
         """Run a chat completion via Ollama."""
         t0 = time.monotonic()
 
-        # If structured output requested, append instruction to system message
+        # If structured output requested, append concise instruction to system message
+        # (Ollama native format=response_schema enforces the schema via grammar sampling)
         if response_schema:
-            schema_str = json.dumps(response_schema)
             system_injection = Message(
                 role="system",
                 content=(
-                    f"You MUST respond with valid JSON that matches this schema exactly:\n"
-                    f"{schema_str}\n"
-                    "Return only the JSON object, no markdown fences."
+                    "You MUST respond with a valid JSON object matching the required structure. "
+                    "Return only the JSON object, no markdown fences or introductory text."
                 ),
             )
             messages = [system_injection, *messages]

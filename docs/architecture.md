@@ -199,23 +199,33 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
-   ┌─────────────────────────────────────────────────────────────┐
-   │           Cognitive Query Planner & Intent Router           │
-   │  • Classifies into 1 of 6 Broadsheet Query Archetypes       │
-   │  • Dispatches optimal tool execution sequence:              │
-   │    - sql_analytics (issue manifest, stats, section lists)   │
-   │    - hybrid_search (dense Qdrant + sparse MySQL RRF)        │
-   │    - entity_search (knowledge graph & salience lookups)     │
-   │    - timeline_builder (thematic chronological progression)  │
-   │    - coverage_analyzer (cross-newspaper comparison)         │
-   │    - web_search (real-time live internet grounding)         │
-   └──────────────────────────────┬──────────────────────────────┘
+   ┌──────────────────────────────────────────────────────────────┐
+   │           Cognitive Query Planner & Intent Router            │
+   │  • Grounded with live archive metadata (dates, papers, cats) │
+   │  • Classifies into 1 of 7 Broadsheet Query Archetypes:       │
+   │    - factual_lookup (specific quotes, events, people)        │
+   │    - cross_newspaper_comparison (framing, differential coverage)│
+   │    - thematic_timeline (thematic chronological progression)  │
+   │    - entity_deep_dive (knowledge graph & salience lookups)   │
+   │    - negative_coverage_audit (unreported news verification)  │
+   │    - macro_summary (broad edition overview & distribution)   │
+   │    - article_catalog (instant manifests, listings, sub-200ms)│
+   │  • Dispatches optimal tool execution sequence:               │
+   │    - sql_analytics (issue manifest, stats, section lists)    │
+   │    - hybrid_search (dense Qdrant + sparse MySQL RRF)         │
+   │    - entity_search (knowledge graph & salience lookups)      │
+   │    - timeline_builder (thematic chronological progression)   │
+   │    - coverage_analyzer (cross-newspaper comparison)          │
+   │    - web_search (real-time live internet grounding)          │
+   └──────────────────────────────┬───────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │         Multi-Tool Dispatch & Execution Engine              │
-   │  • Executes planned tool calls asynchronously in parallel   │
+   │      Concurrent Tool Dispatch & Adaptive Execution Engine   │
+   │  • Executes planned tools in parallel via asyncio.gather    │
+   │  • Real-time adaptive fallback on 0-hit category filters    │
    │  • Resilient multi-tier issue ID fallback in sql_analytics  │
+   │  • Scoped coverage analyzer targeting active date editions  │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
@@ -224,17 +234,20 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │  • Grades keyword relevance & density of retrieved evidence │
    │  • Triggers broadened fallback query if confidence is low   │
    │  • Enforces anti-hallucination hard stops on empty evidence │
+   │  • Automatic 1.0 score protection for structural manifests  │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │         4-Tier Broadsheet Grounded Synthesizer              │
-   │  • Formulates structured response:                          │
-   │    1. Executive Summary                                     │
-   │    2. Key Verified Facts & Highlights                       │
-   │    3. Broadsheet Perspectives (Front Page vs Inside)        │
-   │    4. Explore Further Follow-up Suggestions                 │
-   │  • Generates strict markdown citations: [Paper, Date, Page] │
+   │      Domain-Adaptive Broadsheet Grounded Synthesizer        │
+   │  • Intent-aware structure adapts dynamically to archetype:  │
+   │    - Domain Comparison: Adaptive headers (Medical/Finance)  │
+   │    - Edition Comparison: Page 1 Leads vs Section Breakdown  │
+   │    - Article Catalog: Tabular manifest (Newspaper, Page...) │
+   │    - Factual Lookup: 4-Tier structured executive synthesis  │
+   │  • Headline sanitization cleans author boxes (Dr./Bylines)  │
+   │  • Generates strict 1-shot citations: [Paper, Date, Page]   │
+   │  • Enforces anti-repetition constraints across findings     │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
@@ -306,6 +319,7 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 7: Ad Bleed** | Half-page commercial ads without standard headlines bled into bottom editorial stories (*Retail Investors Skip IPOs*). | Engineered convex ad-envelope detection, injecting barrier delimiter headers (`[Advertisement] ...`) to isolate ad units. |
 | **Phase 8: Slogan Bylines** | Corporate marketing taglines (*"By Innovation I Built For The Future"*) matched byline regexes and became author names. | Introduced `MARKETING_SLOGAN_REGEX` to validate author candidates against commercial buzzword filters. |
 | **Phase 9: Strict Issue IDs** | Users typing `"issue 84"` when the database stored `"Issue #88"` caused `sql_analytics` to return 0 results and poison chat context. | Upgraded `sql_analytics.py` with multi-tier fallback resolution matching by `(newspaper_name, issue_date)` when IDs mismatch. |
+| **Phase 9.17: Autonomous Reasoning & Concurrency** | Blind planning without live archive metadata caused tool hallucination; serial tool execution caused latency spikes; 0-hit category filters starved evidence; author boxes became fake headlines. | Grounded planner with `get_archive_metadata()`; added `article_catalog` archetype (<200ms); ran tools concurrently via `asyncio.gather`; added adaptive zero-hit category fallback; sanitized author/doctor boxes with `sanitize_headline()`. |
 
 ---
 

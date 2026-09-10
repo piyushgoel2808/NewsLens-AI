@@ -11,6 +11,7 @@ Distinguishes between:
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -91,6 +92,7 @@ class CoverageAnalyzer:
         query_or_event: str,
         target_date: str | None = None,
         date_window_days: int = 2,
+        query_vector: list[float] | None = None,
     ) -> PublicationCoverageReport:
         """Perform 3-tier coverage evaluation for a single newspaper regarding an event."""
         logger.info(
@@ -158,6 +160,7 @@ class CoverageAnalyzer:
             top_k=5,
             filters=search_filter,
             rerank=True,
+            query_vector=query_vector,
         )
 
         # Tier 3: Rigorous Confidence Classification
@@ -165,26 +168,34 @@ class CoverageAnalyzer:
             top_hit = hits[0]
             score = top_hit.rerank_score if top_hit.rerank_score is not None else top_hit.rrf_score
 
-            if score >= self.high_threshold or (top_hit.rrf_score >= 0.015 and len(hits) >= 1):
+            # Calibrate threshold: cross-encoder logits can be negative (e.g. -4.0 is a reasonable match)
+            # or RRF score indicates confirmed lexical/dense retrieval
+            is_covered = (
+                (top_hit.rerank_score is not None and top_hit.rerank_score >= -5.0)
+                or score >= self.high_threshold
+                or (top_hit.rrf_score >= 0.008 and len(hits) >= 1)
+            )
+            if is_covered:
                 matched_art_ids = [h.article_id for h in hits]
                 matched_hls = [h.headline for h in hits[:3] if h.headline]
+                conf = 0.95 if (top_hit.rerank_score is not None and top_hit.rerank_score >= -2.0) else 0.85
                 return PublicationCoverageReport(
                     newspaper_id=newspaper.id,
                     newspaper_name=newspaper.name,
                     status=CoverageStatus.COVERED,
-                    confidence=min(1.0, float(score)),
+                    confidence=conf,
                     matched_article_ids=matched_art_ids,
                     matched_headlines=matched_hls,
                     top_score=round(float(score), 4),
                     evidence_snippet=top_hit.snippet[:300],
                     audit_notes=f"Confirmed coverage across {len(hits)} relevant article(s).",
                 )
-            elif score >= self.uncertainty_threshold or top_hit.rrf_score >= 0.008:
+            elif score >= self.uncertainty_threshold or top_hit.rrf_score >= 0.005:
                 return PublicationCoverageReport(
                     newspaper_id=newspaper.id,
                     newspaper_name=newspaper.name,
                     status=CoverageStatus.UNCERTAIN,
-                    confidence=round(float(score), 4),
+                    confidence=0.5,
                     matched_article_ids=[top_hit.article_id],
                     matched_headlines=[top_hit.headline],
                     top_score=round(float(score), 4),
@@ -209,7 +220,22 @@ class CoverageAnalyzer:
     ) -> CoverageMatrix:
         """Generate comparative multi-newspaper coverage reconciliation matrix."""
         async with self._session_factory() as db:
-            res = await db.execute(select(Newspaper))
+            if target_date:
+                try:
+                    d_obj = datetime.date.fromisoformat(target_date)
+                    d_start = d_obj - datetime.timedelta(days=date_window_days)
+                    d_end = d_obj + datetime.timedelta(days=date_window_days)
+                    stmt = (
+                        select(Newspaper)
+                        .join(Issue, Issue.newspaper_id == Newspaper.id)
+                        .where(Issue.issue_date >= d_start, Issue.issue_date <= d_end)
+                        .distinct()
+                    )
+                except ValueError:
+                    stmt = select(Newspaper)
+            else:
+                stmt = select(Newspaper)
+            res = await db.execute(stmt)
             newspapers = res.scalars().all()
 
         matrix = CoverageMatrix(
@@ -218,13 +244,30 @@ class CoverageAnalyzer:
             total_publications=len(newspapers),
         )
 
-        for np in newspapers:
-            rep = await self.analyze_newspaper_coverage(
+        if not newspapers:
+            return matrix
+
+        # Precompute query vector once across all publications
+        query_vector: list[float] | None = None
+        if query_or_event and query_or_event.strip():
+            try:
+                provider = self._hybrid_search._get_embedding_provider()
+                query_vector = await provider.embed_one(query_or_event)
+            except Exception as ex:
+                logger.warning("Could not precompute query vector for coverage matrix", extra={"error": str(ex)})
+
+        reports = await asyncio.gather(*(
+            self.analyze_newspaper_coverage(
                 newspaper=np,
                 query_or_event=query_or_event,
                 target_date=target_date,
                 date_window_days=date_window_days,
+                query_vector=query_vector,
             )
+            for np in newspapers
+        ))
+
+        for np, rep in zip(newspapers, reports, strict=False):
             matrix.reports[np.name] = rep
             if rep.status == CoverageStatus.COVERED:
                 matrix.covered_count += 1

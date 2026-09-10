@@ -277,7 +277,7 @@ class TestAgentWorkflowToolExecution:
     def test_plan_section_listing_sports_manifest(self) -> None:
         planner = QueryPlanner()
         plan = planner.plan_query("list all its sports related news")
-        assert plan.archetype == "quantitative_trend"
+        assert plan.archetype in ("quantitative_trend", "article_catalog")
         assert len(plan.tool_calls) >= 1
         sql_call = plan.tool_calls[0]
         assert sql_call.tool_name == "sql_analytics"

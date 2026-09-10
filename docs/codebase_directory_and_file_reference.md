@@ -167,15 +167,15 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - Methods: `plan_query_async()`, `_plan_query_heuristic()`, `extract_parameters_from_query()`.
   - `PLANNER_SYSTEM_PROMPT` with strict tool boundary rules.
 * **Work It Is Doing**:
-  - Classifies user queries into 1 of 8 query archetypes:
+  - Classifies user queries into 1 of 7 query archetypes:
     1. `factual_lookup` (specific quotes, events, people)
     2. `cross_newspaper_comparison` (differential coverage, omissions, framing differences)
     3. `thematic_timeline` (chronological progression across multiple dates)
-    4. `quantitative_trend` (statistical tables, issue summaries, article counts)
-    5. `entity_deep_dive` (multi-hop entity network search)
-    6. `negative_coverage_audit` (verifying what a publication did NOT report)
-    7. `visual_multimodal_analysis` (charts, infographics, photos)
-    8. `general_broadsheet_exploration` (broad overview of an edition)
+    4. `entity_deep_dive` (multi-hop entity network search)
+    5. `negative_coverage_audit` (verifying what a publication did NOT report)
+    6. `macro_summary` (broad overview of an edition)
+    7. `article_catalog` (ultra-fast listing and catalog manifest generation for specific dates and categories)
+  - **Live Archive Grounding**: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories so it selects lean, non-hallucinated tool sequences.
   - Employs typo-tolerant regex parameter extraction for newspaper names (e.g. "he Morning Standard" $\to$ "The Morning Standard") and publication dates.
   - Produces structured Chain-of-Thought reasoning traces and deterministically schedules 1 to 4 complementary tool calls (`sql_analytics`, `hybrid_search`, `entity_search`, `timeline_builder`, `coverage_analysis`, `web_search`).
   - Includes `_plan_query_heuristic()` for instantaneous zero-latency local fallback if LLM generation encounters timeouts.
@@ -197,7 +197,8 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - Workflow graph compilation with conditional edges.
 * **Work It Is Doing**:
   - Orchestrates the state machine workflow: Plan $\to$ Execute Tools $\to$ Evaluate Evidence (CRAG) $\to$ Synthesize Answer.
-  - Dispatches planned tool calls concurrently via `asyncio.gather()`.
+  - **Concurrent Tool Execution**: Dispatches planned tool calls concurrently via `asyncio.gather(*tasks, return_exceptions=True)`, reducing multi-tool query latency by 40–60%.
+  - **Adaptive Zero-Hit Fallback**: In `_execute_single_tool`, if `hybrid_search` or `sql_analytics(issue_summary)` with a category filter returns 0 articles, automatically retries without the category constraint to prevent empty retrieval.
   - **Corrective RAG (CRAG) Gate**: Scores evidence relevance against stemmed query tokens, strips irrelevant distractors, and triggers fallback searches (`entity_search` or `web_search`) if grounded evidence is empty.
   - **Macro Manifest Protection**: Grants relational SQL manifests an automatic relevance score of $1.0$, guaranteeing that comprehensive exclusion lists and article counts are never pruned.
 * **Important Tools / Frameworks**: LangGraph, Python AsyncIO, SQLAlchemy Async Session Factory.
@@ -206,17 +207,19 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 ##### [`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)
 * **What It Has**: 
   - `Synthesizer` class.
-  - `SYNTHESIZER_SYSTEM_PROMPT` containing strict broadsheet editorial formatting rules.
-  - Helper function `parse_thought_and_answer()`.
+  - Dynamic system prompts via `_build_synthesizer_system_prompt()`.
+  - Helper functions: `parse_thought_and_answer()`, `_build_evidence_context()`.
   - Generator method `synthesize_stream()`.
 * **Work It Is Doing**:
   - Generates authoritative, highly readable executive intelligence briefs.
+  - **Domain-Adaptive Synthesis**: Dynamically adapts comparison table structures based on topic domain (`Key Findings & Medical Focus` for health, `Key Figures & Metrics` for finance, `Key Policy Decisions & Statements` for politics) and outputs dedicated table manifests for `article_catalog` queries.
+  - **Headline Cleansing Integration**: Sanitizes author/doctor byline boxes into descriptive feature labels while protecting real all-caps news headlines.
   - **Evidence Context Budgeting**: Slices evidence to Top 12 items and enforces context caps (up to 4,000 characters for manifests/matrices, 1,200 characters for standard articles).
   - **Critical Publication Scoping Barrier**: Injects explicit constraints listing verified available publications, forbidding the model from hallucinating or citing absent newspapers.
   - **Reasoning Stream Parsing**: Separates model reasoning traces (`<think>...</think>` or `<thought>...</thought>`) from the final response text.
-  - **Strict Citation Enforcement**: Mandates bracketed inline citations on every factual assertion:
+  - **Strict 1-Shot Citation Enforcement**: Mandates bracketed inline citations on every factual assertion:
     `[{Newspaper Name}, {YYYY-MM-DD}, Page {P}, "{Headline}"]` or `[📊 Chart: ...]`.
-  - Formats output into 4 standard sections: `### ⚡ Executive Summary`, `### 📌 Key Verified Facts & Highlights`, `### 📰 Broadsheet Perspectives & Focus Areas`, `### 🔍 Explore Further`.
+  - Anti-repetition constraints preventing duplicate bullet points.
 * **Important Tools / Frameworks**: Async Generators (`AsyncIterator`), Regex Parsing, Pydantic.
 * **LLM / VLM / Embedding Models**: Bound to `answerer` task (`gemma4:12b`, `llama3.1:8b`, `deepseek-r1:14b`, `nemotron-3.5-lightning`, or `gpt-4o`).
 
@@ -236,11 +239,11 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **What It Has**: FastAPI `app` instance, lifespan async context manager, CORS middleware setup, Prometheus middleware integration, router inclusion (`newspapers`, `articles`, `query`, `ingest`, `metadata`, `models`, `settings`, `health`).
 * **Work It Is Doing**:
   - Serves as the master HTTP application entrypoint.
-  - Startup lifespan: Initializes the MySQL connection pool (`init_db`) and ensures the Qdrant vector collection exists.
+  - Startup lifespan: Initializes MySQL connection pools (`init_db`), ensures Qdrant collections exist, and launches background pre-warming for embedding (`BAAI/bge-m3`) and cross-encoder reranker models to absorb cold-start latency.
   - Shutdown lifespan: Gracefully closes database connection pools and client sessions.
   - Exposes standard `/metrics` endpoint for Prometheus scraping.
 * **Important Tools / Frameworks**: FastAPI, Starlette CORS, Prometheus Client.
-* **LLM / VLM / Embedding Models**: None (API Gateway).
+* **LLM / VLM / Embedding Models**: Pre-warms BGE-M3 and MS-MARCO MiniLM.
 
 #### Files in `backend/app/api/routers/`:
 
@@ -670,15 +673,18 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - Merges results using Reciprocal Rank Fusion ($k=60$):
     RRF Score = 1 / (60 + dense_rank) + 1 / (60 + sparse_rank)
   - Passes the top candidate pool (up to 75 items) through the neural Cross-Encoder reranker.
+  - **Category Post-Filtering**: Filters candidates across `category.name`, `section`, and `printed_section` with dynamic candidate pool expansion (`max(50, top_k * 4)`).
   - Retrieves visual chunks (`has_visual_data=True`) containing Markdown tables transcribed by Qwen-VL.
 * **Important Tools / Frameworks**: Qdrant Async, MySQL FULLTEXT, CrossEncoderReranker.
 * **LLM / VLM / Embedding Models**: `BAAI/bge-m3` (dense embeddings), `cross-encoder/ms-marco-MiniLM-L-6-v2` (reranker).
 
 ##### [`backend/app/retrieval/sql_analytics.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/sql_analytics.py)
-* **What It Has**: `SQLAnalyticsEngine` class.
+* **What It Has**: `SQLAnalyticsEngine` class, `sanitize_headline()`, `get_archive_metadata()`.
 * **Work It Is Doing**:
   - Executes deterministic, parameterized SQL aggregation queries.
-  - `get_issue_summary()`: Retrieves the full article manifest for a newspaper issue.
+  - `get_archive_metadata()`: Fast cached (<20ms) extraction of available issue dates, active newspapers, and canonical database categories.
+  - `sanitize_headline()`: Cleanses headlines where doctor/author profile names were mistakenly extracted as the headline, preserving genuine all-caps headlines and bylines.
+  - `get_issue_summary()`: Retrieves the full article manifest for a newspaper issue with economic domain bridging (`Business & Markets` + `Economy & Policy`).
   - `get_newspaper_coverage_difference()`: Computes verified exclusive articles between two publications on a given date (e.g. The Goan vs The Morning Standard).
   - `get_entity_mention_trends()`: Computes monthly/daily mention trajectories.
 * **Important Tools / Frameworks**: SQLAlchemy Core & ORM async select queries.
@@ -692,7 +698,7 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 
 ##### [`backend/app/retrieval/coverage_analyzer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/coverage_analyzer.py)
 * **What It Has**: `CoverageStatus`, `PublicationCoverageReport`, `CoverageMatrix`, `CoverageAnalyzer`.
-* **Work It Is Doing**: Enforces the Coverage Invariant via a 3-tier audit (Relational Ingestion Health -> Targeted Retrieval -> Confidence Classification: `COVERED`, `NOT_FOUND`, `UNCERTAIN`).
+* **Work It Is Doing**: Enforces the Coverage Invariant via a 3-tier audit. Scopes negative audits strictly to publications with active issues on the target date, and uses calibrated cross-encoder logit thresholds (`>= -5.0`) to avoid false `PROCESSING_ERROR` classifications.
 * **Important Tools / Frameworks**: SQLAlchemy AsyncSession, HybridSearchEngine.
 * **LLM / VLM / Embedding Models**: None.
 

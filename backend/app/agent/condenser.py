@@ -13,16 +13,17 @@ from app.providers.registry import get_registry
 logger = get_logger(__name__)
 
 AMBIGUOUS_PRONOUNS_PATTERN = re.compile(
-    r"\b(it|this|that|these|those|they|them|he|him|she|her|its|the article|the news|"
-    r"the story|the company|the deal|the report|the issue|the paper|the event|the incident|"
+    r"\b(it|this|that|these|those|they|them|he|him|she|her|its|there|their|"
+    r"the article|the news|the story|the company|the deal|the report|the issue|the paper|the event|the incident|"
     r"summarize it|more about this|tell me more|who was involved|what else|why did that happen|"
-    r"what happened next|elaborate|explain it|give more details)\b",
+    r"what happened next|elaborate|explain it|give more details|"
+    r"all of them|all there|all their)\b",
     re.IGNORECASE,
 )
 
 GENERIC_FOLLOWUP_SHORT_PATTERN = re.compile(
     r"^(can you |please )?(summarize|summarise|explain|elaborate|expand|tell me more|more details|"
-    r"what about it|who was involved|why|how|what happened|what else)( it| this| that| them)?\??$",
+    r"what about it|who was involved|why|how|what happened|what else|list all|show all|list|show)( it| this| that| them| there| their)?\??$",
     re.IGNORECASE,
 )
 
@@ -64,7 +65,10 @@ def needs_condensation(query: str, chat_history: list[dict[str, Any]]) -> bool:
     if len(words) <= 6 and GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
         return True
 
-    return bool(AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean))
+    if bool(AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean)):
+        return True
+
+    return False
 
 
 def is_ambiguous_standalone_query(query: str, chat_history: list[dict[str, Any]]) -> bool:

@@ -37,11 +37,115 @@ if _CONFIG_PATH.exists():
 
 
 
+_COMMON_HEADLINE_VOCAB = {
+    "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "with", "from",
+    "by", "of", "up", "out", "over", "into", "as", "is", "are", "was", "were",
+    "stocks", "stock", "rally", "fall", "falls", "surge", "surges", "plunge", "plunges",
+    "crash", "rise", "rises", "drop", "drops", "gain", "gains", "loss", "losses",
+    "meet", "meets", "talks", "win", "wins", "lose", "loses", "protest", "protests",
+    "attack", "attacks", "death", "killed", "dies", "dead", "open", "opens", "close", "closes",
+    "war", "market", "markets", "govt", "government", "minister", "police", "report", "reports",
+    "tax", "taxes", "rate", "rates", "cricket", "cup", "match", "final", "plan", "plans",
+    "deal", "deals", "bill", "bills", "row", "scam", "held", "hit", "hits", "warns", "seeks",
+    "calls", "poll", "polls", "vote", "votes", "gold", "bank", "banks", "fund", "funds",
+    "growth", "inflation", "gdp", "trade", "india", "world", "local", "sports", "news",
+    "tech", "ai", "auto", "power", "solar", "oil", "gas", "rupee", "dollar", "price", "prices",
+    "high", "low", "record", "new", "top", "day", "year", "lead", "leads", "chief", "case",
+    "court", "order", "plea", "bail", "jail", "probe", "fire", "blast", "road", "water",
+    "hospital", "health", "cancer", "heart", "care", "cure", "drug", "drugs", "study", "recap",
+}
+
+
+def sanitize_headline(
+    headline: str | None,
+    subheadline: str | None = None,
+    byline_author: str | None = None,
+    snippet: str | None = None,
+) -> tuple[str, str | None]:
+    """Cleanse headlines where doctor/author profile names were mistakenly extracted as the headline.
+
+    Returns (cleaned_headline, effective_byline).
+    """
+    if not headline or not headline.strip():
+        return ("Untitled Report", byline_author)
+
+    hl = headline.strip()
+    byline = (byline_author or "").strip() or None
+    sub = (subheadline or "").strip()
+    snip = (snippet or "").strip()
+
+    # 1. Detect Doctor / Expert name box as headline (e.g. 'Dr. Smriti Naswa Singh')
+    if re.match(r"^(?:Dr\.?|Doctor|Prof\.?|Professor)\s+[A-Z]", hl, re.IGNORECASE):
+        effective_byline = hl if not byline else f"{hl} ({byline})"
+        if sub and len(sub) > 5:
+            cleaned_sub = re.sub(r"[\s\~\-]+$", "", sub).strip()
+            return (cleaned_sub, effective_byline)
+        elif snip:
+            first_sent = re.split(r"[.\n]", snip)[0].strip()
+            if len(first_sent) > 10:
+                return (first_sent[:80], effective_byline)
+        return (f"Medical Column: {hl}", effective_byline)
+
+    # 2. Headline identical to byline author
+    if byline and hl.lower() == byline.lower():
+        if sub and len(sub) > 5:
+            return (sub, byline)
+        elif snip:
+            first_sent = re.split(r"[.\n]", snip)[0].strip()
+            if len(first_sent) > 10:
+                return (first_sent[:80], byline)
+        return (f"Profile: {hl}", byline)
+
+    # 3. All-caps 2 or 3 word person name without verbs or news terms (e.g. 'UTHAMA SANKARANARAYANAN')
+    words = hl.split()
+    if 2 <= len(words) <= 3 and hl.isupper() and all(w.isalpha() for w in words):
+        # If headline contains common news vocabulary, it's an all-caps headline, not a person name
+        if not any(w.lower() in _COMMON_HEADLINE_VOCAB for w in words):
+            if snip:
+                first_sent = re.split(r"[.\n]", snip)[0].strip()
+                if len(first_sent) > 15:
+                    topic = re.sub(r"^(?:A|The)\s+", "", first_sent, flags=re.IGNORECASE)
+                    topic = topic[:70].strip()
+                    eff_byline = f"{hl} / {byline}" if byline else hl
+                    return (f"{topic.capitalize()}", eff_byline)
+            return (f"Special Feature: {hl.title()}", byline or hl.title())
+
+    return (hl, byline)
+
+
 class SQLAnalyticsEngine:
     """Executes safe, parameterized aggregation queries for quantitative news trends."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+
+    async def get_archive_metadata(self) -> dict[str, Any]:
+        """Retrieve lightweight metadata summary of available dates, newspapers, and categories."""
+        from app.models.article import ArticleCategory
+        from app.models.newspaper import Newspaper
+
+        async with self._session_factory() as db:
+            stmt = (
+                select(Issue.issue_date, Newspaper.name, Issue.id)
+                .join(Newspaper, Issue.newspaper_id == Newspaper.id)
+                .where(Issue.ingestion_status.in_(("completed", "indexed", "ready")))
+                .order_by(Issue.issue_date.desc())
+            )
+            res = await db.execute(stmt)
+            rows = res.all()
+            by_date: dict[str, list[str]] = {}
+            for dt, np_name, _ in rows:
+                dt_str = str(dt)
+                if np_name not in by_date.setdefault(dt_str, []):
+                    by_date[dt_str].append(np_name)
+
+            res2 = await db.execute(select(ArticleCategory.name).order_by(ArticleCategory.name))
+            cats = list(res2.scalars().all())
+
+            return {
+                "available_dates": by_date,
+                "categories": cats or _CANONICAL_CATEGORIES,
+            }
 
     async def get_entity_mention_trends(
         self,
@@ -305,17 +409,25 @@ class SQLAnalyticsEngine:
                     else str(p_num)
                 )
 
+                clean_hl, clean_byline = sanitize_headline(
+                    a.headline,
+                    a.subheadline,
+                    a.byline_author,
+                    a.full_text[:300] if getattr(a, "full_text", None) else None,
+                )
+
                 manifest.append(
                     {
                         "id": a.id,
-                        "headline": a.headline,
+                        "headline": clean_hl,
+                        "raw_headline": a.headline,
                         "subheadline": a.subheadline,
                         "section": sec,
                         "printed_section": a.printed_section,
                         "category": cat_name,
                         "topics": art_topics,
                         "article_type": atype,
-                        "byline_author": a.byline_author,
+                        "byline_author": clean_byline or a.byline_author,
                         "page_number": p_num,
                         "printed_page": folio,
                         "word_count": a.word_count,
@@ -335,12 +447,26 @@ class SQLAnalyticsEngine:
                 ]
             elif category_filter:
                 cat_raw = category_filter.strip().lower()
-                resolved_cat = _USER_QUERY_SYNONYMS.get(cat_raw, cat_raw).lower()
-                canon_key = next(
-                    (c for c in _CANONICAL_CATEGORIES if c.lower() in (cat_raw, resolved_cat)),
-                    None,
-                )
-                kw_cluster = _CATEGORY_KEYWORDS.get(canon_key, []) if canon_key else [cat_raw, resolved_cat]
+                target_canons: list[str] = []
+                # If query refers to economics, finance, markets, or business, bridge both economic domains
+                if any(w in cat_raw for w in ["econom", "financ", "business", "market"]):
+                    target_canons = ["Business & Markets", "Economy & Policy"]
+                else:
+                    resolved_cat = _USER_QUERY_SYNONYMS.get(cat_raw, cat_raw).lower()
+                    canon_key = next(
+                        (c for c in _CANONICAL_CATEGORIES if c.lower() in (cat_raw, resolved_cat)),
+                        None,
+                    )
+                    if canon_key:
+                        target_canons = [canon_key]
+                    else:
+                        target_canons = [cat_raw]
+
+                kw_cluster: list[str] = []
+                for c_name in target_canons:
+                    kw_cluster.extend(_CATEGORY_KEYWORDS.get(c_name, []))
+                if not kw_cluster:
+                    kw_cluster = [cat_raw]
 
                 matched: list[dict[str, Any]] = []
                 matched_ids: set[int] = set()
@@ -353,14 +479,12 @@ class SQLAnalyticsEngine:
                     m_topics = [t.lower() for t in m.get("topics", [])]
                     hl_sub = f"{m.get('headline', '')} {m.get('subheadline', '')}".lower()
 
-                    structured_match = (
-                        cat_raw in m_cat
-                        or resolved_cat in m_cat
-                        or cat_raw in m_sec
-                        or resolved_cat in m_sec
-                        or cat_raw in m_psec
-                        or resolved_cat in m_psec
-                        or any(cat_raw in t or resolved_cat in t for t in m_topics)
+                    structured_match = any(
+                        tc.lower() in m_cat
+                        or tc.lower() in m_sec
+                        or tc.lower() in m_psec
+                        or any(tc.lower() in t for t in m_topics)
+                        for tc in target_canons
                     )
                     keyword_match = any(
                         re.search(r"\b" + re.escape(kw.lower()) + r"\b", hl_sub)

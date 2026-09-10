@@ -27,6 +27,7 @@ QueryArchetype = Literal[
     "quantitative_trend",
     "cross_newspaper_comparison",
     "entity_deep_dive",
+    "article_catalog",
 ]
 
 PrimaryToolName = Literal[
@@ -161,11 +162,11 @@ Your job is to analyze the user's research query, understand their underlying in
 
 1. **`sql_analytics` (Relational System of Record & Structural Aggregations)**:
    - MUST BE USED FOR:
+     * Article catalog & itemized listings (e.g. "List all health news", "List all articles on page 5", "Catalog of business news"). Set archetype to `article_catalog`.
      * Whole-issue summaries (e.g. "Summarize issue 81 of Mint", "Give an overview of today's newspaper").
-     * Article listings & page manifests (e.g. "List all articles on page 5", "What news is on page 10?").
      * Article counting & statistics (e.g. "How many articles are in this issue?", "Count stories about economy").
      * Section/category breakdowns (e.g. "Show articles sorted by Sports section").
-   - NEVER USE `hybrid_search` for whole-issue summaries or whole-page article listings. Vector search only retrieves fragmented text chunks and cannot see the full document or list all articles.
+   - NEVER USE `hybrid_search` or `coverage_analysis` for article listings, catalogs, or manifests. Vector search only retrieves fragmented text chunks and cannot see the full document or list all articles.
 
 2. **`hybrid_search` (Dense Vector + Sparse Keyword Reranked Retrieval)**:
    - MUST BE USED FOR:
@@ -181,11 +182,17 @@ Your job is to analyze the user's research query, understand their underlying in
    - MUST BE USED FOR:
      * Comprehensive profiles and salience analysis of specific individuals or organizations across the archive (e.g. "Show me everything about Winston Churchill").
 
-5. **`coverage_analysis` (Cross-Newspaper Comparative Matrix)**:
+5. **`coverage_analysis` (Negative Coverage & Omission Reconciliation)**:
    - MUST BE USED FOR:
-     * Comparing coverage, tone, and editorial stances across multiple newspapers (e.g. "Compare how Mint and Business Standard covered the budget").
+     * Determining if a newspaper OMITTED or missed an event (e.g. "Did Mint fail to cover the budget?", "What stories did Business Standard miss?").
+     * DO NOT USE `coverage_analysis` for standard cross-newspaper comparison or article listings unless omission/exclusion analysis is explicitly requested.
 
-6. **CRITICAL ANTI-HALLUCINATION GUARDRAILS**:
+6. **MINIMAL SUFFICIENT TOOL PRINCIPLE (LOW LATENCY MANDATE)**:
+   - Always choose the minimal, fastest tool(s) needed to answer the query.
+   - For listing/catalog queries: `sql_analytics` ONLY.
+   - For broadsheet comparisons: `sql_analytics` + optional `hybrid_search` for lead stories.
+
+7. **CRITICAL ANTI-HALLUCINATION GUARDRAILS**:
    - NEVER invent, assume, or hallucinate a newspaper brand, issue date, or page number.
    - If the user query does NOT explicitly specify a page number (e.g. "page 5"), NEVER set `page_filter`.
    - If the user query does NOT explicitly mention a newspaper name or date, omit them from `arguments` so the active conversation context can supply them.
@@ -213,8 +220,8 @@ Output: {
 Example 2:
 Query: "List all articles on page 5"
 Output: {
-  "thought_process": "User wants a structured manifest of all news items on page 5. This is a structural page manifest query requiring the relational database. sql_analytics is the primary tool with page_filter='5'.",
-  "archetype": "quantitative_trend",
+  "thought_process": "User wants a structured manifest of all news items on page 5. This is an article catalog query requiring the relational database. sql_analytics is the primary tool with page_filter='5'.",
+  "archetype": "article_catalog",
   "primary_tool": "sql_analytics",
   "arguments": {
     "page_filter": "5",
@@ -263,6 +270,19 @@ Output: {
   },
   "include_secondary_hybrid_search": true,
   "secondary_search_query": "banking crisis"
+}
+
+Example 6:
+Query: "List all their health news"
+Output: {
+  "thought_process": "User is asking to list all health news articles from the current broadsheet edition(s). This is an article catalog query requiring sql_analytics with category_filter='Health'. Vector search cannot list all articles and must be skipped.",
+  "archetype": "article_catalog",
+  "primary_tool": "sql_analytics",
+  "arguments": {
+    "category_filter": "Health",
+    "analysis_type": "issue_summary"
+  },
+  "include_secondary_hybrid_search": false
 }
 
 Example 7:
@@ -436,13 +456,11 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
             params["date_from"] = sorted_dates[0]
             params["date_to"] = sorted_dates[-1]
 
-    # 4. Section / Category Extraction for listing queries
-    is_section_query = any(w in query.lower() for w in ["news", "articles", "stories", "section", "coverage", "reports"])
-    if is_section_query:
-        for pat, cat_name in _SECTION_PATTERNS:
-            if pat.search(query):
-                params["category_filter"] = cat_name
-                break
+    # 4. Section / Category Extraction for listing and comparative queries
+    for pat, cat_name in _SECTION_PATTERNS:
+        if pat.search(query):
+            params["category_filter"] = cat_name
+            break
 
     return params
 
@@ -554,22 +572,32 @@ class QueryPlanner:
         query: str,
         enable_web_search: bool = False,
         model_override: str | None = None,
+        archive_context: str | None = None,
+        active_issue_date: str | None = None,
+        active_newspapers: list[str] | None = None,
     ) -> PlanResult:
         """Plan query using LLM structured Chain-of-Thought reasoning with graceful heuristic fallback."""
         providers = self._get_provider_candidates(model_override)
         for provider in providers:
             try:
                 plan_schema = QueryPlan.model_json_schema()
+                user_content = (
+                    f"Analyze and plan the following broadsheet research query:\n"
+                    f"Query: \"{query}\"\n"
+                )
+                if archive_context:
+                    user_content += f"\nACTIVE ARCHIVE STATE (Verified Publications & Ingested Dates in DB):\n{archive_context}\n"
+                if active_issue_date or active_newspapers:
+                    user_content += (
+                        f"\nCONVERSATION WORKING CONTEXT:\n"
+                        f"Active Date: {active_issue_date or 'Not specified'}\n"
+                        f"Active Newspapers: {', '.join(active_newspapers or []) or 'Not specified'}\n"
+                    )
+                user_content += "\nProvide your JSON plan strictly matching the required schema."
+
                 messages = [
                     Message(role="system", content=PLANNER_SYSTEM_PROMPT),
-                    Message(
-                        role="user",
-                        content=(
-                            f"Analyze and plan the following broadsheet research query:\n"
-                            f"Query: \"{query}\"\n"
-                            f"Provide your JSON plan strictly matching the required schema."
-                        ),
-                    ),
+                    Message(role="user", content=user_content),
                 ]
                 resp = await provider.complete(
                     messages=messages,
@@ -586,6 +614,12 @@ class QueryPlanner:
 
                 if parsed_dict:
                     plan_obj = QueryPlan.model_validate(parsed_dict)
+                    # Inherit active_issue_date if query does not supply its own date
+                    if not plan_obj.arguments.issue_date and active_issue_date:
+                        extracted_params = extract_parameters_from_query(query)
+                        if not extracted_params.get("issue_date"):
+                            plan_obj.arguments.issue_date = active_issue_date
+
                     return self._build_plan_from_structured_model(
                         query=query,
                         plan_obj=plan_obj,
@@ -602,11 +636,28 @@ class QueryPlanner:
                 )
 
         # Fallback if no LLM provider or all LLM calls failed
-        return self._plan_query_heuristic(query, enable_web_search=enable_web_search)
+        return self._plan_query_heuristic(
+            query,
+            enable_web_search=enable_web_search,
+            active_issue_date=active_issue_date,
+            active_newspapers=active_newspapers,
+        )
 
-    def plan_query(self, query: str, enable_web_search: bool = False) -> PlanResult:
+    def plan_query(
+        self,
+        query: str,
+        enable_web_search: bool = False,
+        archive_context: str | None = None,
+        active_issue_date: str | None = None,
+        active_newspapers: list[str] | None = None,
+    ) -> PlanResult:
         """Synchronous planning interface for compatibility with sync callers."""
-        return self._plan_query_heuristic(query, enable_web_search=enable_web_search)
+        return self._plan_query_heuristic(
+            query,
+            enable_web_search=enable_web_search,
+            active_issue_date=active_issue_date,
+            active_newspapers=active_newspapers,
+        )
 
     def classify_archetype(self, query: str) -> tuple[str, str]:
         """Classify query archetype (synchronous interface)."""
@@ -706,6 +757,21 @@ class QueryPlanner:
                     logger.info("Pruned hallucinated issue_date not in query", extra={"issue_date": args.issue_date, "query": query})
                     args.issue_date = None
 
+        # 4. Date ranges: Sanitize hallucinated date_from / date_to if not in query or extracted_params
+        if args.date_from:
+            if extracted_params.get("date_from"):
+                args.date_from = extracted_params["date_from"]
+            elif not any(part in query for part in args.date_from.split("-")):
+                logger.info("Pruned hallucinated date_from not in query", extra={"date_from": args.date_from, "query": query})
+                args.date_from = None
+
+        if args.date_to:
+            if extracted_params.get("date_to"):
+                args.date_to = extracted_params["date_to"]
+            elif not any(part in query for part in args.date_to.split("-")):
+                logger.info("Pruned hallucinated date_to not in query", extra={"date_to": args.date_to, "query": query})
+                args.date_to = None
+
         # Populate date ranges if extracted
         if extracted_params.get("date_from") and not args.date_from:
             args.date_from = extracted_params["date_from"]
@@ -734,6 +800,29 @@ class QueryPlanner:
             and len(args.target_newspapers) <= 1
             and (len(args.target_dates) >= 2 or (args.date_from and args.date_to and args.date_from != args.date_to))
         )
+
+        if plan_obj.archetype == "article_catalog":
+            call_args: dict[str, Any] = {
+                "analysis_type": "issue_summary",
+                "newspaper_name": args.newspaper_name,
+                "issue_date": args.issue_date,
+                "issue_id": args.issue_id,
+                "page_filter": args.page_filter,
+                "category_filter": args.category_filter,
+                "query": args.query or query,
+            }
+            call_args = {k: v for k, v in call_args.items() if v is not None}
+            return PlanResult(
+                archetype="article_catalog",
+                reasoning=plan_obj.thought_process or "Retrieve complete structured article catalog via SQL.",
+                tool_calls=[
+                    PlannedToolCall(
+                        tool_name="sql_analytics",
+                        arguments=call_args,
+                        purpose=f"Retrieve complete article catalog (category: {args.category_filter or 'All'})",
+                    )
+                ],
+            )
 
         if plan_obj.primary_tool == "sql_analytics" or is_single_brand_multi_issue:
             if is_single_brand_multi_issue and plan_obj.primary_tool == "coverage_analysis":
@@ -860,15 +949,18 @@ class QueryPlanner:
             elif is_two_paper_compare:
                 # Retrieve manifests for BOTH target newspapers
                 for np_target in [args.newspaper_name, args.comparison_newspaper]:
+                    sql_args: dict[str, Any] = {
+                        "analysis_type": "issue_summary",
+                        "newspaper_name": np_target,
+                        "issue_date": args.issue_date or args.date_from,
+                        "query": args.query or query,
+                    }
+                    if args.category_filter:
+                        sql_args["category_filter"] = args.category_filter
                     tool_calls.append(
                         PlannedToolCall(
                             tool_name="sql_analytics",
-                            arguments={
-                                "analysis_type": "issue_summary",
-                                "newspaper_name": np_target,
-                                "issue_date": args.issue_date or args.date_from,
-                                "query": args.query or query,
-                            },
+                            arguments=sql_args,
                             purpose=f"Retrieve article manifest for {np_target} on {args.issue_date or args.date_from}",
                         )
                     )
@@ -880,64 +972,67 @@ class QueryPlanner:
                     and args.issue_date is not None
                 )
                 if is_all_newspaper_date_compare:
+                    sql_all_args: dict[str, Any] = {
+                        "analysis_type": "issue_summary",
+                        "issue_date": args.issue_date,
+                        "query": args.query or query,
+                    }
+                    if args.category_filter:
+                        sql_all_args["category_filter"] = args.category_filter
                     # Primary: SQL issue summary for ALL newspapers on target date (no newspaper filter)
                     tool_calls.append(
                         PlannedToolCall(
                             tool_name="sql_analytics",
-                            arguments={
-                                "analysis_type": "issue_summary",
-                                "issue_date": args.issue_date,
-                                "query": args.query or query,
-                            },
+                            arguments=sql_all_args,
                             purpose=f"Retrieve complete article manifest for ALL newspapers on {args.issue_date}",
                         )
                     )
 
+            is_all_newspaper_date_compare = (
+                args.newspaper_name is None
+                and args.issue_date is not None
+            )
+            hs_args: dict[str, Any] = {
+                "query": args.query or query,
+                "newspaper_name": args.newspaper_name,
+                "date_from": args.date_from,
+                "date_to": args.date_to,
+                "top_k": 12,
+            }
+            if args.category_filter:
+                hs_args["category_filter"] = args.category_filter
+            elif is_all_newspaper_date_compare:
+                # When comparing all newspapers across an entire edition without a specific category/domain,
+                # prioritize Page 1 front-page banner articles so the editorial lead stories are compared
+                hs_args["page_filter"] = "1"
+
             tool_calls.append(
                 PlannedToolCall(
                     tool_name="hybrid_search",
-                    arguments={
-                        "query": args.query or query,
-                        "newspaper_name": args.newspaper_name,
-                        "date_from": args.date_from,
-                        "date_to": args.date_to,
-                        "top_k": 12,
-                    },
+                    arguments=hs_args,
                     purpose="Retrieve diverse articles across multiple newspaper editions",
                 )
             )
-            # Pass target_date so coverage_analysis scopes its audit to the requested date window
-            cov_args: dict[str, Any] = {"query": args.query or query}
-            if args.issue_date:
-                cov_args["target_date"] = args.issue_date
-            elif args.date_from:
-                cov_args["target_date"] = args.date_from
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="coverage_analysis",
-                    arguments=cov_args,
-                    purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
-                )
+            # Schedule coverage_analysis when requested as primary tool, for all-newspaper date comparisons, or explicit negative audit
+            needs_negative_audit = (
+                plan_obj.primary_tool == "coverage_analysis"
+                or is_differential
+                or is_all_newspaper_date_compare
+                or any(w in query.lower() for w in ["omission", "miss", "missed", "omitted", "exclusive", "gap", "absent", "fail to report", "all available", "coverage comparison", "coverage matrix"])
             )
-            # Pass issue_date/date filters to sql_analytics(coverage_comparison) too
-            sql_cov_args: dict[str, Any] = {
-                "analysis_type": "coverage_comparison",
-                "query": args.query or query,
-            }
-            if args.issue_date:
-                sql_cov_args["issue_date"] = args.issue_date
-                sql_cov_args["target_date"] = args.issue_date
-            if args.date_from:
-                sql_cov_args["date_from"] = args.date_from
-            if args.date_to:
-                sql_cov_args["date_to"] = args.date_to
-            tool_calls.append(
-                PlannedToolCall(
-                    tool_name="sql_analytics",
-                    arguments=sql_cov_args,
-                    purpose="Compare reporting sentiment, volume, and section prominence",
+            if needs_negative_audit:
+                cov_args: dict[str, Any] = {"query": args.query or query}
+                if args.issue_date:
+                    cov_args["target_date"] = args.issue_date
+                elif args.date_from:
+                    cov_args["target_date"] = args.date_from
+                tool_calls.append(
+                    PlannedToolCall(
+                        tool_name="coverage_analysis",
+                        arguments=cov_args,
+                        purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
+                    )
                 )
-            )
 
         # Secondary search if requested
         if plan_obj.include_secondary_hybrid_search and plan_obj.primary_tool != "hybrid_search":
@@ -979,7 +1074,13 @@ class QueryPlanner:
             tool_calls=tool_calls,
         )
 
-    def _plan_query_heuristic(self, query: str, enable_web_search: bool = False) -> PlanResult:
+    def _plan_query_heuristic(
+        self,
+        query: str,
+        enable_web_search: bool = False,
+        active_issue_date: str | None = None,
+        active_newspapers: list[str] | None = None,
+    ) -> PlanResult:
         """Cognitive intent decomposition and tool routing fallback."""
         q_lower = query.lower().strip()
         words = [w.strip("?:!.,\"'") for w in q_lower.split()]
@@ -988,6 +1089,9 @@ class QueryPlanner:
         newspaper_name = extracted_params.get("newspaper_name")
         issue_id = extracted_params.get("issue_id")
         issue_date = extracted_params.get("issue_date")
+        if not issue_date and active_issue_date:
+            issue_date = active_issue_date
+            extracted_params["issue_date"] = active_issue_date
         category_filter = extracted_params.get("category_filter")
 
         # 1. Check for macro-issue summary or whole-issue queries
@@ -1025,33 +1129,7 @@ class QueryPlanner:
                     page_num_str = cand
                     break
 
-        # Check if page query is a manifest / listing vs factual question
-        is_page_manifest = has_page_token and any(
-            w in q_lower for w in ["list", "articles on", "stories on", "all articles", "no of articles", "how many", "what articles"]
-        ) and not any(w in q_lower for w in ["what happened", "what did", "why did", "how did", "announce", "state", "say"])
-
-        # Check if query is a section/category listing manifest (e.g. "list all its sports related news", "show business section")
-        is_section_manifest = bool(category_filter) and any(
-            w in q_lower for w in ["list", "show", "get", "all", "what are", "what is", "stories", "articles", "news", "headlines"]
-        ) and not any(w in q_lower for w in ["what happened", "what did", "why did", "how did", "announce", "state", "say", "quote"])
-
-        # 3. Check for counting / statistical aggregations
-        is_count_or_stat = any(
-            phrase in q_lower
-            for phrase in [
-                "how many articles",
-                "total articles",
-                "number of articles",
-                "no. of articles",
-                "no of articles",
-                "count of articles",
-                "frequency trend",
-                "distribution of articles",
-                "topic distribution",
-            ]
-        )
-
-        # 4. Check for timeline progression
+        # 3. Check for timeline progression
         is_timeline = any(
             w in q_lower
             for w in [
@@ -1067,7 +1145,7 @@ class QueryPlanner:
             ]
         )
 
-        # 5. Check for cross-newspaper comparison or multi-date / multi-edition comparison
+        # 4. Check for cross-newspaper comparison or multi-date / multi-edition comparison
         is_comparison = bool(
             extracted_params.get("comparison_newspaper")
             or extracted_params.get("is_differential")
@@ -1098,6 +1176,39 @@ class QueryPlanner:
             )
         )
 
+        # Check if page query is a manifest / listing vs factual question
+        is_page_manifest = has_page_token and any(
+            w in q_lower for w in ["list", "articles on", "stories on", "all articles", "no of articles", "how many", "what articles"]
+        ) and not any(w in q_lower for w in ["what happened", "what did", "why did", "how did", "announce", "state", "say"])
+
+        # Check if query is an itemized listing / catalog manifest (e.g. "list all their health news", "show all sports articles")
+        is_listing_manifest = (
+            any(w in q_lower for w in ["list all", "list the", "list their", "list there", "show all", "all articles", "all news", "catalog of", "articles on"])
+            and not is_timeline
+            and not is_comparison
+        )
+
+        # Check if query is a section/category listing manifest (e.g. "list all its sports related news", "show business section")
+        is_section_manifest = bool(category_filter) and not is_timeline and any(
+            w in q_lower for w in ["list", "show", "get", "all", "what are", "what is", "stories", "articles", "news", "headlines"]
+        ) and not any(w in q_lower for w in ["what happened", "what did", "why did", "how did", "announce", "state", "say", "quote"])
+
+        # 5. Check for counting / statistical aggregations
+        is_count_or_stat = any(
+            phrase in q_lower
+            for phrase in [
+                "how many articles",
+                "total articles",
+                "number of articles",
+                "no. of articles",
+                "no of articles",
+                "count of articles",
+                "frequency trend",
+                "distribution of articles",
+                "topic distribution",
+            ]
+        )
+
         # 6. Check for entity deep dive
         is_entity = any(
             phrase in q_lower
@@ -1111,7 +1222,7 @@ class QueryPlanner:
 
         tool_calls: list[PlannedToolCall] = []
 
-        if is_issue_macro or is_page_manifest or is_section_manifest or is_count_or_stat:
+        if is_issue_macro or is_page_manifest or is_count_or_stat:
             archetype = "quantitative_trend"
             reasoning = "Query requires structural issue manifest, section breakdown, or relational article count from MySQL."
             sql_args: dict[str, Any] = {"analysis_type": "issue_summary", "query": query}
@@ -1145,6 +1256,28 @@ class QueryPlanner:
                         purpose=f"Retrieve article content and snippets on Page {page_num_str}",
                     )
                 )
+
+        elif is_listing_manifest or (is_section_manifest and not is_timeline and not is_comparison):
+            archetype = "article_catalog"
+            reasoning = "Query requests an itemized article catalog / manifest matching the specified criteria."
+            sql_args: dict[str, Any] = {"analysis_type": "issue_summary", "query": query}
+            if newspaper_name:
+                sql_args["newspaper_name"] = newspaper_name
+            if issue_id:
+                sql_args["issue_id"] = issue_id
+            if issue_date:
+                sql_args["issue_date"] = issue_date
+            if category_filter:
+                sql_args["category_filter"] = category_filter
+            if page_num_str:
+                sql_args["page_filter"] = page_num_str
+            tool_calls.append(
+                PlannedToolCall(
+                    tool_name="sql_analytics",
+                    arguments=sql_args,
+                    purpose=f"Retrieve complete article catalog (category: {category_filter or 'All'})",
+                )
+            )
 
         elif is_timeline:
             archetype = "thematic_timeline"
@@ -1242,28 +1375,35 @@ class QueryPlanner:
                 archetype = "cross_newspaper_comparison"
                 reasoning = f"Query compares reporting between {newspaper_name} and {comp_np}."
                 target_dt = issue_date or extracted_params.get("date_from")
+                cat_filt = extracted_params.get("category_filter")
                 for np_target in [newspaper_name, comp_np]:
+                    sql_args = {
+                        "analysis_type": "issue_summary",
+                        "newspaper_name": np_target,
+                        "issue_date": target_dt,
+                        "query": query,
+                    }
+                    if cat_filt:
+                        sql_args["category_filter"] = cat_filt
                     tool_calls.append(
                         PlannedToolCall(
                             tool_name="sql_analytics",
-                            arguments={
-                                "analysis_type": "issue_summary",
-                                "newspaper_name": np_target,
-                                "issue_date": target_dt,
-                                "query": query,
-                            },
+                            arguments=sql_args,
                             purpose=f"Retrieve article manifest for {np_target} on {target_dt}",
                         )
                     )
+                hs_args = {
+                    "query": query,
+                    "date_from": target_dt,
+                    "date_to": target_dt,
+                    "top_k": 12,
+                }
+                if cat_filt:
+                    hs_args["category_filter"] = cat_filt
                 tool_calls.append(
                     PlannedToolCall(
                         tool_name="hybrid_search",
-                        arguments={
-                            "query": query,
-                            "date_from": target_dt,
-                            "date_to": target_dt,
-                            "top_k": 12,
-                        },
+                        arguments=hs_args,
                         purpose=f"Retrieve comparative articles across {newspaper_name} and {comp_np}",
                     )
                 )
@@ -1279,58 +1419,72 @@ class QueryPlanner:
                     date_from = issue_date
                     date_to = issue_date
 
+                cat_filt = extracted_params.get("category_filter")
                 # When no specific newspaper + a specific date → add SQL issue summaries for all newspapers
                 if not newspaper_name and issue_date:
+                    sql_all_args = {
+                        "analysis_type": "issue_summary",
+                        "issue_date": issue_date,
+                        "query": query,
+                    }
+                    if cat_filt:
+                        sql_all_args["category_filter"] = cat_filt
                     tool_calls.append(
                         PlannedToolCall(
                             tool_name="sql_analytics",
-                            arguments={
-                                "analysis_type": "issue_summary",
-                                "issue_date": issue_date,
-                                "query": query,
-                            },
+                            arguments=sql_all_args,
                             purpose=f"Retrieve complete article manifest for ALL newspapers on {issue_date}",
                         )
                     )
 
+                hs_args = {
+                    "query": query,
+                    "newspaper_name": newspaper_name,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "top_k": 12,
+                }
+                if cat_filt:
+                    hs_args["category_filter"] = cat_filt
+                elif not newspaper_name and issue_date:
+                    hs_args["page_filter"] = "1"
+
                 tool_calls.append(
                     PlannedToolCall(
                         tool_name="hybrid_search",
-                        arguments={
-                            "query": query,
-                            "newspaper_name": newspaper_name,
-                            "date_from": date_from,
-                            "date_to": date_to,
-                            "top_k": 12,
-                        },
+                        arguments=hs_args,
                         purpose="Retrieve diverse articles across multiple newspaper editions",
                     )
                 )
-                cov_args: dict[str, Any] = {"query": query}
-                if target_date:
-                    cov_args["target_date"] = target_date
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="coverage_analysis",
-                        arguments=cov_args,
-                        purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
-                    )
+                is_all_avail = any(w in query.lower() for w in ["all available", "all the available", "all newspapers", "all papers"])
+                needs_negative_audit = (
+                    is_all_avail
+                    or extracted_params.get("is_differential")
+                    or any(w in query.lower() for w in ["omission", "miss", "missed", "omitted", "exclusive", "gap", "absent", "fail to report", "coverage comparison", "coverage matrix"])
                 )
-                sql_cov_args: dict[str, Any] = {"analysis_type": "coverage_comparison", "query": query}
-                if target_date:
-                    sql_cov_args["target_date"] = target_date
-                    sql_cov_args["issue_date"] = target_date
-                if date_from:
-                    sql_cov_args["date_from"] = date_from
-                if date_to:
-                    sql_cov_args["date_to"] = date_to
-                tool_calls.append(
-                    PlannedToolCall(
-                        tool_name="sql_analytics",
-                        arguments=sql_cov_args,
-                        purpose="Compare reporting sentiment, volume, and section prominence",
+                if needs_negative_audit:
+                    cov_args: dict[str, Any] = {"query": query}
+                    if target_date:
+                        cov_args["target_date"] = target_date
+                    tool_calls.append(
+                        PlannedToolCall(
+                            tool_name="coverage_analysis",
+                            arguments=cov_args,
+                            purpose="3-Tier negative coverage audit and multi-newspaper reconciliation matrix",
+                        )
                     )
-                )
+                    if is_all_avail:
+                        tool_calls.append(
+                            PlannedToolCall(
+                                tool_name="sql_analytics",
+                                arguments={
+                                    "analysis_type": "coverage_comparison",
+                                    "target_date": target_date,
+                                    "query": query,
+                                },
+                                purpose=f"Audit negative coverage omissions and unmentioned stories across all newspapers on {target_date}",
+                            )
+                        )
 
         elif is_entity:
             archetype = "entity_deep_dive"

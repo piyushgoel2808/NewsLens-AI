@@ -7,6 +7,7 @@ Manages the full application lifecycle:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -56,6 +57,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning("Qdrant startup failed (continuing)", extra={"error": str(e)})
         app.state.qdrant = None
+
+    # Pre-warm embedding & neural reranker in background to absorb cold-start latency
+    async def _prewarm_models() -> None:
+        try:
+            from app.providers.registry import get_registry
+            from app.retrieval.reranker import CrossEncoderReranker
+
+            reg = get_registry()
+            embed_provider = reg.get_provider("embedding")
+            if embed_provider and hasattr(embed_provider, "embed_one"):
+                logger.info("Pre-warming embedding model in background...")
+                await embed_provider.embed_one("NewsLens AI initialization query")
+                logger.info("Embedding model pre-warmed successfully")
+
+            reranker = CrossEncoderReranker()
+            await reranker._get_model()
+            logger.info("Reranker model pre-warmed successfully")
+        except Exception as prewarm_err:
+            logger.warning("Model pre-warming non-critical warning", extra={"error": str(prewarm_err)})
+
+    asyncio.create_task(_prewarm_models())
 
     logger.info("NewsLens-AI startup complete")
     yield

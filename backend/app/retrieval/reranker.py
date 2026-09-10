@@ -126,7 +126,7 @@ class CrossEncoderReranker:
             pairs.append((query, text_context.strip()))
 
         try:
-            scores = await asyncio.to_thread(model.predict, pairs)
+            scores = await asyncio.to_thread(model.predict, pairs, show_progress_bar=False)
             scored: list[tuple[float, dict[str, Any]]] = []
             for score, cand in zip(scores, candidates, strict=False):
                 cand_copy = dict(cand)

@@ -274,5 +274,139 @@ class TestAnswerSynthesizer:
         assert "A male tennis player, identifiable as Novak Djokovic" in context
         assert "The Goan" in context
 
+    def test_dynamic_prompt_domain_comparison(self) -> None:
+        """Verify dynamic prompt builder adapts to domain-specific cross-newspaper comparison."""
+        synth = AnswerSynthesizer(provider=MagicMock())
+        query = "COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on economics or finance related news"
+        prompt = synth._build_synthesizer_system_prompt(
+            archetype="cross_newspaper_comparison",
+            query=query,
+            evidence_items=[],
+        )
+        assert "Executive Summary: Economics & Finance Intelligence" in prompt
+        assert "Cross-Newspaper Economics & Finance Comparison Matrix" in prompt
+        assert "Key Verified Sector Highlights & Policies" in prompt
+        assert "STRICT DOMAIN PURITY MANDATE" in prompt
+
+    def test_dynamic_prompt_macro_broadsheet_comparison(self) -> None:
+        """Verify dynamic prompt builder adapts to whole-edition comparison without domain."""
+        synth = AnswerSynthesizer(provider=MagicMock())
+        query = "compare all the available newspaper dated 1/8/2026"
+        prompt = synth._build_synthesizer_system_prompt(
+            archetype="cross_newspaper_comparison",
+            query=query,
+            evidence_items=[],
+        )
+        assert "Executive Summary: Broadsheet Edition Overview" in prompt
+        assert "Front-Page (Page 1) Lead Stories Comparison" in prompt
+        assert "Section Distribution & Coverage Scale" in prompt
+        assert "Exclusive Stories & Distinct Agendas" in prompt
+
+    def test_dynamic_prompt_thematic_timeline(self) -> None:
+        """Verify dynamic prompt builder adapts to chronological timeline inquiries."""
+        synth = AnswerSynthesizer(provider=MagicMock())
+        query = "Provide a timeline of the stock market crash in October"
+        prompt = synth._build_synthesizer_system_prompt(
+            archetype="thematic_timeline",
+            query=query,
+            evidence_items=[],
+        )
+        assert "Executive Summary: Chronological Progression" in prompt
+        assert "Milestone Timeline & Event Progression" in prompt
+        assert "Thematic Trajectory & Broadsheet Evolution" in prompt
+
+    def test_deterministic_summary_cross_newspaper_domain(self) -> None:
+        """Verify deterministic summary produces matrix and sector highlights for domain comparisons."""
+        synth = AnswerSynthesizer()
+        evidence = [
+            {
+                "headline": "Floating Solar Project Launched",
+                "newspaper_name": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "pages": [1],
+                "snippet": "Govt approves Rs 5,070 cr floating solar scheme.",
+                "article_id": 1,
+            },
+            {
+                "headline": "Seabed Mineral Discovery",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+                "pages": [3],
+                "snippet": "Crucial rare earth minerals found in EEZ seabed.",
+                "article_id": 2,
+            },
+        ]
+        summary = synth._generate_deterministic_summary(
+            "COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on economics or finance related news",
+            evidence,
+            archetype="cross_newspaper_comparison",
+        )
+        assert "Executive Summary: Economics & Finance Intelligence" in summary
+        assert "Cross-Newspaper Economics & Finance Comparison Matrix" in summary
+        assert "The Morning Standard" in summary
+        assert "The Goan" in summary
+        assert "Floating Solar Project Launched" in summary
+
+    def test_dynamic_prompt_article_catalog(self) -> None:
+        """Verify dynamic prompt builder adapts to article_catalog inquiries."""
+        synth = AnswerSynthesizer(provider=MagicMock())
+        query = "list all their health news"
+        prompt = synth._build_synthesizer_system_prompt(
+            archetype="article_catalog",
+            query=query,
+            evidence_items=[],
+        )
+        assert "Executive Summary: Health & Medicine Article Catalog" in prompt
+        assert "Comprehensive Health & Medicine Articles Catalog" in prompt
+        assert "| # | Publication | Issue Date | Page | Section | Headline | Author / Byline |" in prompt
+        assert "ANTI-REPETITION CONSTRAINT" in prompt
+
+    def test_domain_adaptive_comparison_column_headers(self) -> None:
+        """Verify comparison table columns adapt to domain (finance metrics vs health medical focus)."""
+        synth = AnswerSynthesizer(provider=MagicMock())
+
+        # 1. Finance query
+        prompt_fin = synth._build_synthesizer_system_prompt(
+            archetype="cross_newspaper_comparison",
+            query="compare coverage on stock markets and economy",
+            evidence_items=[],
+        )
+        assert "Key Figures & Metrics" in prompt_fin
+
+        # 2. Health query
+        prompt_health = synth._build_synthesizer_system_prompt(
+            archetype="cross_newspaper_comparison",
+            query="compare coverage on hospital treatments and medicine",
+            evidence_items=[],
+        )
+        assert "Key Findings & Medical Focus" in prompt_health
+
+    def test_sanitize_headline_integration_in_synthesizer(self) -> None:
+        """Verify doctor name as headline is sanitized into a clean topic in citations and context."""
+        synth = AnswerSynthesizer()
+        evidence = [
+            {
+                "article_id": 101,
+                "headline": "Dr. Smriti Naswa Singh",
+                "subheadline": "Skin Cancer Prevention Tips",
+                "byline_author": "Dr. Smriti Naswa Singh",
+                "newspaper_name": "The Daily Health",
+                "issue_date": "2026-08-01",
+                "pages": [4],
+                "snippet": "Protecting your skin from UV rays is critical in summer.",
+            }
+        ]
+
+        # 1. Check citations
+        citations = synth.extract_citations("Skin Cancer Prevention Tips page 4", evidence)
+        assert len(citations) == 1
+        assert citations[0]["headline"] == "Skin Cancer Prevention Tips"
+
+        # 2. Check evidence context
+        context = synth._build_evidence_context(evidence)
+        assert "Skin Cancer Prevention Tips" in context
+
+
+
 
 

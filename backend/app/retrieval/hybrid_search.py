@@ -114,6 +114,7 @@ class HybridSearchEngine:
         dense_weight: float = 0.5,
         sparse_weight: float = 0.5,
         rerank: bool = True,
+        query_vector: list[float] | None = None,
     ) -> list[HybridSearchResult]:
         """Execute two-stage hybrid search using Reciprocal Rank Fusion and Cross-Encoder neural reranking."""
         if not query.strip():
@@ -140,8 +141,9 @@ class HybridSearchEngine:
                 search_filters_dict["issue_date"] = date_range
 
         # 1. Run Vector Search (Dense)
-        provider = self._get_embedding_provider()
-        query_vector = await provider.embed_one(query)
+        if query_vector is None:
+            provider = self._get_embedding_provider()
+            query_vector = await provider.embed_one(query)
 
         vector_results = await self._qdrant.search(
             query_vector=query_vector,
@@ -203,8 +205,11 @@ class HybridSearchEngine:
             return []
 
         # Two-stage retrieval cascade:
-        # Fetch Top 75 candidates from RRF hybrid search to pass into second-stage Cross-Encoder
-        candidate_pool_size = max(75, top_k * 3) if rerank else top_k
+        # Fetch adaptive candidates from RRF hybrid search to pass into second-stage Cross-Encoder
+        if filters and (filters.category_name or filters.category_id or filters.page_number or filters.printed_page):
+            candidate_pool_size = max(50, top_k * 4) if rerank else max(25, top_k * 2)
+        else:
+            candidate_pool_size = min(40, max(15, top_k * 3)) if rerank else top_k
         sorted_candidates = sorted(
             scores.items(),
             key=lambda item: item[1]["rrf_score"],
@@ -213,7 +218,7 @@ class HybridSearchEngine:
 
         candidate_ids = [item[0] for item in sorted_candidates]
 
-        # 4. Fetch full Article records from MySQL with issues and pages
+        # 4. Fetch full Article records from MySQL with issues, pages, and categories
         async with self._session_factory() as db:
             stmt = (
                 select(Article)
@@ -222,6 +227,7 @@ class HybridSearchEngine:
                     selectinload(Article.issue).selectinload(Issue.newspaper),
                     selectinload(Article.article_pages),
                     selectinload(Article.photos),
+                    selectinload(Article.category),
                 )
             )
             db_articles_res = await db.execute(stmt)
@@ -245,6 +251,21 @@ class HybridSearchEngine:
                 continue
             if filters and filters.category_id and article.category_id != filters.category_id:
                 continue
+            if filters and filters.category_name:
+                cat_req = filters.category_name.strip().lower()
+                art_cat = (article.category.name if article.category else "").lower()
+                art_sec = (article.section or "").lower()
+                art_psec = (article.printed_section or "").lower()
+                # If economics or finance or business, bridge across related economic domains
+                if any(w in cat_req for w in ["econom", "financ", "business", "market"]):
+                    matched_cat = any(
+                        w in art_cat or w in art_sec or w in art_psec
+                        for w in ["business", "market", "econom", "financ", "trade", "commerce", "money", "industry"]
+                    )
+                else:
+                    matched_cat = (cat_req in art_cat or cat_req in art_sec or cat_req in art_psec)
+                if not matched_cat:
+                    continue
 
             np_name = (
                 article.issue.newspaper.name
