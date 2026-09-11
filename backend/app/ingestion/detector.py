@@ -635,9 +635,8 @@ class PDFPageDetector:
             if w < 40.0 or h < 40.0:
                 return False
             # Filter out full-page background/scanned canvas rasters
-            if w >= page_w_300 * 0.90 and h >= page_h_300 * 0.90:
-                return False
-            return True
+            return not (w >= page_w_300 * 0.90 and h >= page_h_300 * 0.90)
+
 
         # 1. Harvest from get_image_info (fastest & most accurate in PyMuPDF)
         try:

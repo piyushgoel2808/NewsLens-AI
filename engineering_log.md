@@ -2972,4 +2972,56 @@ Following the proven decomposition patterns of **Phase 9.23** (`planner.py`) and
 - Static Type Checking: `mypy app/agent/` $\to$ **Success: no issues found in 14 source files**.
 - Linter: `ruff check app/agent/` $\to$ **All checks passed!**
 
+---
+
+## Phase 9.30 — Ingestion Subsystem Audit, Hardening & Type Safety
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Critical Latent Runtime Bug in `PDFRasterizer` (`page_reingestion.py` / `rasterizer.py`)**:
+   - `PageReingestionService` invoked `await rasterizer.rasterize_single_page(...)` at line 209 whenever the target page raster was missing or unreadable in MinIO.
+   - `PDFRasterizer` only implemented `rasterize_pdf_bytes()` (a full-document multi-page loop), missing `rasterize_single_page()`, which caused an immediate `AttributeError` on MinIO cache misses.
+2. **25 Mypy Static Type Errors Across 8 Ingestion Files**:
+   - `extraction_schemas.py`: Positional `Field(None, ...)` under Pydantic v2 was interpreted as requiring those parameters at instantiation without defaults, causing 7 false positive type errors across `tasks.py` and `unified_extractor.py`.
+   - `visual_extractor.py`: Reused loop variable `r` across tabular markdown extraction (`r: list[str]`), conflicting with `r: list[dict[str, Any]]` from line 482 and causing 6 dictionary/string type mismatches. PIL `stat[1] - stat[0]` extrema subtraction also lacked type verification.
+   - `ocr_service.py`: `self._ocr` was untyped in `__init__`, causing mypy assignment errors on `self._ocr = None`.
+   - `layout_analyzer.py:717`: `max_el_id = max((e.element_id for e in elements), default=100) + 1` was evaluated over `element_id: str | int`, causing operator typing errors and potential runtime `TypeError`.
+   - `docling_parser.py`: Direct attribute access on `NodeItem` (`label`, `prov`) failed type analysis.
+   - `celery_app.py` & `visual_extractor.py`: Missing type ignore markers on untyped packages (`celery`, `pytesseract`).
+3. **12 Ruff Lint Violations**:
+   - `tasks.py`: Misplaced imports at line 822 (`E402`) and unchained retry exception (`B904`).
+   - `docling_parser.py`: Ambiguous variable name `l` (`E741`), nested `if` statements (`SIM102`), unused variable `last_picture_bbox` (`F841`), and unsorted imports (`I001`).
+   - `detector.py`: Unsimplified boolean conditions (`SIM103`).
+   - `page_reingestion.py`: Unsorted imports (`I001`).
+4. **Empty Subsystem Entry Point**:
+   - `backend/app/ingestion/__init__.py` was completely blank (0 bytes).
+
+### Architectural Solutions & Implementations
+1. **Single-Page Rasterization Engine**:
+   - Added `rasterize_single_page(pdf_bytes, issue_id, page_number, dpi)` to `PDFRasterizer` in `rasterizer.py`.
+   - Persists rendered PNG to MinIO under `pages/{newspaper_id}/{issue_date}/{edition}/page_{page_number}.png`, updates the relational `Page` record, and returns a `RasterizedPage` dataclass instance.
+   - Added unit test `test_rasterize_single_page_method` in `backend/tests/test_rasterizer.py`.
+2. **Pydantic v2 Keyword Default Migration**:
+   - Migrated all `Field(None, ...)` declarations to `Field(default=None, ...)` across `ArticleSkeleton`, `PageLayoutExtraction`, and `ExtractedTable` in `extraction_schemas.py`.
+3. **Clean Type Safety & Variable Disambiguation**:
+   - Disambiguated loop variables in `visual_extractor.py` to `table_row`, `cell`, and `c`. Added PIL extrema type guards and `pytesseract` import ignore.
+   - Strongly typed `self._ocr: OCREngine | None = None` in `ocr_service.py`.
+   - Filtered `numeric_ids = [e.element_id for e in elements if isinstance(e.element_id, int)]` in `layout_analyzer.py:717`.
+   - Safely retrieved dynamic Docling properties via `getattr` in `docling_parser.py`.
+4. **Package Architecture & Explicit Exports**:
+   - Populated `backend/app/ingestion/__init__.py` with canonical public exports: `IntakeService`, `PDFRasterizer`, `RasterizedPage`, `LayoutAnalyzer`, `ArticleSegmenter`, `CrossPageAssembler`, `ArticleEmbedder`, `UnifiedExtractor`, `DoclingLayoutParser`, `DeletionService`, `run_ingestion_pipeline`, `ArticleClassifier`, `NewspaperChunker`, `FolioDetector`, `MastheadVerifier`, and `PDFPageDetector`.
+   - Added explicit `__all__` boundaries across modified ingestion files.
+
+### Test Verification & Quality Gates
+- `backend/tests/test_rasterizer.py`: **3/3 tests passing (100% green)**.
+- `backend/tests/test_docling_parser.py`: **15/15 tests passing (100% green)**.
+- `backend/tests/test_page_reingestion.py`: **1/1 tests passing (100% green)**.
+- **Ingestion Test Suite**: **147/147 tests passing (100% green)** in 6.09s.
+- **Full Backend Test Suite**: **411/411 tests passing (100% green)** in 24.19s.
+- Static Type Checking: `mypy app/ingestion/` $\to$ **Success: no issues found in 28 source files**.
+- Linter: `ruff check app/ingestion/` $\to$ **All checks passed! (0 errors)**.
+
+
 

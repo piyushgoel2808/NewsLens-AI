@@ -714,7 +714,8 @@ class LayoutAnalyzer:
                 for e in elements
             )
             if not has_ad_hl:
-                max_el_id = max((e.element_id for e in elements), default=100) + 1
+                numeric_ids = [e.element_id for e in elements if isinstance(e.element_id, int)]
+                max_el_id = max(numeric_ids, default=100) + 1
                 ad_hl_elem = LayoutElement(
                     element_id=max_el_id,
                     bbox=(x0, y0, x1, min(y0 + 40.0, y1)),

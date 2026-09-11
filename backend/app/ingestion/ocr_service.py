@@ -25,6 +25,7 @@ class OCRService:
     ) -> None:
         self._db = db
         self._settings = get_settings()
+        self._ocr: OCREngine | None = None
         if ocr_engine:
             self._ocr = ocr_engine
         else:
@@ -94,3 +95,7 @@ class OCRService:
         )
 
         return ocr_result
+
+
+__all__ = ["OCRService"]
+

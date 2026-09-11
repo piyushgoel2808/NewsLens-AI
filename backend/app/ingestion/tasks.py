@@ -27,6 +27,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.ingestion.celery_app import celery_app
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
 from app.ingestion.consensus_extractor import ConsensusExtractor
@@ -48,9 +49,11 @@ from app.ingestion.unified_extractor import UnifiedExtractor
 from app.models.article import Article, ArticleCategory, ArticleChunk, ArticlePage, Photo
 from app.models.entity import ArticleEntity, ArticleTopic, Topic
 from app.models.newspaper import Issue, Newspaper, Page
+from app.providers.openrouter_provider import RateLimitExhaustedError
 from app.storage.minio_store import MinioStore
 
 logger = get_logger(__name__)
+
 
 
 def detect_masthead_and_date(blocks: Sequence[Any], height_px: float) -> tuple[str | None, date | None]:
@@ -819,10 +822,6 @@ async def run_ingestion_pipeline(
         }
 
 
-from app.ingestion.celery_app import celery_app
-from app.providers.openrouter_provider import RateLimitExhaustedError
-
-
 @celery_app.task(
     bind=True,
     name="app.ingestion.tasks.process_issue_ingestion_task",
@@ -843,4 +842,11 @@ def process_issue_ingestion_task(self, issue_id: int, pdf_bytes: bytes, dpi: int
             issue_id,
             retries + 1,
         )
-        raise self.retry(exc=exc, countdown=min(60 * (2 ** retries), 300))
+        raise self.retry(exc=exc, countdown=min(60 * (2 ** retries), 300)) from exc
+
+
+__all__ = [
+    "process_issue_ingestion_task",
+    "run_ingestion_pipeline",
+]
+

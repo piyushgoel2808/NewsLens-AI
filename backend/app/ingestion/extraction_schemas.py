@@ -65,13 +65,13 @@ class ArticleSkeleton(BaseModel):
         description="Headline or title of the article verbatim. For ads, use '[Advertisement] <Company/Subject>'."
     )
     subheadline: str | None = Field(
-        None, description="Subheadline, kicker, deck, or strapline if present."
+        default=None, description="Subheadline, kicker, deck, or strapline if present."
     )
     byline: str | None = Field(
-        None, description="Author, reporter name, agency stamp (e.g. Reuters, PTI, Bureau) if present."
+        default=None, description="Author, reporter name, agency stamp (e.g. Reuters, PTI, Bureau) if present."
     )
     body_text: str | None = Field(
-        None, description="Extracted body text paragraphs belonging to this article."
+        default=None, description="Extracted body text paragraphs belonging to this article."
     )
     article_type: ArticleGenre = Field(
         default="news",
@@ -89,10 +89,10 @@ class ArticleSkeleton(BaseModel):
         description="Normalized bounding box [ymin, xmin, ymax, xmax] scaled 0 to 1000, or absolute pixel coordinates [x0, y0, x1, y1]."
     )
     continues_to_page: int | None = Field(
-        None, description="Page number where this story continues (e.g. from 'Continued on Page 4')."
+        default=None, description="Page number where this story continues (e.g. from 'Continued on Page 4')."
     )
     continued_from_page: int | None = Field(
-        None, description="Page number this story is continued from (e.g. from 'Continued from Page 1')."
+        default=None, description="Page number this story is continued from (e.g. from 'Continued from Page 1')."
     )
     has_table: bool = Field(
         default=False, description="True if this item contains structured tabular financial/statistical data."
@@ -109,13 +109,13 @@ class PageLayoutExtraction(BaseModel):
         default=1, description="Physical PDF page index (1-indexed)."
     )
     newspaper_brand: str | None = Field(
-        None, description="Newspaper brand/title if visible in masthead or header/footer (e.g. 'Mint', 'Business Standard', 'The Hindu')."
+        default=None, description="Newspaper brand/title if visible in masthead or header/footer (e.g. 'Mint', 'Business Standard', 'The Hindu')."
     )
     issue_date: str | None = Field(
-        None, description="Publication date in YYYY-MM-DD format if visible on the page."
+        default=None, description="Publication date in YYYY-MM-DD format if visible on the page."
     )
     printed_page_number: str | None = Field(
-        None, description="Printed newspaper page number/folio string (e.g. '1', 'A-3', 'IV')."
+        default=None, description="Printed newspaper page number/folio string (e.g. '1', 'A-3', 'IV')."
     )
     is_advertisement_page: bool = Field(
         default=False, description="True if the entire page is an advertisement wrap or jacket."
@@ -143,7 +143,7 @@ class ExtractedEntity(BaseModel):
 class ExtractedTable(BaseModel):
     """Structured table extracted from article content."""
 
-    caption: str | None = Field(None, description="Table title or heading.")
+    caption: str | None = Field(default=None, description="Table title or heading.")
     headers: list[str] = Field(default_factory=list, description="Column header strings.")
     rows: list[list[str]] = Field(default_factory=list, description="Row values.")
     markdown: str = Field(default="", description="Table formatted in GitHub-flavored Markdown.")
@@ -171,3 +171,16 @@ class ArticleEnrichment(BaseModel):
         default_factory=list,
         description="Structured data tables contained within the article if any."
     )
+
+
+__all__ = [
+    "ArticleEnrichment",
+    "ArticleGenre",
+    "ArticleSkeleton",
+    "ExtractedEntity",
+    "ExtractedTable",
+    "PageLayoutExtraction",
+    "ProminenceTier",
+    "SectionType",
+]
+

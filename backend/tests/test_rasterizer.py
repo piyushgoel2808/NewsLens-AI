@@ -96,3 +96,41 @@ class TestPDFRasterizer:
         assert [p.page_number for p in pages] == [1, 2, 3]
         assert mock_minio.put.call_count == 3
         assert mock_issue.total_pages == 3
+
+    @pytest.mark.asyncio
+    async def test_rasterize_single_page_method(self) -> None:
+        pdf_path = FIXTURES_DIR / "sample_digital_frontpage.pdf"
+        pdf_bytes = pdf_path.read_bytes()
+
+        mock_db = AsyncMock(spec=AsyncSession)
+        mock_minio = AsyncMock()
+
+        mock_issue = Issue(
+            id=1,
+            newspaper_id=1,
+            issue_date=date(1929, 10, 24),
+            edition="morning",
+            total_pages=None,
+        )
+        mock_issue_res = MagicMock()
+        mock_issue_res.scalar_one_or_none.return_value = mock_issue
+
+        mock_page_res = MagicMock()
+        mock_page_res.scalar_one_or_none.return_value = None
+
+        mock_db.execute.side_effect = [mock_issue_res, mock_page_res]
+
+        rasterizer = PDFRasterizer(db=mock_db, minio=mock_minio)
+        rendered = await rasterizer.rasterize_single_page(
+            pdf_bytes=pdf_bytes,
+            issue_id=1,
+            page_number=1,
+            dpi=300,
+        )
+
+        assert rendered.page_number == 1
+        assert rendered.dpi == 300
+        assert rendered.image_bytes.startswith(b"\x89PNG")
+        assert rendered.object_key == "pages/1/1929-10-24/morning/page_1.png"
+        assert mock_minio.put.called
+

@@ -317,7 +317,12 @@ class VisualDataExtractor:
             if w < 120 and h < 120:
                 grayscale = img if img.mode == "L" else img.convert("L")
                 stat = grayscale.getextrema()
-                if stat and (stat[1] - stat[0] < 5):
+                if (
+                    stat
+                    and isinstance(stat[0], (int, float))
+                    and isinstance(stat[1], (int, float))
+                    and (stat[1] - stat[0] < 5)
+                ):
                     return False
 
             return True
@@ -327,7 +332,7 @@ class VisualDataExtractor:
     def _classify_via_ocr_density(self, image_bytes: bytes) -> VisualClassification:
         """Deterministic fallback classification via OCR density and geometry checks (0ms network latency)."""
         try:
-            import pytesseract
+            import pytesseract  # type: ignore[import-untyped]
 
             img = Image.open(io.BytesIO(image_bytes))
             ocr_str = pytesseract.image_to_string(img)
@@ -546,8 +551,8 @@ class VisualDataExtractor:
         md_lines.append("| " + " | ".join(header_row) + " |")
         md_lines.append("| " + " | ".join([":---"] + [":---:" for _ in range(len(header_row) - 1)]) + " |")
 
-        for r in table_rows[1:]:
-            cells = r[:]
+        for table_row in table_rows[1:]:
+            cells = table_row[:]
             while len(cells) < len(header_row):
                 cells.append("—")
             if len(cells) > len(header_row):
@@ -566,11 +571,12 @@ class VisualDataExtractor:
         chart_title = " - ".join(title_lines) if title_lines else "Infographic Data Table"
         key_metrics.append(f"Title: {chart_title}")
 
-        for r in table_rows[1:]:
-            row_label = r[0] if r else "Metric"
-            num_tokens = [c for c in r[1:] if re.search(r"\d", c)]
+        for table_row in table_rows[1:]:
+            row_label = table_row[0] if table_row else "Metric"
+            num_tokens = [c for c in table_row[1:] if re.search(r"\d", c)]
             if num_tokens:
                 key_metrics.append(f"{row_label}: {', '.join(num_tokens)}")
+
 
         if footnote_lines:
             source_match = re.search(r"(?i)Source:\s*([^|*\n]+)", " ".join(footnote_lines))
@@ -824,3 +830,12 @@ class VisualDataExtractor:
             },
         )
         return classification, extraction
+
+
+__all__ = [
+    "VisualClassification",
+    "VisualDataExtractor",
+    "VisualExtractionResult",
+    "repair_and_parse_json",
+]
+

@@ -143,3 +143,84 @@ class PDFRasterizer:
             extra={"issue_id": issue_id, "rendered_pages": len(results)},
         )
         return results
+
+    async def rasterize_single_page(
+        self,
+        pdf_bytes: bytes,
+        issue_id: int,
+        page_number: int,
+        dpi: int = DEFAULT_DPI,
+    ) -> RasterizedPage:
+        """Rasterize a single 1-indexed page of a PDF and store records in MySQL and MinIO."""
+        stmt = select(Issue).where(Issue.id == issue_id)
+        res = await self._db.execute(stmt)
+        issue = res.scalar_one_or_none()
+        if not issue:
+            raise ValueError(f"Issue with id {issue_id} not found.")
+
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        page_idx = page_number - 1
+        if page_idx < 0 or page_idx >= len(doc):
+            doc.close()
+            raise IndexError(f"Page index {page_number} out of range for PDF with {len(doc)} pages.")
+
+        img_bytes, width_px, height_px = self.render_page(doc, page_idx, dpi=dpi)
+        edition_slug = (issue.edition or "default").lower().replace(" ", "_")
+        object_key = (
+            f"pages/{issue.newspaper_id}/{issue.issue_date}/{edition_slug}/page_{page_number}.png"
+        )
+
+        await self._minio.put(
+            bucket=self._settings.minio.bucket_pages,
+            key=object_key,
+            data=img_bytes,
+            content_type="image/png",
+        )
+
+        page_stmt = select(Page).where(
+            Page.issue_id == issue.id,
+            Page.page_number == page_number,
+        )
+        page_res = await self._db.execute(page_stmt)
+        page = page_res.scalar_one_or_none()
+
+        if not page:
+            page = Page(
+                issue_id=issue.id,
+                page_number=page_number,
+                raster_object_key=object_key,
+                width_px=width_px,
+                height_px=height_px,
+                ingestion_status="rasterized",
+            )
+            self._db.add(page)
+        else:
+            page.raster_object_key = object_key
+            page.width_px = width_px
+            page.height_px = height_px
+            page.ingestion_status = "rasterized"
+
+        await self._db.flush()
+        doc.close()
+
+        logger.info(
+            "Single page rasterization completed",
+            extra={"issue_id": issue_id, "page_number": page_number, "object_key": object_key},
+        )
+        return RasterizedPage(
+            page_number=page_number,
+            image_bytes=img_bytes,
+            width_px=width_px,
+            height_px=height_px,
+            dpi=dpi,
+            object_key=object_key,
+        )
+
+
+__all__ = [
+    "DEFAULT_DPI",
+    "THUMBNAIL_DPI",
+    "PDFRasterizer",
+    "RasterizedPage",
+]
+

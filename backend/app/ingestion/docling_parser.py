@@ -28,8 +28,8 @@ from app.ingestion.layout_analyzer import (
 from app.ingestion.segmenter import (
     DATELINE_CITIES,
     SECTION_HEADER_BLACKLIST,
-    SegmentedArticle,
     WIRE_AGENCIES,
+    SegmentedArticle,
     extract_kicker_and_clean_headline,
     is_valid_headline_candidate,
 )
@@ -118,18 +118,18 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             return (0.0, 0.0, float(width_px), float(height_px))
 
         orig = getattr(bbox, "coord_origin", CoordOrigin.BOTTOMLEFT)
-        l, t, r, b = bbox.l, bbox.t, bbox.r, bbox.b
+        box_l, box_t, box_r, box_b = bbox.l, bbox.t, bbox.r, bbox.b
 
         if orig == CoordOrigin.BOTTOMLEFT:
-            y0_pts = page_h_pts - t
-            y1_pts = page_h_pts - b
-            x0_pts = l
-            x1_pts = r
+            y0_pts = page_h_pts - box_t
+            y1_pts = page_h_pts - box_b
+            x0_pts = box_l
+            x1_pts = box_r
         else:
-            x0_pts = l
-            y0_pts = t
-            x1_pts = r
-            y1_pts = b
+            x0_pts = box_l
+            y0_pts = box_t
+            x1_pts = box_r
+            y1_pts = box_b
 
         scale_x = width_px / page_w_pts if page_w_pts > 0 else 1.0
         scale_y = height_px / page_h_pts if page_h_pts > 0 else 1.0
@@ -151,9 +151,8 @@ class DoclingLayoutParser(DocumentLayoutProvider):
         y0, y1 = bbox[1], bbox[3]
         clean = text.strip().upper()
 
-        if y1 <= height_px * 0.07:
-            if any(kw in clean for kw in _PAGE_HEADER_KEYWORDS) or len(clean.split()) <= 6:
-                return True
+        if y1 <= height_px * 0.07 and (any(kw in clean for kw in _PAGE_HEADER_KEYWORDS) or len(clean.split()) <= 6):
+            return True
 
         # Enhanced masthead banner detection on front/wrap pages up to 20% page height
         if y1 <= height_px * 0.20:
@@ -169,11 +168,11 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             if clean in _PAGE_HEADER_KEYWORDS:
                 return True
 
-        if y0 >= height_px * 0.95:
-            if re.search(r"\b(?:PAGE\s*\d+|\d+\s*\|\s*[A-Z]+)\b", clean) or len(clean.split()) <= 4:
-                return True
+        return bool(
+            y0 >= height_px * 0.95
+            and (re.search(r"\b(?:PAGE\s*\d+|\d+\s*\|\s*[A-Z]+)\b", clean) or len(clean.split()) <= 4)
+        )
 
-        return False
 
     def parse_docling_document(
         self,
@@ -232,10 +231,13 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             )
 
         for item, level in docling_doc.iterate_items():
-            raw_label = item.label.value if hasattr(item.label, "value") else str(item.label)
+            item_label = getattr(item, "label", None)
+            raw_label = str(getattr(item_label, "value", item_label or ""))
             text = clean_ocr_text_artifacts(getattr(item, "text", "") or "")
 
-            bbox_obj = item.prov[0].bbox if item.prov and len(item.prov) > 0 else None
+
+            item_prov = getattr(item, "prov", None)
+            bbox_obj = item_prov[0].bbox if item_prov and len(item_prov) > 0 else None
             bbox_px = self._convert_bbox_to_pixels(
                 bbox=bbox_obj,
                 page_w_pts=page_w_pts,
@@ -243,6 +245,7 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                 width_px=width_px,
                 height_px=height_px,
             )
+
 
             if self._is_header_or_footer_noise(text, bbox_px, height_px):
                 continue
@@ -419,7 +422,6 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             current_bboxes = []
 
         total_items = len(items)
-        last_picture_bbox: tuple[float, float, float, float] | None = None
 
         for idx, item in enumerate(items):
             lbl = item.label
@@ -431,9 +433,13 @@ class DoclingLayoutParser(DocumentLayoutProvider):
 
             # Teaser strip boundary check:
             # If previous items are from a top teaser strip (containing page pointers) and there is a large vertical gap, flush them.
-            if current_bboxes and (bbox[1] - current_bboxes[-1][3] > height_px * 0.07):
-                if any(re.search(r"(?:▶|►|>|->)?\s*P\d{1,2}\b", p) for p in current_body_parts):
-                    _flush_current_article()
+            if (
+                current_bboxes
+                and (bbox[1] - current_bboxes[-1][3] > height_px * 0.07)
+                and any(re.search(r"(?:▶|►|>|->)?\s*P\d{1,2}\b", p) for p in current_body_parts)
+            ):
+                _flush_current_article()
+
 
             next_txt = items[idx + 1].text.strip() if idx + 1 < total_items else ""
             clean_txt_upper = re.sub(r"[^\w\s]", "", txt).strip().upper()
@@ -569,7 +575,7 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                     current_byline = byline_inline_match.group(1).strip().title()
                     txt = txt[:byline_inline_match.start()].strip()
 
-                lines = [l.strip() for l in txt.split("\n") if l.strip()]
+                lines = [line_item.strip() for line_item in txt.split("\n") if line_item.strip()]
                 if lines and (is_syndication_or_agency_slug(lines[0]) or _AUTHOR_NAME_PATTERN.match(lines[0]) or re.match(r"(?i)^by\s+[A-Z]", lines[0])):
                     current_byline = re.sub(r"(?i)^by\s+", "", lines[0]).strip()
                     lines = lines[1:]
@@ -601,8 +607,8 @@ class DoclingLayoutParser(DocumentLayoutProvider):
 
             # 5. Captions & Pictures
             elif lbl == "picture":
-                last_picture_bbox = bbox
                 current_bboxes.append(bbox)
+
 
             elif lbl == "caption":
                 if txt:
@@ -777,3 +783,12 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             nodes=nodes,
             markdown_content="\n\n".join(it.text for it in items),
         )
+
+
+__all__ = [
+    "CorruptedPdfTextLayerError",
+    "DoclingLayoutParser",
+    "DoclingParsedItem",
+    "ExtractedPhotoData",
+]
+

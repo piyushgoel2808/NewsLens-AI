@@ -30,7 +30,7 @@ from app.core.logging import get_logger
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
 from app.ingestion.cross_page_assembler import CrossPageAssembler
-from app.ingestion.detector import PDFPageDetector, PageType
+from app.ingestion.detector import PageType, PDFPageDetector
 from app.ingestion.docling_parser import (
     CorruptedPdfTextLayerError,
     DoclingLayoutParser,
@@ -756,3 +756,10 @@ class PageReingestionService:
                 for art, _ in persisted_articles
             ],
         }
+
+
+__all__ = [
+    "PageReingestionService",
+    "check_is_advertisement_text",
+]
+
