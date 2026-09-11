@@ -140,6 +140,10 @@ def parse_inline_citation(text: str) -> dict[str, Any]:
 def extract_active_issue_from_history(
     chat_history: list[dict[str, Any]],
     current_query: str | None = None,
+    attached_photo_id: int | None = None,
+    attached_article_id: int | None = None,
+    attached_issue_date: str | None = None,
+    attached_newspaper_name: str | None = None,
 ) -> dict[str, Any]:
     """Scan chat history for previously mentioned newspaper names, issue IDs, and dates.
 
@@ -148,11 +152,23 @@ def extract_active_issue_from_history(
     - If current_query specifies its own date or date range, do not inherit stale issue_id/newspaper/article from a different date.
     - If current_query specifies its own newspaper brand, do not inherit a different newspaper brand or article.
     - If current_query specifies an inline citation or explicit headline, that citation is authoritative.
+    - If an attached photo or article is explicitly supplied on the current turn, its issue and newspaper are authoritative.
     """
     res: dict[str, Any] = {}
     current_citation = parse_inline_citation(current_query or "")
     if current_citation:
         res.update(current_citation)
+
+    if attached_photo_id:
+        with contextlib.suppress(ValueError, TypeError):
+            res["photo_id"] = int(attached_photo_id)
+    if attached_article_id:
+        with contextlib.suppress(ValueError, TypeError):
+            res["article_id"] = int(attached_article_id)
+    if attached_issue_date:
+        res["issue_date"] = attached_issue_date
+    if attached_newspaper_name:
+        res["newspaper_name"] = attached_newspaper_name
 
     if not chat_history:
         return res
@@ -163,8 +179,8 @@ def extract_active_issue_from_history(
         or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper", "different newspaper"])
     )
     current_params = extract_parameters_from_query(current_query) if current_query else {}
-    current_date = current_params.get("issue_date") or current_citation.get("issue_date")
-    current_np = current_params.get("newspaper_name") or current_citation.get("newspaper_name")
+    current_date = current_params.get("issue_date") or current_citation.get("issue_date") or attached_issue_date
+    current_np = current_params.get("newspaper_name") or current_citation.get("newspaper_name") or attached_newspaper_name
 
     for turn in reversed(chat_history):
         content = str(turn.get("content", ""))
@@ -296,6 +312,12 @@ def extract_active_issue_from_history(
         res["headline"] = current_citation["headline"]
     if current_citation.get("page_number"):
         res["page_number"] = current_citation["page_number"]
+    if attached_photo_id:
+        with contextlib.suppress(ValueError, TypeError):
+            res["photo_id"] = int(attached_photo_id)
+    if attached_article_id:
+        with contextlib.suppress(ValueError, TypeError):
+            res["article_id"] = int(attached_article_id)
 
     return res
 
@@ -478,6 +500,68 @@ async def condense_conversational_query(
     return query
 
 
+async def resolve_attached_asset_context(
+    session_factory: Any,
+    attached_photo_id: int | None = None,
+    attached_article_id: int | None = None,
+    attached_issue_date: str | None = None,
+    attached_newspaper_name: str | None = None,
+) -> tuple[str | None, str | None, int | None, int | None]:
+    """Resolve ground truth issue date, newspaper name, article ID, and issue ID for attached assets."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from app.models.article import Article, Photo
+    from app.models.newspaper import Issue, Newspaper
+
+    resolved_date = attached_issue_date
+    resolved_np = attached_newspaper_name
+    resolved_art_id = attached_article_id
+    resolved_issue_id: int | None = None
+
+    if not session_factory or (not attached_photo_id and not attached_article_id):
+        return resolved_date, resolved_np, resolved_art_id, resolved_issue_id
+
+    try:
+        async with session_factory() as session:
+            if attached_photo_id:
+                stmt = (
+                    select(Photo)
+                    .where(Photo.id == int(attached_photo_id))
+                    .options(
+                        selectinload(Photo.article)
+                        .selectinload(Article.issue)
+                        .selectinload(Issue.newspaper)
+                    )
+                )
+                photo = (await session.execute(stmt)).scalar_one_or_none()
+                if photo and photo.article:
+                    if not resolved_art_id:
+                        resolved_art_id = photo.article.id
+                    if photo.article.issue:
+                        resolved_issue_id = photo.article.issue.id
+                        resolved_date = str(photo.article.issue.issue_date)
+                        if photo.article.issue.newspaper:
+                            resolved_np = photo.article.issue.newspaper.name
+            elif attached_article_id:
+                stmt = (
+                    select(Article)
+                    .where(Article.id == int(attached_article_id))
+                    .options(
+                        selectinload(Article.issue).selectinload(Issue.newspaper)
+                    )
+                )
+                art = (await session.execute(stmt)).scalar_one_or_none()
+                if art and art.issue:
+                    resolved_issue_id = art.issue.id
+                    resolved_date = str(art.issue.issue_date)
+                    if art.issue.newspaper:
+                        resolved_np = art.issue.newspaper.name
+    except Exception as ex:
+        logger.warning("Failed to resolve attached asset metadata", extra={"error": str(ex)})
+
+    return resolved_date, resolved_np, resolved_art_id, resolved_issue_id
+
+
 __all__ = [
     "AMBIGUOUS_PRONOUNS_PATTERN",
     "CLEAN_SESSION_CLARIFICATION_MESSAGE",
@@ -490,5 +574,6 @@ __all__ = [
     "is_in_context_meta_query",
     "needs_condensation",
     "parse_inline_citation",
+    "resolve_attached_asset_context",
 ]
 

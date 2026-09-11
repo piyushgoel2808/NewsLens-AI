@@ -895,6 +895,26 @@ class ToolExecutor:
 
                     if is_compat:
                         photos_to_process.append(single_photo)
+                    elif bool(
+                        (state.get("attached_photo_id") and int(state["attached_photo_id"]) == single_photo.id)
+                        or (args.get("photo_id") and int(args["photo_id"]) == single_photo.id)
+                    ):
+                        explicit_query_date = q_citation.get("issue_date")
+                        if not explicit_query_date:
+                            # Stale conversation context mismatch - adopt photo's true issue date and publication
+                            photos_to_process.append(single_photo)
+                            if p_art and p_art.issue:
+                                issue_date = str(p_art.issue.issue_date)
+                                if p_art.issue.newspaper:
+                                    newspaper_name = p_art.issue.newspaper.name
+                        else:
+                            logger.warning("Photo ID %s rejected for visual inspection due to explicit query date mismatch", photo_id)
+                            photo_id = None
+                    else:
+                        logger.warning("Photo ID %s rejected for visual inspection due to newspaper/date mismatch", photo_id)
+                        photo_id = None
+
+                    if photos_to_process and single_photo in photos_to_process:
                         # If this photo is part of an article, pull companion charts
                         if single_photo.article_id:
                             comp_stmt = (
@@ -916,9 +936,6 @@ class ToolExecutor:
                             for cp in companion_photos:
                                 if cp.visual_type in ("data_chart", "infographic", "table") and len(photos_to_process) < 6:
                                     photos_to_process.append(cp)
-                    else:
-                        logger.warning("Photo ID %s rejected for visual inspection due to newspaper/date mismatch", photo_id)
-                        photo_id = None
 
             # Strategy B: Target headline resolved from query citation or context, find article
             if target_headline and not photos_to_process:
@@ -959,6 +976,19 @@ class ToolExecutor:
                             is_compat = False
                     if issue_date and str(chk_art.issue.issue_date) != issue_date:
                         is_compat = False
+
+                is_explicit_article = bool(
+                    (state.get("attached_article_id") and int(state["attached_article_id"]) == int(article_id))
+                    or (args.get("article_id") and int(args["article_id"]) == int(article_id))
+                )
+                if not is_compat and is_explicit_article:
+                    explicit_query_date = q_citation.get("issue_date")
+                    if not explicit_query_date:
+                        is_compat = True
+                        if chk_art and chk_art.issue:
+                            issue_date = str(chk_art.issue.issue_date)
+                            if chk_art.issue.newspaper:
+                                newspaper_name = chk_art.issue.newspaper.name
 
                 if not is_compat:
                     logger.warning(

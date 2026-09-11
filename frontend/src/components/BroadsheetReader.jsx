@@ -47,6 +47,14 @@ export default function BroadsheetReader() {
   const [articleDetails, setArticleDetails] = useState(null);
   const [articleLoading, setArticleLoading] = useState(false);
 
+  const currentIssue = useMemo(() => {
+    if (issueData?.issue) return issueData.issue;
+    if (Array.isArray(issues)) {
+      return issues.find((i) => i.id === selectedIssueId) || null;
+    }
+    return null;
+  }, [issueData, issues, selectedIssueId]);
+
   // Canvas Viewport Controls
   const [zoom, setZoom] = useState(1);
   const [showOverlays, setShowOverlays] = useState(true);
@@ -576,6 +584,10 @@ export default function BroadsheetReader() {
                             caption: primaryChart.caption || `${articleDetails.photos.length} visual assets attached`,
                             visualType: primaryChart.visual_type || 'data_chart',
                             imageUrl: primaryChart.image_url,
+                            issueDate: currentIssue?.issue_date,
+                            newspaperName: currentIssue?.newspaper_name,
+                            issueId: currentIssue?.id || selectedIssueId,
+                            pageNumber: selectedPageNumber,
                           });
                         }}
                         className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-xs flex items-center gap-1.5 transition-all shadow-md shadow-purple-900/30 hover:scale-[1.02] active:scale-[0.98] shrink-0"
@@ -597,6 +609,10 @@ export default function BroadsheetReader() {
                               caption: ph.caption || (ph.vlm_description ? ph.vlm_description.slice(0, 100) : `Visual Asset #${ph.id}`),
                               visualType: ph.visual_type || 'data_chart',
                               imageUrl: ph.image_url,
+                              issueDate: currentIssue?.issue_date,
+                              newspaperName: currentIssue?.newspaper_name,
+                              issueId: currentIssue?.id || selectedIssueId,
+                              pageNumber: selectedPageNumber,
                             });
                           }}
                           className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900/90 hover:bg-purple-900/40 border border-slate-700/80 hover:border-purple-500/50 text-[11px] text-slate-300 hover:text-white transition-all whitespace-nowrap group shrink-0"
@@ -768,6 +784,10 @@ export default function BroadsheetReader() {
                                       caption: ph.caption,
                                       visualType: ph.visual_type,
                                       imageUrl: ph.image_url,
+                                      issueDate: currentIssue?.issue_date,
+                                      newspaperName: currentIssue?.newspaper_name,
+                                      issueId: currentIssue?.id || selectedIssueId,
+                                      pageNumber: selectedPageNumber,
                                     })
                                   }
                                   className="text-[10px] text-cyan-400 hover:text-cyan-300 font-medium flex items-center gap-1 bg-cyan-950/40 hover:bg-cyan-900/50 px-2.5 py-1 rounded border border-cyan-800/40 transition-colors shadow-sm"

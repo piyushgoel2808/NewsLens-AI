@@ -14,6 +14,7 @@ from app.agent.condenser import (
     extract_active_issue_from_history,
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
+    resolve_attached_asset_context,
 )
 from app.agent.evaluator import EvidenceEvaluator
 from app.agent.executor import ToolExecutor
@@ -283,6 +284,8 @@ class AgentWorkflow:
         enable_web_search: bool = False,
         attached_article_id: int | None = None,
         attached_photo_id: int | None = None,
+        attached_issue_date: str | None = None,
+        attached_newspaper_name: str | None = None,
     ) -> AgentState:
         """Execute the complete agentic query cycle with caching and metrics."""
         t0 = time.monotonic()
@@ -304,7 +307,35 @@ class AgentWorkflow:
             )
             return cached_result  # type: ignore[return-value]
 
-        active_ctx = extract_active_issue_from_history(history, current_query=query)
+        res_date, res_np, res_art_id, res_iss_id = await resolve_attached_asset_context(
+            session_factory=self._session_factory,
+            attached_photo_id=attached_photo_id,
+            attached_article_id=attached_article_id,
+            attached_issue_date=attached_issue_date,
+            attached_newspaper_name=attached_newspaper_name,
+        )
+        eff_attached_article_id = res_art_id or attached_article_id
+        eff_attached_photo_id = attached_photo_id
+
+        active_ctx = extract_active_issue_from_history(
+            history,
+            current_query=query,
+            attached_photo_id=eff_attached_photo_id,
+            attached_article_id=eff_attached_article_id,
+            attached_issue_date=res_date,
+            attached_newspaper_name=res_np,
+        )
+        if res_date:
+            active_ctx["issue_date"] = res_date
+        if res_np:
+            active_ctx["newspaper_name"] = res_np
+        if res_iss_id:
+            active_ctx["issue_id"] = res_iss_id
+        if eff_attached_article_id:
+            active_ctx["article_id"] = eff_attached_article_id
+        if eff_attached_photo_id:
+            active_ctx["photo_id"] = eff_attached_photo_id
+
         initial_state: AgentState = {
             "query": query,
             "original_query": query,
@@ -324,8 +355,8 @@ class AgentWorkflow:
             "active_issue_id": active_ctx.get("issue_id"),
             "active_newspaper_name": active_ctx.get("newspaper_name"),
             "active_issue_date": active_ctx.get("issue_date"),
-            "attached_article_id": attached_article_id,
-            "attached_photo_id": attached_photo_id,
+            "attached_article_id": eff_attached_article_id,
+            "attached_photo_id": eff_attached_photo_id,
             "error": None,
         }
 

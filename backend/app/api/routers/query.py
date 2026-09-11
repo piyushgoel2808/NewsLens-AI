@@ -18,6 +18,7 @@ from app.agent.condenser import (
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
     needs_condensation,
+    resolve_attached_asset_context,
 )
 from app.agent.graph import AgentWorkflow
 from app.agent.planner import QueryPlanner
@@ -68,6 +69,14 @@ class QueryRequest(BaseModel):
         None,
         description="Optional photo or infographic ID attached to the query",
     )
+    attached_issue_date: str | None = Field(
+        None,
+        description="Optional issue date associated with the attached asset or reader context (YYYY-MM-DD)",
+    )
+    attached_newspaper_name: str | None = Field(
+        None,
+        description="Optional newspaper name associated with the attached asset or reader context",
+    )
 
     @property
     def effective_model(self) -> str | None:
@@ -96,14 +105,23 @@ async def execute_query(
     """Execute the multi-stage LangGraph query workflow."""
     factory = get_session_factory()
     workflow = AgentWorkflow(session_factory=factory)
+    res_date, res_np, res_art_id, _ = await resolve_attached_asset_context(
+        session_factory=factory,
+        attached_photo_id=request.attached_photo_id,
+        attached_article_id=request.attached_article_id,
+        attached_issue_date=request.attached_issue_date,
+        attached_newspaper_name=request.attached_newspaper_name,
+    )
     result = await workflow.run(
         query=request.query,
         chat_history=request.chat_history,
         user_id=request.user_id,
         model_override=request.effective_model,
         enable_web_search=request.enable_web_search,
-        attached_article_id=request.attached_article_id,
+        attached_article_id=res_art_id or request.attached_article_id,
         attached_photo_id=request.attached_photo_id,
+        attached_issue_date=res_date,
+        attached_newspaper_name=res_np,
     )
 
     citations_list: list[dict[str, Any]] = [dict(c) for c in result.get("citations", [])]
@@ -167,7 +185,35 @@ async def stream_query(
             tool_data = json.dumps({"evidence_count": 0, "tools": []})
             yield f"event: tool_results\ndata: {tool_data}\n\n"
         else:
-            active_ctx = extract_active_issue_from_history(chat_history, current_query=query)
+            res_date, res_np, res_art_id, res_iss_id = await resolve_attached_asset_context(
+                session_factory=workflow._session_factory,
+                attached_photo_id=request.attached_photo_id,
+                attached_article_id=request.attached_article_id,
+                attached_issue_date=request.attached_issue_date,
+                attached_newspaper_name=request.attached_newspaper_name,
+            )
+            eff_attached_article_id = res_art_id or request.attached_article_id
+            eff_attached_photo_id = request.attached_photo_id
+
+            active_ctx = extract_active_issue_from_history(
+                chat_history,
+                current_query=query,
+                attached_photo_id=eff_attached_photo_id,
+                attached_article_id=eff_attached_article_id,
+                attached_issue_date=res_date,
+                attached_newspaper_name=res_np,
+            )
+            if res_date:
+                active_ctx["issue_date"] = res_date
+            if res_np:
+                active_ctx["newspaper_name"] = res_np
+            if res_iss_id:
+                active_ctx["issue_id"] = res_iss_id
+            if eff_attached_article_id:
+                active_ctx["article_id"] = eff_attached_article_id
+            if eff_attached_photo_id:
+                active_ctx["photo_id"] = eff_attached_photo_id
+
             if chat_history and needs_condensation(query, chat_history):
                 yield f"event: stage\ndata: {json.dumps({'stage': 'condensing_query'})}\n\n"
                 condensed = await condense_conversational_query(
@@ -183,9 +229,6 @@ async def stream_query(
                 yield f"event: query_condensed\ndata: {cond_data}\n\n"
 
             # 2. Planning Stage
-            eff_attached_article_id = request.attached_article_id or active_ctx.get("article_id")
-            eff_attached_photo_id = request.attached_photo_id or active_ctx.get("photo_id")
-
             yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
             plan_res = await workflow._planner.plan_query_async(
                 query,

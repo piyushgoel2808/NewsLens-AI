@@ -328,6 +328,8 @@ export default function AgentAssistant() {
           enable_web_search: enableWebSearch,
           attached_article_id: activeAttachedAsset?.articleId || selectedArticleId || undefined,
           attached_photo_id: activeAttachedAsset?.photoId || undefined,
+          attached_issue_date: activeAttachedAsset?.issueDate || undefined,
+          attached_newspaper_name: activeAttachedAsset?.newspaperName || undefined,
         }),
       });
 
@@ -968,6 +970,11 @@ export default function AgentAssistant() {
                 <span className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
                   Attached {activeAttachedAsset.visualType ? activeAttachedAsset.visualType.replace('_', ' ') : 'Visual Asset'} #{activeAttachedAsset.photoId}
                 </span>
+                {activeAttachedAsset.newspaperName && (
+                  <span className="text-[10px] text-cyan-200/90 font-mono px-1.5 py-0.5 rounded bg-slate-800/80 border border-cyan-800/40">
+                    {activeAttachedAsset.newspaperName} {activeAttachedAsset.issueDate ? `(${activeAttachedAsset.issueDate})` : ''}
+                  </span>
+                )}
                 {activeAttachedAsset.articleId && (
                   <span className="text-[10px] text-slate-400 font-mono">
                     Article #{activeAttachedAsset.articleId}
