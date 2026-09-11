@@ -1,0 +1,161 @@
+"""Evidence Context Formatter and Prompt Builder for NewsLens-AI."""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from app.agent.taxonomy import detect_domain_from_query, score_evidence_item
+from app.retrieval.sanitizer import repair_text_ligatures
+from app.retrieval.sql_analytics import sanitize_headline
+
+_CHUNK_TAG_REGEX = re.compile(
+    r"\[(?:Newspaper|Page\(s\)|Exact Chunk Match|Visual Data Asset|Article Parent Context|📷\s*Attached Image/Photo):?.*?\]",
+    re.IGNORECASE,
+)
+
+
+def clean_snippet(snip: str) -> str:
+    """Strip retrieval artifacts and chunk tags from snippet text."""
+    cleaned = _CHUNK_TAG_REGEX.sub("", snip).strip()
+    cleaned = re.sub(r"^[\<\#\s\.\,\-]+", "", cleaned).strip()
+    return repair_text_ligatures(cleaned)
+
+
+def sanitize_evidence_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize headlines, bylines, and snippet text for an evidence item."""
+    raw_hl = item.get("headline", "Untitled Article")
+    sub_hl = item.get("subheadline")
+    byline = item.get("byline_author")
+    snip = item.get("snippet") or item.get("summary") or item.get("full_text") or ""
+
+    hl, eff_byline = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
+    item["headline"] = repair_text_ligatures(hl)
+    if eff_byline:
+        item["byline_author"] = eff_byline
+
+    raw_text = (item.get("snippet") or item.get("full_text") or item.get("summary") or "").strip()
+    item["snippet"] = repair_text_ligatures(raw_text)
+    return item
+
+
+def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = "") -> str:
+    """Format retrieved evidence documents into structured prompt context with strict token budgeting."""
+    domain_name = detect_domain_from_query(query, evidence_items) if query else None
+
+    if domain_name and evidence_items:
+        sorted_evidence = sorted(
+            evidence_items,
+            key=lambda it: score_evidence_item(it, domain_name),
+            reverse=True,
+        )
+        budgeted_items = sorted_evidence[:12]
+    else:
+        budgeted_items = evidence_items[:12] if evidence_items else []
+
+    seen_keys: set[str] = set()
+    context_blocks: list[str] = []
+
+    for item in budgeted_items:
+        sanitize_evidence_item(item)
+        hl = item.get("headline", "Untitled Article")
+        text = item.get("snippet", "")
+
+        dedup_key = f"{hl.lower().strip()}_{text[:80].lower().strip()}"
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
+
+        is_manifest_or_matrix = (
+            item.get("source_tool") in ("sql_analytics", "coverage_analysis")
+            or "RELATIONAL ARCHIVE MANIFEST" in text
+            or "COVERAGE RECONCILIATION MATRIX" in text
+            or "VERIFIED EXCLUSIVE COVERAGE" in text
+        )
+        max_chars = 4000 if is_manifest_or_matrix else 1200
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + " ... [excerpt truncated for length]"
+
+        idx = len(context_blocks) + 1
+        is_web = bool(item.get("is_web") or item.get("source_tool") == "web_search")
+
+        if is_web:
+            url = item.get("url", "")
+            src = item.get("newspaper_name", "Live Web")
+            dt = item.get("issue_date", "Current")
+            context_blocks.append(
+                f"--- LIVE WEB EVIDENCE EXCERPT [{idx}] ---\n"
+                f"Source: {src}\n"
+                f"Title: {hl}\n"
+                f"URL: {url}\n"
+                f"Date: {dt}\n"
+                f"Content:\n{text}\n"
+            )
+        else:
+            np_name = item.get("newspaper_name", "Unknown Publication")
+            dt = item.get("issue_date", "Unknown Date")
+            pages = item.get("pages", [1])
+            pdf_page = int(pages[0]) if pages and pages[0] else 1
+            evidence_tag = f'[Evidence: {np_name}, {dt}, Page {pdf_page} (PDF Page {pdf_page}), Headline: "{hl}"]'
+
+            photos = item.get("photos") or []
+            photos_text = ""
+            if photos:
+                photo_lines = [
+                    f"  * [{p.get('visual_type') or 'Photo'} {p_idx}] Caption: \"{p.get('caption') or 'No printed caption'}\""
+                    + (f" | Visual Scene: {p['vlm_description']}" if p.get("vlm_description") else "")
+                    for p_idx, p in enumerate(photos, 1)
+                ]
+                photos_text = "\nAttached Photos & Visual Elements:\n" + "\n".join(photo_lines) + "\n"
+
+            context_blocks.append(
+                f"--- ARCHIVE EVIDENCE EXCERPT [{idx}] ---\n"
+                f"{evidence_tag}\n"
+                f"Publication: {np_name}\n"
+                f"Date: {dt}\n"
+                f"Page(s): Page {pdf_page} (PDF Page {pdf_page})\n"
+                f"Headline: {hl}\n"
+                f"Content:\n{text}\n"
+                f"{photos_text}"
+            )
+    return "\n".join(context_blocks)
+
+
+def build_synthesizer_user_prompt(
+    query: str,
+    archetype: str,
+    evidence_items: list[dict[str, Any]],
+    context: str,
+) -> str:
+    """Construct grounded synthesizer prompt with explicit publication boundaries."""
+    verified_pubs = sorted(list({
+        str(item.get("newspaper_name", "")).strip() for item in evidence_items
+        if item.get("newspaper_name") and item.get("newspaper_name") not in (
+            "Multi-Newspaper Audit", "Aggregated Archive Analytics", "Archive", "Unknown Publication", "Live Web"
+        )
+    }))
+    pubs_note = f"Verified Available Publications for this Query: {', '.join(verified_pubs)}\n" if verified_pubs else ""
+    isolation_rule = (
+        f"STRICT PUBLICATION & DATE ISOLATION:\n"
+        f"- You must ONLY report on and analyze the verified publications present in the current evidence ({', '.join(verified_pubs)}).\n"
+        f"- NEVER mention, summarize, or cite articles from other publications or dates discussed in earlier conversation turns.\n\n"
+        if verified_pubs else ""
+    )
+    domain = detect_domain_from_query(query, evidence_items)
+    domain_note = (
+        f"TARGET DOMAIN FOCUS: {domain}\n"
+        f"- Strictly filter your synthesis to {domain} topics, markets, figures, and developments.\n"
+        f"- Discard any unrelated general news (sports, crime, local repairs) from the final response.\n\n"
+        if domain else ""
+    )
+
+    return (
+        f"User Research Query: {query}\n"
+        f"Query Archetype: {archetype}\n"
+        f"{pubs_note}"
+        f"{isolation_rule}"
+        f"{domain_note}"
+        f"Available Newspaper Evidence:\n"
+        f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
+        f"Synthesize an insightful, highly-structured executive intelligence response."
+    )

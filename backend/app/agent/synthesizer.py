@@ -6,90 +6,39 @@ import re
 from collections.abc import AsyncIterator
 from typing import Any
 
+from app.agent.fallback_presenter import (
+    EMPTY_EVIDENCE_RESPONSE,
+    generate_deterministic_summary,
+    has_valid_evidence,
+    render_broadsheet_perspectives,
+    render_comparison_matrix,
+    render_explore_further,
+    render_front_page_comparison,
+)
+from app.agent.prompt_context import (
+    build_evidence_context,
+    build_synthesizer_user_prompt,
+    clean_snippet,
+)
 from app.agent.state import AgentCitation
+from app.agent.taxonomy import (
+    DOMAIN_TAXONOMY,
+    detect_domain_from_query,
+    is_domain_match,
+    score_evidence_item,
+)
 from app.core.cost_tracker import record_usage_and_cost
 from app.core.logging import get_logger
 from app.providers.base import ChatModelProvider, Message
 from app.providers.registry import get_registry
-from app.retrieval.sanitizer import repair_text_ligatures
 from app.retrieval.sql_analytics import sanitize_headline
 
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Centralized Domain Taxonomy
-# ---------------------------------------------------------------------------
-
-DOMAIN_TAXONOMY: dict[str, dict[str, Any]] = {
-    "Economics & Finance": {
-        "regex": r"\b(econom(?:y|ic|ics)?|financ(?:e|ial)?|business|markets?|trade|tax(?:es|ation)?|budget|fiscal|monetary|bank(?:s|ing)?|corporate|revenue|gdp|stocks?|shares?)\b",
-        "stems": [
-            "econom", "financ", "business", "market", "trade", "tax", "solar",
-            "power", "seabed", "fund", "money", "bank", "stock", "rupee", "dollar",
-            "gdp", "rbi", "corp", "profit",
-        ],
-        "metric_col": "Key Figures & Metrics",
-        "negative_hl": [],
-        "required_override": [],
-    },
-    "Health & Medicine": {
-        "regex": r"\b(health|hospitals?|pharma(?:ceutical)?|medicines?|vaccines?|diseases?|doctors?)\b",
-        "stems": [
-            "health", "hospital", "pharma", "medicine", "doctor", "patient",
-            "disease", "vaccin", "virus", "treatment", "care", "clinic", "surgery",
-            "drug", "medical", "heart", "infect", "liver", "blood", "cancer",
-            "illness", "symptom", "organ", "diet", "nutrition", "wellness", "therapy",
-        ],
-        "metric_col": "Key Findings & Medical Focus",
-        "negative_hl": [
-            "when: ", "where: ", "studio xo", "cases still pending", "tax collections",
-            "excise duty", "deductions", "cricket", "bjp", "congress",
-        ],
-        "required_override": [
-            "health", "doctor", "hospital", "medicine", "disease", "patient", "heart",
-        ],
-    },
-    "Sports": {
-        "regex": r"\b(sports?|cricket|football|tennis|olympics?|tournaments?|match(?:es)?|boxing)\b",
-        "stems": [
-            "sport", "cricket", "football", "tennis", "olympic", "tournament",
-            "match", "boxing", "player", "game",
-        ],
-        "metric_col": "Key Match Results & Scores",
-        "negative_hl": [],
-        "required_override": [],
-    },
-    "Politics & Governance": {
-        "regex": r"\b(politic(?:s|al)?|elections?|parliament|assembly|ministers?|cabinet|governance|policy|bills?)\b",
-        "stems": [
-            "politic", "election", "parliament", "assembly", "minister", "cabinet",
-            "governance", "policy", "bill", "party", "vote",
-        ],
-        "metric_col": "Key Policy Decisions & Statements",
-        "negative_hl": [],
-        "required_override": [],
-    },
-    "Crime & Law": {
-        "regex": r"\b(crimes?|courts?|legal|law|police|arrest(?:s|ed)?|investigations?|verdicts?|bail)\b",
-        "stems": [
-            "crime", "court", "legal", "law", "police", "arrest", "investigation",
-            "verdict", "bail", "judge", "jail",
-        ],
-        "metric_col": "Key Legal Proceedings & Verdicts",
-        "negative_hl": [],
-        "required_override": [],
-    },
-    "Technology & AI": {
-        "regex": r"\b(tech|technology|ai|artificial\s+intelligence|cyber|software)\b",
-        "stems": [
-            "tech", "technology", "ai", "artificial intelligence", "cyber",
-            "software", "digital", "chip",
-        ],
-        "metric_col": "Key Technical Innovations & Specs",
-        "negative_hl": [],
-        "required_override": [],
-    },
-}
+# Re-exports and backward-compatibility aliases
+_clean_snippet = clean_snippet
+_detect_domain_from_query = detect_domain_from_query
+_is_domain_match = is_domain_match
 
 # Provider failover sequences
 DEFAULT_CLOUD_FAILOVER: tuple[str, ...] = (
@@ -113,78 +62,6 @@ DEFAULT_LOCAL_FAILOVER: tuple[str, ...] = (
     "gemini_flash",
     "groq_compound",
 )
-
-EMPTY_EVIDENCE_RESPONSE = (
-    "I could not find any evidence or articles matching this query in the database. "
-    "Please try adjusting your search terms."
-)
-
-_CHUNK_TAG_REGEX = re.compile(
-    r"\[(?:Newspaper|Page\(s\)|Exact Chunk Match|Visual Data Asset|Article Parent Context|📷\s*Attached Image/Photo):?.*?\]",
-    re.IGNORECASE,
-)
-
-
-def _clean_snippet(snip: str) -> str:
-    """Strip retrieval artifacts and chunk tags from snippet text."""
-    cleaned = _CHUNK_TAG_REGEX.sub("", snip).strip()
-    cleaned = re.sub(r"^[\<\#\s\.\,\-]+", "", cleaned).strip()
-    return repair_text_ligatures(cleaned)
-
-
-def _detect_domain_from_query(query: str, evidence_items: list[dict[str, Any]] | None = None) -> str | None:
-    """Detect specific domain/sector from user query or evidence manifests."""
-    if not query:
-        return None
-    q_lower = query.lower()
-    for domain, spec in DOMAIN_TAXONOMY.items():
-        if re.search(spec["regex"], q_lower):
-            return domain
-
-    # Inspect evidence items if manifests contain explicit CATEGORY
-    if evidence_items:
-        for item in evidence_items:
-            snip = item.get("snippet", "")
-            m = re.search(r"CATEGORY:\s*([A-Za-z &]+)", snip)
-            if m:
-                cat = m.group(1).strip()
-                if any(w in cat.lower() for w in ["econom", "financ", "business", "market"]):
-                    return "Economics & Finance"
-                return cat
-    return None
-
-
-def _is_domain_match(item: dict[str, Any], domain: str | None) -> bool:
-    """Check if an evidence item strictly matches the target domain."""
-    if not domain:
-        return True
-    spec = DOMAIN_TAXONOMY.get(domain)
-    domain_terms = (
-        spec["stems"] if spec else
-        [w.lower() for w in re.findall(r"\b\w{3,}\b", domain.lower()) if w.lower() not in {"and", "the", "for"}]
-    )
-    text_corpus = (
-        (item.get("headline") or "")
-        + " "
-        + (item.get("snippet") or "")
-        + " "
-        + (item.get("summary") or "")
-        + " "
-        + (item.get("section") or "")
-    ).lower()
-    hl = (item.get("headline") or "").lower()
-
-    if spec:
-        negative_patterns = spec.get("negative_hl", [])
-        required_override = spec.get("required_override", [])
-        if (
-            negative_patterns
-            and any(x in hl for x in negative_patterns)
-            and (not required_override or not any(h in hl for h in required_override))
-        ):
-            return False
-
-    return any(dt in text_corpus for dt in domain_terms)
 
 
 def parse_thought_and_answer(text: str) -> tuple[str, str]:
@@ -333,25 +210,23 @@ SYNTHESIZER_SYSTEM_PROMPT = (
 
 
 # ---------------------------------------------------------------------------
-# AnswerSynthesizer Implementation
+# AnswerSynthesizer Coordinator
 # ---------------------------------------------------------------------------
 
 class AnswerSynthesizer:
     """Synthesizes grounded narrative answers from retrieved evidence."""
+
+    _render_comparison_matrix = staticmethod(render_comparison_matrix)
+    _render_front_page_comparison = staticmethod(render_front_page_comparison)
+    _render_broadsheet_perspectives = staticmethod(render_broadsheet_perspectives)
+    _render_explore_further = staticmethod(render_explore_further)
 
     def __init__(self, provider: ChatModelProvider | None = None) -> None:
         self._provider = provider
 
     def _has_valid_evidence(self, evidence_items: list[dict[str, Any]]) -> bool:
         """Check whether evidence contains non-empty grounded content."""
-        if not evidence_items:
-            return False
-        for item in evidence_items:
-            snip = item.get("snippet") or item.get("full_text") or item.get("summary") or ""
-            hl = item.get("headline") or ""
-            if len(snip.strip()) >= 5 or len(hl.strip()) >= 5:
-                return True
-        return False
+        return has_valid_evidence(evidence_items)
 
     def _get_provider(self, model_override: str | None = None) -> ChatModelProvider | None:
         if self._provider and not model_override:
@@ -406,110 +281,7 @@ class AnswerSynthesizer:
 
     def _build_evidence_context(self, evidence_items: list[dict[str, Any]], query: str = "") -> str:
         """Format retrieved evidence documents into structured prompt context with strict token budgeting."""
-        domain_name = _detect_domain_from_query(query, evidence_items) if query else None
-        if domain_name and evidence_items:
-            spec = DOMAIN_TAXONOMY.get(domain_name)
-            domain_terms = (
-                spec["stems"] if spec else
-                [w.lower() for w in re.findall(r"\b\w{3,}\b", domain_name.lower()) if w.lower() not in {"and", "the", "for"}]
-            )
-
-            def _domain_score(it: dict[str, Any]) -> int:
-                t = (it.get("headline", "") + " " + it.get("snippet", "") + " " + it.get("summary", "")).lower()
-                hl = (it.get("headline", "")).lower()
-                if it.get("source_tool") in ("sql_analytics", "coverage_analysis") or "MANIFEST" in t or "RECONCILIATION" in t:
-                    return 100
-                if (
-                    spec
-                    and spec.get("negative_hl")
-                    and any(x in hl for x in spec["negative_hl"])
-                    and not any(h in hl for h in spec.get("required_override", []))
-                ):
-                    return -50
-                if any(dt in t for dt in domain_terms):
-                    return 50
-                return 0
-
-            sorted_evidence = sorted(evidence_items, key=_domain_score, reverse=True)
-            budgeted_items = sorted_evidence[:12]
-        else:
-            budgeted_items = evidence_items[:12] if evidence_items else []
-
-        seen_keys: set[str] = set()
-        context_blocks: list[str] = []
-
-        for item in budgeted_items:
-            is_web = item.get("is_web") or item.get("source_tool") == "web_search"
-            raw_hl = item.get("headline", "Untitled Article")
-            sub_hl = item.get("subheadline")
-            byline = item.get("byline_author")
-            snip = item.get("snippet") or item.get("summary") or item.get("full_text") or ""
-            hl, eff_byline = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
-            hl = repair_text_ligatures(hl)
-            item["headline"] = hl
-            if eff_byline:
-                item["byline_author"] = eff_byline
-
-            raw_text = (item.get("snippet") or item.get("full_text") or item.get("summary") or "").strip()
-            text = repair_text_ligatures(raw_text)
-            item["snippet"] = text
-
-            dedup_key = f"{hl.lower().strip()}_{text[:80].lower().strip()}"
-            if dedup_key in seen_keys:
-                continue
-            seen_keys.add(dedup_key)
-
-            is_manifest_or_matrix = (
-                item.get("source_tool") in ("sql_analytics", "coverage_analysis")
-                or "RELATIONAL ARCHIVE MANIFEST" in text
-                or "COVERAGE RECONCILIATION MATRIX" in text
-                or "VERIFIED EXCLUSIVE COVERAGE" in text
-            )
-            max_chars = 4000 if is_manifest_or_matrix else 1200
-            if len(text) > max_chars:
-                text = text[:max_chars].rstrip() + " ... [excerpt truncated for length]"
-
-            idx = len(context_blocks) + 1
-            if is_web:
-                url = item.get("url", "")
-                src = item.get("newspaper_name", "Live Web")
-                dt = item.get("issue_date", "Current")
-                context_blocks.append(
-                    f"--- LIVE WEB EVIDENCE EXCERPT [{idx}] ---\n"
-                    f"Source: {src}\n"
-                    f"Title: {hl}\n"
-                    f"URL: {url}\n"
-                    f"Date: {dt}\n"
-                    f"Content:\n{text}\n"
-                )
-            else:
-                np_name = item.get("newspaper_name", "Unknown Publication")
-                dt = item.get("issue_date", "Unknown Date")
-                pages = item.get("pages", [1])
-                pdf_page = int(pages[0]) if pages and pages[0] else 1
-                evidence_tag = f'[Evidence: {np_name}, {dt}, Page {pdf_page} (PDF Page {pdf_page}), Headline: "{hl}"]'
-
-                photos = item.get("photos") or []
-                photos_text = ""
-                if photos:
-                    photo_lines = [
-                        f"  * [{p.get('visual_type') or 'Photo'} {p_idx}] Caption: \"{p.get('caption') or 'No printed caption'}\""
-                        + (f" | Visual Scene: {p['vlm_description']}" if p.get("vlm_description") else "")
-                        for p_idx, p in enumerate(photos, 1)
-                    ]
-                    photos_text = "\nAttached Photos & Visual Elements:\n" + "\n".join(photo_lines) + "\n"
-
-                context_blocks.append(
-                    f"--- ARCHIVE EVIDENCE EXCERPT [{idx}] ---\n"
-                    f"{evidence_tag}\n"
-                    f"Publication: {np_name}\n"
-                    f"Date: {dt}\n"
-                    f"Page(s): Page {pdf_page} (PDF Page {pdf_page})\n"
-                    f"Headline: {hl}\n"
-                    f"Content:\n{text}\n"
-                    f"{photos_text}"
-                )
-        return "\n".join(context_blocks)
+        return build_evidence_context(evidence_items, query=query)
 
     def _build_synthesizer_user_prompt(
         self,
@@ -519,36 +291,8 @@ class AnswerSynthesizer:
         context: str,
     ) -> str:
         """Construct grounded synthesizer prompt with explicit publication boundaries."""
-        verified_pubs = sorted(list({
-            str(item.get("newspaper_name", "")).strip() for item in evidence_items
-            if item.get("newspaper_name") and item.get("newspaper_name") not in (
-                "Multi-Newspaper Audit", "Aggregated Archive Analytics", "Archive", "Unknown Publication", "Live Web"
-            )
-        }))
-        pubs_note = f"Verified Available Publications for this Query: {', '.join(verified_pubs)}\n" if verified_pubs else ""
-        isolation_rule = (
-            f"STRICT PUBLICATION & DATE ISOLATION:\n"
-            f"- You must ONLY report on and analyze the verified publications present in the current evidence ({', '.join(verified_pubs)}).\n"
-            f"- NEVER mention, summarize, or cite articles from other publications or dates discussed in earlier conversation turns.\n\n"
-            if verified_pubs else ""
-        )
-        domain = _detect_domain_from_query(query, evidence_items)
-        domain_note = (
-            f"TARGET DOMAIN FOCUS: {domain}\n"
-            f"- Strictly filter your synthesis to {domain} topics, markets, figures, and developments.\n"
-            f"- Discard any unrelated general news (sports, crime, local repairs) from the final response.\n\n"
-            if domain else ""
-        )
-
-        return (
-            f"User Research Query: {query}\n"
-            f"Query Archetype: {archetype}\n"
-            f"{pubs_note}"
-            f"{isolation_rule}"
-            f"{domain_note}"
-            f"Available Newspaper Evidence:\n"
-            f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
-            f"Synthesize an insightful, highly-structured executive intelligence response."
+        return build_synthesizer_user_prompt(
+            query=query, archetype=archetype, evidence_items=evidence_items, context=context,
         )
 
     @staticmethod
@@ -639,7 +383,7 @@ class AnswerSynthesizer:
         evidence_items: list[dict[str, Any]] | None = None,
     ) -> str:
         """Construct intent-aware dynamic system prompt tailored to query archetype and domain."""
-        domain = _detect_domain_from_query(query, evidence_items)
+        domain = detect_domain_from_query(query, evidence_items)
 
         if archetype == "cross_newspaper_comparison" and domain:
             metric_col = DOMAIN_TAXONOMY.get(domain, {}).get("metric_col", "Key Takeaways & Core Findings")
@@ -884,190 +628,20 @@ ANTI-REPETITION CONSTRAINT:
         archetype: str = "factual_lookup",
     ) -> str:
         """Structured deterministic grounded synthesis when all LLMs are offline."""
-        if not self._has_valid_evidence(evidence_items):
-            return EMPTY_EVIDENCE_RESPONSE
+        return generate_deterministic_summary(query, evidence_items, archetype=archetype)
 
-        # 1. Sanitize all evidence headlines and repair font ligatures
-        for item in evidence_items:
-            raw_hl = item.get("headline", "Untitled Article")
-            sub_hl = item.get("subheadline")
-            byline = item.get("byline_author")
-            snip = item.get("snippet") or item.get("summary") or item.get("full_text") or ""
-            hl, eff_byline = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
-            item["headline"] = repair_text_ligatures(hl)
-            if eff_byline:
-                item["byline_author"] = eff_byline
-            if item.get("snippet"):
-                item["snippet"] = repair_text_ligatures(item["snippet"])
 
-        # 2. Domain & keyword filtering
-        domain = _detect_domain_from_query(query, evidence_items)
-        query_words = {w.lower() for w in query.split() if len(w) > 3}
-        if domain and domain in DOMAIN_TAXONOMY:
-            query_words.update(DOMAIN_TAXONOMY[domain]["stems"])
-
-        if archetype == "cross_newspaper_comparison":
-            relevant_items = evidence_items
-        else:
-            relevant_items = [
-                item for item in evidence_items
-                if not query_words or any(
-                    qw in (
-                        (item.get("headline") or "")
-                        + " "
-                        + (item.get("snippet") or "")
-                        + " "
-                        + (item.get("summary") or "")
-                    ).lower()
-                    for qw in query_words
-                )
-            ]
-
-        filtered_evidence = relevant_items if relevant_items else evidence_items
-
-        # 3. Partition real news articles vs manifests
-        real_articles = [
-            item for item in filtered_evidence
-            if not (item.get("headline") or "").startswith("Issue Manifest:")
-            and "exact chunk match" not in (item.get("headline") or "").lower()
-            and item.get("newspaper_name") not in ("Multi-Newspaper Audit", "Aggregated Archive Analytics")
-        ]
-
-        first = (real_articles or filtered_evidence)[0]
-        first_np = first.get("newspaper_name", "Daily News")
-        first_dt = first.get("issue_date", "")
-
-        pub_groups: dict[str, list[dict[str, Any]]] = {}
-        for item in filtered_evidence:
-            np_name = item.get("newspaper_name", "Archive")
-            if np_name not in ("Multi-Newspaper Audit", "Aggregated Archive Analytics", "Archive"):
-                pub_groups.setdefault(np_name, []).append(item)
-
-        if not pub_groups:
-            for item in filtered_evidence[:6]:
-                np_name = item.get("newspaper_name", "Archive")
-                pub_groups.setdefault(np_name, []).append(item)
-
-        lines: list[str] = []
-
-        # 4. Render sections by archetype
-        if archetype == "cross_newspaper_comparison":
-            summary_desc = (
-                f"Comparative analysis across verified broadsheet archives covering {domain or 'regional news'} developments."
-            )
-            lines.append(
-                f"### ⚡ Executive Summary: {domain} Intelligence" if domain else "### ⚡ Executive Summary: Broadsheet Edition Comparison"
-            )
-            lines.append(f"{summary_desc}\n")
-
-            if domain:
-                lines.extend(self._render_comparison_matrix(pub_groups, domain))
-            else:
-                lines.extend(self._render_front_page_comparison(pub_groups, domain))
-        else:
-            lines.append("### ⚡ Executive Summary")
-            lines.append(
-                f"Archival broadsheet reporting covering {domain or 'regional news'} was documented across "
-                f"regional publications, led by *{first_np}* ({first_dt}).\n"
-            )
-            lines.append("### 📌 Key Verified Facts & Highlights")
-
-        # Prioritize real news articles for facts and highlights
-        domain_reals = [a for a in real_articles if _is_domain_match(a, domain)]
-        display_facts = domain_reals[:6] if domain_reals else real_articles[:6] if real_articles else filtered_evidence[:6]
-        for item in display_facts:
-            np_name = item.get("newspaper_name", "Archive")
-            dt = item.get("issue_date", "")
-            pages = item.get("pages", [1])
-            page_str = f"Page {pages[0]}" if pages else "Page 1"
-            hl = item.get("headline", "Untitled")
-            clean_snip = _clean_snippet(item.get("snippet") or item.get("summary") or "")
-            lines.append(f'- **{hl}**: {clean_snip[:180]}... [{np_name}, {dt}, {page_str}, "{hl}"]')
-
-        lines.extend(self._render_broadsheet_perspectives(pub_groups, domain))
-        lines.extend(self._render_explore_further(pub_groups))
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _render_comparison_matrix(pub_groups: dict[str, list[dict[str, Any]]], domain: str) -> list[str]:
-        """Render cross-newspaper comparison matrix table with zero-coverage handling."""
-        lines = [
-            f"### 📊 Cross-Newspaper {domain} Comparison Matrix\n",
-            "| Publication | Issue Date | Coverage Focus | Key Verified Highlights |",
-            "|---|---|---|---|",
-        ]
-        for pub, items in pub_groups.items():
-            pub_reals = [
-                it for it in items
-                if not (it.get("headline") or "").startswith("Issue Manifest:")
-                and "exact chunk match" not in (it.get("headline") or "").lower()
-                and _is_domain_match(it, domain)
-            ]
-            if pub_reals:
-                lead_item = pub_reals[0]
-                hl = lead_item.get("headline") or "General Reporting"
-                if hl.startswith("Issue Manifest:"):
-                    hl = f"General {domain or 'News'} Archive Coverage"
-                dt_val = lead_item.get("issue_date") or items[0].get("issue_date", "")
-                lines.append(f"| **{pub}** | {dt_val} | {len(pub_reals)} verified item(s) | {hl} |")
-            else:
-                dt_val = items[0].get("issue_date", "")
-                lines.append(
-                    f"| **{pub}** | {dt_val} | No standalone {domain} reporting | "
-                    f"Carried no standalone {domain} reporting in this edition |"
-                )
-        lines.append("\n### 📌 Key Verified Sector Highlights & Policies")
-        return lines
-
-    @staticmethod
-    def _render_front_page_comparison(
-        pub_groups: dict[str, list[dict[str, Any]]], domain: str | None
-    ) -> list[str]:
-        """Render front page headline comparisons across publications."""
-        lines = ["### 📰 Front-Page (Page 1) Lead Stories Comparison"]
-        for pub, items in pub_groups.items():
-            pub_reals = [
-                it for it in items
-                if not (it.get("headline") or "").startswith("Issue Manifest:")
-                and "exact chunk match" not in (it.get("headline") or "").lower()
-            ]
-            lead_item = pub_reals[0] if pub_reals else items[0]
-            hl = lead_item.get("headline") or "Front-page report"
-            if hl.startswith("Issue Manifest:"):
-                hl = f"General {domain or 'News'} Archive Coverage"
-            p_num = lead_item.get("pages", [1])[0]
-            dt_val = lead_item.get("issue_date") or items[0].get("issue_date", "")
-            lines.append(f"- **{pub}**: Front-page lead report '{hl}' [{pub}, {dt_val}, Page {p_num}, \"{hl}\"]")
-        lines.append("\n### 📊 Section Distribution & Coverage Scale")
-        return lines
-
-    @staticmethod
-    def _render_broadsheet_perspectives(
-        pub_groups: dict[str, list[dict[str, Any]]], domain: str | None
-    ) -> list[str]:
-        """Render publication perspectives and zero-coverage notes."""
-        lines = ["\n### 📰 Broadsheet Perspectives"]
-        for pub, items in pub_groups.items():
-            pub_reals = [
-                it for it in items
-                if not (it.get("headline") or "").startswith("Issue Manifest:")
-                and "exact chunk match" not in (it.get("headline") or "").lower()
-                and _is_domain_match(it, domain)
-            ]
-            if pub_reals:
-                top_hl = pub_reals[0].get("headline") or "Reporting"
-                if top_hl.startswith("Issue Manifest:"):
-                    top_hl = f"General {domain or 'News'} Coverage"
-                lines.append(f"- **{pub}**: Emphasized '{top_hl}' across {len(pub_reals)} related report(s).")
-            else:
-                lines.append(f"- **{pub}**: Carried no dedicated {domain} reports in this issue.")
-        return lines
-
-    @staticmethod
-    def _render_explore_further(pub_groups: dict[str, list[dict[str, Any]]]) -> list[str]:
-        """Render explore further follow-up hints."""
-        lines = ["\n### 🔍 Explore Further"]
-        for pub in list(pub_groups.keys())[:2]:
-            lines.append(f"> 💡 Explore: What was {pub}'s detailed coverage on this topic?")
-        return lines
+__all__ = [
+    "AnswerSynthesizer",
+    "COMMON_ANALYTICAL_GUIDELINES",
+    "COMMON_MEMORY_AND_CONSTRAINTS",
+    "DEFAULT_CLOUD_FAILOVER",
+    "DEFAULT_LOCAL_FAILOVER",
+    "DOMAIN_TAXONOMY",
+    "EMPTY_EVIDENCE_RESPONSE",
+    "SYNTHESIZER_SYSTEM_PROMPT",
+    "detect_domain_from_query",
+    "is_domain_match",
+    "parse_thought_and_answer",
+    "score_evidence_item",
+]

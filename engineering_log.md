@@ -2889,3 +2889,47 @@ Comprehensive architectural audit of `backend/app/agent/planner.py` (previously 
 - **Full Backend Regression Suite**: **409/409 tests passing (100% green)** in 25.44s.
 - Static Type Checking: `mypy app/agent/ app/retrieval/` $\to$ **Success: no issues found in 21 source files**.
 - Linter: `ruff check app/agent/ app/retrieval/` $\to$ **All checks passed!**
+
+---
+
+## Phase 9.28 — Decoupled Modular Synthesizer Architecture
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Monolithic God Object in `synthesizer.py` (1,073 lines)**:
+   - `synthesizer.py` was the last remaining monolithic module in the agent pipeline.
+   - It conflated 6 distinct responsibilities:
+     1. Domain classification, keyword stems, and relevance scoring (`DOMAIN_TAXONOMY`).
+     2. Evidence sanitization, token budgeting, and chunk tag removal (`_build_evidence_context`).
+     3. Dynamic prompt engineering with publication boundaries (`_build_synthesizer_user_prompt`, `_build_synthesizer_system_prompt`).
+     4. LLM provider failover execution and streaming (`synthesize`, `synthesize_stream`).
+     5. Inline citation extraction and provenance matching (`extract_citations`, `_make_citation`).
+     6. Deterministic offline markdown summary and matrix generation (`_generate_deterministic_summary` and 4 static renderers).
+2. **Maintenance & Testing Friction**:
+   - Changes to prompt formatting or domain stems required modifying the same file responsible for LLM streaming and citation resolution.
+
+### Architectural Solutions & Implementations
+Following the proven decomposition patterns of **Phase 9.23** (`planner.py`) and **Phase 9.25** (`graph.py`):
+1. **`backend/app/agent/taxonomy.py` (165 lines)**:
+   - Centralized `DOMAIN_TAXONOMY` specification for 6 broadsheet sectors (`Economics & Finance`, `Health & Medicine`, `Sports`, `Politics & Governance`, `Crime & Law`, `Technology & AI`).
+   - Encapsulates `detect_domain_from_query()`, `get_domain_terms()`, `is_domain_match()`, and `score_evidence_item()`.
+2. **`backend/app/agent/prompt_context.py` (161 lines)**:
+   - Encapsulates `clean_snippet()`, `sanitize_evidence_item()`, `build_evidence_context()`, and `build_synthesizer_user_prompt()`.
+   - Single-pass chunk tag stripping, ligature repair via `repair_text_ligatures()`, and token budgeting with visual scene descriptions.
+3. **`backend/app/agent/fallback_presenter.py` (211 lines)**:
+   - Encapsulates `generate_deterministic_summary()`, `has_valid_evidence()`, and modular renderers: `render_comparison_matrix()`, `render_front_page_comparison()`, `render_broadsheet_perspectives()`, `render_explore_further()`.
+4. **`backend/app/agent/synthesizer.py` (648 lines, ~320 lines of logic)**:
+   - Refactored `AnswerSynthesizer` into a lean coordinator focusing exclusively on prompt assembly, provider failover execution, streaming, and citation resolution.
+   - Provides 100% backward-compatible transparent delegation for legacy callers and unit tests.
+
+### Test Verification & Quality Gates
+- `backend/tests/test_synthesizer.py`: **24/24 tests passing (100% green)**
+- `backend/tests/test_thought_parsing.py`: **5/5 tests passing (100% green)**
+- `backend/tests/test_streaming_api.py`: **4/4 tests passing (100% green)**
+- `backend/tests/test_web_search.py`: **11/11 tests passing (100% green)**
+- **Full Backend Regression Suite**: **409/409 tests passing (100% green)** in 22.99s.
+- Static Type Checking: `mypy app/agent/` $\to$ **Success: no issues found in 14 source files**.
+- Linter: `ruff check app/agent/` $\to$ **All checks passed!**
+

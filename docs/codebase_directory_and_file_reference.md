@@ -247,26 +247,48 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Important Tools / Frameworks**: LangGraph `StateGraph`, Python AsyncIO.
 * **LLM / VLM / Embedding Models**: Orchestrates planning and synthesis models.
 
+##### [`backend/app/agent/taxonomy.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/taxonomy.py)
+* **What It Has**:
+  - Centralized `DOMAIN_TAXONOMY` mapping for 6 domains (`Economics & Finance`, `Health & Medicine`, `Sports`, `Politics & Governance`, `Crime & Law`, `Technology & AI`).
+  - Domain helpers: `detect_domain_from_query()`, `get_domain_terms()`, `is_domain_match()`, `score_evidence_item()`.
+* **Work It Is Doing**:
+  - Serves as the single source of truth for domain classification across the agent layer.
+  - Encapsulates domain regexes, keyword stems, column headers, and negative exclusion rules with required positive overrides.
+  - Provides scoring functions for token-budget sorting and relevance filtering.
+* **Important Tools / Frameworks**: Python `re`, typing.
+
+##### [`backend/app/agent/prompt_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/prompt_context.py)
+* **What It Has**:
+  - Evidence formatting helpers: `clean_snippet()`, `sanitize_evidence_item()`, `build_evidence_context()`, `build_synthesizer_user_prompt()`.
+* **Work It Is Doing**:
+  - Cleans retrieval artifacts, chunk tags, and visual asset brackets via single-pass regex and repairs font ligatures (`repair_text_ligatures()`).
+  - Implements strict token budgeting, deduplicating evidence items and budgeting up to 12 top-ranked items (including photos and VLM scene descriptions).
+  - Injects strict publication boundaries and domain guidance into the user prompt.
+* **Important Tools / Frameworks**: Regex, Font Ligature Sanitizer.
+
+##### [`backend/app/agent/fallback_presenter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/fallback_presenter.py)
+* **What It Has**:
+  - `generate_deterministic_summary()`, `has_valid_evidence()`, `EMPTY_EVIDENCE_RESPONSE`.
+  - Modular static renderers: `render_comparison_matrix()`, `render_front_page_comparison()`, `render_broadsheet_perspectives()`, `render_explore_further()`.
+* **Work It Is Doing**:
+  - Delivers a structured, publication-grade markdown brief when all cloud and local LLM providers are offline.
+  - Implements archetype preservation, rendering cross-newspaper comparison matrices, front-page comparisons, and zero-coverage reporting (`No standalone [Domain] reporting in this edition`).
+* **Important Tools / Frameworks**: Markdown generation, domain filtering.
+
 ##### [`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)
 * **What It Has**: 
-  - `AnswerSynthesizer` class and `parse_thought_and_answer()`.
-  - Centralized `DOMAIN_TAXONOMY` mapping for 6 domains (`Economics & Finance`, `Health & Medicine`, `Sports`, `Politics & Governance`, `Crime & Law`, `Technology & AI`).
+  - `AnswerSynthesizer` coordinator class and `parse_thought_and_answer()`.
   - Dynamic system prompt composition (`_build_synthesizer_system_prompt()`, `COMMON_ANALYTICAL_GUIDELINES`, `COMMON_MEMORY_AND_CONSTRAINTS`).
-  - Modular static renderers: `_render_comparison_matrix()`, `_render_front_page_comparison()`, `_render_broadsheet_perspectives()`, `_render_explore_further()`.
-  - Citation helper: `_make_citation()`.
-  - Streaming method: `synthesize_stream()`.
+  - Citation extraction and provenance helper: `extract_citations()`, `_make_citation()`.
+  - Failover loops and streaming method: `synthesize()`, `synthesize_stream()`.
+  - Transparent delegation to `taxonomy.py`, `prompt_context.py`, and `fallback_presenter.py`.
 * **Work It Is Doing**:
-  - Generates authoritative, highly readable executive intelligence briefs.
-  - **Single Source of Truth (`DOMAIN_TAXONOMY`)**: Centralizes regex patterns, domain token stems, comparison column headers, and negative exclusion patterns, eliminating multi-file duplication.
-  - **Zero-Coverage Reporting**: Formats explicit notices (`No standalone [Domain] reporting`) when publications lack coverage in requested topics, preventing noise substitution.
-  - **Domain-Adaptive Synthesis**: Dynamically adapts comparison table structures based on topic domain (`Key Findings & Medical Focus` for health, `Key Figures & Metrics` for finance, `Key Policy Decisions & Statements` for politics) and outputs dedicated table manifests for `article_catalog` queries.
-  - **Archetype Preservation in Fallbacks**: Passes explicit `archetype` to `_generate_deterministic_summary()`, ensuring cross-newspaper comparisons preserve multi-edition publication tables without dropping scheduled editions or degrading into single-paper templates.
-  - **Headline Cleansing & OCR Font Ligature Repair Integration**: Sanitizes author/doctor byline boxes into descriptive feature labels while protecting real all-caps news headlines, and runs `repair_text_ligatures()` across all evidence and headlines.
-  - **Top-Level Static Imports**: Avoids dynamic runtime imports (`from ... import ...`) inside loops, eliminating `_ModuleLock` concurrency contention.
+  - Generates authoritative, highly readable executive intelligence briefs by orchestrating provider failovers and assembling structured prompts.
+  - **Lean Coordinator Architecture**: Decoupled from 1,073 lines down to ~320 lines, delegating domain classification to `taxonomy.py`, context building to `prompt_context.py`, and offline summaries to `fallback_presenter.py`.
+  - **Zero-Coverage Reporting & Domain Purity**: Enforces explicit notices when publications lack coverage in requested topics.
   - **Reasoning Stream Parsing**: Separates model reasoning traces (`<think>...</think>`) from the final response text.
-  - **Strict 1-Shot Citation Enforcement**: Mandates bracketed inline citations on every factual assertion:
-    `[{Newspaper Name}, {YYYY-MM-DD}, Page {P}, "{Headline}"]` or `[📊 Chart: ...]`.
-* **Important Tools / Frameworks**: Async Generators (`AsyncIterator`), Regex Parsing, Pydantic.
+  - **Strict 1-Shot Citation Enforcement**: Mandates bracketed inline citations on every factual assertion.
+* **Important Tools / Frameworks**: Async Generators (`AsyncIterator`), Provider Registry, Cost Tracker.
 * **LLM / VLM / Embedding Models**: Bound to `answerer` task (`nemotron-3.5-lightning`, `gemma4:12b`, `llama3.1:8b`, `deepseek-r1:14b`, or `gpt-4o`).
 
 ---
