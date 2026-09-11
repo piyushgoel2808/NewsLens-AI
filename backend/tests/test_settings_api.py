@@ -53,5 +53,5 @@ async def test_get_and_update_model_bindings() -> None:
         assert reset_resp.status_code == 200
         reset_data = reset_resp.json()
         assert reset_data["status"] == "reset_to_default"
-        assert reset_data["task_bindings"]["query_planner"] == "openrouter_gemma4_26b"
-        assert reset_data["task_bindings"]["layout_analysis"] == "google_cloud_vision"
+        assert reset_data["task_bindings"]["query_planner"] == "ollama_llama3"
+        assert reset_data["task_bindings"]["layout_analysis"] == "docling_parser"

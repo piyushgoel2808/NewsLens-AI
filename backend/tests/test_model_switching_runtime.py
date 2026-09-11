@@ -25,8 +25,8 @@ async def test_runtime_model_swapping_live_update() -> None:
         reset_resp = await client.post("/api/settings/model-bindings/reset")
         assert reset_resp.status_code == 200
         data = reset_resp.json()
-        assert data["task_bindings"]["layout_analysis"] == "google_cloud_vision"
-        assert data["task_bindings"]["query_planner"] == "openrouter_gemma4_26b"
+        assert data["task_bindings"]["layout_analysis"] == "docling_parser"
+        assert data["task_bindings"]["query_planner"] == "ollama_llama3"
 
         # 2. Swap layout_analysis to ollama_qwen3vl
         put_resp = await client.put(
@@ -46,7 +46,7 @@ async def test_runtime_model_swapping_live_update() -> None:
         # 3. Reset back to defaults
         reset_back = await client.post("/api/settings/model-bindings/reset")
         assert reset_back.status_code == 200
-        assert reset_back.json()["task_bindings"]["layout_analysis"] == "google_cloud_vision"
+        assert reset_back.json()["task_bindings"]["layout_analysis"] == "docling_parser"
 
 
 @pytest.mark.asyncio

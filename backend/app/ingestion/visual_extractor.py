@@ -240,54 +240,67 @@ class VisualDataExtractor:
 
     def _get_provider(self) -> VisionModelProvider | None:
         """Resolve vision model provider from registry with circuit breaker and failover."""
+        # If circuit breaker is open, bypass primary provider (including injected provider)
+        if self.is_circuit_open():
+            if self._provider:
+                return None
+            logger.info(
+                "Circuit breaker actively open (%.1fs remaining); engaging secondary fallback provider",
+                max(0.0, self._circuit_open_until - time.time()),
+            )
+            registry = get_registry()
+            try:
+                active_binding = registry.get_task_binding("visual_extraction")
+            except Exception:
+                active_binding = None
+            return self._get_secondary_fallback_provider(exclude_id=active_binding)
+
         if self._provider:
             return self._provider
 
-        # If circuit breaker is open, bypass primary provider to avoid stalling
-        if self.is_circuit_open():
-            return self._get_secondary_fallback_provider()
-
         registry = get_registry()
+        try:
+            active_binding = registry.get_task_binding("visual_extraction")
+        except Exception:
+            active_binding = None
+
         try:
             provider = registry.get_provider("visual_extraction")
             if isinstance(provider, VisionModelProvider):
                 # If provider is OpenRouter and all keys are currently rate-limited, trip circuit breaker immediately
                 if hasattr(provider, "are_all_keys_rate_limited") and provider.are_all_keys_rate_limited():
                     self.trip_circuit_breaker(60.0, "All OpenRouter keys currently in cooldown (HTTP 429)")
-                    return self._get_secondary_fallback_provider()
+                    return self._get_secondary_fallback_provider(exclude_id=active_binding)
                 return provider
         except Exception:
             pass
 
-        return self._get_secondary_fallback_provider()
+        return self._get_secondary_fallback_provider(exclude_id=active_binding)
 
-    def _get_secondary_fallback_provider(self) -> VisionModelProvider | None:
-        """Attempt to locate a secondary healthy vision provider (Gemini Vision or Ollama VLM)."""
+    def _get_secondary_fallback_provider(self, exclude_id: str | None = None) -> VisionModelProvider | None:
+        """Attempt to locate a secondary healthy vision provider (prioritizing local Ollama Qwen 3 VL, then Gemini Vision)."""
+        if self._provider:
+            # Custom injected provider: do not pull external registry providers
+            return None
+
         try:
             registry = get_registry()
-            # 1. Try Gemini Vision if configured
-            try:
-                gemini_prov = registry.get_provider_by_id("gemini_vision")
-                if isinstance(gemini_prov, VisionModelProvider):
-                    return gemini_prov
-            except Exception:
-                pass
-
-            # 2. Try Ollama local vision if available
-            try:
-                ollama_prov = registry.get_provider_by_id("ollama_qwen3vl")
-                if isinstance(ollama_prov, VisionModelProvider):
-                    return ollama_prov
-            except Exception:
-                pass
-
-            # 3. Try layout_analysis if it provides vision
-            try:
-                layout_prov = registry.get_provider("layout_analysis")
-                if isinstance(layout_prov, VisionModelProvider):
-                    return layout_prov
-            except Exception:
-                pass
+            candidates = ["ollama_qwen3vl", "ollama_vlm", "gemini_vision", "layout_analysis"]
+            for cand_id in candidates:
+                if exclude_id and cand_id == exclude_id:
+                    continue
+                try:
+                    cand_prov = (
+                        registry.get_provider(cand_id)
+                        if cand_id == "layout_analysis"
+                        else registry.get_provider_by_id(cand_id)
+                    )
+                    if isinstance(cand_prov, VisionModelProvider):
+                        if hasattr(cand_prov, "are_all_keys_rate_limited") and cand_prov.are_all_keys_rate_limited():
+                            continue
+                        return cand_prov
+                except Exception:
+                    continue
         except Exception:
             pass
 
@@ -371,20 +384,15 @@ class VisualDataExtractor:
                 contains_data=False,
             )
 
-        # If circuit breaker is tripped, skip network inference immediately
-        if self.is_circuit_open():
-            logger.debug("Visual extraction circuit breaker is open; skipping VLM triage to avoid stall")
-            return self._classify_via_ocr_density(image_bytes)
-
         provider = self._get_provider()
         if not provider:
             return self._classify_via_ocr_density(image_bytes)
 
         from app.providers.openrouter_provider import RateLimitExhaustedError
 
-        try:
-            response = await asyncio.wait_for(
-                provider.analyze_image(
+        async def _run_inference(p: VisionModelProvider) -> VisualClassification | None:
+            resp = await asyncio.wait_for(
+                p.analyze_image(
                     image_bytes=image_bytes,
                     prompt=TRIAGE_CLASSIFICATION_PROMPT,
                     response_schema=None,
@@ -392,21 +400,36 @@ class VisualDataExtractor:
                 ),
                 timeout=20.0,
             )
-            raw_text = response.text.strip()
-            parsed = repair_and_parse_json(raw_text)
+            raw = resp.text.strip()
+            parsed = repair_and_parse_json(raw)
             if parsed:
-                classification = VisualClassification(**parsed)
-                if classification.visual_type in {"data_chart", "table", "infographic"}:
-                    classification.contains_data = True
-                return classification
+                cls = VisualClassification(**parsed)
+                if cls.visual_type in {"data_chart", "table", "infographic"}:
+                    cls.contains_data = True
+                return cls
+            return None
+
+        try:
+            res = await _run_inference(provider)
+            if res:
+                return res
         except RateLimitExhaustedError as rle:
             wait_s = getattr(rle, "retry_after_seconds", 60.0) or 60.0
             self.trip_circuit_breaker(wait_s, str(rle))
             logger.warning(
-                "Rate limits exhausted during triage classification; tripping circuit breaker for %.1fs: %s",
+                "Rate limits exhausted during triage classification; tripping circuit breaker for %.1fs: %s. Engaging secondary fallback provider.",
                 wait_s,
                 rle,
             )
+            fallback = self._get_secondary_fallback_provider()
+            if fallback and fallback != provider:
+                try:
+                    res = await _run_inference(fallback)
+                    if res:
+                        logger.info("Successfully classified visual asset using secondary fallback provider.")
+                        return res
+                except Exception as fb_err:
+                    logger.warning("Secondary fallback provider also failed triage: %s", fb_err)
         except Exception as e:
             logger.warning(
                 "Visual triage classification fallback, checking OCR density",
@@ -599,24 +622,21 @@ class VisualDataExtractor:
         visual_type: str = "data_chart",
     ) -> VisualExtractionResult:
         """Extract structured markdown table and metrics from a data-bearing visual asset."""
-        if self.is_circuit_open():
-            logger.info(
-                "Circuit breaker open; executing deterministic OCR spatial matrix reconstruction",
-                extra={"visual_type": visual_type},
-            )
-            return self.extract_table_via_spatial_ocr(image_bytes, visual_type=visual_type)
-
         provider = self._get_provider()
         if not provider:
+            logger.info(
+                "No vision provider available; executing deterministic OCR spatial matrix reconstruction",
+                extra={"visual_type": visual_type},
+            )
             return self.extract_table_via_spatial_ocr(image_bytes, visual_type=visual_type)
 
         from app.providers.openrouter_provider import RateLimitExhaustedError
 
         prompt = STRUCTURED_EXTRACTION_PROMPT.replace("{visual_type}", visual_type)
 
-        try:
-            response = await asyncio.wait_for(
-                provider.analyze_image(
+        async def _run_extraction(p: VisionModelProvider) -> VisualExtractionResult | None:
+            resp = await asyncio.wait_for(
+                p.analyze_image(
                     image_bytes=image_bytes,
                     prompt=prompt,
                     response_schema=None,
@@ -624,7 +644,7 @@ class VisualDataExtractor:
                 ),
                 timeout=120.0,
             )
-            raw_text = response.text.strip()
+            raw_text = resp.text.strip()
             parsed = repair_and_parse_json(raw_text)
             if parsed and (parsed.get("markdown_table") or parsed.get("summary") or parsed.get("key_metrics")):
                 return VisualExtractionResult(
@@ -634,8 +654,6 @@ class VisualDataExtractor:
                     confidence=float(parsed.get("confidence", 0.9)),
                     visual_type=visual_type,
                 )
-
-            # Fallback 1: Attempt direct regex extraction of Markdown table from raw text
             extracted_md = extract_markdown_table_from_raw_text(raw_text)
             if extracted_md:
                 logger.info(
@@ -649,14 +667,29 @@ class VisualDataExtractor:
                     confidence=0.8,
                     visual_type=visual_type,
                 )
+            return None
+
+        try:
+            res = await _run_extraction(provider)
+            if res:
+                return res
         except RateLimitExhaustedError as rle:
             wait_s = getattr(rle, "retry_after_seconds", 60.0) or 60.0
             self.trip_circuit_breaker(wait_s, str(rle))
             logger.warning(
-                "Rate limits exhausted during structured extraction; tripping circuit breaker for %.1fs: %s",
+                "Rate limits exhausted during structured extraction; tripping circuit breaker for %.1fs: %s. Engaging secondary fallback provider.",
                 wait_s,
                 rle,
             )
+            fallback = self._get_secondary_fallback_provider()
+            if fallback and fallback != provider:
+                try:
+                    res = await _run_extraction(fallback)
+                    if res:
+                        logger.info("Successfully extracted structured data using secondary fallback provider.")
+                        return res
+                except Exception as fb_err:
+                    logger.warning("Secondary fallback provider also failed structured extraction: %s", fb_err)
         except Exception as e:
             logger.warning(
                 "VLM structured visual extraction failed or empty, engaging deterministic spatial OCR fallback",
@@ -719,16 +752,6 @@ class VisualDataExtractor:
         caption: str = "",
     ) -> VisualExtractionResult:
         """Analyze editorial photograph to extract rich visual scene description and key subjects."""
-        if self.is_circuit_open():
-            summary = f"Editorial news photograph. {caption}".strip() if caption else "Editorial news photograph."
-            return VisualExtractionResult(
-                summary=summary,
-                markdown_table="",
-                key_metrics=[f"Caption: {caption}"] if caption else [],
-                confidence=0.6,
-                visual_type="photo",
-            )
-
         provider = self._get_provider()
         if not provider:
             summary = f"Editorial news photograph. {caption}".strip() if caption else "Editorial news photograph."
@@ -745,9 +768,9 @@ class VisualDataExtractor:
         caption_context = f"Published Newspaper Caption: \"{caption}\"" if caption else ""
         prompt = PHOTO_SCENE_ANALYSIS_PROMPT.replace("{caption_context}", caption_context)
 
-        try:
-            response = await asyncio.wait_for(
-                provider.analyze_image(
+        async def _run_photo_analysis(p: VisionModelProvider) -> VisualExtractionResult | None:
+            resp = await asyncio.wait_for(
+                p.analyze_image(
                     image_bytes=image_bytes,
                     prompt=prompt,
                     response_schema=None,
@@ -755,8 +778,8 @@ class VisualDataExtractor:
                 ),
                 timeout=35.0,
             )
-            raw_text = response.text.strip()
-            parsed = repair_and_parse_json(raw_text)
+            raw = resp.text.strip()
+            parsed = repair_and_parse_json(raw)
             if parsed and (parsed.get("summary") or parsed.get("markdown_table")):
                 return VisualExtractionResult(
                     summary=parsed.get("summary", ""),
@@ -765,14 +788,29 @@ class VisualDataExtractor:
                     confidence=float(parsed.get("confidence", 0.9)),
                     visual_type="photo",
                 )
+            return None
+
+        try:
+            res = await _run_photo_analysis(provider)
+            if res:
+                return res
         except RateLimitExhaustedError as rle:
             wait_s = getattr(rle, "retry_after_seconds", 60.0) or 60.0
             self.trip_circuit_breaker(wait_s, str(rle))
             logger.warning(
-                "Rate limits exhausted during photo scene analysis; tripping circuit breaker for %.1fs: %s",
+                "Rate limits exhausted during photo scene analysis; tripping circuit breaker for %.1fs: %s. Engaging secondary fallback provider.",
                 wait_s,
                 rle,
             )
+            fallback = self._get_secondary_fallback_provider()
+            if fallback and fallback != provider:
+                try:
+                    res = await _run_photo_analysis(fallback)
+                    if res:
+                        logger.info("Successfully analyzed photo scene using secondary fallback provider.")
+                        return res
+                except Exception as fb_err:
+                    logger.warning("Secondary fallback provider also failed photo scene analysis: %s", fb_err)
         except Exception as e:
             logger.warning(
                 "VLM photo scene analysis failed or timed out",

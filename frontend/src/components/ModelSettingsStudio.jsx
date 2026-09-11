@@ -324,6 +324,7 @@ export default function ModelSettingsStudio() {
   // Granular Pipeline Task Staging State
   const [stagedBindings, setStagedBindings] = useState(() => ({ ...(taskBindings || {}) }));
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [autoSave, setAutoSave] = useState(true);
 
   // Provider Registry Search & Filter
   const [providerSearch, setProviderSearch] = useState('');
@@ -487,16 +488,54 @@ export default function ModelSettingsStudio() {
     }
   };
 
-  // Stage a change to a single task binding
-  const handleStageTaskBinding = (taskId, providerId) => {
-    setStagedBindings((prev) => {
-      const updated = { ...prev, [taskId]: providerId };
+  // Stage or Auto-Save a change to a single task binding
+  const handleStageTaskBinding = async (taskId, providerId) => {
+    const updated = { ...stagedBindings, [taskId]: providerId };
+    setStagedBindings(updated);
+
+    if (autoSave) {
+      setStatusNotification({
+        type: 'loading',
+        message: `Saving ${taskId} ➔ ${providerId}...`,
+      });
+      try {
+        const res = await fetch('/api/settings/model-bindings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task_bindings: updated }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || `HTTP ${res.status}`);
+        }
+
+        const newBindings = data.task_bindings || updated;
+        setCurrentBindings(newBindings);
+        setStagedBindings(newBindings);
+        setHasUnsavedChanges(false);
+        updateTaskBindings(newBindings, true);
+
+        setStatusNotification({
+          type: 'success',
+          message: `Task "${taskId}" bound to "${providerId}" and persisted to disk.`,
+        });
+
+        if (apiEndpoint === '/api/settings/model-bindings') {
+          executeApiRequest('/api/settings/model-bindings', 'GET');
+        }
+      } catch (err) {
+        setHasUnsavedChanges(true);
+        setStatusNotification({
+          type: 'error',
+          message: `Failed to auto-save binding: ${err.message}`,
+        });
+      }
+    } else {
       const hasChanges = Object.keys(updated).some(
         (key) => updated[key] !== currentBindings[key]
       );
       setHasUnsavedChanges(hasChanges);
-      return updated;
-    });
+    }
   };
 
   // Save Staged Pipeline Bindings
@@ -998,6 +1037,17 @@ export default function ModelSettingsStudio() {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
+              <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-xs font-medium text-slate-300 border border-slate-700 cursor-pointer select-none transition-colors">
+                <input
+                  type="checkbox"
+                  checked={autoSave}
+                  onChange={(e) => setAutoSave(e.target.checked)}
+                  className="rounded border-slate-700 text-emerald-500 focus:ring-0 w-3.5 h-3.5 cursor-pointer"
+                />
+                <Zap className={`w-3.5 h-3.5 ${autoSave ? 'text-amber-400 fill-amber-400/30' : 'text-slate-500'}`} />
+                <span>Auto-Save</span>
+              </label>
+
               {hasUnsavedChanges && (
                 <>
                   <button
@@ -1188,6 +1238,33 @@ export default function ModelSettingsStudio() {
               );
             })}
           </div>
+
+          {/* Floating Sticky Save Bar (if manual mode or pending save) */}
+          {hasUnsavedChanges && (
+            <div className="sticky bottom-4 z-20 bg-slate-900/95 border border-amber-500/50 backdrop-blur-md p-3.5 rounded-xl shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-fadeIn">
+              <div className="flex items-center gap-2 text-xs text-amber-300 font-medium">
+                <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                <span>You have unsaved task binding changes that need to be committed to disk.</span>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={handleRevertStaged}
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-medium border border-slate-700 transition-colors"
+                >
+                  Discard
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSavePipelineBindings}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-950/50 transition-colors"
+                >
+                  <CheckSquare className="w-3.5 h-3.5" />
+                  <span>Save to model_config.yaml</span>
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       )}
 
