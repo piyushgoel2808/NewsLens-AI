@@ -33,7 +33,7 @@ from pathlib import Path
 import yaml
 
 from app.core.logging import get_logger
-from app.ingestion.cross_page_assembler import AssembledArticle
+from app.ingestion.layout import AssembledArticle
 from app.models.article import _ARTICLE_TYPES
 
 logger = get_logger(__name__)

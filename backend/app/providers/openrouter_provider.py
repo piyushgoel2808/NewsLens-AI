@@ -125,10 +125,7 @@ class KeyRotator:
     def are_all_keys_rate_limited(self) -> bool:
         """Synchronously check if all keys are currently in cooldown."""
         now = time.time()
-        for k in self._keys:
-            if now >= self._cooldowns.get(k, 0.0):
-                return False
-        return True
+        return all(now < self._cooldowns.get(k, 0.0) for k in self._keys)
 
     def get_shortest_cooldown_remaining(self) -> float:
         """Return remaining seconds until the next key cooldown expires."""

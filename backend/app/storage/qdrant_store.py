@@ -6,6 +6,7 @@ Creates the collection on startup if it doesn't exist.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
@@ -91,7 +92,7 @@ class QdrantStore:
                 # Check if any value is a date string (e.g. YYYY-MM-DD)
                 is_date = any(isinstance(v, str) and "-" in v for v in value.values())
                 if is_date:
-                    from datetime import datetime, timezone
+                    from datetime import datetime
                     dt_kwargs: dict[str, Any] = {}
                     for bound, val in value.items():
                         if isinstance(val, str):
@@ -99,13 +100,13 @@ class QdrantStore:
                                 if bound in ("gte", "gt"):
                                     if len(val) == 10:
                                         d = datetime.fromisoformat(val)
-                                        dt_kwargs[bound] = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
+                                        dt_kwargs[bound] = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=UTC)
                                     else:
                                         dt_kwargs[bound] = datetime.fromisoformat(val)
                                 elif bound in ("lte", "lt"):
                                     if len(val) == 10:
                                         d = datetime.fromisoformat(val)
-                                        dt_kwargs[bound] = datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=timezone.utc)
+                                        dt_kwargs[bound] = datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=UTC)
                                     else:
                                         dt_kwargs[bound] = datetime.fromisoformat(val)
                             except Exception:

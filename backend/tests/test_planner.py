@@ -356,6 +356,7 @@ class TestAgentWorkflowToolExecution:
     @pytest.mark.asyncio
     async def test_llm_plan_cross_newspaper_date_promotion(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
+
         from app.providers.base import ModelResponse
 
         mock_provider = MagicMock()

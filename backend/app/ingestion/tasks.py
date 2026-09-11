@@ -30,22 +30,29 @@ from app.core.logging import get_logger
 from app.ingestion.celery_app import celery_app
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
-from app.ingestion.consensus_extractor import ConsensusExtractor
-from app.ingestion.cross_page_assembler import AssembledArticle, CrossPageAssembler
-from app.ingestion.debug_exporter import DebugArtifactsExporter
 from app.ingestion.detector import PDFPageDetector
-from app.ingestion.docling_parser import DoclingLayoutParser, ExtractedPhotoData
 from app.ingestion.embedder import ArticleEmbedder
-from app.ingestion.extraction_schemas import (
-    PageLayoutExtraction,
+from app.ingestion.layout import (
+    ArticleSegmenter,
+    AssembledArticle,
+    CrossPageAssembler,
+    LayoutAnalyzer,
+    SegmentedArticle,
 )
-from app.ingestion.folio_detector import FolioDetector
-from app.ingestion.layout_analyzer import LayoutAnalyzer
 from app.ingestion.media_extractor import MediaExtractor
+from app.ingestion.metadata import (
+    ConsensusExtractor,
+    FolioDetector,
+)
 from app.ingestion.metadata_extractor import MetadataExtractor
+from app.ingestion.parsers import (
+    DoclingLayoutParser,
+    ExtractedPhotoData,
+    PageLayoutExtraction,
+    UnifiedExtractor,
+)
 from app.ingestion.rasterizer import PDFRasterizer, RasterizedPage
-from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
-from app.ingestion.unified_extractor import UnifiedExtractor
+from app.ingestion.storage import DebugArtifactsExporter
 from app.models.article import Article, ArticleCategory, ArticleChunk, ArticlePage, Photo
 from app.models.entity import ArticleEntity, ArticleTopic, Topic
 from app.models.newspaper import Issue, Newspaper, Page
@@ -58,7 +65,7 @@ logger = get_logger(__name__)
 
 def detect_masthead_and_date(blocks: Sequence[Any], height_px: float) -> tuple[str | None, date | None]:
     """Helper to detect masthead and date from top header blocks."""
-    from app.ingestion.consensus_extractor import (
+    from app.ingestion.metadata import (
         _DATE_PATTERNS,
         _KNOWN_MASTHEADS,
         _parse_extracted_date,

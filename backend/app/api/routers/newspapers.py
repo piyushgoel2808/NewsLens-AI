@@ -420,7 +420,7 @@ async def delete_issue(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Execute 3-Tier Hard Deletion Blueprint across Qdrant, MinIO, and MySQL."""
-    from app.ingestion.deletion_service import DeletionService
+    from app.ingestion.storage import DeletionService
 
     service = DeletionService(db=db)
     result = await service.delete_issue(issue_id)
@@ -528,7 +528,7 @@ async def delete_newspaper(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Delete a newspaper and cascade deletion across all its issues in Qdrant, MinIO, and MySQL."""
-    from app.ingestion.deletion_service import DeletionService
+    from app.ingestion.storage import DeletionService
 
     stmt = select(Newspaper).where(Newspaper.id == newspaper_id)
     res = await db.execute(stmt)

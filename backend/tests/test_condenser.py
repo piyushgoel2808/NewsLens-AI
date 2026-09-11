@@ -1,14 +1,15 @@
 """Unit tests for query condensation, coreference resolution, and anti-hallucination guardrails."""
 
 import pytest
+
 from app.agent.condenser import (
     condense_conversational_query,
     extract_active_issue_from_history,
     needs_condensation,
 )
 from app.agent.planner import (
-    QueryPlanner,
     QueryPlan,
+    QueryPlanner,
     extract_parameters_from_query,
 )
 

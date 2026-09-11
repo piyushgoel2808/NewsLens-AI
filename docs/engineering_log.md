@@ -3023,5 +3023,48 @@ Following the proven decomposition patterns of **Phase 9.23** (`planner.py`) and
 - Static Type Checking: `mypy app/ingestion/` $\to$ **Success: no issues found in 28 source files**.
 - Linter: `ruff check app/ingestion/` $\to$ **All checks passed! (0 errors)**.
 
+---
 
+## Phase 9.31 — Ingestion Subsystem Architectural Consolidation & Subpackaging
 
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Architectural Bloat
+1. **Severe Fragmentation Across 28 Files**:
+   - The ingestion subsystem had expanded into 28 loose files with high mental overhead, micro-modules, and split responsibilities.
+   - Micro-utilities (`compressor.py` [109 LOC], `deletion_service.py` [145 LOC], `debug_exporter.py` [197 LOC]) lived as separate modules despite all addressing storage and artifact lifecycle management.
+2. **Duplicated Regexes and Logic Duplication**:
+   - `_DATE_PATTERNS` and `_MONTH_MAP` were copy-pasted across `folio_detector.py` and `consensus_extractor.py`.
+   - String normalizers, regexes, and constant lists (`WIRE_AGENCIES`, `DATELINE_CITIES`, `SECTION_HEADER_BLACKLIST`, `is_syndication_or_agency_slug`, `is_numbered_feature_subhead`) were copy-pasted across `layout_analyzer.py` and `cross_page_assembler.py` (~220 lines of redundant code).
+3. **Unstructured Parser & Layout Components**:
+   - Specialized document extraction engines (`extraction_schemas.py`, `docling_parser.py`, `unified_extractor.py`, `ocr_service.py`) were unstructured top-level files without a dedicated namespace.
+   - Reading order and multi-page article assembly logic were fragmented into doppelgänger pairs (`reading_order.py` + `layout_analyzer.py`, `cross_page_assembler.py` + `segmenter.py`).
+
+### Architectural Solutions & Implementations
+1. **Consolidation into 4 Cohesive Architectural Domains**:
+   - **`metadata.py` (528 LOC)**: Consolidated header & masthead extraction. Unified `_DATE_PATTERNS`, `_MONTH_MAP`, and `_clean_header_text`. Houses `FolioDetector`, `MastheadVerifier`, `ConsensusExtractor`, `extract_newspaper_and_date_consensus`, `HeaderCandidate`, `MastheadMatch`, `FolioMetadata`, and `ConsensusMetadata`.
+   - **`storage.py` (282 LOC)**: Consolidated storage & artifact lifecycle maintenance. Houses `compress_pdf_bytes`, `compress_pdf`, `DeletionService` (3-tier cascading hard deletion across MySQL, Qdrant, and MinIO), and `DebugArtifactsExporter`.
+   - **`parsers/` Subpackage**: Structured parser abstraction layer:
+     - `parsers/schemas.py`: Pydantic models (`ArticleSkeleton`, `PageLayoutExtraction`, `ExtractedTable`, `ExtractedPicture`, `VisualCropData`).
+     - `parsers/docling.py`: Deep layout parser (`DoclingLayoutParser`, `DOCLING_AVAILABLE`).
+     - `parsers/vlm.py`: Multimodal vision-language extractor (`UnifiedExtractor`).
+     - `parsers/ocr.py`: OCR orchestrator and post-processor (`OCRService`).
+     - `parsers/__init__.py`: Clean public facade exporting all parser types and engines.
+   - **`layout/` Subpackage**: Spatial layout analysis, reading order, and multi-page stitching:
+     - `layout/slugs.py`: Centralized single source of truth for wire agencies, datelines, section headers, jump phrase regexes, and text cleaning utilities.
+     - `layout/analyzer.py`: Spatial layout analysis and geometric column detection absorbing `ReadingOrderResolver`, `BlockType`, `LayoutElement`, and `OrderedReadingBlock`.
+     - `layout/segmenter.py`: Cross-column article clustering and multi-page stitching absorbing `CrossPageAssembler`, `AssembledArticle`, and `PageBBoxMapping`.
+     - `layout/__init__.py`: Clean public facade exporting all layout components.
+2. **Zero-Monolith Principle**:
+   - Avoided creating massive >1,200 LOC files by organizing complex parser and layout subsystems into cohesive subpackages (`parsers/`, `layout/`) with clear separation of concerns.
+3. **100% Backward-Compatible Re-export Proxy Shims**:
+   - Replaced legacy files (`folio_detector.py`, `masthead_verifier.py`, `consensus_extractor.py`, `compressor.py`, `deletion_service.py`, `debug_exporter.py`, `extraction_schemas.py`, `docling_parser.py`, `unified_extractor.py`, `ocr_service.py`, `reading_order.py`, `cross_page_assembler.py`) with thin forwarding shims to preserve compatibility for existing tests and external consumers.
+4. **Subsystem Entry Point & Modernized Callers**:
+   - Populated `backend/app/ingestion/__init__.py` with canonical public exports from the consolidated domains.
+   - Modernized imports in API routers (`routers/ingest.py`, `routers/newspapers.py`) and pipeline services (`tasks.py`, `page_reingestion.py`, `intake.py`, `classifier.py`).
+
+### Test Verification & Quality Gates
+- **Full Backend Test Suite**: **411/411 tests passing (100% green)** in 23.36s.
+- **Static Type Checking**: `mypy backend/app/ingestion/` $\to$ **Success: no issues found in 39 source files**.
+- **Linter**: `ruff check backend/` $\to$ **All checks passed! (0 errors)**.

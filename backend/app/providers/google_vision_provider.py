@@ -327,13 +327,14 @@ class GoogleCloudVisionOCR(OCREngine, DocumentLayoutProvider, VisionModelProvide
         import re
 
         from app.ingestion.detector import check_is_advertisement_text
-        from app.ingestion.extraction_schemas import (
+        from app.ingestion.layout import ArticleSegmenter, LayoutAnalyzer
+        from app.ingestion.parsers import (
             ArticleEnrichment,
+            ArticleGenre,
             ArticleSkeleton,
             PageLayoutExtraction,
+            ProminenceTier,
         )
-        from app.ingestion.layout_analyzer import LayoutAnalyzer
-        from app.ingestion.segmenter import ArticleSegmenter
 
         # 1. Run Pure Document Text OCR
         ocr_res = await self.ocr(image_bytes=image_bytes)
@@ -400,8 +401,8 @@ class GoogleCloudVisionOCR(OCREngine, DocumentLayoutProvider, VisionModelProvide
 
                 # Map article genre
                 is_ad = check_is_advertisement_text(art.headline or "") or check_is_advertisement_text(art.body_text or "")
-                art_type = "advertisement" if is_ad else "news"
-                prominence = "major" if art.word_count > 250 else ("minor" if art.word_count < 60 else "standard")
+                art_type: ArticleGenre = "advertisement" if is_ad else "news"
+                prominence: ProminenceTier = "major" if art.word_count > 250 else ("minor" if art.word_count < 60 else "standard")
 
                 articles.append(
                     ArticleSkeleton(

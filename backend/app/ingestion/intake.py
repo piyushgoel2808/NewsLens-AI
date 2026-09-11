@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.ingestion.compressor import compress_pdf_bytes
+from app.ingestion.storage import compress_pdf_bytes
 from app.models.ingestion import IngestionJob
 from app.models.newspaper import Issue, Newspaper, Page
 from app.storage.minio_store import MinioStore
@@ -211,7 +211,7 @@ class IntakeService:
             # Multi-Page Consensus Date and Masthead Detection on uploaded PDF
             if is_valid_pdf(item.content):
                 try:
-                    from app.ingestion.consensus_extractor import (
+                    from app.ingestion.metadata import (
                         extract_newspaper_and_date_consensus,
                     )
 

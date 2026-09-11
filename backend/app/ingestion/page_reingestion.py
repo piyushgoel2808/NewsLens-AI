@@ -29,20 +29,23 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
-from app.ingestion.cross_page_assembler import CrossPageAssembler
 from app.ingestion.detector import PageType, PDFPageDetector
-from app.ingestion.docling_parser import (
+from app.ingestion.embedder import ArticleEmbedder
+from app.ingestion.layout import (
+    ArticleSegmenter,
+    CrossPageAssembler,
+    LayoutAnalyzer,
+    SegmentedArticle,
+)
+from app.ingestion.media_extractor import MediaExtractor
+from app.ingestion.metadata import FolioDetector
+from app.ingestion.metadata_extractor import MetadataExtractor
+from app.ingestion.parsers import (
     CorruptedPdfTextLayerError,
     DoclingLayoutParser,
     ExtractedPhotoData,
 )
-from app.ingestion.embedder import ArticleEmbedder
-from app.ingestion.folio_detector import FolioDetector
-from app.ingestion.layout_analyzer import LayoutAnalyzer
-from app.ingestion.media_extractor import MediaExtractor
-from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.rasterizer import PDFRasterizer
-from app.ingestion.segmenter import ArticleSegmenter, SegmentedArticle
 from app.models.article import (
     Article,
     ArticleCategory,

@@ -1,6 +1,5 @@
 """Tests for parse_thought_and_answer across reasoning and non-reasoning models."""
 
-import pytest
 from app.agent.synthesizer import parse_thought_and_answer
 
 

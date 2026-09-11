@@ -232,8 +232,6 @@ class TestDoclingLayoutParser:
         assert len(articles) == 0
 
     def test_corrupted_font_check_raises_error(self) -> None:
-        from app.ingestion.docling_parser import CorruptedPdfTextLayerError
-        parser = DoclingLayoutParser()
         items = [
             DoclingParsedItem(
                 label="text",

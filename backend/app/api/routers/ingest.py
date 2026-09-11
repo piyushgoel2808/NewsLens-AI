@@ -36,7 +36,7 @@ async def inspect_upload_preview(
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-    from app.ingestion.consensus_extractor import extract_newspaper_and_date_consensus
+    from app.ingestion.metadata import extract_newspaper_and_date_consensus
     from app.models.newspaper import Newspaper
 
     all_news_res = await db.execute(select(Newspaper))
@@ -241,7 +241,7 @@ async def delete_ingestion_job(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Purge an ingestion job and all associated issue artifacts."""
-    from app.ingestion.deletion_service import DeletionService
+    from app.ingestion.storage import DeletionService
 
     service = DeletionService(db=db)
     result = await service.delete_job(job_id)
@@ -259,7 +259,7 @@ async def get_issue_debug_artifacts(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """List available debug artifacts (OCR text, RAG chunks, articles manifest, advertisements)."""
-    from app.ingestion.debug_exporter import DebugArtifactsExporter
+    from app.ingestion.storage import DebugArtifactsExporter
 
     stmt = select(Issue).where(Issue.id == issue_id).options(selectinload(Issue.newspaper))
     res = await db.execute(stmt)
@@ -313,7 +313,7 @@ async def get_issue_debug_artifact_content(
     """Fetch content of a specific debug artifact (e.g. ocr_extracted_text, rag_chunks, etc.)."""
     import json
 
-    from app.ingestion.debug_exporter import DebugArtifactsExporter
+    from app.ingestion.storage import DebugArtifactsExporter
 
     clean_name = artifact_name.replace(".json", "").strip().lower()
     allowed_artifacts = {

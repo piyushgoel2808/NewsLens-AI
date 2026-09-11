@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from openai import RateLimitError
 
 from app.providers.base import (
     ChatModelProvider,
@@ -162,9 +159,11 @@ class TestOpenRouterProviderInference:
         client_failing = AsyncMock()
         client_failing.chat.completions.create.side_effect = Exception("429 rate limit reached")
 
-        with patch.object(provider, "_get_client", return_value=client_failing):
-            with pytest.raises(RateLimitExhaustedError):
-                await provider.complete([Message(role="user", content="Will fail")])
+        with (
+            patch.object(provider, "_get_client", return_value=client_failing),
+            pytest.raises(RateLimitExhaustedError),
+        ):
+            await provider.complete([Message(role="user", content="Will fail")])
 
     @pytest.mark.asyncio
     async def test_analyze_image_wraps_data_url(self) -> None:

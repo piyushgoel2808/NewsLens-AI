@@ -1,0 +1,1336 @@
+"""Hybrid Vision-Language Model and spatial layout analyzer for newspaper pages.
+
+Extracts:
+- Headlines and subheadlines with prominence tiers.
+- Multi-column body text bounding boxes.
+- Photo and illustration regions with associated caption blocks.
+- Structured tabular data regions.
+- Human reading order sequences.
+"""
+
+import re
+from dataclasses import dataclass, field
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from app.core.config import get_settings
+from app.core.logging import get_logger
+from app.ingestion.detector import (
+    DigitalTextBlock,
+    is_noise_or_promo_text,
+)
+from app.ingestion.geometry import BBox
+from app.ingestion.layout.slugs import (
+    CONTINUATION_END_TOKENS,
+    clean_ocr_text_artifacts,
+    is_numbered_feature_subhead,
+    is_numeric_stat_box,
+    is_pullquote_author_block,
+    is_syndication_or_agency_slug,
+    is_toc_index_block,
+)
+from app.providers.base import (
+    DocumentLayoutProvider,
+    ExtractedDocumentNode,
+    ExtractedPhotoData,
+    ExtractedTableData,
+    OCRBlock,
+    VisionModelProvider,
+)
+from app.providers.registry import get_registry
+
+logger = get_logger(__name__)
+
+
+# =============================================================================
+# Spatial Reading Order Primitives (absorbed from reading_order)
+# =============================================================================
+
+
+class BlockType(StrEnum):
+    BANNER_HEADLINE = "banner_headline"
+    HEADLINE = "headline"
+    SUBHEAD = "subhead"
+    BODY_TEXT = "body_text"
+    BYLINE = "byline"
+    METADATA = "metadata"
+    PHOTO = "photo"
+    CAPTION = "caption"
+    TABLE = "table"
+    SIDEBAR = "sidebar"
+    TEASER = "teaser"
+    TOC_INDEX = "toc_index"
+    PULLQUOTE_AUTHOR = "pullquote_author"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class LayoutElement:
+    """A spatial bounding box element on a page."""
+
+    element_id: str | int
+    bbox: tuple[float, float, float, float]  # x0, y0, x1, y1
+    text: str = ""
+    block_type: BlockType = BlockType.BODY_TEXT
+    font_size: float = 10.0
+    confidence: float = 1.0
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class OrderedReadingBlock:
+    """An element placed in deterministic human reading order."""
+
+    reading_order_index: int
+    element_id: str | int
+    block_type: BlockType
+    text: str
+    bbox: tuple[float, float, float, float]
+    column_band: int = 0
+
+
+class ReadingOrderResolver:
+    """Resolves spatial 2D newspaper blocks into 1D human reading sequences."""
+
+    def __init__(self, page_width: float = 2480.0, page_height: float = 3508.0) -> None:
+        self.page_width = max(page_width, 100.0)
+        self.page_height = max(page_height, 100.0)
+
+    def resolve_reading_order(
+        self,
+        elements: list[LayoutElement],
+    ) -> list[OrderedReadingBlock]:
+        """Order layout elements following 2D newspaper column-binding rules."""
+        if not elements:
+            return []
+
+        # Step 1: Identify all headline / banner elements
+        headlines: list[LayoutElement] = [
+            el for el in elements
+            if el.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+        ]
+
+        # Sort headlines primarily top-to-bottom by y0, then left-to-right by x0
+        quant_y = max(self.page_height * 0.01, 15.0)
+        headlines.sort(key=lambda h: (round(h.bbox[1] / quant_y), h.bbox[0]))
+
+        assigned_ids: set[str | int] = set()
+        ordered_blocks: list[OrderedReadingBlock] = []
+        current_index = 1
+
+        # Step 2: For each headline, bind underlying multi-column body blocks
+        for h in headlines:
+            if h.element_id in assigned_ids:
+                continue
+
+            assigned_ids.add(h.element_id)
+            ordered_blocks.append(
+                OrderedReadingBlock(
+                    reading_order_index=current_index,
+                    element_id=h.element_id,
+                    block_type=h.block_type,
+                    text=h.text,
+                    bbox=h.bbox,
+                    column_band=0,
+                )
+            )
+            current_index += 1
+
+            h_x0, h_y0, h_x1, h_y1 = h.bbox
+            span_tol_x = max(self.page_width * 0.015, 20.0)
+            span_x0 = max(0.0, h_x0 - span_tol_x)
+            span_x1 = min(self.page_width, h_x1 + span_tol_x)
+
+            # Find lower vertical bound: next headline below intersecting this horizontal span
+            y_limit = self.page_height * 0.94
+            for other_h in headlines:
+                if other_h.element_id == h.element_id:
+                    continue
+                oh_x0, oh_y0, oh_x1, _ = other_h.bbox
+                h_overlap = min(oh_x1, span_x1) - max(oh_x0, span_x0)
+                if (
+                    oh_y0 > h_y1
+                    and h_overlap > 10.0
+                    and oh_y0 < y_limit
+                ):
+                    y_limit = oh_y0
+
+            # Collect candidate body blocks whose centroid or top falls inside 2D container
+            candidate_body: list[LayoutElement] = []
+            for el in elements:
+                if el.element_id in assigned_ids:
+                    continue
+                if el.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE):
+                    continue
+
+                el_x0, el_y0, el_x1, el_y1 = el.bbox
+                el_mid_x = (el_x0 + el_x1) / 2.0
+                el_mid_y = (el_y0 + el_y1) / 2.0
+
+                b_overlap = min(el_x1, span_x1) - max(el_x0, span_x0)
+                min_el_w = max(el_x1 - el_x0, 1.0)
+                overlap_ratio = b_overlap / min_el_w if min_el_w > 0 else 0.0
+
+                is_inside_container = (
+                    (span_x0 <= el_mid_x <= span_x1 or overlap_ratio >= 0.40)
+                    and (
+                        (h_y1 - (self.page_height * 0.008) <= el_y0 < y_limit)
+                        or (h_y1 <= el_mid_y <= y_limit)
+                    )
+                )
+
+                if is_inside_container:
+                    candidate_body.append(el)
+
+            if not candidate_body:
+                continue
+
+            # Cluster candidate body blocks into column lanes (left-to-right)
+            sorted_candidates = sorted(candidate_body, key=lambda e: e.bbox[0])
+            column_lanes: list[list[LayoutElement]] = []
+            lane_tolerance = max(self.page_width * 0.045, 30.0)
+
+            for cand in sorted_candidates:
+                assigned_to_lane = False
+                for lane in column_lanes:
+                    avg_lane_x = sum(item.bbox[0] for item in lane) / len(lane)
+                    if abs(cand.bbox[0] - avg_lane_x) <= lane_tolerance:
+                        lane.append(cand)
+                        assigned_to_lane = True
+                        break
+                if not assigned_to_lane:
+                    column_lanes.append([cand])
+
+            # Sort column lanes left-to-right
+            column_lanes.sort(key=lambda lane: sum(item.bbox[0] for item in lane) / len(lane))
+
+            # Within each column lane, sort top-to-bottom and add to reading sequence
+            for lane_idx, lane in enumerate(column_lanes, start=1):
+                lane.sort(key=lambda item: item.bbox[1])
+                for item in lane:
+                    assigned_ids.add(item.element_id)
+                    ordered_blocks.append(
+                        OrderedReadingBlock(
+                            reading_order_index=current_index,
+                            element_id=item.element_id,
+                            block_type=item.block_type,
+                            text=item.text,
+                            bbox=item.bbox,
+                            column_band=lane_idx,
+                        )
+                    )
+                    current_index += 1
+
+        # Step 3: Zero-Drop Guarantee — Append all remaining unassigned elements
+        remaining = [el for el in elements if el.element_id not in assigned_ids]
+        if remaining:
+            remaining_sorted = sorted(remaining, key=lambda e: e.bbox[0])
+            rem_lanes: list[list[LayoutElement]] = []
+            lane_tol = max(self.page_width * 0.05, 35.0)
+
+            for rem in remaining_sorted:
+                assigned_to_rem = False
+                for r_lane in rem_lanes:
+                    avg_x = sum(item.bbox[0] for item in r_lane) / len(r_lane)
+                    if abs(rem.bbox[0] - avg_x) <= lane_tol:
+                        r_lane.append(rem)
+                        assigned_to_rem = True
+                        break
+                if not assigned_to_rem:
+                    rem_lanes.append([rem])
+
+            rem_lanes.sort(key=lambda lane: sum(item.bbox[0] for item in lane) / len(lane))
+            for r_lane_idx, r_lane in enumerate(rem_lanes, start=1):
+                r_lane.sort(key=lambda item: item.bbox[1])
+                for item in r_lane:
+                    ordered_blocks.append(
+                        OrderedReadingBlock(
+                            reading_order_index=current_index,
+                            element_id=item.element_id,
+                            block_type=item.block_type,
+                            text=item.text,
+                            bbox=item.bbox,
+                            column_band=r_lane_idx,
+                        )
+                    )
+                    current_index += 1
+
+        return ordered_blocks
+
+
+
+def _load_newspaper_rules() -> dict[str, Any]:
+    """Load configurable newspaper layout rules and vocabularies from YAML."""
+    rule_path = Path(__file__).resolve().parents[2] / "core" / "newspaper_rules.yaml"
+    if rule_path.exists():
+        try:
+            with rule_path.open(encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as ex:
+            logger.warning("Could not parse newspaper_rules.yaml, using defaults", extra={"error": str(ex)})
+    return {}
+
+
+_NEWSPAPER_RULES = _load_newspaper_rules()
+
+_SPONSOR_KEYWORDS = _NEWSPAPER_RULES.get("sponsor_and_boilerplate_keywords", [
+    "jm financial", "axis capital", "icici securities", "kfin technologies",
+    "link intime", "kotak mahindra capital", "sbi capital markets", "dam capital",
+    "equirus", "motilal oswal", "nomura financial", "jefferies", "citigroup global",
+    "morgan stanley", "goldman sachs", "hdfc bank limited", "asba",
+    "applications supported by blocked amount", "book running lead managers",
+    "registrar to the issue", "sebi registration", "corporate identity number",
+    "registered office", "compliance officer", "company secretary", "statutory auditor",
+    "red herring prospectus", "initial public offering", "equity shares of face value",
+])
+
+_BRAND_EXCLUSIONS = _NEWSPAPER_RULES.get("brand_exclusion_keywords", [
+    "mint", "livemint", "thinkahead", "think ahead", "think growth", "the hindu",
+    "the times of india", "times of india", "economic times", "business standard",
+    "indian express", "hindustan times", "dainik bhaskar", "epaper", "edition",
+])
+
+_MASTHEAD_KEYWORDS = _NEWSPAPER_RULES.get("masthead_keywords", [
+    "mint", "livemint", "hindu", "the hindu", "times of india", "economic times",
+    "business standard", "indian express", "hindustan times", "dainik bhaskar",
+    "think ahead", "think growth", "epaper", "vol", "volume", "edition",
+])
+
+_SYNDICATION_LIST = _NEWSPAPER_RULES.get("syndication_slugs", [
+    "the wall street journal", "wall street journal", "reuters", "bloomberg",
+    "bloomberg news", "pti", "press trust of india", "afp", "agence france-presse",
+    "ap", "associated press", "financial times", "new york times", "business wire",
+    "pr newswire", "news in numbers", "columns", "inside", "quote of the day",
+    "data bites", "plain facts", "mint primer", "mint curator", "ask mint",
+    "mark to market", "wsj",
+])
+
+SPONSOR_AND_BOILERPLATE_PATTERNS = re.compile(
+    r"(?i)\b(?:" + "|".join(re.escape(k) for k in _SPONSOR_KEYWORDS) + r")\b"
+)
+
+DATE_LINE_PATTERN = re.compile(
+    r"(?i)\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+    r"[,\.\s]+\d{1,2}[\s\.\-]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+    r"[\s\.\-]+\d{2,4}\b|"
+    r"\b\d{1,2}[\s\.\-]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+    r"[\s\.\-]+\d{2,4}\b"
+)
+
+BRAND_EXCLUSION_KEYWORDS = re.compile(
+    r"(?i)\b(?:" + "|".join(re.escape(k) for k in _BRAND_EXCLUSIONS) + r")\b"
+)
+
+MASTHEAD_KEYWORDS = re.compile(
+    r"(?i)\b(?:" + "|".join(re.escape(k) for k in _MASTHEAD_KEYWORDS) + r"|vol(?:\.|ume)?\s*\d+|no\s*\d+|edition|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"page\s*\d+|pg\s*\d+|p\.\s*\d+)\b"
+)
+
+STANDALONE_NOISE_TOKENS = frozenset(set(_BRAND_EXCLUSIONS).union({"asba", "nse", "bse"}))
+
+SYNDICATION_SLUGS = frozenset(_SYNDICATION_LIST)
+
+SYNDICATION_REGEX = re.compile(
+    r"^(?:THE\s+)?(?:WALL\s+STREET\s+JOURNAL|REUTERS|BLOOMBERG(?:\s+NEWS)?|PTI|AFP|AP|"
+    r"FINANCIAL\s+TIMES|NEW\s+YORK\s+TIMES|PRESS\s+TRUST\s+OF\s+INDIA|ASSOCIATED\s+PRESS|"
+    r"QUOTE\s+OF\s+THE\s+DAY|DATA\s+BITES|PLAIN\s+FACTS|NEWS\s+IN\s+NUMBERS|COLUMNS|INSIDE|WSJ|"
+    r"MARK\s+TO\s+MARKET|MINT\s+PRIMER|MINT\s+CURATOR|ASK\s+MINT)(?:\s*[\/\-–—|]\s*.*)?$",
+    re.IGNORECASE,
+)
+
+NUMBERED_QUESTION_REGEX = re.compile(
+    r"^(?:(?:Q\.?\s*)?\d{1,2}[\.\/\)]|\b(?:Q\d{1,2}|Part\s+\d+|Step\s+\d+)\b|\b\d{1,2}\s+(?:How|Why|What|When|Where|Who|Which|Can|Will|Is|Are|Do|Does|Did|Should|Could|Would|Has|Have|Had))\s+",
+    re.IGNORECASE,
+)
+
+
+STATUTORY_AD_KEYWORDS = [
+    "qualified institutions placement", "qip", "issue price", "issue size",
+    "number of equity shares", "book running lead managers", "domestic legal counsel",
+    "international legal counsel", "advisor to the company", "registrar to the issue",
+    "thank you for being part of this milestone", "backed by trust, built for tomorrow",
+    "initial public offering", "red herring prospectus", "prospectus", "draft red herring",
+    "promoters:", "our promoters:", "bid/issue opens on", "bid/issue closes on",
+    "price band", "floor price", "public notice", "statutory notice", "tender notice",
+    "nclt", "insolvency and bankruptcy", "e-auction sale notice", "possession notice",
+    "corrigendum", "allotment of equity shares", "listing of equity shares",
+]
+
+STATUTORY_AD_REGEX = re.compile(
+    r"(?i)\b(?:" + "|".join(re.escape(k) for k in STATUTORY_AD_KEYWORDS) + r")\b"
+)
+
+
+def detect_advertisement_envelopes(
+    elements: list[LayoutElement],
+    page_width: float,
+    page_height: float,
+) -> list[tuple[float, float, float, float, str]]:
+    """Detect prominent spatial advertisement boxes (e.g. QIPs, full-column IPO notices, display ads).
+
+    Returns list of (x0, y0, x1, y1, ad_title).
+    """
+    ad_elements: list[LayoutElement] = []
+    ad_titles: list[str] = []
+
+    for el in elements:
+        txt = el.text.strip()
+        if not txt:
+            continue
+        if STATUTORY_AD_REGEX.search(txt):
+            ad_elements.append(el)
+            for line in txt.split("\n"):
+                l_s = line.strip()
+                if (
+                    3 <= len(l_s.split()) <= 12
+                    and not any(
+                        k in l_s.lower()
+                        for k in (
+                            "book running", "legal counsel", "advisor", "per equity",
+                            "number of", "issue size", "domestic", "international",
+                        )
+                    )
+                ):
+                    ad_titles.append(l_s)
+                    break
+
+    if len(ad_elements) < 2:
+        return []
+
+    x0 = min(el.bbox[0] for el in ad_elements)
+    y0 = min(el.bbox[1] for el in ad_elements)
+    x1 = max(el.bbox[2] for el in ad_elements)
+    y1 = max(el.bbox[3] for el in ad_elements)
+
+    # Pad envelope slightly to enclose adjacent logos/badges
+    x0 = max(0.0, x0 - 15.0)
+    y0 = max(0.0, y0 - 20.0)
+    x1 = min(page_width, x1 + 15.0)
+    y1 = min(page_height, y1 + 20.0)
+
+    title = ad_titles[0] if ad_titles else "Commercial Announcement"
+    return [(x0, y0, x1, y1, title)]
+
+
+def is_grammatically_open_headline_fragment(text: str) -> bool:
+    """Check if text ends in a grammatical continuation word or punctuation."""
+    words = text.strip().split()
+    if not words:
+        return False
+    last_word = words[-1].lower().strip(" \t\n\r.:;,")
+    if last_word in CONTINUATION_END_TOKENS:
+        return True
+    if text.rstrip().endswith((",", "-", "—", ":", "...")):
+        return True
+    return bool(len(words) <= 2 and last_word in ("and", "or", "to", "in", "of", "for", "with"))
+
+
+def is_noise_or_boilerplate_block(
+    elem: LayoutElement,
+    page_height: float,
+    page_width: float,
+) -> bool:
+    """Filter out isolated brand logos, sponsor boilerplate, dates, and noise blocks."""
+    text = elem.text.strip()
+    if not text:
+        return True
+
+    text_lower = text.lower().strip(".:;, -")
+    if text_lower in STANDALONE_NOISE_TOKENS:
+        return True
+
+    words = text.split()
+    x0, y0, x1, y1 = elem.bbox
+
+    # 1. Top 5% Coordinate Exclusion (Brand text / Mastheads in absolute header zone)
+    if y1 <= page_height * 0.05:
+        if (
+            BRAND_EXCLUSION_KEYWORDS.search(text)
+            or MASTHEAD_KEYWORDS.search(text)
+            or DATE_LINE_PATTERN.search(text)
+        ):
+            return True
+        if len(words) <= 2 and (len(text) < 10 or re.match(r"^\d{1,3}$", text)):
+            return True
+
+    # 2. Top 8% Masthead / Date / Slogan check
+    if y1 <= page_height * 0.08 and len(words) <= 15 and MASTHEAD_KEYWORDS.search(text):
+        return True
+
+    # 3. Pure Date Strings
+    if len(words) <= 8 and DATE_LINE_PATTERN.search(text):
+        return True
+
+    # 4. Financial Sponsor / Legal Boilerplate Boxes
+    if len(words) <= 15 and SPONSOR_AND_BOILERPLATE_PATTERNS.search(text):
+        return True
+
+    # 5. Short standalone numbers or tokens in header zone
+    return bool(
+        y1 <= page_height * 0.08
+        and len(words) <= 2
+        and (len(text) < 10 or re.match(r"^\d{1,3}$", text))
+    )
+
+
+def is_masthead_or_running_header(
+    elem: LayoutElement,
+    page_height: float,
+    page_width: float,
+) -> bool:
+    """Compatibility alias for is_noise_or_boilerplate_block."""
+    return is_noise_or_boilerplate_block(elem, page_height, page_width)
+
+
+LAYOUT_EXTRACTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "headlines": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "level": {"type": "string", "enum": ["banner", "major", "subhead", "kicker"]},
+                    "bbox": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": ["text", "bbox"],
+            },
+        },
+        "columns": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "column_index": {"type": "integer"},
+                    "text": {"type": "string"},
+                    "bbox": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": ["bbox"],
+            },
+        },
+        "photos": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "caption": {"type": "string"},
+                    "bbox": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": ["bbox"],
+            },
+        },
+        "tables": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "bbox": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": ["bbox"],
+            },
+        },
+    },
+    "required": ["headlines", "columns"],
+}
+
+LAYOUT_PROMPT = """Analyze this newspaper page image and identify all structural layout regions:
+1. Headlines: Main banner headlines, article headlines, subheadings with bounding boxes.
+2. Columns: Text columns of news articles.
+3. Photos: Images/illustrations and their captions.
+4. Tables: Statistical or commodity data tables.
+
+Return strict JSON conforming to the schema."""
+
+
+@dataclass
+class PageLayoutResult:
+    """Consolidated layout analysis output."""
+
+    page_number: int
+    width_px: int
+    height_px: int
+    elements: list[LayoutElement] = field(default_factory=list)
+    reading_order: list[OrderedReadingBlock] = field(default_factory=list)
+    tables: list[ExtractedTableData] = field(default_factory=list)
+    photos: list[ExtractedPhotoData] = field(default_factory=list)
+    markdown_content: str = ""
+    source: str = "mineru"  # 'mineru', 'vlm', or 'spatial_rule_based'
+
+
+class LayoutAnalyzer:
+    """Analyzes newspaper page visual layouts using MinerU, VLM, and rule-based fallbacks."""
+
+    def __init__(
+        self,
+        vision_provider: VisionModelProvider | DocumentLayoutProvider | None = None,
+    ) -> None:
+        self._settings = get_settings()
+        self._layout_provider = vision_provider
+
+    async def _get_layout_provider(
+        self,
+    ) -> VisionModelProvider | DocumentLayoutProvider | None:
+        """Resolve configured layout analysis provider if available."""
+        if self._layout_provider:
+            return self._layout_provider
+        try:
+            registry = get_registry()
+            provider = registry.get_provider("layout_analysis")
+            if isinstance(provider, (DocumentLayoutProvider, VisionModelProvider)):
+                return provider
+        except Exception as e:
+            logger.debug(
+                "Could not load layout provider (falling back to rule-based)",
+                extra={"error": str(e)},
+            )
+        return None
+
+    def analyze_from_text_blocks(
+        self,
+        page_number: int,
+        width_px: int,
+        height_px: int,
+        digital_blocks: list[DigitalTextBlock] | None = None,
+        ocr_blocks: list[OCRBlock] | None = None,
+    ) -> PageLayoutResult:
+        """Rule-based spatial layout analysis using bounding boxes from digital text or OCR."""
+        elements: list[LayoutElement] = []
+        element_id = 1
+
+        if digital_blocks:
+            max_x = max((d.bbox[2] for d in digital_blocks), default=float(width_px))
+            ref_width = max_x if max_x > 0 else float(width_px)
+            for d_blk in digital_blocks:
+                cleaned_text = clean_ocr_text_artifacts(d_blk.text)
+                if not cleaned_text or is_noise_or_promo_text(cleaned_text):
+                    continue
+                if is_syndication_or_agency_slug(cleaned_text):
+                    b_type = BlockType.BYLINE
+                elif is_numbered_feature_subhead(cleaned_text):
+                    b_type = BlockType.SUBHEAD
+                elif is_numeric_stat_box(cleaned_text):
+                    b_type = BlockType.TABLE
+                else:
+                    is_wide_heading = (
+                        d_blk.is_heading_candidate
+                        and (d_blk.bbox[2] - d_blk.bbox[0]) >= ref_width * 0.40
+                    )
+                    b_type = (
+                        BlockType.BANNER_HEADLINE
+                        if is_wide_heading
+                        else (
+                            BlockType.HEADLINE
+                            if d_blk.is_heading_candidate
+                            else BlockType.BODY_TEXT
+                        )
+                    )
+                elements.append(
+                    LayoutElement(
+                        element_id=element_id,
+                        bbox=d_blk.bbox,
+                        text=cleaned_text,
+                        block_type=b_type,
+                        font_size=d_blk.mean_font_size,
+                    )
+                )
+                element_id += 1
+
+        elif ocr_blocks:
+            # Dynamically compute line heights across OCR blocks to distinguish headings
+            line_heights: list[float] = []
+            for o_blk in ocr_blocks:
+                num_lines = len([line for line in o_blk.text.split("\n") if line.strip()]) or 1
+                lh = (o_blk.bbox[3] - o_blk.bbox[1]) / num_lines
+                line_heights.append(lh)
+
+            import statistics
+
+            median_lh = statistics.median(line_heights) if line_heights else 20.0
+
+            boilerplate_stopwords = {
+                "limited", "ltd", "corp", "corporation", "pvt", "private", "equity", "issue",
+                "issue,", "shares", "company", "notice", "promoters", "price", "band", "page",
+                "continued", "from", "and", "or", "of", "in", "on", "at", "to", "for", "with",
+            }
+
+            for o_blk, lh in zip(ocr_blocks, line_heights, strict=False):
+                cleaned_text = clean_ocr_text_artifacts(o_blk.text)
+                box_width = o_blk.bbox[2] - o_blk.bbox[0]
+                words_blk = cleaned_text.strip().split()
+                is_single_boilerplate = (
+                    len(words_blk) == 1
+                    and words_blk[0].lower().rstrip(",.:;") in boilerplate_stopwords
+                )
+
+                if is_syndication_or_agency_slug(cleaned_text):
+                    b_type = BlockType.BYLINE
+                elif is_numbered_feature_subhead(cleaned_text):
+                    b_type = BlockType.SUBHEAD
+                elif is_numeric_stat_box(cleaned_text):
+                    b_type = BlockType.TABLE
+                else:
+                    is_banner = (
+                        box_width >= float(width_px) * 0.50
+                        and lh >= median_lh * 1.25
+                        and not is_single_boilerplate
+                    )
+                    is_headline = (
+                        not is_single_boilerplate
+                        and (
+                            is_banner
+                            or (
+                                lh >= median_lh * 1.25
+                                and 3 <= len(words_blk) <= 25
+                                and not cleaned_text.rstrip().endswith((".", ";", ","))
+                            )
+                            or (
+                                cleaned_text.isupper()
+                                and 3 <= len(words_blk) <= 20
+                                and lh >= median_lh * 1.10
+                                and not cleaned_text.rstrip().endswith((".", ";", ","))
+                            )
+                        )
+                    )
+                    b_type = (
+                        BlockType.BANNER_HEADLINE
+                        if is_banner
+                        else (BlockType.HEADLINE if is_headline else BlockType.BODY_TEXT)
+                    )
+                elements.append(
+                    LayoutElement(
+                        element_id=element_id,
+                        bbox=o_blk.bbox,
+                        text=cleaned_text,
+                        block_type=b_type,
+                        confidence=o_blk.confidence,
+                    )
+                )
+                element_id += 1
+
+        # Filter out mastheads and running headers in top 8%
+        non_masthead_elements = [
+            e for e in elements
+            if not is_masthead_or_running_header(e, float(height_px), float(width_px))
+        ]
+        elements = non_masthead_elements if non_masthead_elements else elements
+
+        # Consolidate bounding boxes and merge adjacent paragraph fragments
+        elements = self._consolidate_elements(
+            elements=elements,
+            page_width=float(width_px),
+            page_height=float(height_px),
+        )
+
+        # Detect discrete spatial advertisement envelopes and inject boundary delimiters
+        ad_envelopes = detect_advertisement_envelopes(elements, float(width_px), float(height_px))
+        for x0, y0, x1, y1, ad_title in ad_envelopes:
+            has_ad_hl = any(
+                e.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                and (x0 - 10 <= e.bbox[0] and e.bbox[2] <= x1 + 10 and y0 - 10 <= e.bbox[1] <= y1 + 10)
+                for e in elements
+            )
+            if not has_ad_hl:
+                numeric_ids = [e.element_id for e in elements if isinstance(e.element_id, int)]
+                max_el_id = max(numeric_ids, default=100) + 1
+                ad_hl_elem = LayoutElement(
+                    element_id=max_el_id,
+                    bbox=(x0, y0, x1, min(y0 + 40.0, y1)),
+                    text=f"[Advertisement] {ad_title}",
+                    block_type=BlockType.HEADLINE,
+                    confidence=1.0,
+                )
+                elements.append(ad_hl_elem)
+
+        resolver = ReadingOrderResolver(page_width=float(width_px), page_height=float(height_px))
+        reading_order = resolver.resolve_reading_order(elements)
+
+        return PageLayoutResult(
+            page_number=page_number,
+            width_px=width_px,
+            height_px=height_px,
+            elements=elements,
+            reading_order=reading_order,
+            source="spatial_rule_based",
+        )
+
+    def _merge_horizontal_headline_slices(
+        self,
+        elements: list[LayoutElement],
+        page_width: float,
+    ) -> list[LayoutElement]:
+        """Merge multi-column sliced headlines that lie on the same horizontal plane.
+        
+        Optimized to O(N log N) by grouping candidate headline blocks into horizontal baseline bands
+        and merging adjacent left-to-right neighbors in a single pass.
+        """
+        if len(elements) <= 1:
+            return elements
+
+        from app.ingestion.detector import check_is_advertisement_text
+
+        # Separate headlines from other layout elements
+        headline_indices: list[int] = []
+        other_elements: list[LayoutElement] = []
+        for idx, el in enumerate(elements):
+            if el.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE) and not check_is_advertisement_text(el.text):
+                headline_indices.append(idx)
+            else:
+                other_elements.append(el)
+
+        if len(headline_indices) <= 1:
+            return elements
+
+        # Extract and sort headline candidates by Y baseline (top), then X (left)
+        headlines = [elements[i] for i in headline_indices]
+        headlines.sort(key=lambda h: (h.bbox[1], h.bbox[0]))
+
+        # Group headlines into horizontal bands (baseline_diff <= 15% height or 12px)
+        bands: list[list[LayoutElement]] = []
+        for h in headlines:
+            placed = False
+            for band in bands:
+                anchor = band[0]
+                ha = max(anchor.bbox[3] - anchor.bbox[1], 1.0)
+                hb = max(h.bbox[3] - h.bbox[1], 1.0)
+                min_h = min(ha, hb)
+                max_h = max(ha, hb)
+                baseline_diff = abs(anchor.bbox[1] - h.bbox[1])
+                v_overlap = max(0.0, min(anchor.bbox[3], h.bbox[3]) - max(anchor.bbox[1], h.bbox[1]))
+                if baseline_diff <= min(max_h * 0.20, 15.0) and (v_overlap / min_h) >= 0.70:
+                    band.append(h)
+                    placed = True
+                    break
+            if not placed:
+                bands.append([h])
+
+        # Merge adjacent blocks within each horizontal band
+        merged_headlines: list[LayoutElement] = []
+        for band in bands:
+            # Sort band strictly from left to right by x0
+            band.sort(key=lambda h: h.bbox[0])
+            cur = band[0]
+            for next_hl in band[1:]:
+                box_a = BBox.from_tuple(cur.bbox)
+                box_b = BBox.from_tuple(next_hl.bbox)
+
+                min_h = min(box_a.height, box_b.height)
+                max_h = max(box_a.height, box_b.height)
+                baseline_diff = abs(box_a.y0 - box_b.y0)
+                v_overlap_ratio = box_a.vertical_overlap(box_b) / max(min_h, 1.0)
+
+                gap_x = box_b.x0 - box_a.x1
+                font_diff = abs(cur.font_size - next_hl.font_size) / max(cur.font_size, next_hl.font_size, 1.0)
+
+                words_a = cur.text.strip().split()
+                words_b = next_hl.text.strip().split()
+
+                can_merge = False
+                if words_a and words_b and not cur.text.rstrip().endswith((".", "?", "!", ":", ";", '"', "'", "”")):
+                    is_open_a = is_grammatically_open_headline_fragment(cur.text)
+                    is_open_b = bool(words_b[0][0].islower() or words_b[0].lower() in CONTINUATION_END_TOKENS)
+                    last_token_a = words_a[-1].lower().strip(" \t\n\r.:;,")
+                    ends_with_hyphen = cur.text.rstrip().endswith(("-", "—", ","))
+                    is_open_connector = bool(
+                        last_token_a in CONTINUATION_END_TOKENS
+                        or is_open_a
+                        or is_open_b
+                        or ends_with_hyphen
+                    )
+
+                    if is_open_connector or not (len(words_a) >= 3 and len(words_b) >= 3):
+                        max_gap_x = max(page_width * 0.035, 35.0)
+                        if (
+                            baseline_diff <= min(max_h * 0.15, 10.0)
+                            and v_overlap_ratio >= 0.80
+                            and -5.0 <= gap_x <= max_gap_x
+                            and font_diff <= 0.15
+                        ):
+                            can_merge = True
+
+                if can_merge:
+                    # Merge next_hl into cur
+                    cur.text = f"{cur.text} {next_hl.text}".strip()
+                    cur.bbox = box_a.union(box_b).as_tuple()
+                    cur.font_size = max(cur.font_size, next_hl.font_size)
+                    total_width = cur.bbox[2] - cur.bbox[0]
+                    if total_width >= page_width * 0.50:
+                        cur.block_type = BlockType.BANNER_HEADLINE
+                    else:
+                        cur.block_type = BlockType.HEADLINE
+                else:
+                    merged_headlines.append(cur)
+                    cur = next_hl
+
+            merged_headlines.append(cur)
+
+        result_elems = other_elements + merged_headlines
+        result_elems.sort(key=lambda e: (round(e.bbox[1] / 15.0), e.bbox[0]))
+        return result_elems
+
+    def _consolidate_elements(
+        self,
+        elements: list[LayoutElement],
+        page_width: float,
+        page_height: float,
+    ) -> list[LayoutElement]:
+        """Consolidate adjacent text boxes & headlines using Vertical-First column tracking."""
+        if len(elements) <= 1:
+            return elements
+
+        # Sort elements primarily by top-Y, then left-X
+        sorted_elements = sorted(elements, key=lambda e: (round(e.bbox[1] / 20.0), e.bbox[0]))
+
+        # Pass 0: Drop Cap Reattachment (Merge single uppercase initials into subsequent body)
+        drop_cap_merged: list[LayoutElement] = []
+        skip_indices: set[int] = set()
+        for i, el in enumerate(sorted_elements):
+            if i in skip_indices:
+                continue
+            raw_t = el.text.strip()
+            if (
+                len(raw_t) == 1
+                and raw_t.isalpha()
+                and raw_t.isupper()
+                and i + 1 < len(sorted_elements)
+            ):
+                target_j: int | None = None
+                for j in range(i + 1, min(i + 6, len(sorted_elements))):
+                    if j in skip_indices:
+                        continue
+                    cand = sorted_elements[j]
+                    if not cand.text.strip():
+                        continue
+                    is_near_y = (el.bbox[1] - 8.0 <= cand.bbox[1] <= el.bbox[3] + 25.0)
+                    h_overlap = min(el.bbox[2], cand.bbox[2]) - max(el.bbox[0], cand.bbox[0])
+                    is_col_aligned = h_overlap > -40.0 and cand.bbox[0] >= el.bbox[0] - 10.0
+                    if is_near_y and is_col_aligned:
+                        target_j = j
+                        break
+                if target_j is not None:
+                    cand = sorted_elements[target_j]
+                    if cand.text.startswith(" ") or cand.text.startswith("\n"):
+                        cand.text = raw_t + cand.text.lstrip()
+                    elif cand.text and cand.text[0].islower():
+                        cand.text = raw_t + cand.text
+                    else:
+                        cand.text = f"{raw_t} {cand.text}".strip()
+                    cand.bbox = (
+                        min(el.bbox[0], cand.bbox[0]),
+                        min(el.bbox[1], cand.bbox[1]),
+                        max(el.bbox[2], cand.bbox[2]),
+                        max(el.bbox[3], cand.bbox[3]),
+                    )
+                    skip_indices.add(i)
+                    continue
+            drop_cap_merged.append(el)
+        sorted_elements = drop_cap_merged
+
+        # Compute median line height across body elements
+        body_heights = [
+            (e.bbox[3] - e.bbox[1]) / max(len(e.text.split("\n")), 1)
+            for e in sorted_elements
+            if e.block_type == BlockType.BODY_TEXT and (e.bbox[3] - e.bbox[1]) > 0
+        ]
+        median_lh = float(sorted(body_heights)[len(body_heights) // 2]) if body_heights else 20.0
+        max_v_gap = max(median_lh * 1.8, 15.0)
+
+        # Pass 1: Vertical Multi-Line Headline & Paragraph Stitching within Column Tracks
+        consolidated: list[LayoutElement] = []
+        for elem in sorted_elements:
+            if not consolidated:
+                consolidated.append(elem)
+                continue
+
+            merged_vertically = False
+            for prev in reversed(consolidated):
+                gap_y = elem.bbox[1] - prev.bbox[3]
+                if gap_y > max_v_gap * 2.5:
+                    break
+
+                box_prev = BBox.from_tuple(prev.bbox)
+                box_elem = BBox.from_tuple(elem.bbox)
+
+                # Column track overlap evaluated symmetrically to avoid banner/column bleeding
+                overlap_x = box_prev.horizontal_overlap(box_elem)
+                max_w = max(box_prev.width, box_elem.width)
+                min_w = min(box_prev.width, box_elem.width)
+                width_similarity = (min_w / max_w) if max_w > 0 else 0.0
+                track_overlap_ratio = (overlap_x / max_w) if max_w > 0 else 0.0
+                is_same_track = bool(track_overlap_ratio >= 0.40 or (width_similarity >= 0.70 and (overlap_x / min_w) >= 0.60))
+
+                # HEADING-BOUNDARY BREAK: Stop immediately if an intervening headline is encountered
+                if (
+                    elem.block_type == BlockType.BODY_TEXT
+                    and is_same_track
+                    and prev.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                ):
+                    break
+
+                if (
+                    elem.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                    and is_same_track
+                    and prev.block_type == BlockType.BODY_TEXT
+                ):
+                    break
+
+                # Case A: Font-Aware Multi-Line Headline Stitching in same column track
+                if (
+                    prev.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                    and elem.block_type in (BlockType.BANNER_HEADLINE, BlockType.HEADLINE)
+                ):
+                    font_diff = (
+                        abs(prev.font_size - elem.font_size)
+                        / max(prev.font_size, elem.font_size, 1.0)
+                    )
+
+                    if (
+                        is_same_track
+                        and -5.0 <= gap_y <= max_v_gap * 2.0
+                        and font_diff <= 0.35
+                    ):
+                        prev.text = f"{prev.text} {elem.text}".strip()
+                        prev.bbox = box_prev.union(box_elem).as_tuple()
+                        prev.font_size = max(prev.font_size, elem.font_size)
+                        merged_vertically = True
+                        break
+
+                # Case B: Merge adjacent body paragraphs in the same column track
+                if (
+                    prev.block_type == BlockType.BODY_TEXT
+                    and elem.block_type == BlockType.BODY_TEXT
+                ):
+                    scale_h = (page_height / 1000.0) if page_height else 1.0
+                    max_allowed_gap = max(median_lh * 1.6, 20.0 * scale_h)
+                    if (
+                        is_same_track
+                        and -8.0 <= gap_y <= max_allowed_gap
+                    ):
+                        if prev.text.endswith("-"):
+                            prev.text = prev.text[:-1] + elem.text
+                        elif prev.text.endswith((".", "!", "?", ":")):
+                            prev.text = f"{prev.text}\n\n{elem.text}"
+                        else:
+                            prev.text = f"{prev.text} {elem.text}"
+                        prev.bbox = box_prev.union(box_elem).as_tuple()
+                        merged_vertically = True
+                        break
+
+            if not merged_vertically:
+                consolidated.append(elem)
+
+        # Pass 2: Merge multi-column sliced headlines horizontally across X-axis
+        consolidated = self._merge_horizontal_headline_slices(consolidated, page_width)
+
+        # Re-index element IDs
+        for idx, elem in enumerate(consolidated):
+            elem.element_id = idx + 1
+
+        return consolidated
+
+    def build_layout_from_parsed_nodes(
+        self,
+        page_number: int,
+        width_px: int,
+        height_px: int,
+        nodes: list[ExtractedDocumentNode],
+        markdown_content: str = "",
+        source: str = "docling",
+    ) -> PageLayoutResult:
+        """Construct PageLayoutResult from pre-extracted neural document nodes."""
+        elements: list[LayoutElement] = []
+        tables: list[ExtractedTableData] = []
+        photos: list[ExtractedPhotoData] = []
+
+        for idx, node in enumerate(nodes):
+            cleaned_t = clean_ocr_text_artifacts(node.text)
+
+            # Check surrounding text for quotation context
+            prev_t = nodes[idx - 1].text if idx > 0 else ""
+            next_t = nodes[idx + 1].text if idx + 1 < len(nodes) else ""
+            surrounding_context = f"{prev_t}\n{next_t}"
+
+            b_type = BlockType.BODY_TEXT
+            if is_toc_index_block(cleaned_t):
+                b_type = BlockType.TOC_INDEX
+            elif is_pullquote_author_block(cleaned_t, surrounding_context):
+                b_type = BlockType.PULLQUOTE_AUTHOR
+            elif is_syndication_or_agency_slug(cleaned_t):
+                b_type = BlockType.BYLINE
+            elif is_numeric_stat_box(cleaned_t):
+                b_type = BlockType.TABLE
+            elif node.node_type == "title":
+                if not (is_toc_index_block(cleaned_t) or is_pullquote_author_block(cleaned_t)):
+                    b_type = (
+                        BlockType.BANNER_HEADLINE if node.level == 1 else BlockType.HEADLINE
+                    )
+                else:
+                    b_type = BlockType.BODY_TEXT
+            elif node.node_type == "table":
+                b_type = BlockType.TABLE
+                if node.table_data:
+                    tables.append(node.table_data)
+            elif node.node_type in ("image", "photo"):
+                b_type = BlockType.PHOTO
+                if node.photo_data:
+                    photos.append(node.photo_data)
+            elif node.node_type == "caption":
+                b_type = BlockType.CAPTION
+
+            elem = LayoutElement(
+                element_id=idx + 1,
+                bbox=node.bbox,
+                text=cleaned_t,
+                block_type=b_type,
+            )
+            elements.append(elem)
+
+        # Filter out mastheads and running headers from elements
+        non_masthead_elements = [
+            e for e in elements
+            if not is_masthead_or_running_header(e, float(height_px), float(width_px))
+        ]
+        elements = non_masthead_elements if non_masthead_elements else elements
+
+        # For neural Docling layout, use Docling's pre-linearized reading order directly
+        reading_order = [
+            OrderedReadingBlock(
+                reading_order_index=i + 1,
+                element_id=elem.element_id,
+                block_type=elem.block_type,
+                text=elem.text,
+                bbox=elem.bbox,
+            )
+            for i, elem in enumerate(elements)
+        ]
+
+        return PageLayoutResult(
+            page_number=page_number,
+            width_px=width_px,
+            height_px=height_px,
+            elements=elements,
+            reading_order=reading_order,
+            tables=tables,
+            photos=photos,
+            markdown_content=markdown_content,
+            source=source,
+        )
+
+    async def analyze_page(
+        self,
+        page_number: int,
+        width_px: int,
+        height_px: int,
+        image_bytes: bytes,
+        digital_blocks: list[DigitalTextBlock] | None = None,
+        ocr_blocks: list[OCRBlock] | None = None,
+    ) -> PageLayoutResult:
+        """Run full hybrid layout analysis on a newspaper page."""
+        # If page is scanned and ocr_blocks are provided, prioritize them directly
+        if ocr_blocks and not digital_blocks:
+            return self.analyze_from_text_blocks(
+                page_number=page_number,
+                width_px=width_px,
+                height_px=height_px,
+                ocr_blocks=ocr_blocks,
+            )
+
+        provider = await self._get_layout_provider()
+        if not provider:
+            return self.analyze_from_text_blocks(
+                page_number=page_number,
+                width_px=width_px,
+                height_px=height_px,
+                digital_blocks=digital_blocks,
+                ocr_blocks=ocr_blocks,
+            )
+
+        # Path A: DocumentLayoutProvider (Docling / MinerU)
+        if isinstance(provider, DocumentLayoutProvider):
+            try:
+                parsed_res = await provider.parse_page_image(
+                    image_bytes=image_bytes,
+                    page_number=page_number,
+                )
+
+                # Check if provider returned non-empty text nodes
+                text_nodes = [n for n in parsed_res.nodes if n.text and n.text.strip()]
+                if not text_nodes and (ocr_blocks or digital_blocks):
+                    return self.analyze_from_text_blocks(
+                        page_number=page_number,
+                        width_px=width_px,
+                        height_px=height_px,
+                        digital_blocks=digital_blocks,
+                        ocr_blocks=ocr_blocks,
+                    )
+
+                provider_source = getattr(provider, "provider_name", "docling")
+                return self.build_layout_from_parsed_nodes(
+                    page_number=page_number,
+                    width_px=width_px,
+                    height_px=height_px,
+                    nodes=parsed_res.nodes,
+                    markdown_content=parsed_res.markdown_content,
+                    source=provider_source,
+                )
+            except Exception as e:
+                logger.warning(
+                    "DocumentLayoutProvider analysis failed, falling back to spatial rules",
+                    extra={"page_number": page_number, "error": str(e)},
+                )
+                return self.analyze_from_text_blocks(
+                    page_number=page_number,
+                    width_px=width_px,
+                    height_px=height_px,
+                    digital_blocks=digital_blocks,
+                    ocr_blocks=ocr_blocks,
+                )
+
+        # Path B: VisionModelProvider (VLM prompt)
+        try:
+            resp = await provider.analyze_image(
+                image_bytes=image_bytes,
+                prompt=LAYOUT_PROMPT,
+                response_schema=LAYOUT_EXTRACTION_SCHEMA,
+            )
+            raw_data = resp.parsed
+            if not isinstance(raw_data, dict):
+                from app.ingestion.visual_extractor import repair_and_parse_json
+                raw_data = repair_and_parse_json(resp.text)
+
+            if not isinstance(raw_data, dict):
+                raise ValueError("Vision model response did not return a valid layout dict.")
+
+            vlm_elements: list[LayoutElement] = []
+            el_id = 1
+
+            for h in raw_data.get("headlines", []):
+                cleaned_h = clean_ocr_text_artifacts(h.get("text", ""))
+                bbox = tuple(float(x) for x in h.get("bbox", [0, 0, 0, 0]))
+                level = h.get("level", "major")
+                if is_numeric_stat_box(cleaned_h):
+                    b_type = BlockType.TABLE
+                else:
+                    b_type = BlockType.BANNER_HEADLINE if level == "banner" else BlockType.HEADLINE
+                vlm_elements.append(
+                    LayoutElement(
+                        element_id=el_id,
+                        bbox=bbox,  # type: ignore[arg-type]
+                        text=cleaned_h,
+                        block_type=b_type,
+                    )
+                )
+                el_id += 1
+
+            for col in raw_data.get("columns", []):
+                cleaned_c = clean_ocr_text_artifacts(col.get("text", ""))
+                bbox = tuple(float(x) for x in col.get("bbox", [0, 0, 0, 0]))
+                b_type = BlockType.TABLE if is_numeric_stat_box(cleaned_c) else BlockType.BODY_TEXT
+                vlm_elements.append(
+                    LayoutElement(
+                        element_id=el_id,
+                        bbox=bbox,  # type: ignore[arg-type]
+                        text=cleaned_c,
+                        block_type=b_type,
+                    )
+                )
+                el_id += 1
+
+            for p in raw_data.get("photos", []):
+                bbox = tuple(float(x) for x in p.get("bbox", [0, 0, 0, 0]))
+                vlm_elements.append(
+                    LayoutElement(
+                        element_id=el_id,
+                        bbox=bbox,  # type: ignore[arg-type]
+                        text=p.get("caption", ""),
+                        block_type=BlockType.PHOTO,
+                    )
+                )
+                el_id += 1
+
+            # Filter mastheads in VLM output
+            non_masthead_vlm = [
+                e for e in vlm_elements
+                if not is_masthead_or_running_header(e, float(height_px), float(width_px))
+            ]
+            vlm_elements = non_masthead_vlm if non_masthead_vlm else vlm_elements
+
+            # Consolidate bounding boxes and merge adjacent paragraph fragments
+            vlm_elements = self._consolidate_elements(
+                elements=vlm_elements,
+                page_width=float(width_px),
+                page_height=float(height_px),
+            )
+
+            resolver = ReadingOrderResolver(
+                page_width=float(width_px), page_height=float(height_px)
+            )
+            reading_order_blocks = resolver.resolve_reading_order(vlm_elements)
+
+            return PageLayoutResult(
+                page_number=page_number,
+                width_px=width_px,
+                height_px=height_px,
+                elements=vlm_elements,
+                reading_order=reading_order_blocks,
+                source="vlm",
+            )
+
+        except Exception as e:
+            logger.warning(
+                "VLM layout analysis failed, falling back to spatial rules",
+                extra={"page_number": page_number, "error": str(e)},
+            )
+            return self.analyze_from_text_blocks(
+                page_number=page_number,
+                width_px=width_px,
+                height_px=height_px,
+                digital_blocks=digital_blocks,
+                ocr_blocks=ocr_blocks,
+            )
+
+
+__all__ = [
+    "BlockType",
+    "LayoutAnalyzer",
+    "LayoutElement",
+    "NUMBERED_QUESTION_REGEX",
+    "OrderedReadingBlock",
+    "PageLayoutResult",
+    "ReadingOrderResolver",
+    "SYNDICATION_REGEX",
+    "SYNDICATION_SLUGS",
+    "clean_ocr_text_artifacts",
+    "is_numbered_feature_subhead",
+    "is_numeric_stat_box",
+    "is_pullquote_author_block",
+    "is_syndication_or_agency_slug",
+    "is_toc_index_block",
+]
