@@ -696,33 +696,33 @@ class ToolExecutor:
                     comparison_newspaper=cmp_np,
                     issue_date=iss_dt,
                 )
-            if "error" in diff_res:
-                items.append(
-                    {
-                        "article_id": 0,
-                        "headline": f"Coverage Difference Error: {diff_res['error']}",
-                        "newspaper_name": src_np or "Archive",
-                        "issue_date": iss_dt or "Overview",
-                        "pages": [1],
-                        "snippet": f"⚠️ {diff_res['error']}",
-                        "prominence_score": 1.0,
-                        "source_tool": "sql_analytics",
-                    }
-                )
-            else:
-                hits_count = len(diff_res.get("exclusive_articles", []))
-                items.append(
-                    {
-                        "article_id": 0,
-                        "headline": f"Verified Exclusive Articles: {diff_res['source_newspaper']} vs {diff_res['comparison_newspaper']}",
-                        "newspaper_name": diff_res["source_newspaper"],
-                        "issue_date": diff_res["issue_date"],
-                        "pages": [1],
-                        "snippet": format_coverage_difference_snippet(diff_res),
-                        "prominence_score": 1.0,
-                        "source_tool": "sql_analytics",
-                    }
-                )
+                if "error" in diff_res:
+                    items.append(
+                        {
+                            "article_id": 0,
+                            "headline": f"Coverage Difference Error: {diff_res['error']}",
+                            "newspaper_name": src_np or "Archive",
+                            "issue_date": iss_dt or "Overview",
+                            "pages": [1],
+                            "snippet": f"⚠️ {diff_res['error']}",
+                            "prominence_score": 1.0,
+                            "source_tool": "sql_analytics",
+                        }
+                    )
+                else:
+                    hits_count = len(diff_res.get("exclusive_articles", []))
+                    items.append(
+                        {
+                            "article_id": 0,
+                            "headline": f"Verified Exclusive Articles: {diff_res['source_newspaper']} vs {diff_res['comparison_newspaper']}",
+                            "newspaper_name": diff_res["source_newspaper"],
+                            "issue_date": diff_res["issue_date"],
+                            "pages": [1],
+                            "snippet": format_coverage_difference_snippet(diff_res),
+                            "prominence_score": 1.0,
+                            "source_tool": "sql_analytics",
+                        }
+                    )
 
         return items, hits_count, context_updates
 
@@ -774,3 +774,11 @@ class ToolExecutor:
             for wr in web_results
         ]
         return items, len(web_results)
+ 
+ 
+__all__ = [
+    "ToolExecutor",
+    "format_coverage_difference_snippet",
+    "format_coverage_matrix_snippet",
+    "format_issue_manifest",
+]

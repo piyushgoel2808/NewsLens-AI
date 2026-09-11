@@ -209,3 +209,14 @@ def generate_deterministic_summary(
     lines.extend(render_explore_further(pub_groups))
 
     return "\n".join(lines)
+
+
+__all__ = [
+    "EMPTY_EVIDENCE_RESPONSE",
+    "generate_deterministic_summary",
+    "has_valid_evidence",
+    "render_broadsheet_perspectives",
+    "render_comparison_matrix",
+    "render_explore_further",
+    "render_front_page_comparison",
+]

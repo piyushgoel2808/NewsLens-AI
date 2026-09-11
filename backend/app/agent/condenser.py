@@ -6,8 +6,9 @@ import contextlib
 import re
 from typing import Any
 
+from app.agent.extractor import _KNOWN_BRANDS_PATTERNS, extract_parameters_from_query
 from app.core.logging import get_logger
-from app.providers.base import ChatModelProvider, Message
+from app.providers.base import Message
 from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
@@ -114,8 +115,6 @@ def extract_active_issue_from_history(
     if not chat_history:
         return res
 
-    from app.agent.planner import _KNOWN_BRANDS_PATTERNS, extract_parameters_from_query
-
     q_lower = (current_query or "").lower()
     is_cross_newspaper = bool(
         re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff(?:erence[s]?|ering)?|versus|vs\.?)\b", q_lower)
@@ -213,7 +212,7 @@ _UNSET = object()
 async def condense_conversational_query(
     query: str,
     chat_history: list[dict[str, Any]],
-    provider: ChatModelProvider | None | Any = _UNSET,
+    provider: Any = _UNSET,
     model_override: str | None = None,
     active_issue_id: int | None = None,
     active_newspaper_name: str | None = None,
@@ -229,7 +228,7 @@ async def condense_conversational_query(
     iss_date = active_issue_date or active_ctx.get("issue_date")
 
     # Resolve LLM provider (prefer lightweight/fast model like groq_llama or query_planner)
-    resolved_provider: ChatModelProvider | None
+    resolved_provider: Any
     if provider is _UNSET:
         try:
             registry = get_registry()
@@ -364,4 +363,18 @@ async def condense_conversational_query(
         return q_resolved
 
     return query
+
+
+__all__ = [
+    "AMBIGUOUS_PRONOUNS_PATTERN",
+    "CLEAN_SESSION_CLARIFICATION_MESSAGE",
+    "GENERIC_FOLLOWUP_SHORT_PATTERN",
+    "IN_CONTEXT_META_QUERY_PATTERN",
+    "condense_conversational_query",
+    "extract_active_issue_from_history",
+    "format_chat_history_for_prompt",
+    "is_ambiguous_standalone_query",
+    "is_in_context_meta_query",
+    "needs_condensation",
+]
 

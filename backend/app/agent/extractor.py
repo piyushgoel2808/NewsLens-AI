@@ -174,3 +174,13 @@ def build_targeted_web_query(query: str) -> str:
 
 # Backward compatibility alias
 _build_targeted_web_query = build_targeted_web_query
+
+__all__ = [
+    "_CONVERSATIONAL_PREFIX_PATTERNS",
+    "_KNOWN_BRANDS_PATTERNS",
+    "_MONTH_MAP",
+    "_SECTION_PATTERNS",
+    "_build_targeted_web_query",
+    "build_targeted_web_query",
+    "extract_parameters_from_query",
+]

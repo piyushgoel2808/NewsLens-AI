@@ -2933,3 +2933,43 @@ Following the proven decomposition patterns of **Phase 9.23** (`planner.py`) and
 - Static Type Checking: `mypy app/agent/` $\to$ **Success: no issues found in 14 source files**.
 - Linter: `ruff check app/agent/` $\to$ **All checks passed!**
 
+---
+
+## Phase 9.29 — Full Agent Module Audit, Bug Fix & Clean Architecture Hygiene
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Critical `UnboundLocalError` in `executor.py`**:
+   - In `ToolExecutor._execute_sql_analytics()`, the branch handling `analysis_type == "coverage_difference"` checked `if not src_np or not cmp_np:` to append an error message.
+   - However, the subsequent check `if "error" in diff_res:` was indented outside the `else:` block. When either newspaper was missing, `diff_res` was not assigned, crashing execution with `UnboundLocalError`.
+2. **In-Place Dynamic Import in `condenser.py`**:
+   - `condenser.extract_active_issue_from_history()` performed `from app.agent.planner import _KNOWN_BRANDS_PATTERNS, extract_parameters_from_query` inside the function call on every invocation.
+   - This caused `_ModuleLock` contention during concurrent query calls and improperly imported from `planner` instead of the root module `extractor.py`.
+3. **Empty Package Interface (`__init__.py`) & Missing Export Declarations**:
+   - `backend/app/agent/__init__.py` was completely empty, requiring consumers to know internal file layouts rather than importing standard agent entry points.
+   - Modules lacked explicit `__all__` definitions, allowing arbitrary internal symbols to leak into wildcards and auto-imports.
+
+### Architectural Solutions & Implementations
+1. **Bug Resolution in `backend/app/agent/executor.py`**:
+   - Correctly scoped `diff_res` retrieval, error inspection, and manifest construction strictly within the `else:` branch.
+   - Added unit test `test_execute_single_tool_coverage_difference_missing_newspapers` in `backend/tests/test_graph.py` verifying graceful error handling with zero unhandled exceptions.
+2. **Top-Level Static Import Resolution in `backend/app/agent/condenser.py`**:
+   - Eliminated the dynamic import inside `extract_active_issue_from_history()`, hoisting `from app.agent.extractor import _KNOWN_BRANDS_PATTERNS, extract_parameters_from_query` to top-of-file.
+3. **Package Architecture Entry Points (`backend/app/agent/__init__.py`)**:
+   - Populated `__init__.py` with canonical public exports: `AgentWorkflow`, `AgentState`, `QueryPlanner`, `AnswerSynthesizer`, `PlannedToolCall`, `PlanResult`, `QueryArchetype`, `ToolName`, `AgentCitation`, and `ToolExecutionRecord`.
+4. **Uniform Export Hygiene Across All 14 Files**:
+   - Added explicit `__all__` lists across `state.py`, `models.py`, `taxonomy.py`, `prompt_context.py`, `extractor.py`, `tool_factory.py`, `evaluator.py`, `fallback_presenter.py`, `condenser.py`, `executor.py`, `graph.py`, `planner.py`, and `synthesizer.py`.
+   - Added domain taxonomy normalization fallback in `taxonomy.detect_domain_from_query()`.
+
+### Test Verification & Quality Gates
+- `backend/tests/test_graph.py`: **8/8 tests passing (100% green)** including the new coverage difference regression test.
+- `backend/tests/test_query_condenser.py`: **12/12 tests passing (100% green)**.
+- `backend/tests/test_planner.py`: **18/18 tests passing (100% green)**.
+- `backend/tests/test_synthesizer.py`: **24/24 tests passing (100% green)**.
+- **Full Backend Regression Suite**: **410/410 tests passing (100% green)** in 24.21s.
+- Static Type Checking: `mypy app/agent/` $\to$ **Success: no issues found in 14 source files**.
+- Linter: `ruff check app/agent/` $\to$ **All checks passed!**
+
+

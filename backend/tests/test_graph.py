@@ -267,3 +267,40 @@ class TestAgentWorkflow:
         assert "1. [Finance] \"MARKET HIGHS REACHED\" (Page 1 by John Doe, 250 words)" in manifest
         assert "2. [Sports] \"LOCAL TEAM WINS\" (Page 3, 180 words)" in manifest
 
+    @pytest.mark.asyncio
+    async def test_execute_single_tool_coverage_difference_missing_newspapers(self) -> None:
+        """Verify that coverage_difference handles missing newspaper arguments without UnboundLocalError."""
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+        state: AgentState = {
+            "query": "coverage difference test",
+            "original_query": "coverage difference test",
+            "chat_history": [],
+            "archetype": "cross_newspaper_comparison",
+            "plan": [],
+            "tool_executions": [],
+            "evidence_items": [],
+            "synthesized_answer": "",
+            "citations": [],
+            "cost_usd": 0.0,
+            "latency_ms": 0,
+            "user_id": None,
+            "model_override": None,
+            "enable_web_search": False,
+            "web_search_results": [],
+            "active_issue_id": None,
+            "active_newspaper_name": None,
+            "active_issue_date": None,
+            "error": None,
+        }
+
+        # Call with empty arguments (missing source_newspaper and comparison_newspaper)
+        call = {
+            "tool_name": "sql_analytics",
+            "arguments": {"analysis_type": "coverage_difference"},
+        }
+        items, record, ctx_updates = await workflow._execute_single_tool(call, state)
+        assert len(items) == 1
+        assert "Missing newspaper arguments" in items[0]["headline"]
+        assert record["tool_name"] == "sql_analytics"
+

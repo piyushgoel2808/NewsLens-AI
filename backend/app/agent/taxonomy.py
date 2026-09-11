@@ -95,6 +95,11 @@ def detect_domain_from_query(query: str, evidence_items: list[dict[str, Any]] | 
                 cat = m.group(1).strip()
                 if any(w in cat.lower() for w in ["econom", "financ", "business", "market"]):
                     return "Economics & Finance"
+                if cat in DOMAIN_TAXONOMY:
+                    return cat
+                for dom in DOMAIN_TAXONOMY:
+                    if cat.lower() in dom.lower():
+                        return dom
                 return cat
     return None
 
@@ -163,3 +168,12 @@ def score_evidence_item(item: dict[str, Any], domain: str | None) -> int:
             return 50
 
     return 0
+
+
+__all__ = [
+    "DOMAIN_TAXONOMY",
+    "detect_domain_from_query",
+    "get_domain_terms",
+    "is_domain_match",
+    "score_evidence_item",
+]

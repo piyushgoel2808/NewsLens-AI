@@ -198,3 +198,9 @@ class EvidenceEvaluator:
             return fallback_items, tool_records
 
         return filtered_evidence, tool_records
+
+
+__all__ = [
+    "EvidenceEvaluator",
+    "is_structural_or_relevant_evidence",
+]

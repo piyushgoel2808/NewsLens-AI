@@ -232,3 +232,18 @@ def build_web_search_tool(
     """Build a planned web_search tool invocation."""
     default_purpose = "Live internet search for external context"
     return PlannedToolCall("web_search", {"query": query, "num_results": num_results}, purpose or default_purpose)
+
+
+__all__ = [
+    "_GENERIC_FILLER_QUERIES",
+    "build_coverage_analysis_tool",
+    "build_entity_search_tool",
+    "build_hybrid_search_tool",
+    "build_sql_coverage_comparison_tool",
+    "build_sql_difference_tool",
+    "build_sql_summary_tool",
+    "build_timeline_tool",
+    "build_web_search_tool",
+    "reconcile_and_sanitize_arguments",
+    "sanitize_generic_filler_query",
+]
