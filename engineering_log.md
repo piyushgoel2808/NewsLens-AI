@@ -2820,6 +2820,72 @@ Comprehensive architectural audit of `backend/app/agent/planner.py` (previously 
 - Static Type Checking: `mypy app/agent/ app/retrieval/sql_analytics.py` $\to$ **Success: no issues found in 12 source files**.
 - Linter: `ruff check app/agent/` $\to$ **All checks passed!**
 
+---
 
+## Phase 9.26 — Multi-Edition Comparison Audit & SQL Relational Manifest Recovery
 
+**Date**: 2026-09-11  
+**Status**: Completed ✅
 
+### Problems Addressed & Root Causes
+1. **Empty Manifests on Slash-Formatted Dates**:
+   - Queries specifying date formats like `1/8/2026` passed unnormalized strings to `sql_analytics.list_issue_articles`, resulting in 0 issues found and generating empty article manifests for cross-newspaper comparisons.
+2. **Missing Editorial Lead Recovery in Multi-Edition Comparisons**:
+   - When users asked to compare all available newspapers on a specific date (e.g. `COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news`), missing date normalization resulted in one publication being completely omitted from the comparison matrix.
+
+### Architectural Solutions & Implementations
+1. **Universal ISO-8601 Normalization in SQL Analytics**:
+   - Added automatic date normalization via `normalize_date_to_iso()` inside `get_issues_by_date()`, `list_issue_articles()`, and `get_issue_summary()`.
+   - Guaranteed that any human date format (`1/8/2026`, `01-08-2026`, `Aug 1 2026`) transparently maps to `YYYY-MM-DD` before querying MySQL.
+2. **Deterministic Manifest Integration in Graph Executor**:
+   - Updated `ToolExecutor` in `backend/app/agent/executor.py` to format relational manifests across all available issues for the given date, ensuring multi-newspaper comparative prompts receive complete coverage inventories for every participating broadsheet.
+
+### Test Verification & Quality Gates
+- `backend/tests/test_synthesizer.py`: **18/18 tests passing (100% green)**
+- **Full Backend Regression Suite**: **404/404 tests passing (100% green)**
+
+---
+
+## Phase 9.27 — CrossEncoder Latency Optimization, Strict Domain Purity & Synthesizer De-Bloating
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Severe 30.4-Second Latency Spike in Hybrid Search**:
+   - **Root Cause**: Apple Silicon `mps` backend for `CrossEncoderReranker` (`ms-marco-MiniLM-L-6-v2`) incurred a massive 10–15 second Metal shader compilation lag and GPU memory synchronization overhead. Furthermore, `hybrid_search.py` passed all retrieved candidates unboundedly to the cross-encoder.
+   - **Downstream Impact**: Single comparative queries took up to **30,428 ms** in the `hybrid_search` tool node.
+2. **Domain Pollution in Topical Cross-Newspaper Comparisons**:
+   - When a user asked for a specific topic (e.g. `"health related news"` on `1/8/2026`), newspapers with 0 health articles (like *The Morning Standard*) were filled with completely unrelated stories (e.g. `"Studio XO live concert"` or `"cases still pending in designated courts"`), creating hallucinated cross-domain associations.
+3. **CBDT Section 80C Tax Citation Regurgitation**:
+   - The synthesizer system prompt contained a hardcoded example referencing CBDT Section 80C tax deductions. LLMs were regurgitating this tax citation verbatim even on queries regarding health, medicine, and sports.
+4. **Synthesizer Monolithic Bloat (1,182 lines)**:
+   - `synthesizer.py` had grown to 1,182 lines with triple-duplicated domain stem taxonomies, 4 copies of domain regexes, runtime dynamic imports inside tight loops (`from ... import ...`), and a 240-line imperative markdown template engine.
+
+### Architectural Solutions & Implementations
+1. **CrossEncoder CPU Accelerator & Candidate Pool Capping (`reranker.py`, `hybrid_search.py`)**:
+   - Forced `device="cpu"` on macOS for `CrossEncoderReranker` in `backend/app/retrieval/reranker.py`. Since MiniLM is a lightweight 6-layer model, CPU inference executes in **~80ms** without MPS GPU shader lag. Added `batch_size=32` and a synchronous `predict()` method.
+   - In `backend/app/retrieval/hybrid_search.py`, capped the candidate pool passed to the reranker at `min(len(merged_candidates), 20)`.
+   - **Performance Verification**: Warm hybrid search latency plummeted from **30,428 ms to 1,019 ms** (~30x speedup).
+2. **Domain Purity Noise Filters (`sql_analytics.py`)**:
+   - In `list_issue_articles()`, when a domain category filter is active (e.g. `Health`), articles with off-domain negative keywords (`when: `, `where: `, `studio xo`, `cases still pending`, `tax collections`, `excise duty`, `deductions`, `cricket`) are pruned before building manifests unless explicit medical terms are present.
+3. **Zero-Coverage Reporting & Prompt Clean-Up (`synthesizer.py`)**:
+   - Removed hardcoded Section 80C tax examples from the synthesizer prompt.
+   - Implemented strict Zero-Coverage handling: if a publication lacks reporting in the requested domain, both the LLM prompt and the deterministic fallback explicitly output:
+     `| **[Publication]** | [Date] | No standalone [Domain] reporting | Carried no standalone [Domain] reporting in this edition |`
+   - Forbade query-echoing in executive summaries (e.g. no more `"Key broadsheet reporting regarding [USER QUERY]..."`).
+4. **Synthesizer De-Bloating & Architecture Overhaul (`synthesizer.py`)**:
+   - **Centralized `DOMAIN_TAXONOMY`**: Single module-level registry mapping all 6 domains (`Economics & Finance`, `Health & Medicine`, `Sports`, `Politics & Governance`, `Crime & Law`, `Technology & AI`) with regexes, stems, column headers, and negative exclusion patterns.
+   - **Top-Level Static Imports**: Eliminated runtime `from ... import ...` calls inside loops to prevent `_ModuleLock` micro-stalls.
+   - **Modular Static Renderers**: Decomposed `_generate_deterministic_summary()` into `_render_comparison_matrix()`, `_render_front_page_comparison()`, `_render_broadsheet_perspectives()`, and `_render_explore_further()`.
+   - **Citation Helper**: Added `_make_citation()` to deduplicate `AgentCitation` construction across web and broadsheet sources.
+
+### Test Verification & Quality Gates
+- `backend/tests/test_synthesizer.py`: **24/24 tests passing (100% green)**
+- `backend/tests/test_hybrid_search.py`: **8/8 tests passing (100% green)**
+- `backend/tests/test_thought_parsing.py`: **5/5 tests passing (100% green)**
+- `backend/tests/test_streaming_api.py`: **4/4 tests passing (100% green)**
+- `backend/tests/test_web_search.py`: **11/11 tests passing (100% green)**
+- **Full Backend Regression Suite**: **409/409 tests passing (100% green)** in 25.44s.
+- Static Type Checking: `mypy app/agent/ app/retrieval/` $\to$ **Success: no issues found in 21 source files**.
+- Linter: `ruff check app/agent/ app/retrieval/` $\to$ **All checks passed!**

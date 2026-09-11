@@ -251,7 +251,7 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │  • Broadsheet OCR font ligature repair (e  orts -> efforts)│
    │  • Headline sanitization cleans author boxes (Dr./Bylines)  │
    │  • Generates strict 1-shot citations: [Paper, Date, Page]   │
-   │  • Enforces anti-repetition constraints across findings     │
+   │  • Modular static renderers in deterministic fallback       │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
@@ -326,6 +326,11 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 9.17: Autonomous Reasoning & Concurrency** | Blind planning without live archive metadata caused tool hallucination; serial tool execution caused latency spikes; 0-hit category filters starved evidence; author boxes became fake headlines. | Grounded planner with `get_archive_metadata()`; added `article_catalog` archetype (<200ms); ran tools concurrently via `asyncio.gather`; added adaptive zero-hit category fallback; sanitized author/doctor boxes with `sanitize_headline()`. |
 | **Phase 9.18: NVIDIA NIM Hosted Acceleration** | Local LLMs struggled with 90s latency on long syntheses and lacked real-time thinking traces. | Integrated `NvidiaProvider` supporting `nvidia/nemotron-3.5-lightning` (<1s response, live `<think>` streaming) and `meta/llama-3.2-11b-vision`. |
 | **Phase 9.19: Topic Integrity & Font Ligature Recovery** | Few-shot contamination overwrote user topics with generic phrases; 25s unconstrained coverage audits delayed domain queries; synthesizer fallbacks dropped multi-newspaper tables; OCR dropped font ligatures (`e   orts`). | Dynamic filler sanitization in planner; conditional coverage analysis; explicit `archetype` preservation in deterministic synthesizer; granular domain token stem budgeting; and dedicated Unicode ligature decomposition engine (`repair_text_ligatures`). |
+| **Phase 9.23: Clean Modular Planner Architecture** | Monolithic 1,593-line `planner.py` combined NER extraction, tool construction, hallucination pruning, and routing, causing test fragility and tight coupling. | Refactored into 4 single-responsibility modules: `models.py` (schemas), `extractor.py` (NER & parameters), `tool_factory.py` (canonical tool builders & sanitizers), and `planner.py` (lean coordinator). |
+| **Phase 9.24: Heuristic Disambiguation & Context Retention** | Heuristic fallback misclassified topic manifests as `quantitative_trend` instead of `article_catalog`; multi-turn follow-ups pruned active brand and date parameters. | Added structural disambiguation for `article_catalog` in heuristic fallback; guarded active multi-turn working context in `reconcile_and_sanitize_arguments()`. |
+| **Phase 9.25: Agent State Machine Decoupling** | Monolithic 1,153-line `graph.py` combined ORM logic, execution, and CRAG evaluation; in-place imports inside coroutines caused `_ModuleLock` micro-stalls; CRAG discarded semantic vector hits. | Modularized into `executor.py` (tool dispatch & manifests) and `evaluator.py` (CRAG & semantic hit protection); reduced `graph.py` to 267 lines with native LangGraph conditional edge routing. |
+| **Phase 9.26: Date Normalization & Multi-Edition Audit** | Slash-formatted dates (`1/8/2026`) failed database queries, omitting publications from comparative matrices. | Added universal ISO-8601 normalization (`normalize_date_to_iso`) in `sql_analytics.py`; integrated complete multi-edition manifests into comparative prompts. |
+| **Phase 9.27: CrossEncoder Latency & Synthesizer De-Bloating** | Apple Silicon MPS backend caused 30.4s hybrid search latency spikes; off-domain articles polluted topical comparisons; synthesizer was 1,182 lines with quadruple-duplicated domain maps. | Forced `device="cpu"` on macOS for `CrossEncoderReranker` (80ms execution) and capped candidate pool at 20 (dropping latency from 30.4s to 1.0s); filtered domain noise in SQL analytics; enforced strict zero-coverage reporting; de-bloated `synthesizer.py` with centralized `DOMAIN_TAXONOMY` and modular static renderers. |
 
 ---
 

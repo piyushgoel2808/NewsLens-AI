@@ -249,24 +249,25 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 
 ##### [`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)
 * **What It Has**: 
-  - `Synthesizer` class.
-  - Dynamic system prompts via `_build_synthesizer_system_prompt()`.
-  - Helper functions: `parse_thought_and_answer()`, `_build_evidence_context()`.
-  - Generator method `synthesize_stream()`.
+  - `AnswerSynthesizer` class and `parse_thought_and_answer()`.
+  - Centralized `DOMAIN_TAXONOMY` mapping for 6 domains (`Economics & Finance`, `Health & Medicine`, `Sports`, `Politics & Governance`, `Crime & Law`, `Technology & AI`).
+  - Dynamic system prompt composition (`_build_synthesizer_system_prompt()`, `COMMON_ANALYTICAL_GUIDELINES`, `COMMON_MEMORY_AND_CONSTRAINTS`).
+  - Modular static renderers: `_render_comparison_matrix()`, `_render_front_page_comparison()`, `_render_broadsheet_perspectives()`, `_render_explore_further()`.
+  - Citation helper: `_make_citation()`.
+  - Streaming method: `synthesize_stream()`.
 * **Work It Is Doing**:
   - Generates authoritative, highly readable executive intelligence briefs.
+  - **Single Source of Truth (`DOMAIN_TAXONOMY`)**: Centralizes regex patterns, domain token stems, comparison column headers, and negative exclusion patterns, eliminating multi-file duplication.
+  - **Zero-Coverage Reporting**: Formats explicit notices (`No standalone [Domain] reporting`) when publications lack coverage in requested topics, preventing noise substitution.
   - **Domain-Adaptive Synthesis**: Dynamically adapts comparison table structures based on topic domain (`Key Findings & Medical Focus` for health, `Key Figures & Metrics` for finance, `Key Policy Decisions & Statements` for politics) and outputs dedicated table manifests for `article_catalog` queries.
   - **Archetype Preservation in Fallbacks**: Passes explicit `archetype` to `_generate_deterministic_summary()`, ensuring cross-newspaper comparisons preserve multi-edition publication tables without dropping scheduled editions or degrading into single-paper templates.
-  - **Granular Domain Stem Budgeting**: Maps composite domain labels (e.g. `Health & Medicine`) to granular search token stems (`["health", "hospital", "pharma", "medicine", "doctor", ...]`), ensuring health articles receive top relevance ranking in evidence budget limits.
   - **Headline Cleansing & OCR Font Ligature Repair Integration**: Sanitizes author/doctor byline boxes into descriptive feature labels while protecting real all-caps news headlines, and runs `repair_text_ligatures()` across all evidence and headlines.
-  - **Evidence Context Budgeting**: Slices evidence to Top 12 items and enforces context caps (up to 4,000 characters for manifests/matrices, 1,200 characters for standard articles).
-  - **Critical Publication Scoping Barrier**: Injects explicit constraints listing verified available publications, forbidding the model from hallucinating or citing absent newspapers.
-  - **Reasoning Stream Parsing**: Separates model reasoning traces (`<think>...</think>` or `<thought>...</thought>`) from the final response text.
+  - **Top-Level Static Imports**: Avoids dynamic runtime imports (`from ... import ...`) inside loops, eliminating `_ModuleLock` concurrency contention.
+  - **Reasoning Stream Parsing**: Separates model reasoning traces (`<think>...</think>`) from the final response text.
   - **Strict 1-Shot Citation Enforcement**: Mandates bracketed inline citations on every factual assertion:
     `[{Newspaper Name}, {YYYY-MM-DD}, Page {P}, "{Headline}"]` or `[📊 Chart: ...]`.
-  - Anti-repetition constraints preventing duplicate bullet points.
 * **Important Tools / Frameworks**: Async Generators (`AsyncIterator`), Regex Parsing, Pydantic.
-* **LLM / VLM / Embedding Models**: Bound to `answerer` task (`gemma4:12b`, `llama3.1:8b`, `deepseek-r1:14b`, `nemotron-3.5-lightning`, or `gpt-4o`).
+* **LLM / VLM / Embedding Models**: Bound to `answerer` task (`nemotron-3.5-lightning`, `gemma4:12b`, `llama3.1:8b`, `deepseek-r1:14b`, or `gpt-4o`).
 
 ---
 
@@ -745,9 +746,13 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **LLM / VLM / Embedding Models**: None (Deterministic Relational Grounding).
 
 ##### [`backend/app/retrieval/reranker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/reranker.py)
-* **What It Has**: `CrossEncoderReranker`, `HeuristicReranker`, `_detect_best_device()`.
-* **Work It Is Doing**: Computes full cross-attention interaction scores between query and candidate snippets on MPS (Apple Silicon), CUDA, or CPU.
-* **Important Tools / Frameworks**: `sentence_transformers.CrossEncoder`, PyTorch.
+* **What It Has**: `CrossEncoderReranker`, `HeuristicReranker`, `_detect_best_device()`, `predict()` synchronous method.
+* **Work It Is Doing**:
+  - Computes full cross-attention interaction scores between query and candidate snippets.
+  - **macOS CPU Optimization**: On Apple Silicon (macOS), explicitly selects CPU over MPS for `ms-marco-MiniLM-L-6-v2` because the lightweight 6-layer model executes in **~80ms** on CPU, completely avoiding the 10–15 second Metal shader compilation lag and GPU buffer synchronization overhead of MPS.
+  - **Synchronous Pair Scoring**: Provides `predict(pairs: list[tuple[str, str]]) -> list[float]` for zero-overhead batch scoring in timeline verification and retrieval nodes.
+  - **Graceful Fallback**: Automatically degrades to `HeuristicReranker` if PyTorch or sentence-transformers dependencies are unavailable.
+* **Important Tools / Frameworks**: `sentence_transformers.CrossEncoder`, PyTorch, AsyncIO threadpool execution.
 * **LLM / VLM / Embedding Models**: `cross-encoder/ms-marco-MiniLM-L-6-v2`.
 
 ##### [`backend/app/retrieval/coverage_analyzer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/coverage_analyzer.py)
