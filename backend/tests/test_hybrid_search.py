@@ -126,3 +126,77 @@ class TestHybridSearch:
         # Both article 1 and article 2 appear in vector and keyword results
         assert results[0].vector_rank is not None
         assert results[0].keyword_rank is not None
+
+    @pytest.mark.asyncio
+    async def test_reranker_candidates_capped_at_20(self) -> None:
+        """Verify second-stage neural reranker receives at most 20 candidates."""
+        from app.retrieval.reranker import CrossEncoderReranker
+
+        mock_reranker = MagicMock(spec=CrossEncoderReranker)
+        mock_reranker.rerank = AsyncMock(return_value=[])
+
+        mock_session_factory = MagicMock()
+        mock_db = MagicMock()
+        mock_session_factory.return_value.__aenter__.return_value = mock_db
+
+        # Generate 35 mock articles
+        articles = [
+            MagicMock(
+                id=i,
+                headline=f"Headline {i}",
+                subheadline=None,
+                byline_author="Author",
+                section="General",
+                article_type="news",
+                prominence_score=0.5,
+                summary=f"Summary {i}",
+                full_text=f"Full text {i}",
+                issue=MagicMock(issue_date="2026-08-21", newspaper=MagicMock(name="Daily News")),
+                pages=[MagicMock(page_number=1)],
+                article_pages=[],
+                photos=[],
+                category=None,
+            )
+            for i in range(1, 36)
+        ]
+
+        mock_db_res = MagicMock()
+        mock_db_res.scalars.return_value.all.return_value = articles
+        mock_db.execute = AsyncMock(return_value=mock_db_res)
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.search = AsyncMock(
+            return_value=[
+                VectorSearchResult(
+                    id=f"v{i}",
+                    score=0.9,
+                    payload={"headline": f"A{i}"},
+                    article_id=i,
+                )
+                for i in range(1, 36)
+            ]
+        )
+
+        engine = HybridSearchEngine(
+            session_factory=mock_session_factory,
+            qdrant=mock_qdrant,
+            embed_provider=MockEmbedProvider(),
+            reranker=mock_reranker,
+        )
+        engine._ft_search.search = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        await engine.search("test query", top_k=10, rerank=True)
+
+        assert mock_reranker.rerank.called
+        call_kwargs = mock_reranker.rerank.call_args.kwargs
+        candidates_passed = call_kwargs["candidates"]
+        assert len(candidates_passed) <= 20
+
+    def test_reranker_device_detection_prefers_cpu_on_macos(self) -> None:
+        """Verify _detect_best_device chooses CPU over MPS for CrossEncoder throughput."""
+        from app.retrieval.reranker import _detect_best_device
+
+        device = _detect_best_device()
+        # On macOS without CUDA, device should strictly be cpu, never mps
+        assert device in ("cpu", "cuda")
+        assert device != "mps"

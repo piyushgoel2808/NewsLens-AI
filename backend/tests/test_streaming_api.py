@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.agent.planner import PlanResult, PlannedToolCall
+from app.agent.planner import PlannedToolCall, PlanResult
 from app.api.main import create_app
 from app.retrieval.hybrid_search import HybridSearchResult
 
@@ -187,4 +187,89 @@ async def test_stream_query_with_exclusion_phrase_in_history() -> None:
             )
             assert response.status_code == 200
             assert "event: done" in response.text
+
+
+@pytest.mark.asyncio
+async def test_stream_query_empty_answer_preserves_archetype_in_fallback() -> None:
+    app = create_app()
+
+    mock_session_factory = MagicMock()
+    mock_db = MagicMock()
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+    mock_session_factory.return_value.__aenter__.return_value = mock_db
+
+    # Model produces reasoning but 0 answer chunks
+    async def mock_stream_gen(*args: Any, **kwargs: Any) -> AsyncIterator[str]:
+        yield "<think>\nDeep comparative analysis across broadsheet archives...\n</think>\n\n"
+
+    mock_plan = PlanResult(
+        archetype="cross_newspaper_comparison",
+        reasoning="Comparative query.",
+        tool_calls=[
+            PlannedToolCall(
+                tool_name="hybrid_search",
+                arguments={"query": "health news", "top_k": 6},
+                purpose="Compare health",
+            )
+        ],
+    )
+
+    with (
+        patch("app.api.routers.query.get_session_factory", return_value=mock_session_factory),
+        patch("app.agent.planner.QueryPlanner.plan_query_async", new_callable=AsyncMock, return_value=mock_plan),
+        patch("app.agent.graph.HybridSearchEngine.search", new_callable=AsyncMock) as mock_search,
+        patch(
+            "app.agent.synthesizer.AnswerSynthesizer.synthesize_stream",
+            side_effect=mock_stream_gen,
+        ),
+    ):
+        mock_search.return_value = [
+            HybridSearchResult(
+                article_id=1,
+                headline="Hospital Wing Opened",
+                subheadline=None,
+                byline_author="Staff",
+                section="Health",
+                article_type="news",
+                prominence_score=0.9,
+                rrf_score=0.03,
+                vector_rank=1,
+                keyword_rank=1,
+                snippet="Modern hospital opened in state.",
+                newspaper_name="The Goan",
+                issue_date="2026-08-01",
+                pages=[1],
+            ),
+            HybridSearchResult(
+                article_id=2,
+                headline="Clinic Subsidies Given",
+                subheadline=None,
+                byline_author="Staff",
+                section="Health",
+                article_type="news",
+                prominence_score=0.9,
+                rrf_score=0.03,
+                vector_rank=1,
+                keyword_rank=1,
+                snippet="Clinics received new medical funds.",
+                newspaper_name="The Morning Standard",
+                issue_date="2026-08-01",
+                pages=[5],
+            ),
+        ]
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/query/stream",
+                json={"query": "COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news"},
+            )
+            assert response.status_code == 200
+            assert "event: done" in response.text
+            # The fallback must preserve archetype and render the comparison matrix, NOT single paper
+            assert "Comparison" in response.text and "Matrix" in response.text
+            assert "The Goan" in response.text
+            assert "The Morning Standard" in response.text
+
 

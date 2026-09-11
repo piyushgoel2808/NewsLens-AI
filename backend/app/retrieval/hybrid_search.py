@@ -406,8 +406,9 @@ class HybridSearchEngine:
             )
 
         # Second-Stage Neural Reranking:
-        # Pass candidate pool into CrossEncoder to compute interaction scores and extract Top K
+        # Pass capped candidate pool into CrossEncoder to compute interaction scores and extract Top K
         if rerank and final_results:
+            max_rerank_candidates = min(len(final_results), 20)
             candidates_data = [
                 {
                     "result_obj": r,
@@ -416,7 +417,7 @@ class HybridSearchEngine:
                     "rrf_score": r.rrf_score,
                     "prominence_score": r.prominence_score,
                 }
-                for r in final_results
+                for r in final_results[:max_rerank_candidates]
             ]
             reranked_data = await self._reranker.rerank(
                 query=query,

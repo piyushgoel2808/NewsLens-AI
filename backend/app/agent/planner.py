@@ -81,6 +81,10 @@ Output: {"thought_process": "Relational catalog query for health articles in The
 
 Query: "Compare all available newspapers dated 1/8/2026 on health related news"
 Output: {"thought_process": "Cross-newspaper domain comparison on health. First fetch SQL manifest for all newspapers on that date, then retrieve comparative excerpts.", "archetype": "cross_newspaper_comparison", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"issue_date": "2026-08-01", "category_filter": "Health", "analysis_type": "issue_summary", "query": "health related news"}, "purpose": "Fetch complete manifest of health articles across all newspapers"}, {"tool_name": "hybrid_search", "arguments": {"query": "health related news", "category_filter": "Health", "date_from": "2026-08-01", "date_to": "2026-08-01", "top_k": 12}, "purpose": "Retrieve comparative excerpts across broadsheet editions"}]}
+
+### ⚡ REASONING & OUTPUT INSTRUCTIONS
+- Keep internal chain-of-thought concise (<80 words).
+- You MUST respond with a valid JSON object matching the required schema. Return only the JSON object, with no markdown fences or conversational text.
 """
 
 
@@ -175,7 +179,7 @@ class QueryPlanner:
                     messages=messages,
                     response_schema=AgentPlan.model_json_schema(),
                     temperature=0.0,
-                    max_tokens=1024,
+                    max_tokens=2048,
                 )
 
                 parsed_dict = resp.parsed if isinstance(resp.parsed, dict) else self._parse_json_plan(resp.text)
@@ -188,6 +192,10 @@ class QueryPlanner:
                         active_issue_date=active_issue_date,
                         active_newspapers=active_newspapers,
                     )
+                logger.warning(
+                    "Provider returned unparseable plan output, attempting failover candidate",
+                    extra={"provider": getattr(provider, "provider_name", ""), "raw": (resp.text or "")[:150]},
+                )
             except Exception as ex:
                 logger.warning(
                     "LLM Agentic Planning attempt failed on provider, trying failover candidate",

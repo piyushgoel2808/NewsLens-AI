@@ -418,7 +418,7 @@ class TimelineBuilder:
                 ]
                 scores = reranker.predict(candidate_pairs)
                 verified_articles = []
-                for a, sc in zip(articles, scores):
+                for a, sc in zip(articles, scores, strict=False):
                     if sc >= 0.15:  # Retain verified storyline-relevant documents
                         verified_articles.append(a)
                 if verified_articles:

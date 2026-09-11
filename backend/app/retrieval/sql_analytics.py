@@ -73,6 +73,14 @@ def sanitize_headline(
     byline = (byline_author or "").strip() or None
     sub = (subheadline or "").strip()
     snip = (snippet or "").strip()
+    if snip:
+        snip = re.sub(r"\[Newspaper:.*?\]\s*", "", snip, flags=re.IGNORECASE)
+        snip = re.sub(r"\[Page\(s\):.*?\]\s*", "", snip, flags=re.IGNORECASE)
+        snip = re.sub(r"\[Exact Chunk Match\]:?\s*", "", snip, flags=re.IGNORECASE)
+        snip = re.sub(r"\[Visual Data Asset:.*?\]\s*", "", snip, flags=re.IGNORECASE)
+        snip = re.sub(r"\[Article Parent Context\]:?\s*", "", snip, flags=re.IGNORECASE)
+        snip = re.sub(r"\[📷\s*Attached Image/Photo:.*?\]\s*", "", snip, flags=re.IGNORECASE)
+        snip = re.sub(r"^[\<\#\s\.\,\-]+", "", snip).strip()
 
     # 1. Detect Doctor / Expert name box as headline (e.g. 'Dr. Smriti Naswa Singh')
     if re.match(r"^(?:Dr\.?|Doctor|Prof\.?|Professor)\s+[A-Z]", hl, re.IGNORECASE):
@@ -496,6 +504,24 @@ class SQLAnalyticsEngine:
                         for kw in kw_cluster
                         if len(kw) >= 3
                     )
+
+                    # Domain noise filter: Discard obvious event listings, ads, court notices, or tax stories from Health manifests
+                    if (
+                        any("health" in tc.lower() for tc in target_canons)
+                        and any(
+                            noise_pat in hl_sub
+                            for noise_pat in [
+                                "when: ", "where: ", "studio xo", "cases still pending",
+                                "[advertisement]", "sit vacant", "excise duty", "tax revenue",
+                                "indirect taxes", "net tax collections", "cricket", "hockey"
+                            ]
+                        )
+                        and not any(
+                            h_pat in hl_sub
+                            for h_pat in ["health", "hospital", "doctor", "medicine", "disease", "patient", "clinic"]
+                        )
+                    ):
+                        continue
 
                     if (structured_match or keyword_match) and m_id not in matched_ids:
                         matched.append(m)

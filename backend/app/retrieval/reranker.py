@@ -12,13 +12,16 @@ logger = get_logger(__name__)
 
 
 def _detect_best_device() -> str:
-    """Detect available compute accelerator (MPS on macOS, CUDA on Linux/Windows, or CPU)."""
+    """Detect available compute accelerator (CUDA on Linux/Windows, or CPU for optimal MiniLM throughput).
+
+    Note: On macOS, CPU is explicitly preferred over MPS for small CrossEncoder models
+    (ms-marco-MiniLM-L-6-v2) because CPU executes in ~80ms without the 10-15s Metal shader
+    compilation lag and memory synchronization stalls inherent to MPS.
+    """
     try:
         import torch
 
-        if torch.backends.mps.is_available() and torch.backends.mps.is_built():
-            return "mps"
-        elif torch.cuda.is_available():
+        if torch.cuda.is_available():
             return "cuda"
     except Exception:
         pass
@@ -91,6 +94,26 @@ class CrossEncoderReranker:
             )
             return None
 
+    def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+        """Synchronously compute raw cross-encoder relevance scores for query-document pairs."""
+        if not pairs:
+            return []
+        model = self._model or self._load_model_sync()
+        if model is not None:
+            try:
+                raw_scores = model.predict(pairs, batch_size=32, show_progress_bar=False)
+                return [float(s) for s in raw_scores]
+            except Exception as ex:
+                logger.warning("CrossEncoder predict failed, falling back to heuristic", extra={"error": str(ex)})
+        # Heuristic fallback score calculation
+        results: list[float] = []
+        for q, doc in pairs:
+            q_tokens = set(re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", q.lower()))
+            d_tokens = set(re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", doc.lower()))
+            overlap = len(q_tokens.intersection(d_tokens))
+            results.append(overlap / max(1, len(q_tokens)))
+        return results
+
     async def _get_model(self) -> Any:
         if self._model is not None:
             return self._model
@@ -126,7 +149,12 @@ class CrossEncoderReranker:
             pairs.append((query, text_context.strip()))
 
         try:
-            scores = await asyncio.to_thread(model.predict, pairs, show_progress_bar=False)
+            scores = await asyncio.to_thread(
+                model.predict,
+                pairs,
+                batch_size=32,
+                show_progress_bar=False,
+            )
             scored: list[tuple[float, dict[str, Any]]] = []
             for score, cand in zip(scores, candidates, strict=False):
                 cand_copy = dict(cand)

@@ -406,6 +406,21 @@ class TestAnswerSynthesizer:
         context = synth._build_evidence_context(evidence)
         assert "Skin Cancer Prevention Tips" in context
 
+    def test_sanitize_headline_with_chunk_markers_in_snippet(self) -> None:
+        """Verify sanitize_headline strips chunk match and visual markers before using snippet."""
+        from app.retrieval.sql_analytics import sanitize_headline
+
+        hl, byline = sanitize_headline(
+            headline="Dr. Smriti Naswa Singh",
+            subheadline="",
+            byline_author="Dr. Smriti Naswa Singh",
+            snippet="[Exact Chunk Match]:\n[Visual Data Asset: Infographic]\nProtecting your skin from UV rays is critical in summer.",
+        )
+        assert hl != "[Exact Chunk Match]:"
+        assert "[Visual Data Asset" not in hl
+        assert "Protecting your skin from UV rays is critical in summer" in hl
+        assert "Dr. Smriti Naswa Singh" in (byline or "")
+
     @pytest.mark.asyncio
     async def test_deterministic_summary_preserves_cross_newspaper_archetype(self) -> None:
         """Verify fallback deterministic summary preserves cross_newspaper_comparison matrix format."""
@@ -468,6 +483,128 @@ class TestAnswerSynthesizer:
             query="COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news",
         )
         assert "Orthopedic Clinic" in context
+
+    def test_deterministic_summary_excludes_issue_manifest_and_cleans_chunks(self) -> None:
+        """Verify _generate_deterministic_summary suppresses manifests from facts/perspectives and cleans chunk tags."""
+        synth = AnswerSynthesizer()
+        evidence = [
+            {
+                "article_id": 1,
+                "headline": "Issue Manifest: The Goan (2026-08-01)",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+                "pages": [1],
+                "snippet": "=== RELATIONAL ARCHIVE MANIFEST FOR The Goan (2026-08-01) ===",
+            },
+            {
+                "article_id": 2,
+                "headline": "Issue Manifest: The Morning Standard (2026-08-01)",
+                "newspaper_name": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "pages": [1],
+                "snippet": "=== RELATIONAL ARCHIVE MANIFEST FOR The Morning Standard (2026-08-01) ===",
+            },
+            {
+                "article_id": 3,
+                "headline": "Cholangitis (Bile duct infection)",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+                "pages": [11],
+                "snippet": "[Exact Chunk Match]: [Visual Data Asset: Infographic] The infographic illustrates liver and gallbladder anatomy.",
+            },
+            {
+                "article_id": 4,
+                "headline": "Pharma Subsidies Approved",
+                "newspaper_name": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "pages": [4],
+                "snippet": "[Exact Chunk Match]: [📷 Attached Image/Photo: Subsidies] Ministry announced new medicine incentives.",
+            },
+        ]
+        text = synth._generate_deterministic_summary(
+            query="COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news",
+            evidence_items=evidence,
+            archetype="cross_newspaper_comparison",
+        )
+
+        assert "Comparison Matrix" in text
+        # Manifests should never appear as headlines or facts in user-facing brief
+        assert "Issue Manifest:" not in text
+        assert "[Exact Chunk Match]" not in text
+        assert "[Visual Data Asset" not in text
+        assert "[📷" not in text
+        # Real articles must be highlighted
+        assert "Cholangitis" in text
+        assert "Pharma Subsidies Approved" in text
+        assert "Emphasized 'Cholangitis (Bile duct infection)'" in text
+        assert "Emphasized 'Pharma Subsidies Approved'" in text
+
+    def test_deterministic_summary_zero_coverage_publication_handling(self) -> None:
+        """Verify publication with 0 domain articles is marked as having no standalone reporting, not filled with noise."""
+        synth = AnswerSynthesizer()
+        evidence = [
+            {
+                "article_id": 1,
+                "headline": "Lifestyle changes for healthy heart",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+                "pages": [3],
+                "snippet": "Doctors emphasize diet and exercise for cardiovascular wellness.",
+            },
+            {
+                "article_id": 2,
+                "headline": "WHEN: August 8, 9 pm WHERE: Studio XO, Noida",
+                "newspaper_name": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "pages": [2],
+                "snippet": "Live concert tickets are on sale.",
+            },
+            {
+                "article_id": 3,
+                "headline": "Cases still pending in designated courts",
+                "newspaper_name": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "pages": [5],
+                "snippet": "Judicial bench reviewed trial delays.",
+            },
+        ]
+        text = synth._generate_deterministic_summary(
+            query="COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news",
+            evidence_items=evidence,
+            archetype="cross_newspaper_comparison",
+        )
+
+        assert "The Goan" in text
+        assert "Lifestyle changes for healthy heart" in text
+        # Studio XO and Cases pending must be rejected by domain purity
+        assert "Studio XO" not in text
+        assert "Cases still pending" not in text
+        # The Morning Standard should explicitly state zero coverage
+        assert "No standalone Health & Medicine reporting" in text
+        assert "Carried no standalone Health & Medicine reporting in this edition" in text
+        assert "- **The Morning Standard**: Carried no dedicated Health & Medicine reports in this issue." in text
+        # Executive summary must never copy the user's raw prompt
+        assert "COMPARE ALL THE NEWSPAPER" not in text
+
+    def test_system_prompt_excludes_hardcoded_tax_example(self) -> None:
+        """Verify prompt does not contain hardcoded Section 80C CBDT tax citation example."""
+        synth = AnswerSynthesizer()
+        prompt_comp = synth._build_synthesizer_system_prompt(
+            archetype="cross_newspaper_comparison",
+            query="COMPARE ALL THE NEWSPAPER AVALABLE DATED 1/8/2026 on health related news",
+        )
+        assert "Section 80C" not in prompt_comp
+        assert "Direct Tax Compliance" not in prompt_comp
+        assert "Over 4.5 lakh taxpayers" not in prompt_comp
+
+        prompt_cat = synth._build_synthesizer_system_prompt(
+            archetype="article_catalog",
+            query="list all health articles",
+        )
+        assert "Section 80C" not in prompt_cat
+        assert "Direct Tax Compliance" not in prompt_cat
+        assert "Over 4.5 lakh taxpayers" not in prompt_cat
+
 
 
 

@@ -5,16 +5,6 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-REASONING_START_REGEX = re.compile(
-    r"^\s*(?:<think>|Here'?s a thinking process:?|Thinking Process:?|Thought:?)",
-    re.IGNORECASE,
-)
-
-ANSWER_TRANSITION_REGEX = re.compile(
-    r"\n\s*(?:#{1,4}\s+|Draft:\s*\n|Executive Summary:?\s*\n|Summary:\s*\n)",
-    re.IGNORECASE,
-)
-
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -35,6 +25,16 @@ from app.agent.synthesizer import parse_thought_and_answer
 from app.models.base import get_db, get_session_factory
 from app.models.query import QueryLog
 from app.retrieval.timeline_builder import NarrativeTrajectoryResponse, TimelineBuilder
+
+REASONING_START_REGEX = re.compile(
+    r"^\s*(?:<think>|Here'?s a thinking process:?|Thinking Process:?|Thought:?)",
+    re.IGNORECASE,
+)
+
+ANSWER_TRANSITION_REGEX = re.compile(
+    r"\n\s*(?:#{1,4}\s+|Draft:\s*\n|Executive Summary:?\s*\n|Summary:\s*\n)",
+    re.IGNORECASE,
+)
 
 router = APIRouter(prefix="/api/query", tags=["query"])
 
@@ -339,7 +339,7 @@ async def stream_query(
         # Robust recovery for reasoning models where answer may be trapped inside <think> or scratchpad
         full_thought_final = "".join(think_chunks).strip()
         if not answer_chunks:
-            combined_raw = full_thought_final
+            combined_raw = f"<think>\n{full_thought_final}\n</think>" if full_thought_final else ""
             parsed_thought, parsed_ans = parse_thought_and_answer(combined_raw)
             t_dur = round(time.monotonic() - (think_start_time or t0), 1)
             if parsed_ans.strip():
@@ -352,7 +352,9 @@ async def stream_query(
             else:
                 # If cannot separate or model only produced scratchpad / repetition loop,
                 # synthesize clean deterministic grounded brief so UI is never blank or corrupted
-                fallback_summary = workflow._synthesizer._generate_deterministic_summary(query, evidence)
+                fallback_summary = workflow._synthesizer._generate_deterministic_summary(
+                    query, evidence, archetype=effective_archetype
+                )
                 full_thought = full_thought_final
                 done_th = json.dumps({"thought": full_thought, "duration_sec": t_dur})
                 yield f"event: thought_done\ndata: {done_th}\n\n"
