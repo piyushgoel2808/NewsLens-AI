@@ -323,7 +323,8 @@ PRICING_FINANCE_REGEX = re.compile(
     r"(?i)\b(?:starting\s*at|starts\s*at|special\s*offer|limited\s*period\s*offer|"
     r"inaugural\s*offer|flat\s*\d+%\s*off|save\s*up\s*to|price\s*inclusive\s*of|"
     r"down\s*payment|no\s*cost\s*emi|easy\s*emi|zero\s*processing\s*fee|exchange\s*bonus|"
-    r"exchange\s*value|cashback\s*up\s*to|t&c\s*apply|terms\s*(?:and|&)\s*conditions\s*apply)\b"
+    r"exchange\s*value|cashback\s*up\s*to|t&c\s*apply|terms\s*(?:and|&)\s*conditions\s*apply|"
+    r"smarter\s*steels?(?:\s*for\s*people\s*and\s*planet)?)\b"
 )
 
 REAL_ESTATE_AUTO_REGEX = re.compile(
@@ -504,11 +505,18 @@ def check_is_advertisement_text(text: str, word_count: int | None = None) -> boo
     if editorial_hits >= 3 and w_count >= 350:
         return ad_score >= 6.0
 
-    # 5. Short marketing / retail pages (< 250 words)
+    # 5. Short commercial snippets or slogans (< 50 words) with high density or pricing/tagline phrases
+    if w_count < 50 and (
+        (commercial_density >= 0.20 and ad_score >= 2.0)
+        or bool(PRICING_FINANCE_REGEX.search(norm_text) and not editorial_hits)
+    ):
+        return True
+
+    # 6. Short marketing / retail pages (< 250 words)
     if w_count < 250 and ad_score >= 3.0:
         return True
 
-    # 6. Standard commercial confidence threshold
+    # 7. Standard commercial confidence threshold
     return ad_score >= 4.5
 
 

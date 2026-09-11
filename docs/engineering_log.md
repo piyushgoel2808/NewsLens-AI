@@ -3164,4 +3164,50 @@ Following the proven decomposition patterns of **Phase 9.23** (`planner.py`) and
 - **Full Backend Test Suite**: **418/418 tests passing (100% green)** in 23.65s.
 - **Frontend Production Build**: `npm run build` completed in 961ms with 0 errors.
 
+---
+
+## Phase 10 — False-Positive Advertisement Remediation, Hallucinated Date Pruning & Geopolitical Retrieval
+
+**Date**: 2026-09-11
+**Status**: Completed ✅
+
+### Problem Diagnosis & Root Cause
+When querying specific analytical articles (such as `"The growing bipolarity in the world complicates the ability of Brics-like groupings to push for a radical Global South agenda"`):
+1. **False-Positive Advertisement Matching**:
+   - In `backend/app/ingestion/tasks.py:99` and `page_reingestion.py:65`, a naive helper `check_is_advertisement_text` matched substring `"ipo"` inside `"bipolarity"` (`b-ipo-larity`) and `"bipolar"`.
+   - Affected editorial articles (Article `42245` on BRICS/multipolarity and 118 other business/policy/opinion stories) were marked as `[Advertisement]`, assigned `article_type = "advertisement"`, and completely excluded from vector chunking and Qdrant indexing.
+2. **Hallucinated Date Ranges & Category Filters**:
+   - The LLM query planner hallucinated date ranges (`date_from: 2020-01-01`, `date_to: 2022-12-31`) and `category_filter: "Politics"`.
+   - `tool_factory.py:reconcile_and_sanitize_arguments` sanitized `issue_date`, but failed to sanitize `date_from`, `date_to`, `target_date`, or unprompted `category_filter`.
+   - As a result, the 2026 edition was filtered out, returning 0 results from `hybrid_search`.
+3. **Missing Geopolitical Taxonomy**:
+   - `DOMAIN_TAXONOMY` lacked a dedicated entry for `World & Geopolitics` (international relations, BRICS, multipolarity, global south, foreign policy), defaulting domain detection to None.
+
+### Architectural Solutions & Implementations
+1. **Ingestion Advertisement Detection Overhaul (`tasks.py` & `page_reingestion.py`)**:
+   - Replaced naive local `check_is_advertisement_text` with the multi-signal, regex-word-boundary detector from `app.ingestion.detector`.
+   - Added editorial safety guardrails: articles with verified bylines or journalistic long-form content (>= 300 words) without explicit ad headers are protected from being misclassified as advertisements.
+   - Enhanced `detector.py` to identify marketing slogans and high-density commercial snippets while strictly isolating editorial content.
+2. **Date & Category Pruning in Agent Tool Factory (`tool_factory.py` & `planner.py`)**:
+   - In `reconcile_and_sanitize_arguments`:
+     - Prunes hallucinated `date_from`, `date_to`, and `target_date` if the user prompt does not specify dates/years and they do not match the active issue date, allowing archive-wide search.
+     - Prunes hallucinated `category_filter` if not present in the user query.
+   - In `PLANNER_SYSTEM_PROMPT`: Added strict `CRITICAL DATE RESTRAINT` and `ARCHETYPE SELECTION` guidelines.
+3. **Geopolitical Domain Taxonomy Expansion (`taxonomy.py`)**:
+   - Added `"World & Geopolitics"` domain with comprehensive regex patterns and keywords (`geopolitics`, `brics`, `multipolarity`, `bipolarity`, `global south`, `foreign policy`, `diplomacy`, `summit`, `g7`, `g20`).
+4. **Synthesis Deduplication (`synthesizer.py`)**:
+   - Added `deduplicate_repetitive_lines` to filter out cyclical repeating bullet points from smaller local LLMs.
+5. **Universal Database Remediation (`scripts/remediate_false_positive_ads.py`)**:
+   - Scanned all articles in MySQL; remediated 119 falsely classified articles.
+   - Stripped `[Advertisement] ` prefix, reset `article_type = "news"`, generated chunks via `NewspaperChunker`, and embedded 231 vector points into Qdrant collection `newslens_articles`.
+   - Article `42245` (*Hindustan Times*, 2026-09-10, Page 4, by Roshan Kishore) is now fully indexed and retrievable.
+
+### Verification Results
+- **Full Backend Test Suite**: **418/418 passed (100% green)** in 25.27s.
+- **Detector & Planner Tests**: 41/41 passed.
+- **End-to-End Retrieval Verification**:
+  - Query: `"The growing bipolarity in the world complicates the ability of Brics-like groupings to push for a radical Global South agenda"`
+  - Retrieved Article `42245` as rank #1 with cross-encoder score `9.9215`.
+  - Synthesized structured brief correctly citing *Hindustan Times* (p.4) with zero duplicate bullet points and accurate bounding boxes.
+
 

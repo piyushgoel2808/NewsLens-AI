@@ -119,7 +119,32 @@ def parse_thought_and_answer(text: str) -> tuple[str, str]:
         text.strip(),
     ).strip()
 
+    ans_text = deduplicate_repetitive_lines(ans_text)
     return "", ans_text
+
+
+def deduplicate_repetitive_lines(text: str) -> str:
+    """Deduplicate cyclical or repeating bullet points/lines from local LLM generation."""
+    if not text:
+        return ""
+    lines = text.split("\n")
+    if len(lines) < 4:
+        return text
+
+    deduped: list[str] = []
+    seen_bullets: set[str] = set()
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("*", "-", "•")):
+            norm = re.sub(r"\[.*?\]", "", stripped).strip().lower()
+            if len(norm) > 15:
+                if norm in seen_bullets:
+                    continue
+                seen_bullets.add(norm)
+        deduped.append(line)
+
+    return "\n".join(deduped)
 
 
 # ---------------------------------------------------------------------------

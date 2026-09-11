@@ -102,7 +102,7 @@ def reconcile_and_sanitize_arguments(
             elif extracted.get("source_newspaper"):
                 sanitized["source_newspaper"] = extracted["source_newspaper"]
 
-    # 2. Issue Date Ground Truth & Active Context Retention
+    # 2. Issue Date & Date Range Ground Truth & Active Context Retention
     valid_dates: list[str] = (
         extracted.get("target_dates")
         or ([extracted["issue_date"]] if extracted.get("issue_date") else [])
@@ -114,21 +114,45 @@ def reconcile_and_sanitize_arguments(
         else:
             is_active_date = bool(active_issue_date) and str(sanitized["issue_date"]).strip() == str(active_issue_date).strip()
             if not is_active_date:
-                d_parts = str(sanitized["issue_date"]).split("-")
+                d_parts = [p for p in str(sanitized["issue_date"]).split("-") if len(p) >= 2]
                 if not any(part in query for part in d_parts):
                     sanitized.pop("issue_date", None)
 
-    # 3. Page Filter Ground Truth
+    for d_key in ("date_from", "date_to", "target_date"):
+        if sanitized.get(d_key):
+            d_val = str(sanitized[d_key]).strip()
+            if valid_dates:
+                if d_key == "target_date" and d_val not in valid_dates:
+                    sanitized[d_key] = valid_dates[0]
+            else:
+                is_active_date = bool(active_issue_date) and d_val == str(active_issue_date).strip()
+                if not is_active_date:
+                    d_parts = [p for p in d_val.split("-") if len(p) >= 2]
+                    if not any(part in query for part in d_parts):
+                        sanitized.pop(d_key, None)
+
+    # 3. Category Filter Ground Truth
+    if sanitized.get("category_filter"):
+        cat_val = str(sanitized["category_filter"]).strip().lower()
+        valid_cat = extracted.get("category_filter")
+        if valid_cat:
+            sanitized["category_filter"] = valid_cat
+        else:
+            cat_tokens = [w for w in re.split(r"[^a-zA-Z0-9]+", cat_val) if len(w) >= 4]
+            if not any(tok in q_lower for tok in cat_tokens):
+                sanitized.pop("category_filter", None)
+
+    # 4. Page Filter Ground Truth
     if sanitized.get("page_filter") is not None:
         p_val = str(sanitized["page_filter"]).strip()
         if not re.search(rf"\bpage\s*{re.escape(p_val)}\b|\bp\.?\s*{re.escape(p_val)}\b", query, re.I):
             sanitized.pop("page_filter", None)
 
-    # 4. Issue ID Ground Truth
+    # 5. Issue ID Ground Truth
     if extracted.get("issue_id") is not None and "issue_id" not in sanitized:
         sanitized["issue_id"] = extracted["issue_id"]
 
-    # 5. Generic Filler Query Sanitization
+    # 6. Generic Filler Query Sanitization
     if "query" in sanitized and sanitized["query"]:
         sanitized["query"] = sanitize_generic_filler_query(
             query=query,

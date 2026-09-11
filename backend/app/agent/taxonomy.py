@@ -74,6 +74,17 @@ DOMAIN_TAXONOMY: dict[str, dict[str, Any]] = {
         "negative_hl": [],
         "required_override": [],
     },
+    "World & Geopolitics": {
+        "regex": r"\b(geopolitic(?:s|al)?|international|global(?:\s+south)?|brics|multipolar(?:ity)?|bipolar(?:ity)?|foreign\s+policy|diplomacy|diplomatic|treaty|\bun\b|united\s+nations|g7|g20|summit)\b",
+        "stems": [
+            "geopolitic", "international", "global", "brics", "multipolar", "bipolar",
+            "foreign policy", "diplomacy", "diplomatic", "treaty", "united nations",
+            "g7", "g20", "summit", "world", "bilateral", "sanctions",
+        ],
+        "metric_col": "Key Geopolitical Developments & Strategic Takeaways",
+        "negative_hl": [],
+        "required_override": [],
+    },
 }
 
 

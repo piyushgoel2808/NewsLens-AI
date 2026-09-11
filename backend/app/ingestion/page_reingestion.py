@@ -29,7 +29,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
-from app.ingestion.detector import PageType, PDFPageDetector
+from app.ingestion.detector import PageType, PDFPageDetector, check_is_advertisement_text
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.layout import (
     ArticleSegmenter,
@@ -60,33 +60,6 @@ from app.storage.minio_store import MinioStore
 from app.storage.qdrant_store import QdrantStore
 
 logger = get_logger(__name__)
-
-
-def check_is_advertisement_text(text: str) -> bool:
-    """Detect if text has strong advertising or commercial markers."""
-    t_lower = text.lower()
-    ad_keywords = [
-        "advertisement",
-        "ad vt",
-        "public notice",
-        "classified",
-        "tender notice",
-        "e-tender",
-        "terms & conditions apply",
-        "t&c apply",
-        "all rights reserved",
-        "visit our website",
-        "www.",
-        "http://",
-        "https://",
-        "call now",
-        "toll free",
-        "limited period offer",
-        "smarter steels",
-        "net zero steel",
-        "anniversary",
-    ]
-    return any(kw in t_lower for kw in ad_keywords)
 
 
 class PageReingestionService:
@@ -450,11 +423,20 @@ class PageReingestionService:
                 printed_section=assembled.printed_section,
             )
 
-            is_ad = (
-                class_res.article_type == "advertisement"
-                or assembled.headline.startswith(("[Advertisement]", "[Public Notice]"))
-                or check_is_advertisement_text(assembled.full_text)
+            is_explicit_ad = assembled.headline.startswith(("[Advertisement]", "[Public Notice]"))
+            full_txt = assembled.full_text or ""
+            text_is_ad = check_is_advertisement_text(full_txt)
+            has_editorial_protection = (
+                bool(assembled.byline_author and assembled.byline_author.strip())
+                or (len(full_txt.split()) >= 300 and class_res.article_type != "advertisement")
             )
+
+            if is_explicit_ad:
+                is_ad = True
+            elif has_editorial_protection:
+                is_ad = False
+            else:
+                is_ad = (class_res.article_type == "advertisement" or text_is_ad)
 
             clean_hl = (assembled.headline or "")[:1024]
             if is_ad and not clean_hl.startswith(("[Advertisement]", "[Public Notice]")):

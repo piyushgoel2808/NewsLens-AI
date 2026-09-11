@@ -30,7 +30,7 @@ from app.core.logging import get_logger
 from app.ingestion.celery_app import celery_app
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
-from app.ingestion.detector import PDFPageDetector
+from app.ingestion.detector import PDFPageDetector, check_is_advertisement_text
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.layout import (
     ArticleSegmenter,
@@ -94,17 +94,6 @@ def detect_masthead_and_date(blocks: Sequence[Any], height_px: float) -> tuple[s
                             detected_date = parsed
                             break
     return detected_brand, detected_date
-
-
-def check_is_advertisement_text(text: str) -> bool:
-    """Fast check for ad keywords in text."""
-    lower = text.lower()
-    ad_kws = (
-        "advertisement", "advertorial", "special feature", "public notice",
-        "tender notice", "ipo", "red herring", "terms and conditions apply",
-        "t&c apply", "statutory notice"
-    )
-    return any(kw in lower for kw in ad_kws)
 
 
 async def run_ingestion_pipeline(
@@ -509,11 +498,20 @@ async def run_ingestion_pipeline(
                 printed_section=assembled.printed_section,
             )
 
-            is_ad = (
-                class_res.article_type == "advertisement"
-                or assembled.headline.startswith(("[Advertisement]", "[Public Notice]"))
-                or check_is_advertisement_text(assembled.full_text)
+            is_explicit_ad = assembled.headline.startswith(("[Advertisement]", "[Public Notice]"))
+            full_txt = assembled.full_text or ""
+            text_is_ad = check_is_advertisement_text(full_txt)
+            has_editorial_protection = (
+                bool(assembled.byline_author and assembled.byline_author.strip())
+                or (len(full_txt.split()) >= 300 and class_res.article_type != "advertisement")
             )
+
+            if is_explicit_ad:
+                is_ad = True
+            elif has_editorial_protection:
+                is_ad = False
+            else:
+                is_ad = (class_res.article_type == "advertisement" or text_is_ad)
 
             primary_page_id = page_id_map.get(assembled.primary_page_number)
             clean_hl = (assembled.headline or "")[:1024]
