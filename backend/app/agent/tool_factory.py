@@ -51,29 +51,72 @@ def reconcile_and_sanitize_arguments(
     q_lower = query.lower()
 
     # 1. Newspaper Brand Ground Truth & Active Context Retention
-    if extracted.get("newspaper_name"):
-        if sanitized.get("newspaper_name") and sanitized["newspaper_name"] != extracted["newspaper_name"]:
-            sanitized["newspaper_name"] = extracted["newspaper_name"]
-    elif sanitized.get("newspaper_name"):
-        is_active_brand = (
-            bool(active_newspapers)
-            and any(str(sanitized["newspaper_name"]).strip().lower() == str(an).strip().lower() for an in (active_newspapers or []))
-        )
-        if not is_active_brand:
-            brand_tokens = [w.lower() for w in str(sanitized["newspaper_name"]).split() if w.lower() not in {"the", "of", "and"}]
-            if not any(tok in q_lower for tok in brand_tokens):
-                sanitized.pop("newspaper_name", None)
+    valid_brands: list[str] = (
+        extracted.get("target_newspapers")
+        or ([extracted["newspaper_name"]] if extracted.get("newspaper_name") else [])
+    )
+    if sanitized.get("newspaper_name"):
+        sn_lower = str(sanitized["newspaper_name"]).strip().lower()
+        if valid_brands:
+            matched_valid = next(
+                (b for b in valid_brands if b.lower() == sn_lower or sn_lower in b.lower() or b.lower() in sn_lower),
+                None,
+            )
+            if matched_valid:
+                sanitized["newspaper_name"] = matched_valid
+            else:
+                sanitized["newspaper_name"] = valid_brands[0]
+        else:
+            is_active_brand = (
+                bool(active_newspapers)
+                and any(sn_lower == str(an).strip().lower() for an in (active_newspapers or []))
+            )
+            if not is_active_brand:
+                brand_tokens = [w.lower() for w in str(sanitized["newspaper_name"]).split() if w.lower() not in {"the", "of", "and"}]
+                if not any(tok in q_lower for tok in brand_tokens):
+                    sanitized.pop("newspaper_name", None)
+
+    # Reconcile comparison_newspaper if present
+    if sanitized.get("comparison_newspaper"):
+        cn_lower = str(sanitized["comparison_newspaper"]).strip().lower()
+        if valid_brands:
+            matched_comp = next(
+                (b for b in valid_brands if b.lower() == cn_lower or cn_lower in b.lower() or b.lower() in cn_lower),
+                None,
+            )
+            if matched_comp:
+                sanitized["comparison_newspaper"] = matched_comp
+            elif extracted.get("comparison_newspaper"):
+                sanitized["comparison_newspaper"] = extracted["comparison_newspaper"]
+
+    # Reconcile source_newspaper if present
+    if sanitized.get("source_newspaper"):
+        src_lower = str(sanitized["source_newspaper"]).strip().lower()
+        if valid_brands:
+            matched_src = next(
+                (b for b in valid_brands if b.lower() == src_lower or src_lower in b.lower() or b.lower() in src_lower),
+                None,
+            )
+            if matched_src:
+                sanitized["source_newspaper"] = matched_src
+            elif extracted.get("source_newspaper"):
+                sanitized["source_newspaper"] = extracted["source_newspaper"]
 
     # 2. Issue Date Ground Truth & Active Context Retention
-    if extracted.get("issue_date"):
-        if sanitized.get("issue_date") and sanitized["issue_date"] != extracted["issue_date"]:
-            sanitized["issue_date"] = extracted["issue_date"]
-    elif sanitized.get("issue_date"):
-        is_active_date = bool(active_issue_date) and str(sanitized["issue_date"]).strip() == str(active_issue_date).strip()
-        if not is_active_date:
-            d_parts = str(sanitized["issue_date"]).split("-")
-            if not any(part in query for part in d_parts):
-                sanitized.pop("issue_date", None)
+    valid_dates: list[str] = (
+        extracted.get("target_dates")
+        or ([extracted["issue_date"]] if extracted.get("issue_date") else [])
+    )
+    if sanitized.get("issue_date"):
+        if valid_dates:
+            if sanitized["issue_date"] not in valid_dates:
+                sanitized["issue_date"] = valid_dates[0]
+        else:
+            is_active_date = bool(active_issue_date) and str(sanitized["issue_date"]).strip() == str(active_issue_date).strip()
+            if not is_active_date:
+                d_parts = str(sanitized["issue_date"]).split("-")
+                if not any(part in query for part in d_parts):
+                    sanitized.pop("issue_date", None)
 
     # 3. Page Filter Ground Truth
     if sanitized.get("page_filter") is not None:

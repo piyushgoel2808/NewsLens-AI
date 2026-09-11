@@ -3068,3 +3068,54 @@ Following the proven decomposition patterns of **Phase 9.23** (`planner.py`) and
 - **Full Backend Test Suite**: **411/411 tests passing (100% green)** in 23.36s.
 - **Static Type Checking**: `mypy backend/app/ingestion/` $\to$ **Success: no issues found in 39 source files**.
 - **Linter**: `ruff check backend/` $\to$ **All checks passed! (0 errors)**.
+
+---
+
+## Phase 9.32 — Multi-Newspaper Tool Reconciliation, Date Drift Protection & Taxonomy Normalization
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Multi-Newspaper Tool Overwriting**:
+   - In `backend/app/agent/tool_factory.py:reconcile_and_sanitize_arguments`, tool calls specifying secondary publications were unconditionally overwritten with the primary extracted newspaper (`extracted["newspaper_name"]`).
+   - For multi-brand queries (e.g. *The Morning Standard* and *The Goan*), all calls planned for *The Goan* were hijacked and sent to *The Morning Standard*, producing duplicate calls for Morning Standard and zero calls for The Goan.
+2. **Silent Date Drift in SQL Analytics**:
+   - In `backend/app/retrieval/sql_analytics.py:list_issue_articles`, Fallback 2 resolved by newspaper name without checking `not issue_date`.
+   - When *The Morning Standard* was queried for `2026-08-02` (which was not published/ingested; only `2026-08-01` exists), Fallback 2 silently returned 12 articles from `2026-08-01` as if they were from `2026-08-02`.
+3. **Ground Truth Discrepancy with Hybrid Search**:
+   - `hybrid_search` strictly enforced vector date boundaries in Qdrant (`date_from="2026-08-02"`, `date_to="2026-08-02"`), returning 0 hits. The mismatch between SQL claiming 12 articles and vector search returning 0 created contradictory telemetry.
+4. **Taxonomy False-Positive Pronoun Collision**:
+   - In `backend/app/core/category_aliases.yaml`, under `category_keywords.Health`, the keyword `- who` (intended for the World Health Organization) matched the ubiquitous English relative pronoun "who".
+   - Articles like *Fishermen await official update*, *Refrain from printing judges' names*, and *Who owns the Constitution?* were falsely classified into Health with `0.63` confidence.
+5. **Multi-Turn Chat History Date Priming**:
+   - In `backend/app/agent/prompt_context.py:build_synthesizer_user_prompt`, `verified_dates` was omitted from prompt boundary instructions.
+   - When earlier turns in the chat history discussed `1/8/2026`, local LLMs (`Llama 3.1 8B`) primed on the previous assistant turn and outputted "dated 1/8/2026" instead of `2/8/2026`.
+
+### Architectural Solutions & Implementations
+1. **Multi-Newspaper Brand Retention (`tool_factory.py`)**:
+   - Updated `reconcile_and_sanitize_arguments` to check `valid_brands = extracted.get("target_newspapers")`.
+   - If the tool argument matches any extracted brand (case-insensitive), it is normalized to that brand and preserved.
+   - Extended to `comparison_newspaper` and `source_newspaper`.
+2. **Issue Resolution Fallback Date Guarding (`sql_analytics.py`)**:
+   - Guarded Fallback 2: `if not issue and newspaper_name and not issue_date:`.
+   - Guarded Fallback 3: `if not issue and issue_date and not newspaper_name:`.
+   - Explicit `(newspaper_name, issue_date)` misses return `{"error": f"No issue found for '{newspaper_name}' on date {issue_date}.", "articles": []}` instead of silently returning another date's edition.
+   - Refined Health category filtering in `list_issue_articles` to eliminate conflicting primary domains (Politics, Entertainment, Crime) unless an explicit medical/health term is in the headline.
+3. **Taxonomy Acronym Normalization (`category_aliases.yaml`)**:
+   - Replaced `- who` with `- world health organization`, `- who guidelines`, and `- who report`.
+   - Replaced ambiguous 2-letter tokens `- ed` with `- ed probe` and `- un` with `- un summit`.
+   - Synchronized database article categories for Issues #94 and #98.
+4. **Strict Date Anchoring (`prompt_context.py`)**:
+   - Extracted `verified_dates` from `evidence_items` in `build_synthesizer_user_prompt`.
+   - Injected explicit target date anchors forbidding models from carrying forward dates from previous conversation turns.
+
+### Test Verification & Quality Gates
+- **New Unit Test Suite**: `backend/tests/test_multi_newspaper_reconciliation.py`:
+  - `test_reconcile_preserves_multiple_valid_newspapers`: **PASSED**
+  - `test_reconcile_preserves_comparison_newspaper`: **PASSED**
+  - `test_taxonomy_who_pronoun_does_not_trigger_health`: **PASSED**
+  - `test_prompt_context_anchors_verified_dates`: **PASSED**
+- **Full Backend Test Suite**: **415/415 tests passing (100% green)** in 26.81s.
+- **End-to-End Simulation**: Verified zero brand stomping, explicit date-miss errors, and clean health manifests.
+

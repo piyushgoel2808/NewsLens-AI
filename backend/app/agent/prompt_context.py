@@ -134,12 +134,23 @@ def build_synthesizer_user_prompt(
             "Multi-Newspaper Audit", "Aggregated Archive Analytics", "Archive", "Unknown Publication", "Live Web"
         )
     }))
+    verified_dates = sorted(list({
+        str(item.get("issue_date", "")).strip() for item in evidence_items
+        if item.get("issue_date") and str(item.get("issue_date")).strip() not in (
+            "", "Overview", "Live Web", "Unknown Date"
+        )
+    }))
+
     pubs_note = f"Verified Available Publications for this Query: {', '.join(verified_pubs)}\n" if verified_pubs else ""
+    dates_note = f"Verified Target Issue Date(s): {', '.join(verified_dates)}\n" if verified_dates else ""
+
+    date_anchor_clause = f" on date(s): {', '.join(verified_dates)}" if verified_dates else ""
     isolation_rule = (
         f"STRICT PUBLICATION & DATE ISOLATION:\n"
-        f"- You must ONLY report on and analyze the verified publications present in the current evidence ({', '.join(verified_pubs)}).\n"
-        f"- NEVER mention, summarize, or cite articles from other publications or dates discussed in earlier conversation turns.\n\n"
-        if verified_pubs else ""
+        f"- You must ONLY report on and analyze the verified publications present in the current evidence ({', '.join(verified_pubs) or 'Current Evidence'}){date_anchor_clause}.\n"
+        f"- Target Date Anchoring: All synthesized summaries, tables, and references must strictly reflect the verified date(s): {', '.join(verified_dates) or 'current query date'}. NEVER carry forward or conflate dates discussed in earlier conversation turns.\n"
+        f"- NEVER mention, summarize, or cite articles from other publications or dates not in the current evidence.\n\n"
+        if verified_pubs or verified_dates else ""
     )
     domain = detect_domain_from_query(query, evidence_items)
     domain_note = (
@@ -153,6 +164,7 @@ def build_synthesizer_user_prompt(
         f"User Research Query: {query}\n"
         f"Query Archetype: {archetype}\n"
         f"{pubs_note}"
+        f"{dates_note}"
         f"{isolation_rule}"
         f"{domain_note}"
         f"Available Newspaper Evidence:\n"

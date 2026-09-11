@@ -326,8 +326,8 @@ class SQLAnalyticsEngine:
                 res = await db.execute(stmt)
                 issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
 
-            # Fallback 2: Resolve by newspaper_name (latest issue)
-            if not issue and newspaper_name:
+            # Fallback 2: Resolve by newspaper_name (latest issue) only if issue_date was NOT specified
+            if not issue and newspaper_name and not issue_date:
                 stmt = (
                     select(Issue)
                     .join(Newspaper)
@@ -341,8 +341,8 @@ class SQLAnalyticsEngine:
                 res = await db.execute(stmt)
                 issue = res.scalars().first() if hasattr(res, "scalars") else (res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None)
 
-            # Fallback 3: Resolve by issue_date (latest issue on that date)
-            if not issue and issue_date:
+            # Fallback 3: Resolve by issue_date (latest issue on that date) only if newspaper_name was NOT specified
+            if not issue and issue_date and not newspaper_name:
                 stmt = (
                     select(Issue)
                     .where(Issue.issue_date == issue_date)
@@ -506,22 +506,32 @@ class SQLAnalyticsEngine:
                     )
 
                     # Domain noise filter: Discard obvious event listings, ads, court notices, or tax stories from Health manifests
-                    if (
-                        any("health" in tc.lower() for tc in target_canons)
-                        and any(
+                    if any("health" in tc.lower() for tc in target_canons):
+                        has_explicit_health_term = any(
+                            h_pat in hl_sub
+                            for h_pat in [
+                                "health", "hospital", "doctor", "medicine", "medical",
+                                "disease", "patient", "clinic", "treatment", "vaccine",
+                                "pharma", "clinical", "surgery", "diet", "mental health", "typhoid"
+                            ]
+                        )
+                        # Exclude conflicting primary categories (e.g. Politics, Entertainment, Crime) unless explicitly about health
+                        is_conflicting_primary = any(
+                            non_h in m_cat for non_h in ["politics", "entertainment", "crime", "sports"]
+                        )
+                        if is_conflicting_primary and not has_explicit_health_term:
+                            continue
+
+                        if any(
                             noise_pat in hl_sub
                             for noise_pat in [
                                 "when: ", "where: ", "studio xo", "cases still pending",
                                 "[advertisement]", "sit vacant", "excise duty", "tax revenue",
-                                "indirect taxes", "net tax collections", "cricket", "hockey"
+                                "indirect taxes", "net tax collections", "cricket", "hockey",
+                                "police complaint", "singer files"
                             ]
-                        )
-                        and not any(
-                            h_pat in hl_sub
-                            for h_pat in ["health", "hospital", "doctor", "medicine", "disease", "patient", "clinic"]
-                        )
-                    ):
-                        continue
+                        ) and not has_explicit_health_term:
+                            continue
 
                     if (structured_match or keyword_match) and m_id not in matched_ids:
                         matched.append(m)
