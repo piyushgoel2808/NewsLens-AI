@@ -182,6 +182,18 @@ export function ActiveHighlightProvider({ children }) {
     setActiveTab('reader');
   }, []);
 
+  // Attached Visual Asset (Infographics, Data Charts, Tables) for Agent Assistant interrogation
+  const [activeAttachedAsset, setActiveAttachedAsset] = useState(null);
+
+  const attachAssetForAgent = useCallback((asset) => {
+    setActiveAttachedAsset(asset);
+    setActiveTab('agent');
+  }, []);
+
+  const clearAttachedAsset = useCallback(() => {
+    setActiveAttachedAsset(null);
+  }, []);
+
   return (
     <ActiveHighlightContext.Provider
       value={{
@@ -211,6 +223,10 @@ export function ActiveHighlightProvider({ children }) {
         openTimeline,
         highlightArticle,
         openIssueInReader,
+        activeAttachedAsset,
+        setActiveAttachedAsset,
+        attachAssetForAgent,
+        clearAttachedAsset,
       }}
     >
       {children}

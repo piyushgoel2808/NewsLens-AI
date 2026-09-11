@@ -73,9 +73,28 @@ This document outlines the complete data flows, state transitions, transformatio
 ## 2. Visual Asset Extraction, Scene Analysis & On-Demand Data Flow
 
 ```
-[ Cropped Image Crop from Broadsheet / On-Demand UI Trigger ]
-                │
-                ▼
+[ Broadsheet PDF Ingestion Crop ]          [ Broadsheet Reader / Agent Query Trigger ]
+                 │                                            │
+                 ▼                                            ▼
+┌────────────────────────────────────────┐ ┌─────────────────────────────────────────┐
+│ Ingestion Fast Triage & Cropping       │ │ Agent `inspect_visual_asset` Invocation │
+│ • PIL heuristics: dimensions, aspect   │ │ • Triggered by user query or attached   │
+│ • Crop stored in MinIO `bucket_pages`  │ │   `attached_photo_id` / `article_id`    │
+│ • Initial fast placeholder / triage    │ │ • Resolves target photo via Strategies  │
+│   (`data_chart`, `table`, `photo`)     │ │   Cascade (Strategies A through E)      │
+└──────────────────┬─────────────────────┘ └────────────────────┬────────────────────┘
+                   │                                            │
+                   │                                            ▼
+                   │                           ┌─────────────────────────────────────┐
+                   │                           │ On-Demand Placeholder Detection     │
+                   │                           │ • If `vlm_description` is default   │
+                   │                           │   placeholder or requires refresh:  │
+                   │                           │   → Stream raw crop from MinIO      │
+                   │                           │   → Dispatch to VLM Extractor       │
+                   │                           └────────────────┬────────────────────┘
+                   │                                            │
+                   └─────────────────────┬──────────────────────┘
+                                         ▼
 ┌────────────────────────────────────────────────────────┐
 │ Stage 1: Fast Visual Triage Classification             │
 │ • PIL heuristics: dimensions, aspect ratio, variance   │
@@ -115,8 +134,9 @@ This document outlines the complete data flows, state transitions, transformatio
 │ Persistence & Interactive UI Delivery                  │
 │ • Store `vlm_description` & `visual_type` in MySQL     │
 │ • Index unfragmented Visual DocumentChunk into Qdrant  │
-│ • Serve via `GET /api/articles/{id}` and on-demand     │
-│   `POST /api/photos/{id}/analyze` to Broadsheet Reader │
+│ • Serve via `GET /api/articles/{id}`, on-demand        │
+│   `POST /api/photos/{id}/analyze`, and inline visual   │
+│   citations `/api/photos/{id}/image` in Agent Assistant│
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -137,20 +157,22 @@ sequenceDiagram
     participant Synth as 4-Tier Answer Synthesizer
     participant SSE as SSE Streaming Response
 
-    User->>Cache: Submit Query + Session ID
+    User->>Cache: Submit Query + Session ID + Optional attached_article_id / attached_photo_id
     alt Query in Cache
         Cache-->>User: Return Cached Response (<5ms)
     else Cache Miss
-        Cache->>Condenser: Pass Raw Query & Chat History
-        Condenser->>Condenser: Resolve Pronouns & Bind Active Newspaper/Date
-        Condenser->>Planner: Pass Condensed Query
-        Planner->>Planner: Classify 1 of 6 Archetypes & Generate Tool Plan
+        Cache->>Condenser: Pass Raw Query, History, and Attached Asset IDs
+        Condenser->>Condenser: Resolve Pronouns, Bind Active Issue & Retain Attached Assets
+        Condenser->>Planner: Pass Condensed Query & Asset Context
+        Planner->>Planner: Classify 1 of 7 Archetypes & Generate Tool Plan
         Planner->>Tools: Dispatch Planned Tool Calls (Asynchronous)
-        par Tool Invocations
-            Tools->>DB: sql_analytics (Manifest / Aggregate Stats)
-            Tools->>DB: hybrid_search (Dense Qdrant + Sparse MySQL FULLTEXT)
+        par Concurrent Tool Invocations
+            Tools->>DB: inspect_visual_asset (Charts/Tables/Photos via Strategies A-E & On-Demand VLM)
+            Tools->>DB: sql_analytics (Manifest / Aggregate Stats / Issue Summary)
+            Tools->>DB: hybrid_search (Dense Qdrant BGE-M3 + Sparse MySQL RRF)
             Tools->>DB: entity_search (Knowledge Graph & Mentions)
             Tools->>DB: timeline_builder (Chronological Progression)
+            Tools->>DB: coverage_analyzer (Cross-Broadsheet Comparative Audit)
             Tools->>DB: web_search (Live Internet Search if Enabled)
         end
         DB-->>Tools: Tool Results & Structured Evidence
@@ -163,8 +185,8 @@ sequenceDiagram
         end
         CRAG->>Synth: Filtered High-Confidence Evidence
         Synth->>Synth: Formulate 4-Tier Grounded Broadsheet Response
-        Synth->>SSE: Stream Response Tokens & Reasoning Trace
-        SSE-->>User: Real-Time Markdown Stream + Provenance Citations
+        Synth->>SSE: Stream Response Tokens, Visual Cards & Reasoning Trace
+        SSE-->>User: Real-Time Markdown Stream + Provenance Citations + Photo Thumbnails
         Synth->>DB: Persist Query Audit Log in `query_logs`
         Synth->>Cache: Cache Result (TTL: 1 Hour)
     end
@@ -176,12 +198,13 @@ sequenceDiagram
 
 | Query Archetype | Trigger Conditions & User Intent | Primary Tool | Secondary / Supplementary Tool | Target Output Format |
 |---|---|---|---|---|
-| **`factual_lookup`** | Specific fact, figure, event, statement, or quote from an article or page. | `hybrid_search` (Dense BGE-M3 + Sparse MySQL RRF) | `entity_search` | Direct verified answer with exact page and article citation. |
-| **`quantitative_trend`** | Whole-newspaper summary, section listing, article count, or frequency metrics. | `sql_analytics` (`issue_summary` / `count_articles`) | `hybrid_search` (for sample excerpts) | Structured manifest breakdown by section, page, and category. |
+| **`factual_lookup`** | Specific fact, figure, event, statement, or quote from an article, chart, or page. | `hybrid_search` (Dense BGE-M3 + Sparse MySQL RRF) | `inspect_visual_asset` (when chart/table/photo mentioned), `entity_search` | Direct verified answer with exact page and article citation. |
+| **`article_catalog`** | Fast manifest listing of articles, front-page leads, or section indices (<200ms). | `sql_analytics` (`issue_summary` / `list_articles`) | None | Tabular manifest by newspaper, date, page, headline, and category. |
+| **`quantitative_trend`** | Aggregate metrics, distribution of topics, page counts, or volume analytics. | `sql_analytics` (`aggregate_metrics` / `count_articles`) | `hybrid_search` (for sample excerpts) | Statistical summary breakdown with data tables. |
 | **`thematic_timeline`** | Chronological progression, evolution, history, or milestone development over time. | `timeline_builder` | `hybrid_search` | Date-ordered milestone trajectory with narrative trajectory canvas links. |
 | **`cross_newspaper_comparison`** | Comparative coverage, framing differences, contrasting editorial perspectives, or differential exclusions (*"In X but not in Y"*). | `sql_analytics` (`coverage_difference`) for exclusions; `coverage_analyzer` for multi-broadsheet audits | `hybrid_search` (scoped to target publication and date) | Verified exclusive article manifest with page folios, or side-by-side editorial matrix. |
 | **`entity_deep_dive`** | Comprehensive profile of a person, company, agency, or geopolitical entity. | `entity_search` | `timeline_builder` + `hybrid_search` | Entity salience stats, co-occurring entities, and key storylines. |
-| **`conversational_meta_query`** | In-context follow-ups, clarifications, or greetings. | Context Condenser / Direct Response | None | Conversational response or clarifying disambiguation modal. |
+| **`negative_coverage_audit`** | Audit of topics or events not reported by a specific broadsheet or edition. | `sql_analytics` (`coverage_difference`) | `hybrid_search` (anti-hallucination verification) | Explicit verification of absence or unmentioned topics across editions. |
 
 ---
 
@@ -256,3 +279,51 @@ sequenceDiagram
 │   graph JSON payload │ └──────────────────────────────────────────────┘
 └──────────────────────┘
 ```
+
+---
+
+## 7. Broadsheet Reader to Agent Visual Attachment Data Flow
+
+When a user reads an archived newspaper in the interactive **Broadsheet Reader** and encounters a complex visual graphic, chart, or photo, they can route that specific asset directly into the **Agent Assistant** for deep multimodal inquiry.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Reader as User / Broadsheet Reader (React)
+    participant State as Global Reader State
+    participant Assistant as Agent Assistant Component
+    participant API as FastAPI Backend (/api/agent/query)
+    participant Condenser as Conversational Condenser
+    participant Executor as Concurrent Tool Executor
+    participant VLM as VLM Visual Data Extractor (MinIO)
+    participant DB as MySQL Database
+
+    Reader->>State: User clicks "Ask Agent About This Infographic / Photo"
+    State->>Assistant: Open Assistant Panel with attachedAsset payload
+    Note over Assistant: Renders attached asset banner<br/>with thumbnail, headline & date
+    Reader->>Assistant: Submits query (e.g. "Explain the GDP projections in this chart")
+    Assistant->>API: POST /api/agent/query<br/>{query, attached_article_id, attached_photo_id}
+    API->>Condenser: Pass query, chat history, and attached IDs
+    Condenser->>Condenser: Bind attached IDs to active turn;<br/>Purge on subsequent unrelated turns
+    Condenser->>Executor: Plan tool execution with Strategy A/C (photo_id/article_id)
+    Executor->>DB: Query Photo record by photo_id or article_id
+    alt vlm_description is Placeholder
+        Executor->>VLM: Stream raw image crop from MinIO bucket_pages
+        VLM->>VLM: Run Multimodal VLM OCR & tabular synthesis
+        VLM->>DB: Persist synthesized vlm_description to article_photos
+    end
+    DB-->>Executor: Complete visual description, caption, and metadata
+    Executor-->>API: Synthesize evidence including visual asset
+    API-->>Assistant: Stream response with is_visual_asset citation & /api/photos/{id}/image
+    Assistant-->>Reader: Render rich response with interactive visual card thumbnail
+```
+
+### 7.1 Lifecycle & Anti-Leakage Guardrails
+1. **Interactive Attachment Banner**:
+   - `AgentAssistant.jsx` displays an active blue attachment chip above the chat input: `Attached: [Infographic/Photo] Headline (Date, Page X)` with a dismiss `×` button.
+2. **First-Turn Binding**:
+   - When the user submits their query, `attached_article_id` and `attached_photo_id` are included in the `QueryRequest` body.
+   - `extract_active_issue_from_history()` and `condenser.py` bind these IDs directly to tool arguments (`photo_id`, `article_id`).
+3. **Cross-Turn Parameter Purge**:
+   - On the next turn, if the user asks an unrelated question or references a different date/newspaper, Guardrails 1, 2, and 3 immediately purge `photo_id`, `article_id`, `headline`, and `page_number`, preventing visual context leakage across independent questions.
+

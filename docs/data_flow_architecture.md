@@ -30,14 +30,14 @@ flowchart TD
     end
 
     subgraph QUERY ["3. Agentic Retrieval & LangGraph State Machine"]
-        Q[User Submits Natural Language Query] --> R[Query Condenser: History Contextualization]
-        R --> S[Query Planner: Archetype Classification & Plan Generation]
-        S --> T[Tool Execution Engine]
-        T --> U[HybridSearchEngine: Vector Qdrant + MySQL FULLTEXT + RRF + Cross-Encoder]
-        T --> V[Specialized Tools: EntitySearch, SQLAnalytics, TimelineBuilder, WebSearch]
+        Q[User Query + Optional Attached Asset IDs] --> R[Query Condenser: History, Inline Citations & Guardrails]
+        R --> S[Query Planner: 7 Archetypes & Optimal Tool Invocations]
+        S --> T[Tool Execution Engine: Concurrent Async Dispatch]
+        T --> U[HybridSearchEngine: Dense Qdrant + MySQL FULLTEXT + RRF + Cross-Encoder]
+        T --> V[Specialized Tools: InspectVisualAsset, EntitySearch, SQLAnalytics, TimelineBuilder, WebSearch]
         U & V --> W[Evidence Relevance Gate & CRAG Fallback]
-        W --> X[AnswerSynthesizer: Grounded LLM Generation with Strict Citations]
-        X --> Y[SSE Streaming API: Thoughts, Tokens, Citations, Trajectories]
+        W --> X[AnswerSynthesizer: 4-Tier Grounded Synthesis & Visual Citation Cards]
+        X --> Y[SSE Streaming API: Thoughts, Tokens, Citations, Photo Thumbnails]
     end
 ```
 
@@ -197,23 +197,28 @@ sequenceDiagram
 
 #### Detailed Retrieval Steps:
 1. **Conversational Query Condensation** ([`backend/app/agent/condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py)):
-   - Contextualizes conversational follow-ups while employing query-aware guardrails to drop stale publications or dates whenever a user switches dates or initiates cross-newspaper comparisons.
+   - Contextualizes conversational follow-ups and parses inline citations via `parse_inline_citation()` supporting formats like `[4] Newspaper, YYYY-MM-DD, Page X, Headline: "..."`.
+   - Propagates active reader attached assets (`attached_article_id`, `attached_photo_id`) into query context for deep visual inquiry.
+   - Applies strict anti-leakage guardrails (Guardrails 1, 2, and 3 in `extract_active_issue_from_history()`) to purge stale `article_id`, `photo_id`, `headline`, `page_number`, and `target_newspapers` whenever the user asks about a different date, newspaper, or distinct topic.
    - Preserves differential exclusion context across multi-turn follow-ups (*"list all those 11 articles"* $\to$ *"list all those articles in The Goan but not in The Morning Standard dated 2026-08-01"*).
 2. **Query Planner** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)):
+   - Grounded with live archive metadata (`get_archive_metadata()`) preventing tool hallucinations.
    - Multi-brand entity extraction and typo tolerance (e.g. mapping `"he Morning Standard"` to `The Morning Standard`).
-   - Classifies query into archetypes:
-     - `factual_lookup`: Specific event or metric.
+   - Classifies query into 1 of 7 Archetypes:
+     - `factual_lookup`: Specific event, figure, quote, or chart.
+     - `article_catalog`: Sub-200ms manifest listings of front-page leads or sections.
      - `cross_newspaper_comparison`: Differing coverage, multi-broadsheet audits, or differential article exclusions (*"In X but not in Y"*).
      - `thematic_timeline`: Evolution over dates.
-     - `quantitative_trend`: Charts, stocks, macro indicators, and whole-issue article manifests.
+     - `quantitative_trend`: Macro indicators, volume statistics, and section distributions.
      - `entity_deep_dive`: Multi-hop entity exploration and salience profiles.
-     - `conversational_meta_query`: Continuity and metadata lookups directly from dialogue context.
+     - `negative_coverage_audit`: Rigorous verification of unreported topics across publications.
 3. **Hybrid Search Engine** ([`backend/app/retrieval/hybrid_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/hybrid_search.py)):
    - **Vector Search**: Qdrant cosine similarity over 1024-dim dense space (`BAAI/bge-m3`).
    - **Keyword Search**: MySQL `MATCH ... AGAINST` in natural language mode with query expansion.
    - **Reciprocal Rank Fusion (RRF)**: Merges ranks using $RRF = \sum \frac{1}{60 + \text{rank}_i}$.
-   - **Cross-Encoder Reranker**: Deep token-level relevance scoring using `BAAI/bge-reranker-v2-m3`.
+   - **Cross-Encoder Reranker**: Deep token-level relevance scoring using `BAAI/bge-reranker-v2-m3` (enforcing CPU execution on macOS to avoid MPS stall).
 4. **Specialized Tools**:
+   - `InspectVisualAsset`: Executes 5-tier Strategy Cascade (A: photo_id lookup + companion charts; B: headline lookup; C: article_id lookup + companion charts; D: multi-criteria DB search; E: scoped caption/VLM search). Performs lazy on-demand VLM extraction by streaming raw crop bytes from MinIO `bucket_pages` when `vlm_description` contains placeholder text, persisting the enriched Markdown extraction to MySQL.
    - `SQLAnalytics`: Whole-issue manifests, section distributions, article counts, and **Deterministic Coverage Differences** (`get_newspaper_coverage_difference`) computing exact article exclusions between publications on the same date via headline token overlap.
    - `CoverageAnalyzer`: Multi-newspaper 3-tier negative coverage matrix audits.
    - `EntityFilter`: N-hop entity exploration (`search_by_entity`).
@@ -224,10 +229,11 @@ sequenceDiagram
 
 ### Stage 8: Corrective RAG & Answer Synthesis
 
-1. **Evidence Relevance Gate (CRAG)** ([`backend/app/agent/graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py)):
+1. **Evidence Relevance Gate (CRAG)** ([`backend/app/agent/graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py), [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)):
    - Evaluates retrieved evidence items against query token stems.
+   - Protects structural manifests and high-confidence semantic vector hits from false-positive pruning.
    - Automatically prunes completely unrelated chunks (relevance score = 0) so they cannot pollute LLM context.
-   - If zero grounded evidence is found, triggers fallback entity search or web search.
+   - If zero grounded evidence is found, triggers fallback entity search or web search, or hard-stops with anti-hallucination notice.
 2. **Answer Synthesizer** ([`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)):
    - Enforces strict anti-hallucination negative constraints:
      - Zero fabrication of dates or publisher names.
@@ -238,7 +244,7 @@ sequenceDiagram
        - `### 📰 Broadsheet Perspectives & Focus Areas`
        - `### 🔍 Explore Further`
 3. **Server-Sent Events (SSE) Streaming** ([`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py)):
-   - Streams live thought tokens (`event: thought`), markdown tokens (`event: token`), resolved citations (`event: citations`), and final metadata (`event: done`).
+   - Streams live execution stages (`event: stage` including `inspecting_visual_asset`), thoughts (`event: thought`), tokens (`event: token`), resolved citations (`event: citations` including visual asset flags `is_visual_asset: true` and thumbnail endpoints `/api/photos/{id}/image`), and final metadata (`event: done`).
 
 ---
 

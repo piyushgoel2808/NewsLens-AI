@@ -100,6 +100,43 @@ def is_ambiguous_standalone_query(query: str, chat_history: list[dict[str, Any]]
     return False
 
 
+def parse_inline_citation(text: str) -> dict[str, Any]:
+    """Extract newspaper name, issue date, page number, and headline from inline citations.
+
+    Handles formats like:
+    - [4] Hindustan Times, 2026-09-10, Page 4, Headline: "The growing bipolarity..."
+    - [{Hindustan Times}, 2026-09-10, Page 4, "The growing bipolarity..."]
+    - Hindustan Times, 2026-09-10, Page 4, Headline: "..."
+    """
+    if not text:
+        return {}
+    m = re.search(
+        r"(?:\[(?:\d+|photo)?\]\s*)?"
+        r"(?:\{?([A-Za-z0-9\s\.\'\-]+?)\}?,\s*)"
+        r"(?:(\d{4}-\d{2}-\d{2}),\s*)?"
+        r"(?:Page\s*(\d+),\s*)?"
+        r"(?:Headline:\s*)?[\"“]([^\"”]+)[\"”]",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        np = m.group(1).strip()
+        for pat, brand in _KNOWN_BRANDS_PATTERNS:
+            if pat.search(np):
+                np = brand
+                break
+        res: dict[str, Any] = {"newspaper_name": np, "target_newspapers": [np]}
+        if m.group(2):
+            res["issue_date"] = m.group(2).strip()
+        if m.group(3):
+            with contextlib.suppress(ValueError):
+                res["page_number"] = int(m.group(3).strip())
+        if m.group(4):
+            res["headline"] = m.group(4).strip()
+        return res
+    return {}
+
+
 def extract_active_issue_from_history(
     chat_history: list[dict[str, Any]],
     current_query: str | None = None,
@@ -108,10 +145,15 @@ def extract_active_issue_from_history(
 
     Safeguards against context leakage:
     - If current_query targets a cross-newspaper comparison or 'all newspapers', do not inherit a single newspaper.
-    - If current_query specifies its own date or date range, do not inherit stale issue_id/newspaper from a different date.
-    - If current_query specifies its own newspaper brand, do not inherit a different newspaper brand.
+    - If current_query specifies its own date or date range, do not inherit stale issue_id/newspaper/article from a different date.
+    - If current_query specifies its own newspaper brand, do not inherit a different newspaper brand or article.
+    - If current_query specifies an inline citation or explicit headline, that citation is authoritative.
     """
     res: dict[str, Any] = {}
+    current_citation = parse_inline_citation(current_query or "")
+    if current_citation:
+        res.update(current_citation)
+
     if not chat_history:
         return res
 
@@ -121,8 +163,8 @@ def extract_active_issue_from_history(
         or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper", "different newspaper"])
     )
     current_params = extract_parameters_from_query(current_query) if current_query else {}
-    current_date = current_params.get("issue_date")
-    current_np = current_params.get("newspaper_name")
+    current_date = current_params.get("issue_date") or current_citation.get("issue_date")
+    current_np = current_params.get("newspaper_name") or current_citation.get("newspaper_name")
 
     for turn in reversed(chat_history):
         content = str(turn.get("content", ""))
@@ -140,7 +182,52 @@ def extract_active_issue_from_history(
         if params.get("issue_date") and not res.get("issue_date"):
             res["issue_date"] = params["issue_date"]
 
-        # 1. Inspect executive summary headers: e.g. "The Goan newspaper issue 94 (2026-08-02)"
+        # 0. Inspect structured citations and attached assets on the turn
+        # If current_query provided its own explicit headline or citation, do NOT inherit foreign article/photo IDs
+        if not current_citation.get("headline"):
+            turn_citations = turn.get("citations") or []
+            for cit in turn_citations:
+                if isinstance(cit, dict):
+                    if cit.get("article_id") and not res.get("article_id"):
+                        with contextlib.suppress(ValueError):
+                            res["article_id"] = int(cit["article_id"])
+                    if cit.get("headline") and not res.get("headline"):
+                        res["headline"] = str(cit["headline"]).strip()
+                    if cit.get("newspaper_name") and not res.get("newspaper_name"):
+                        res["newspaper_name"] = str(cit["newspaper_name"]).strip()
+                    if cit.get("issue_date") and not res.get("issue_date"):
+                        res["issue_date"] = str(cit["issue_date"]).strip()
+                    if cit.get("photo_id") and not res.get("photo_id"):
+                        with contextlib.suppress(ValueError):
+                            res["photo_id"] = int(cit["photo_id"])
+                    if cit.get("pages") and not res.get("page_number"):
+                        with contextlib.suppress(Exception):
+                            res["page_number"] = int(cit["pages"][0])
+
+            attached_asset = turn.get("attachedAsset") or {}
+            if isinstance(attached_asset, dict):
+                if attached_asset.get("articleId") and not res.get("article_id"):
+                    with contextlib.suppress(ValueError):
+                        res["article_id"] = int(attached_asset["articleId"])
+                if attached_asset.get("photoId") and not res.get("photo_id"):
+                    with contextlib.suppress(ValueError):
+                        res["photo_id"] = int(attached_asset["photoId"])
+                if attached_asset.get("headline") and not res.get("headline"):
+                    res["headline"] = str(attached_asset["headline"]).strip()
+
+        # 1. Inspect inline citations in message text
+        hist_cite = parse_inline_citation(content)
+        if hist_cite:
+            if not res.get("newspaper_name") and hist_cite.get("newspaper_name"):
+                res["newspaper_name"] = hist_cite["newspaper_name"]
+            if not res.get("issue_date") and hist_cite.get("issue_date"):
+                res["issue_date"] = hist_cite["issue_date"]
+            if not res.get("page_number") and hist_cite.get("page_number"):
+                res["page_number"] = hist_cite["page_number"]
+            if not res.get("headline") and hist_cite.get("headline") and not current_citation.get("headline"):
+                res["headline"] = hist_cite["headline"]
+
+        # 2. Inspect executive summary headers: e.g. "The Goan newspaper issue 94 (2026-08-02)"
         summary_m = re.search(
             r"([A-Za-z0-9\s\.\'\-]+?)\s+(?:newspaper\s+)?issue\s+(\d+)(?:\s*\((\d{4}-\d{2}-\d{2})\))?",
             content,
@@ -162,31 +249,53 @@ def extract_active_issue_from_history(
             if summary_m.group(3) and not res.get("issue_date"):
                 res["issue_date"] = summary_m.group(3)
 
-        # 2. Inspect all known brand patterns across turn text
+        # 3. Inspect all known brand patterns across turn text
         if not res.get("newspaper_name"):
             for pat, brand in _KNOWN_BRANDS_PATTERNS:
                 if pat.search(content):
                     res["newspaper_name"] = brand
                     break
 
-        if res.get("newspaper_name") and res.get("issue_date"):
+        if res.get("newspaper_name") and res.get("issue_date") and res.get("headline"):
             break
 
     # Guardrail 1: If current query is cross-newspaper comparison, do NOT constrain to a single newspaper
     if is_cross_newspaper:
         res.pop("newspaper_name", None)
         res.pop("issue_id", None)
+        res.pop("article_id", None)
+        res.pop("photo_id", None)
+        res.pop("target_newspapers", None)
 
     # Guardrail 2: If current query explicitly provides its own date, invalidate stale context if from different date
     if current_date and res.get("issue_date") and res["issue_date"] != current_date:
         res.pop("newspaper_name", None)
         res.pop("issue_id", None)
         res.pop("issue_date", None)
+        res.pop("article_id", None)
+        res.pop("photo_id", None)
+        res.pop("headline", None)
+        res.pop("target_newspapers", None)
 
-    # Guardrail 3: If current query explicitly specifies its own newspaper, discard history newspaper
-    if current_np:
+    # Guardrail 3: If current query explicitly specifies its own newspaper, discard history newspaper and foreign articles
+    if current_np and res.get("newspaper_name") and current_np.lower() not in res["newspaper_name"].lower() and res["newspaper_name"].lower() not in current_np.lower():
         res.pop("newspaper_name", None)
         res.pop("issue_id", None)
+        res.pop("article_id", None)
+        res.pop("photo_id", None)
+        res.pop("headline", None)
+        res.pop("target_newspapers", None)
+
+    # Re-apply explicit current query parameters
+    if current_np:
+        res["newspaper_name"] = current_np
+        res["target_newspapers"] = [current_np]
+    if current_date:
+        res["issue_date"] = current_date
+    if current_citation.get("headline"):
+        res["headline"] = current_citation["headline"]
+    if current_citation.get("page_number"):
+        res["page_number"] = current_citation["page_number"]
 
     return res
 
@@ -249,11 +358,15 @@ async def condense_conversational_query(
     formatted_history = format_chat_history_for_prompt(chat_history)
     comp_np = active_ctx.get("comparison_newspaper")
     is_diff = active_ctx.get("is_differential")
+    active_hl = active_ctx.get("headline")
+    active_pg = active_ctx.get("page_number")
     ctx_hint = ""
     if comp_np and np_name and is_diff:
         ctx_hint = f" Active Differential Comparison: {np_name} vs {comp_np} (Stories in {np_name} but not in {comp_np})" + (f" dated {iss_date}" if iss_date else "") + "."
     elif comp_np and np_name:
         ctx_hint = f" Active Publication Comparison: {np_name} vs {comp_np}" + (f" dated {iss_date}" if iss_date else "") + "."
+    elif active_hl and np_name:
+        ctx_hint = f" Active Article: \"{active_hl}\" in {np_name}" + (f" (Page {active_pg})" if active_pg else "") + (f" dated {iss_date}" if iss_date else "") + "."
     elif np_name or iss_id:
         ctx_hint = " Active Publication: " + (f"{np_name} " if np_name else "") + (f"(Issue {iss_id})" if iss_id else "") + (f" dated {iss_date}" if iss_date else "") + "."
 
@@ -376,5 +489,6 @@ __all__ = [
     "is_ambiguous_standalone_query",
     "is_in_context_meta_query",
     "needs_condensation",
+    "parse_inline_citation",
 ]
 

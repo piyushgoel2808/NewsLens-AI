@@ -60,6 +60,14 @@ class QueryRequest(BaseModel):
         False,
         description="Enable live internet search to complement newspaper archives",
     )
+    attached_article_id: int | None = Field(
+        None,
+        description="Optional article ID currently active in user's reader workspace",
+    )
+    attached_photo_id: int | None = Field(
+        None,
+        description="Optional photo or infographic ID attached to the query",
+    )
 
     @property
     def effective_model(self) -> str | None:
@@ -94,6 +102,8 @@ async def execute_query(
         user_id=request.user_id,
         model_override=request.effective_model,
         enable_web_search=request.enable_web_search,
+        attached_article_id=request.attached_article_id,
+        attached_photo_id=request.attached_photo_id,
     )
 
     citations_list: list[dict[str, Any]] = [dict(c) for c in result.get("citations", [])]
@@ -173,11 +183,18 @@ async def stream_query(
                 yield f"event: query_condensed\ndata: {cond_data}\n\n"
 
             # 2. Planning Stage
+            eff_attached_article_id = request.attached_article_id or active_ctx.get("article_id")
+            eff_attached_photo_id = request.attached_photo_id or active_ctx.get("photo_id")
+
             yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
             plan_res = await workflow._planner.plan_query_async(
                 query,
                 enable_web_search=request.enable_web_search,
                 model_override=effective_model,
+                active_issue_date=active_ctx.get("issue_date"),
+                active_newspapers=[active_ctx.get("newspaper_name")] if active_ctx.get("newspaper_name") else None,
+                attached_article_id=eff_attached_article_id,
+                attached_photo_id=eff_attached_photo_id,
             )
             effective_archetype = plan_res.archetype
             planned_calls = [
@@ -188,7 +205,9 @@ async def stream_query(
             yield f"event: plan\ndata: {plan_data}\n\n"
 
             # 3. Tool Execution Stage
-            if any(c.get("tool_name") == "web_search" for c in planned_calls):
+            if any(c.get("tool_name") == "inspect_visual_asset" for c in planned_calls):
+                yield f"event: stage\ndata: {json.dumps({'stage': 'inspecting_visual_asset'})}\n\n"
+            elif any(c.get("tool_name") == "web_search" for c in planned_calls):
                 yield f"event: stage\ndata: {json.dumps({'stage': 'web_search'})}\n\n"
             else:
                 yield f"event: stage\ndata: {json.dumps({'stage': 'tool_execution'})}\n\n"
@@ -213,6 +232,8 @@ async def stream_query(
                     "active_issue_id": active_ctx.get("issue_id"),
                     "active_newspaper_name": active_ctx.get("newspaper_name"),
                     "active_issue_date": active_ctx.get("issue_date"),
+                    "attached_article_id": eff_attached_article_id,
+                    "attached_photo_id": eff_attached_photo_id,
                     "error": None,
                 }
             )

@@ -23,7 +23,7 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** purpose-bui
 │   Document Ingestion Flow   │    Retrieval Toolbelt & DB    │   Agentic Reasoning Flow    │
 │  • Celery Async Ingestion   │  • MySQL 8 (System of Record) │  • LangGraph State Machine  │
 │  • PyMuPDF + Docling Layout │  • Qdrant Dense Vector Store  │  • Dynamic Query Planner    │
-│  • Multi-Page Consensus     │  • MinIO Object Storage (S3)  │  • Multi-Tool Dispatcher    │
+│  • Multi-Page Consensus     │  • MinIO Storage (S3 Crops)   │  • 7-Tool Multimodal Dispatch│
 │  • Spatial Column De-bundle │  • Redis 7 (Cache & Lock)     │  • Corrective RAG (CRAG)    │
 │  • Probabilistic 12-Domain  │  • RRF (Dense + Sparse Fusion)│  • 4-Tier Synthesizer       │
 │  • Spatial Matrix OCR Parser│  • Fulltext MySQL Indexing    │  • Strict Provenance Citator│
@@ -155,6 +155,10 @@ Visual elements in broadsheets contain high-value quantitative data (e.g. IPO su
      - Transcribes clean GitHub-flavored Markdown tables and computes key metrics.
 3. **Stage 3: Numerical Cross-Validation**:
    - Validates numerical tokens in the table against OCR ground truth to adjust final confidence scores.
+4. **Stage 4: On-Demand VLM Extraction During Agent Query Execution**:
+   - Visual assets ingested with placeholder descriptions (or fast-path crops) are enriched lazily during conversational query execution when `inspect_visual_asset` targets them.
+   - The tool fetches raw crop bytes directly from MinIO `bucket_pages`, passes them to `VisualDataExtractor.process_image_crop()`, transcribes rich markdown metrics and summaries, and dynamically persists the synthesized extraction back into MySQL `article_photos.vlm_description`.
+   - Guarantees zero cold-start latency during bulk PDF ingestion while delivering high-fidelity quantitative grounding whenever an agent or reader inspects a chart or infographic.
 
 ---
 
@@ -203,6 +207,7 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │           Conversational Context Condensation Node          │
    │  • Resolves pronouns ("its", "they", "this newspaper")      │
    │  • Binds active newspaper issue and date from chat history  │
+   │  • Propagates active reader attached assets (article/photo) │
    │  • Short-circuits ambiguous initial queries with guidance   │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
@@ -221,6 +226,7 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │  • Dispatches optimal tool execution sequence:               │
    │    - sql_analytics (issue manifest, stats, section lists)    │
    │    - hybrid_search (dense Qdrant + sparse MySQL RRF)         │
+   │    - inspect_visual_asset (multimodal charts, tables, photos)│
    │    - entity_search (knowledge graph & salience lookups)      │
    │    - timeline_builder (thematic chronological progression)   │
    │    - coverage_analyzer (cross-newspaper comparison)          │
@@ -231,6 +237,9 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    ┌─────────────────────────────────────────────────────────────┐
    │      Concurrent Tool Dispatch & Adaptive Execution Engine   │
    │  • Executes planned tools in parallel via asyncio.gather    │
+   │  • Deep Visual Inspection Cascade (Strategies A through E)  │
+   │  • On-demand VLM extraction from MinIO on placeholder crops │
+   │  • Defensive publication & date validation in executor      │
    │  • Real-time adaptive fallback on 0-hit category filters    │
    │  • Resilient multi-tier issue ID fallback in sql_analytics  │
    │  • Scoped coverage analyzer targeting active date editions  │
@@ -340,6 +349,8 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 9.26: Date Normalization & Multi-Edition Audit** | Slash-formatted dates (`1/8/2026`) failed database queries, omitting publications from comparative matrices. | Added universal ISO-8601 normalization (`normalize_date_to_iso`) in `sql_analytics.py`; integrated complete multi-edition manifests into comparative prompts. |
 | **Phase 9.27: CrossEncoder Latency & Synthesizer De-Bloating** | Apple Silicon MPS backend caused 30.4s hybrid search latency spikes; off-domain articles polluted topical comparisons; synthesizer was 1,182 lines with quadruple-duplicated domain maps. | Forced `device="cpu"` on macOS for `CrossEncoderReranker` (80ms execution) and capped candidate pool at 20 (dropping latency from 30.4s to 1.0s); filtered domain noise in SQL analytics; enforced strict zero-coverage reporting; de-bloated `synthesizer.py` with centralized `DOMAIN_TAXONOMY` and modular static renderers. |
 | **Phase 9.28: Decoupled Modular Synthesizer Architecture** | Monolithic 1,073-line `synthesizer.py` conflated 6 responsibilities (domain classification, context formatting, token budgeting, prompt templating, LLM streaming, and deterministic report generation). | Decoupled into single-responsibility modules: `taxonomy.py` (domain classification & scoring), `prompt_context.py` (evidence context & budgeting), and `fallback_presenter.py` (deterministic report engine), shrinking `synthesizer.py` to a lean coordinator (~320 lines) while preserving 100% backward compatibility and test coverage. |
+| **Phase 10: Ingestion Subsystem Consolidation & Remediation** | Ingestion pipeline sprawl across ad-hoc modules; ad bleed into editorial text; phantom publication dates; false-positive article segmentation. | Consolidated ingestion into structured `layout/` and `parsers/` subpackages; implemented geometric ad barrier isolation; added multi-page majority voting for masthead dates; refined newsroom taxonomy with geopolitical domain anchors and contextual dampening. |
+| **Phase 11: Multimodal Visual Intelligence & Conversational Guardrails** | Complex broadsheet charts and infographics were ignored during agent QA; conversational multi-turn context leaked outdated article/issue metadata; dual-page citation noise degraded credibility; hardcoded provider configs caused lock-in. | Introduced `inspect_visual_asset` tool with 5-tier Strategy Cascade A–E and on-demand MinIO VLM extraction; added Broadsheet Reader `"Ask Agent About This Infographic / Photo"` deep-link integration; engineered `parse_inline_citation` with strict cross-turn parameter eviction guardrails; eliminated dual-page citation formatting; added dynamic `ModelSettingsStudio.jsx`. |
 
 ---
 

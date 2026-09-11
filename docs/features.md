@@ -19,6 +19,9 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * Atomically deletes previous page-exclusive articles, entities, topics, chunks, photos, and Qdrant vector points, replacing them with freshly parsed records without corrupting or restarting the entire multi-page issue.
 * **VLM Spatial Grounding for Composite Photo Displays**:
   * Automatically applies VLM visual grounding (`detect_subphotos_via_vlm_grounding`) to identify, describe, and crop discrete portraits and photo insets on complex composite display pages.
+* **"Ask Agent About This Infographic / Photo" Direct Integration**:
+  * Every cropped photo, diagram, and infographic card rendered in the broadsheet side inspector features a dedicated `"Ask Agent About This Infographic / Photo"` action button.
+  * Clicking this button opens the conversational agent assistant with the asset pre-attached (`attachedAsset` state), showing an active blue banner with the headline, date, and page, immediately ready for multimodal reasoning.
 
 ---
 
@@ -89,9 +92,18 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * If a query compares multiple editions or dates of the *same* newspaper, the planner intelligently routes to targeted SQL issue summaries and scoped hybrid search instead of invoking an all-newspaper `coverage_analysis` across the entire database.
 * **Dynamic Brand-to-ID Filter Resolution**:
   * In `graph.py`, hybrid searches mentioning publication names (such as *"The Goan"*) dynamically query MySQL to resolve the exact `newspaper_id`, ensuring search results are strictly confined to the requested newspaper.
-* **Dynamic Publication & Date Isolation**:
-  * Employs query-aware guardrails in `extract_active_issue_from_history()` to drop stale publications or dates whenever a user switches to a different date or initiates a comparative query.
-  * Injects `Verified Available Publications for this Query` and strict isolation constraints into synthesizer prompts, guaranteeing that past conversation topics (e.g. LIV Golf, Ram Temple) never bleed into new dates.
+* **Inline Citation Parsing (`parse_inline_citation`)**:
+  * Seamlessly extracts metadata from user follow-ups quoting previous answer citations in broadsheet bracketed formats (e.g. `[4] The Goan, 2026-08-01, Page 3, Headline: "..."` or `[{The Goan}, ...]`).
+  * Resolves `headline`, `newspaper_name`, `issue_date`, and `page_number` for instant targeted inspection.
+* **Active Reader Attached Asset Propagation**:
+  * Supports direct asset routing from the Broadsheet Reader via `attached_article_id` and `attached_photo_id` fields in `QueryRequest`.
+  * Renders an active blue attachment pill in `AgentAssistant.jsx` with headline, date, and page info, binding the asset to `PlanResult` for multimodal inquiry.
+* **Strict Cross-Turn Invalidation Guardrails**:
+  * In `extract_active_issue_from_history()`, strictly drops stale parameters (`article_id`, `photo_id`, `headline`, `page_number`, `target_newspapers`) across turns:
+    * **Guardrail 1**: Purges parameters when user specifies a new or conflicting issue date.
+    * **Guardrail 2**: Purges parameters when user switches to a different publication brand.
+    * **Guardrail 3**: Purges parameters when user introduces an explicit headline or new topic.
+  * Injects `Verified Available Publications for this Query` and strict isolation constraints into synthesizer prompts, guaranteeing that past conversation topics never bleed into new dates.
 * **Multi-Brand Parameter Extraction & Typo Tolerance**:
   * Parses multiple newspaper brand names from complex queries in token order without breaking on the first match.
   * Detects differential exclusion syntax (`"but not in"`, `"not in"`, `"exclusive to"`, `"absent in"`).
@@ -118,7 +130,9 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * Seamless integration with NVIDIA API Catalog / NIM endpoints (`https://integrate.api.nvidia.com/v1`).
   * Delivers sub-second (~0.59s) reasoning completions with `nvidia/nemotron-3.5-lightning-30b-a3b`, streaming thinking deltas directly into the collapsible reasoning accordion.
   * Powers multimodal vision reading with `meta/llama-3.2-11b-vision-instruct` for high-resolution newspaper charts and photojournalism.
-* **Server-Sent Events (SSE) Streaming**: Low-latency token streaming with live tool telemetry and reasoning traces.
+* **Server-Sent Events (SSE) Streaming with Visual Provenance**:
+  * Low-latency token streaming with live tool telemetry (`event: stage` including `inspecting_visual_asset`).
+  * Yields structured citations (`event: citations`) flagged with `is_visual_asset: true` and thumbnail endpoints (`/api/photos/{id}/image`), rendering interactive visual cards in the UI.
 
 ---
 
@@ -138,6 +152,14 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * **Interactive Reader Controls**: Broadsheet Reader photo cards include `⚡ Analyze with Qwen-VL` and `🔄 Re-Analyze with VLM` buttons with live loading animations and verified scene badges.
 * **Spatial Polygon Media Binding**: Binds cropped photos and charts to their parent editorial article using horizontal overlap and vertical proximity algorithms.
 * **Dedicated Visual RAG Chunks**: Generates unfragmented `[INFOGRAPHIC / DATA TABLE]` chunks embedded in Qdrant for dense semantic retrieval.
+* **Agentic Visual Inspection Tool (`inspect_visual_asset`)**:
+  * Equips the conversational agent with dedicated visual inspection capabilities across 5 execution strategies:
+    * **Strategy A**: Direct `photo_id` lookup with companion chart discovery and defensive publication validation.
+    * **Strategy B**: Target headline lookup mapped to visual assets on the matching date.
+    * **Strategy C**: Direct `article_id` lookup retrieving all associated charts and diagrams.
+    * **Strategy D**: Multi-criteria database search scoped by publication, date, page, and caption.
+    * **Strategy E**: Scoped caption and VLM keyword search strictly joined with `Issue` to prevent photo leakage.
+  * **On-Demand MinIO VLM Fallback**: If a targeted asset has a default placeholder description, streams the original high-resolution crop directly from MinIO `bucket_pages`, triggers `VisualDataExtractor.process_image_crop()`, transcribes the Markdown table/metrics, and persists the result to MySQL.
 * **Interactive Media Inspector**: View high-resolution cropped assets in a side modal with full image zoom, caption, AI scene breakdown, and transcribed tabular data.
 
 ---
@@ -205,11 +227,22 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 
 ---
 
-## 9. Runtime Model Provider Binding & Hot-Swapping
+## 9. Dynamic Model Provider Studio & Hot-Swappable Runtime Bindings
 
-* **Provider Agnostic Architecture**: Supports local inference (Ollama, Sentence-Transformers, Tesseract) and hosted providers (Anthropic, OpenAI, Google Gemini, Groq).
-* **Hot-Swappable Task Bindings**: Configure distinct providers for `query_planner`, `answerer`, `layout_analysis`, `embedding`, and `ocr` in `model_config.yaml` or dynamically via the `/api/settings/model-bindings` API.
-* **Task Capability Validation**: Validates that assigned providers satisfy required capabilities (e.g. vision support for layout analysis).
+* **Provider Agnostic Architecture**: Supports local inference (Ollama, Sentence-Transformers, RapidOCR, Tesseract) and hosted cloud providers (NVIDIA NIM, Anthropic Claude, OpenAI, Google Gemini, Groq).
+* **Model Settings Studio (`ModelSettingsStudio.jsx`)**:
+  * Dedicated interactive settings control panel in the web application for managing AI providers and active task bindings.
+  * Real-time API key management, custom endpoint URLs, connection health testing, and temperature/context window controls.
+  * Live visual capability indicators showing whether a selected model supports text chat, structured function calling, vision/multimodal reasoning, or embedding.
+* **Hot-Swappable Task Bindings**:
+  * Configure distinct models for each functional pipeline task independently:
+    * `query_planner`: Fast structured tool scheduling and archetype classification.
+    * `synthesizer` / `answerer`: High-capacity grounded synthesis and analytical reporting.
+    * `vlm_extractor`: Multimodal vision models for charts, tables, and broadsheet photojournalism.
+    * `embedding`: Dense vector representations (BAAI/bge-m3).
+    * `ocr`: Local RapidOCR / Tesseract or cloud OCR engines.
+  * Persisted in `model_config.yaml` and hot-reloaded dynamically via `/api/settings/model-bindings` without server restarts.
+* **Task Capability Validation**: Validates that assigned providers satisfy required capabilities (e.g. vision support for layout analysis and chart extraction).
 
 ---
 

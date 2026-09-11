@@ -19,6 +19,9 @@ class AgentCitation(TypedDict, total=False):
     url: str | None
     source_type: str  # "newspaper" or "web"
     is_web: bool
+    photo_id: int | None
+    image_url: str | None
+    visual_type: str | None
 
 
 class ToolExecutionRecord(TypedDict):
@@ -51,6 +54,8 @@ class AgentState(TypedDict):
     active_issue_id: int | None
     active_newspaper_name: str | None
     active_issue_date: str | None
+    attached_article_id: int | None
+    attached_photo_id: int | None
     error: str | None
 
 

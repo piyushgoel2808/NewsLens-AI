@@ -50,6 +50,21 @@ def reconcile_and_sanitize_arguments(
     sanitized = dict(args)
     q_lower = query.lower()
 
+    if tool_name == "inspect_visual_asset":
+        if extracted.get("attached_photo_id") and "photo_id" not in sanitized:
+            sanitized["photo_id"] = extracted["attached_photo_id"]
+        if extracted.get("attached_article_id") and "article_id" not in sanitized:
+            sanitized["article_id"] = extracted["attached_article_id"]
+        if "query" not in sanitized:
+            sanitized["query"] = query
+        if extracted.get("newspaper_name") and "newspaper_name" not in sanitized:
+            sanitized["newspaper_name"] = extracted["newspaper_name"]
+        if extracted.get("issue_date") and "issue_date" not in sanitized:
+            sanitized["issue_date"] = extracted["issue_date"]
+        if extracted.get("page_number") and "page_filter" not in sanitized:
+            sanitized["page_filter"] = str(extracted["page_number"])
+        return sanitized
+
     # 1. Newspaper Brand Ground Truth & Active Context Retention
     valid_brands: list[str] = (
         extracted.get("target_newspapers")
@@ -301,11 +316,39 @@ def build_web_search_tool(
     return PlannedToolCall("web_search", {"query": query, "num_results": num_results}, purpose or default_purpose)
 
 
+def build_inspect_visual_asset_tool(
+    photo_id: int | None = None,
+    article_id: int | None = None,
+    query: str = "",
+    newspaper_name: str = "",
+    issue_date: str = "",
+    page_filter: str | int | None = None,
+    purpose: str = "",
+) -> PlannedToolCall:
+    """Build a planned inspect_visual_asset tool invocation."""
+    args: dict[str, Any] = {}
+    if photo_id is not None:
+        args["photo_id"] = photo_id
+    if article_id is not None:
+        args["article_id"] = article_id
+    if query:
+        args["query"] = query
+    if newspaper_name:
+        args["newspaper_name"] = newspaper_name
+    if issue_date:
+        args["issue_date"] = issue_date
+    if page_filter is not None and str(page_filter).strip():
+        args["page_filter"] = str(page_filter).strip()
+    default_purpose = "Deep multimodal visual inspection and numerical data table transcription"
+    return PlannedToolCall("inspect_visual_asset", args, purpose or default_purpose)
+
+
 __all__ = [
     "_GENERIC_FILLER_QUERIES",
     "build_coverage_analysis_tool",
     "build_entity_search_tool",
     "build_hybrid_search_tool",
+    "build_inspect_visual_asset_tool",
     "build_sql_coverage_comparison_tool",
     "build_sql_difference_tool",
     "build_sql_summary_tool",

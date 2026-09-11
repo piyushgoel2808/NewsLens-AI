@@ -31,7 +31,7 @@ and updated at every phase.
 | `Makefile` | Dev convenience targets: `up`, `down`, `migrate`, `test`, `lint`, `verify`, `pull-models`, `serve` |
 | `.pre-commit-config.yaml` | ruff + mypy + pre-commit-hooks (end-of-file, trailing whitespace, yaml/json check) |
 | `.github/workflows/ci.yml` | GitHub Actions CI: lint job + test job (with MySQL + Redis services) running in parallel |
-| `engineering_log.md` | This file |
+| `docs/engineering_log.md` | This file |
 | `docs/architecture.md` | Architecture quick-reference stub |
 | `backend/pyproject.toml` | Python 3.12 project via uv; all runtime + dev dependencies |
 | `backend/app/core/config.py` | Pydantic Settings loading env vars + model_config.yaml; typed sub-models for each config section |
@@ -3209,5 +3209,60 @@ When querying specific analytical articles (such as `"The growing bipolarity in 
   - Query: `"The growing bipolarity in the world complicates the ability of Brics-like groupings to push for a radical Global South agenda"`
   - Retrieved Article `42245` as rank #1 with cross-encoder score `9.9215`.
   - Synthesized structured brief correctly citing *Hindustan Times* (p.4) with zero duplicate bullet points and accurate bounding boxes.
+
+---
+
+## Phase 11 — Agent Multimodal Visual Intelligence, On-Demand VLM Extraction & Cross-Turn Anti-Leakage Guardrails
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problem Diagnosis & Root Cause
+When users interacted with broadsheet articles containing companion infographics, charts, and tables across multiple dialogue turns, the system suffered from an insidious chain of four compounding failures:
+1. **Unconstrained Global Fallback Search in Strategy E (`executor.py:1000`)**:
+   - When a conversational follow-up query (e.g. *"DO IT HAVE ANY INFOGRPICS WITH IT IN HINDUSTAN TIMES"*) lacked headline tokens, Strategy D headline token scoring returned 0 matches.
+   - Strategy E (`Fallback search on Photo captions`) executed `select(Photo).order_by(Photo.id.desc()).limit(10)` without scoping by `Newspaper` or `Issue`.
+   - It pulled the 10 latest photos globally across the entire database, which happened to belong to *Mint* (2026-09-05). It retrieved Photo `#8671` belonging to Article `#42426` (*"SEBI APPROVES NSE IPO"*), citing it into conversation history.
+2. **Incomplete Guardrail Eviction in `condenser.py:228-238`**:
+   - On the next turn, when the user explicitly pasted the citation for the article on Hindustan Times Page 4 (`[4] Hindustan Times, 2026-09-10, Page 4, Headline: "The growing bipolarity in the world..."`), `extract_active_issue_from_history()` scanned history.
+   - It picked up Turn 2's citations: `article_id = 42426`, `photo_id = 8671`, `headline = "SEBI APPROVES NSE IPO..."`.
+   - While Guardrail 2 and 3 noticed date and newspaper changes (`2026-09-10`, `Hindustan Times`), they only popped `newspaper_name`, `issue_id`, and `issue_date`.
+   - **Crucially, they never evicted `article_id`, `photo_id`, or `headline`!**
+   - As a result, `active_ctx` leaked `{'article_id': 42426, 'photo_id': 8671}` into the new turn.
+3. **Rigid Citation Regex Ignoring Broadsheet Format & Current Query**:
+   - `condenser.py` used regex `\[\{([^}]+)\},\s*...\]` requiring curly braces `{}` around the newspaper name, and only scanned `chat_history`.
+   - The broadsheet reader and user citations use `[4] Hindustan Times, 2026-09-10, Page 4, Headline: "..."`. This went completely unparsed when embedded in `current_query`.
+4. **Blind Trust in `article_id` in Strategy C (`executor.py:897`)**:
+   - `query.py` passed `attached_article_id = 42426` to the planner, which invoked `inspect_visual_asset(article_id=42426, newspaper_name="Hindustan Times", ...)`.
+   - Strategy C executed `select(Photo).where(Photo.article_id == 42426)` without verifying whether Article 42426 actually belonged to the requested newspaper (*Hindustan Times*) or date (*2026-09-10*).
+   - Because Article 42426 was from *Mint*, it blindly retrieved Mint's photos (Nepal tunnel rescue, ISRO rocket launch), resulting in the synthesizer declaring that no visual assets existed for BRICS in Hindustan Times and hallucinating the Mint photos.
+
+### Architectural Solutions & Implementations
+1. **Authoritative Inline Citation Extractor (`condenser.py:parse_inline_citation`)**:
+   - Implemented a unified regex parser supporting both broadsheet format (`[4] Hindustan Times, 2026-09-10, Page 4, Headline: "..."`) and bracketed format (`[{Hindustan Times}, 2026-09-10, Page 4, "Headline"]`).
+   - Parses `current_query` first as an authoritative source of truth before inspecting dialogue history.
+2. **Strict Multi-Turn Context Purging & Invalidation (`condenser.py:extract_active_issue_from_history`)**:
+   - Updated Guardrails 1, 2, and 3: whenever `current_query` supplies a new date, a new newspaper, or an authoritative citation, all prior article-specific keys (`article_id`, `photo_id`, `headline`, `page_number`, `target_newspapers`) are strictly purged.
+3. **Defensive Publication & Issue Date Validation in Visual Inspection (`executor.py:_execute_inspect_visual_asset`)**:
+   - In **Strategy A** (`photo_id`) and **Strategy C** (`article_id`): verified that `article.issue.newspaper.name` and `article.issue.issue_date` match the requested `newspaper_name` and `issue_date`.
+   - If an incompatible ID is encountered, it is rejected, a warning is logged, and the executor falls back to headline and candidate matching.
+4. **Scoped Strategy D and Strategy E Queries (`executor.py`)**:
+   - In Strategy D: prioritized matching against `target_headline`.
+   - In Strategy E: joined `Issue` and `Newspaper` and constrained queries with `Newspaper.name` and `Issue.issue_date`, permanently eliminating cross-newspaper photo leakage.
+5. **On-Demand VLM Extraction in `inspect_visual_asset` (`executor.py`)**:
+   - When inspecting broadsheet visual assets with placeholder captions (`"Visual asset: data_chart from broadsheet."`), the tool fetches crop bytes directly from MinIO and executes on-demand VLM extraction (`VisualDataExtractor`), updating MySQL with markdown tables and key metrics.
+6. **Frontend Reader & Agent Assistant Integration**:
+   - Added "Ask Agent About This Infographic / Photo" action button in `BroadsheetReader.jsx`.
+   - Added attached asset banner and visual citation cards with thumbnail previews (`/api/photos/{id}/image`) in `AgentAssistant.jsx`.
+   - Added `attached_article_id` and `attached_photo_id` parameters to `QueryRequest` in `query.py`, enabling seamless grounding across reader and conversational agent.
+   - Added `ModelSettingsStudio.jsx` component for dynamic model provider configuration and switching.
+
+### Verification Results
+- **Automated Tests**: Added `test_parse_inline_citation_formats` and `test_cross_turn_article_eviction` in `backend/tests/test_condenser.py`. All 79 agent tests passing (100% green).
+- **End-to-End Live API Verification**: Tested against live streaming API with the exact problematic query and dirty history:
+  - Correctly resolved *Hindustan Times*, 2026-09-10, Page 4, Article `#42245`.
+  - Retrieved all 4 genuine data charts (`#8408`, `#8409`, `#8410`, `#8411`).
+  - Synthesized accurate quantitative metrics (Brics-ex China rising from 7.4 to 8.0, G7-ex US declining from 29.8 to 17.8, US and China GDP trajectories) with zero hallucination from Mint.
+
 
 

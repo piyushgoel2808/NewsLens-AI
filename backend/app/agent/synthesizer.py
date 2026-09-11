@@ -353,8 +353,11 @@ class AnswerSynthesizer:
             issue_id=item.get("issue_id", 0),
             bboxes=item.get("bboxes", []),
             url=None,
-            source_type="newspaper",
+            source_type="visual_asset" if item.get("is_visual_asset") or item.get("source_tool") == "inspect_visual_asset" else "newspaper",
             is_web=False,
+            photo_id=item.get("photo_id"),
+            image_url=item.get("image_url"),
+            visual_type=item.get("visual_type"),
         )
 
     def extract_citations(
@@ -367,11 +370,15 @@ class AnswerSynthesizer:
         seen_keys: set[str] = set()
         text_lower = (text or "").lower()
 
-        # Step 1: Filter candidates to genuine articles (article_id > 0) or web articles
+        # Step 1: Filter candidates to genuine articles (article_id > 0), visual assets, or web articles
         # Strictly exclude aggregate tool artifacts (article_id == 0) like manifests and coverage matrices
         candidate_items = [
             item for item in evidence_items
-            if (bool(item.get("is_web") or item.get("source_tool") == "web_search") or int(item.get("article_id") or 0) > 0)
+            if (
+                bool(item.get("is_web") or item.get("source_tool") == "web_search")
+                or int(item.get("article_id") or 0) > 0
+                or bool(item.get("is_visual_asset") or item.get("source_tool") == "inspect_visual_asset")
+            )
         ]
         # In case tests or mock fixtures omit article_id, keep non-manifest items
         if not candidate_items and evidence_items:
@@ -394,9 +401,27 @@ class AnswerSynthesizer:
             url = item.get("url") or ""
 
             is_referenced = False
+            is_visual = bool(item.get("is_visual_asset") or item.get("source_tool") == "inspect_visual_asset")
+
             if is_web:
                 if (url and url.lower() in text_lower) or (hl_clean and len(hl_clean) > 4 and hl_clean in text_lower):
                     is_referenced = True
+            elif is_visual:
+                photo_id_str = str(item.get("photo_id") or "")
+                v_type = str(item.get("visual_type") or "chart").replace("_", " ").lower()
+                # Check if visual asset is referenced by headline, photo ID, visual type, or data points
+                if (
+                    (photo_id_str and photo_id_str in text_lower)
+                    or (hl_clean and len(hl_clean) > 5 and hl_clean in text_lower)
+                    or any(w in text_lower for w in [v_type, "chart", "infographic", "table", "graph", "trend", "metric", "figure"])
+                ):
+                    is_referenced = True
+                elif hl_clean:
+                    tokens = [w for w in re.findall(r"\w+", hl_clean) if len(w) > 3]
+                    if len(tokens) >= 3:
+                        matched_tokens = sum(1 for tok in tokens if tok in text_lower)
+                        if matched_tokens / len(tokens) >= 0.5:
+                            is_referenced = True
             else:
                 # Check exact or substring headline match
                 if hl_clean and len(hl_clean) > 5 and hl_clean in text_lower:
@@ -416,20 +441,31 @@ class AnswerSynthesizer:
                         is_referenced = True
 
             if is_referenced:
-                dedup_key = f"{item.get('newspaper_name')}_{item.get('issue_date')}_{hl}"
+                photo_id = item.get("photo_id")
+                if photo_id:
+                    dedup_key = f"visual_{photo_id}"
+                else:
+                    dedup_key = f"{item.get('newspaper_name')}_{item.get('issue_date')}_{hl}"
                 if dedup_key not in seen_keys:
                     seen_keys.add(dedup_key)
                     citations.append(self._make_citation(item, headline=hl))
 
         # Fallback if no specific inline references matched: strictly pick top genuine candidate articles
         if not citations and candidate_items:
-            for item in candidate_items[:2]:
-                raw_hl = item.get("headline", "")
-                sub_hl = item.get("subheadline")
-                byline = item.get("byline_author")
-                snip = item.get("snippet") or item.get("summary") or ""
-                hl, _ = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
-                citations.append(self._make_citation(item, headline=hl))
+            for item in candidate_items[:4]:
+                photo_id = item.get("photo_id")
+                if photo_id:
+                    dedup_key = f"visual_{photo_id}"
+                else:
+                    dedup_key = f"{item.get('newspaper_name')}_{item.get('issue_date')}_{item.get('headline')}"
+                if dedup_key not in seen_keys:
+                    seen_keys.add(dedup_key)
+                    raw_hl = item.get("headline", "")
+                    sub_hl = item.get("subheadline")
+                    byline = item.get("byline_author")
+                    snip = item.get("snippet") or item.get("summary") or ""
+                    hl, _ = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
+                    citations.append(self._make_citation(item, headline=hl))
 
         return citations
 

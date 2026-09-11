@@ -155,21 +155,24 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 ##### [`backend/app/agent/condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py)
 * **What It Has**: 
   - `QueryCondenser` class.
-  - Helper functions: `is_in_context_meta_query()`, `extract_active_issue_from_history()`, `extract_active_article_context()`, `extract_active_exclusion_context()`.
+  - Helper functions: `parse_inline_citation()`, `is_in_context_meta_query()`, `extract_active_issue_from_history()`, `extract_active_article_context()`, `extract_active_exclusion_context()`.
   - `CONDENSATION_PROMPT` system template.
 * **Work It Is Doing**:
+  - **Inline Citation Parsing**: Parses quoted citations from previous turns in formats like `[4] Newspaper, YYYY-MM-DD, Page X, Headline: "..."` and `[{Newspaper}, ...]`, extracting headline, newspaper, date, and page number.
   - **Conversational Meta-Query Short-Circuit**: Checks if a query is purely asking about previous turn metadata (e.g. "What was the date?", "Which paper was this from?") and bypasses heavy retrieval to answer instantly from chat context.
-  - **Query-Aware Context Isolation**: Analyzes prior turns to extract active publication names, issue dates, and differential comparison states. Purges stale context when the user switches topics.
+  - **Reader Attached Asset Binding**: Binds active reader attached assets (`attached_article_id`, `attached_photo_id`) for immediate visual query routing.
+  - **Strict Cross-Turn Invalidation Guardrails**: Evaluates Guardrails 1, 2, and 3 to strictly purge `article_id`, `photo_id`, `headline`, `page_number`, and `target_newspapers` when switching dates, publications, or topics.
   - **Coreference Resolution**: Rewrites ambiguous follow-up questions (e.g. "list all those 11 articles") into complete, standalone search queries ("list all those 11 articles in The Goan but not in The Morning Standard dated 2026-08-01").
 * **Important Tools / Frameworks**: Python AsyncIO, Regular Expressions (`re`), Pydantic.
 * **LLM / VLM / Embedding Models**: Invokes the configured `query_planner` LLM (e.g. `gemma4:12b`, `llama3.1:8b`, or `gpt-4o-mini`).
 
 ##### [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)
 * **What It Has**: 
-  - Domain Data Models: `ToolName`, `QueryArchetype`, `PlannedToolCall`, `PlanResult`, `ToolCallSpec`, `AgentPlan`.
+  - Domain Data Models: `ToolName` (including `INSPECT_VISUAL_ASSET`), `QueryArchetype` (7 archetypes: `factual_lookup`, `quantitative_trend`, `thematic_timeline`, `cross_newspaper_comparison`, `entity_deep_dive`, `negative_coverage_audit`, `article_catalog`), `PlannedToolCall`, `PlanResult`, `ToolCallSpec`, `AgentPlan`.
   - Backward compatibility aliases and containers: `QueryPlan`, `ExtractedToolArguments`.
 * **Work It Is Doing**:
   - Defines the core type-safe schema contracts for agentic query planning and tool execution.
+  - Encapsulates tool argument contracts for visual inspection (`photo_id`, `article_id`, `page_filter`, `target_headline`, `query_text`).
   - Decouples Pydantic models and dataclasses from orchestration logic for zero-dependency reuse across retrieval and graph nodes.
 
 ##### [`backend/app/agent/extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py)
@@ -183,10 +186,11 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 
 ##### [`backend/app/agent/tool_factory.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_factory.py)
 * **What It Has**: 
-  - Canonical Tool Builders: `build_sql_summary_tool()`, `build_sql_difference_tool()`, `build_sql_coverage_comparison_tool()`, `build_hybrid_search_tool()`, `build_coverage_analysis_tool()`, `build_timeline_tool()`, `build_entity_search_tool()`, `build_web_search_tool()`.
+  - Canonical Tool Builders: `build_sql_summary_tool()`, `build_sql_difference_tool()`, `build_sql_coverage_comparison_tool()`, `build_hybrid_search_tool()`, `build_coverage_analysis_tool()`, `build_timeline_tool()`, `build_entity_search_tool()`, `build_web_search_tool()`, `build_inspect_visual_asset_tool()`.
   - Reconcilers: `reconcile_and_sanitize_arguments()`, `sanitize_generic_filler_query()`.
 * **Work It Is Doing**:
   - **Single Source of Truth for Tool Construction**: Centralizes the generation of `PlannedToolCall` objects with clean parameter filtering.
+  - **Visual Asset Tool Construction**: Builds `inspect_visual_asset` tool calls with normalized `photo_id`, `article_id`, and scoping parameters.
   - **Hallucination Pruner**: Checks LLM-generated arguments against query ground truth and prunes hallucinated brand names, dates, or page numbers.
   - **Filler Sanitization**: Detects few-shot prompt contamination and restores substantive user domain queries.
 
@@ -194,16 +198,17 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **What It Has**: 
   - `QueryPlanner` class coordinating direct tool planning and fallback.
   - Re-exports of `models`, `extractor`, and `tool_factory` symbols via `__all__` for 100% backward compatibility.
-  - Lean `PLANNER_SYSTEM_PROMPT` with 3 canonical few-shot examples.
+  - Lean `PLANNER_SYSTEM_PROMPT` with canonical few-shot examples including visual asset queries.
 * **Work It Is Doing**:
   - **True Agentic Direct Tool Planning (Option 2)**: Directly prompts LLMs to schedule ordered tool calls (`[ToolCallSpec(tool_name, arguments, purpose)]`) inside `AgentPlan`.
-  - **Lean Deterministic Heuristic Router**: Clean single-pass intent classifier mapping queries to 6 core archetypes:
+  - **Lean Deterministic Heuristic Router**: Clean single-pass intent classifier mapping queries to 7 core archetypes:
     1. `thematic_timeline` (chronological progression across multiple dates)
     2. `entity_deep_dive` (multi-hop entity network search and profiling)
     3. `cross_newspaper_comparison` (differential coverage, omissions, framing differences across broadsheets)
-    4. `quantitative_trend` (article counts, topic distributions, page-level article manifests, full issue overviews)
-    5. `article_catalog` (fast listing and catalog manifest generation for specific dates/sections)
-    6. `factual_lookup` (targeted semantic + keyword search for point-in-time facts and quotes)
+    4. `quantitative_trend` (macro statistics, topic distributions, section volume summaries)
+    5. `negative_coverage_audit` (unreported news verification and omission analysis)
+    6. `article_catalog` (fast listing and catalog manifest generation for specific dates/sections)
+    7. `factual_lookup` (targeted semantic + keyword search for point-in-time facts, quotes, and visual graphics)
   - **Transparent Legacy Adapter**: Translates older mock objects and test fixtures (`QueryPlan`, `primary_tool`, `ExtractedToolArguments`) to direct tool calls via `tool_factory`.
   - **Live Archive Grounding**: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories.
   - **High-Throughput Cloud Failover**: Prioritizes `nvidia_nemotron` (<1s hosted inference with streaming reasoning) on cloud failover routes.
@@ -214,19 +219,21 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **What It Has**: `AgentState` TypedDict, `EvidenceItem` dataclass, `AgentCitation` dataclass.
 * **Work It Is Doing**:
   - Defines the global state container passed through the LangGraph state machine.
-  - Stores: user query, condensed query, conversation history, query plan, raw tool execution outputs, filtered evidence, streaming tokens, `<think>` reasoning traces, and bounding-box citations.
+  - Stores: user query, condensed query, conversation history, query plan, raw tool execution outputs, filtered evidence, streaming tokens, `<think>` reasoning traces, and bounding-box citations (including `is_visual_asset` and image URLs).
 * **Important Tools / Frameworks**: Python `typing.TypedDict`, `typing.Annotated`, Pydantic models.
 * **LLM / VLM / Embedding Models**: None (State Definition).
 
 ##### [`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)
-* **What It Has**: `ToolExecutor` class, presentation formatting helpers (`format_issue_manifest()`, `format_coverage_matrix_snippet()`, `format_coverage_difference_snippet()`).
+* **What It Has**: `ToolExecutor` class, `execute_inspect_visual_asset()`, presentation formatting helpers (`format_issue_manifest()`, `format_coverage_matrix_snippet()`, `format_coverage_difference_snippet()`).
 * **Work It Is Doing**:
-  - Encapsulates isolated, concurrent tool dispatch for all planned tool calls (`hybrid_search`, `sql_analytics`, `entity_search`, `web_search`) via `asyncio.gather(*tasks, return_exceptions=True)`.
+  - Encapsulates isolated, concurrent tool dispatch for all planned tool calls (`hybrid_search`, `sql_analytics`, `inspect_visual_asset`, `entity_search`, `web_search`) via `asyncio.gather(*tasks, return_exceptions=True)`.
+  - **5-Tier Visual Inspection Cascade**: Implements Strategy Cascade (A: photo_id lookup + companion charts; B: headline lookup; C: article_id lookup + companion charts; D: multi-criteria DB search; E: scoped caption/VLM search) with defensive publication and date validation.
+  - **On-Demand MinIO VLM Fallback**: If a targeted asset has a default placeholder description, streams raw crop bytes from MinIO `bucket_pages`, passes them to `VisualDataExtractor.process_image_crop()`, transcribes the Markdown table/metrics, and persists the result to MySQL `article_photos.vlm_description`.
   - **Zero Dynamic Imports**: Eliminates Python import-lock contention (`_ModuleLock`) during high-concurrency coroutine execution.
-  - **Single-Source Formatters**: Unifies relational SQL manifests and coverage matrix text representations to ensure clean separation of concerns.
+  - **Single-Source Formatters**: Unifies relational SQL manifests and coverage matrix text representations.
   - **Date Normalization & Zero-Hit Fallback**: Normalizes non-ISO dates and transparently falls back when category constraints yield zero hits.
-* **Important Tools / Frameworks**: Python AsyncIO, SQLAlchemy Async Engine, Retrieval Engine Tools.
-* **LLM / VLM / Embedding Models**: None (Execution Tier).
+* **Important Tools / Frameworks**: Python AsyncIO, SQLAlchemy Async Engine, Retrieval Engine Tools, MinIO Client, VisualDataExtractor.
+* **LLM / VLM / Embedding Models**: Bound to `visual_extraction` for on-demand VLM enrichment.
 
 ##### [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)
 * **What It Has**: `EvidenceEvaluator` class, `_stem()`, `_stem_phrase()`, `is_structural_or_relevant_evidence()`.
@@ -246,6 +253,7 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - Native LangGraph conditional edge router: `_route_after_planning()`.
 * **Work It Is Doing**:
   - Orchestrates the full conversational RAG lifecycle in ~260 lines of clean code by delegating to `ToolExecutor` and `EvidenceEvaluator`.
+  - **Concurrent Tool Dispatch**: Executes all scheduled tools in parallel, including `inspect_visual_asset`, yielding `inspecting_visual_asset` stage updates.
   - **Native Conditional Edge Routing**: Short-circuits directly from `classify_and_plan` to `log_query` (for `clarification_needed`) or to `synthesize_answer` (for `conversational_meta_query`), completely bypassing tool execution and CRAG evaluation.
   - **Direct State Context Propagation**: Eliminates redundant history re-parsing in intermediate nodes by reading active issue context directly from `AgentState`.
 * **Important Tools / Frameworks**: LangGraph `StateGraph`, Python AsyncIO.
@@ -381,10 +389,10 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 ##### [`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py)
 * **What It Has**: 
   - Routes: `POST /query`, `POST /query/stream`, `POST /query/plan`, `POST /query/timeline`, `GET /query/history`.
-  - Pydantic models: `QueryRequest`, `QueryResponse`, `TimelineQueryRequest`.
+  - Pydantic models: `QueryRequest` (including `attached_article_id` and `attached_photo_id`), `QueryResponse`, `TimelineQueryRequest`.
 * **Work It Is Doing**:
   - Main user query execution endpoint.
-  - `POST /query/stream`: Pushes real-time Server-Sent Events (SSE) including pipeline stages (`stage`), internal thoughts (`thought`), narrative tokens (`token`), citation objects with bounding boxes (`citations`), and cost metrics (`done`).
+  - `POST /query/stream`: Pushes real-time Server-Sent Events (SSE) including pipeline stages (`stage` supporting `planning`, `searching`, `inspecting_visual_asset`, `evaluating_evidence`, `synthesizing`), internal thoughts (`thought`), narrative tokens (`token`), citation objects with bounding boxes and visual flags (`citations` with `is_visual_asset`, `image_url: /api/photos/{id}/image`), and cost metrics (`done`).
   - `POST /query/plan`: Inspects the Query Planner Chain-of-Thought and scheduled tools without executing generation.
 * **Important Tools / Frameworks**: FastAPI `StreamingResponse`, SSE Protocol (`text/event-stream`), AgentGraph.
 * **LLM / VLM / Embedding Models**: Coordinates the full cognitive agent stack.
@@ -984,13 +992,13 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 ### 6.3 `frontend/src/components/` — Workspaces, Readers & Modals
 
 ##### [`frontend/src/components/AgentAssistant.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/AgentAssistant.jsx)
-* **What It Has**: Conversational chat interface, SSE event listener, collapsible `<think>` reasoning accordion, inline citation pills, follow-up prompt pills, export buttons.
-* **Work It Is Doing**: Consumes the `/api/query/stream` SSE wire protocol in real-time, rendering thinking steps and markdown responses progressively. Links citations directly to the broadsheet canvas.
+* **What It Has**: Conversational chat interface, SSE event listener, collapsible `<think>` reasoning accordion, active attached asset banner (`attachedAsset` state with headline, date, page, and dismiss button), visual citation cards with thumbnail rendering (`/api/photos/{id}/image`), inline citation pills, follow-up prompt pills, export buttons.
+* **Work It Is Doing**: Consumes the `/api/query/stream` SSE wire protocol in real-time, rendering thinking steps, live stage indicators (including `inspecting_visual_asset`), and markdown responses progressively. Supports attaching photos and articles directly from the Broadsheet Reader and links citations directly to the broadsheet canvas.
 * **Important Tools / Frameworks**: Fetch API EventStream reader, Lucide React, Markdown rendering.
 
 ##### [`frontend/src/components/BroadsheetReader.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/BroadsheetReader.jsx)
-* **What It Has**: High-resolution pan/zoom canvas reader, page navigation carousel, article text inspection drawer.
-* **Work It Is Doing**: Displays 300 DPI broadsheet pages with smooth zoom controls; overlays interactive SVG bounding boxes for articles, photos, and infographics.
+* **What It Has**: High-resolution pan/zoom canvas reader, page navigation carousel, article text inspection drawer, `"Ask Agent About This Infographic / Photo"` action buttons on visual asset cards.
+* **Work It Is Doing**: Displays 300 DPI broadsheet pages with smooth zoom controls; overlays interactive SVG bounding boxes for articles, photos, and infographics. Equips every visual asset with deep-linking controls that open the Agent Assistant with the asset pre-attached for multimodal inquiry.
 * **Important Tools / Frameworks**: Canvas / SVG overlay rendering, CSS Transforms.
 
 ##### [`frontend/src/components/CanvasOverlay.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/CanvasOverlay.jsx)
@@ -1014,8 +1022,13 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 * **Work It Is Doing**: Displays raw DocLayNet bounding boxes, raw OCR text blocks, and parsed layout elements for any page to audit pipeline extraction quality.
 
 ##### [`frontend/src/components/ModelSelector.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/ModelSelector.jsx)
-* **What It Has**: Model configuration modal and task binding selector.
-* **Work It Is Doing**: Calls `/api/settings/bindings` to let users switch active models (e.g. from Ollama to Groq or Gemini) in real time.
+* **What It Has**: Quick model selection modal and compact task binding switcher.
+* **Work It Is Doing**: Calls `/api/settings/bindings` to let users switch active models in real time.
+
+##### [`frontend/src/components/ModelSettingsStudio.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/ModelSettingsStudio.jsx)
+* **What It Has**: Comprehensive AI provider management studio and task binding workbench.
+* **Work It Is Doing**: Provides a full-featured interface for configuring hosted and local model providers (NVIDIA NIM, Ollama, Anthropic, OpenAI, Gemini, Groq), managing API keys, running real-time connectivity and latency health tests, inspecting model capabilities (chat, reasoning, multimodal vision, embeddings), and dynamically updating task assignments (`query_planner`, `synthesizer`, `vlm_extractor`, `embedding`, `ocr`) with hot reload.
+* **Important Tools / Frameworks**: React Hooks, Lucide Icons, REST API integration.
 
 ##### [`frontend/src/components/RawDataViewer.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/RawDataViewer.jsx)
 * **What It Has**: JSON tree inspector.

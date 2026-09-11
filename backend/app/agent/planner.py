@@ -32,6 +32,7 @@ from app.agent.tool_factory import (
     build_coverage_analysis_tool,
     build_entity_search_tool,
     build_hybrid_search_tool,
+    build_inspect_visual_asset_tool,
     build_sql_coverage_comparison_tool,
     build_sql_difference_tool,
     build_sql_summary_tool,
@@ -71,10 +72,19 @@ Analyze the user's query, understand their underlying intent, produce step-by-st
 6. `web_search`: Live internet search.
    - Arguments: {"query": str, "num_results": int}
    - Use for: Real-time current events outside the archive.
+7. `inspect_visual_asset`: Deep multimodal visual inspection, numerical table extraction, and chart axis reading from broadsheet visual crops.
+   - Arguments: {"photo_id": int, "article_id": int, "query": str, "newspaper_name": str, "issue_date": str, "page_filter": str}
+   - Use for: Extracting specific numbers, data tables, infographic graphics, charts, and captions from an attached, cited, or inquired broadsheet visual asset, or checking if an article/page has infographics or graphs.
 
 ### 📚 FEW-SHOT EXAMPLES
 Query: "What happened to Tata Power on page 3?"
 Output: {"thought_process": "Factual question about Tata Power on page 3. Direct hybrid search bounded to page 3.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "hybrid_search", "arguments": {"query": "Tata Power", "page_filter": "3", "top_k": 6}, "purpose": "Search page 3 for Tata Power reporting"}]}
+
+Query: "What are the exact figures and routes shown in this infographic?" (Attached asset photo_id: 5382)
+Output: {"thought_process": "User is asking about specific figures and content in an attached infographic. Schedule inspect_visual_asset.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "inspect_visual_asset", "arguments": {"photo_id": 5382, "query": "transport routes and figures"}, "purpose": "Transcribe and analyze infographic visual crop"}]}
+
+Query: "Does the Brics article on page 4 have any infographics or graphs with it?"
+Output: {"thought_process": "Inquiring about visual assets, charts, or infographics attached to an article on page 4.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "inspect_visual_asset", "arguments": {"query": "Brics multipolarity Global South agenda", "page_filter": "4"}, "purpose": "Inspect visual charts and infographics on page 4"}, {"tool_name": "hybrid_search", "arguments": {"query": "Brics multipolarity Global South agenda", "page_filter": "4", "top_k": 4}, "purpose": "Retrieve article textual context"}]}
 
 Query: "List all health news in The Goan on 2026-08-01"
 Output: {"thought_process": "Relational catalog query for health articles in The Goan.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "issue_date": "2026-08-01", "category_filter": "Health", "analysis_type": "issue_summary"}, "purpose": "Retrieve complete manifest of Health articles"}]}
@@ -163,6 +173,8 @@ class QueryPlanner:
         archive_context: str | None = None,
         active_issue_date: str | None = None,
         active_newspapers: list[str] | None = None,
+        attached_article_id: int | None = None,
+        attached_photo_id: int | None = None,
     ) -> PlanResult:
         """Plan query using true direct agentic tool calling with graceful heuristic fallback."""
         providers = self._get_provider_candidates(model_override)
@@ -173,6 +185,8 @@ class QueryPlanner:
                     user_content += f"\nACTIVE ARCHIVE STATE:\n{archive_context}\n"
                 if active_issue_date or active_newspapers:
                     user_content += f"\nCONVERSATION WORKING CONTEXT:\nActive Date: {active_issue_date or 'None'}\nActive Newspapers: {', '.join(active_newspapers or []) or 'None'}\n"
+                if attached_photo_id or attached_article_id:
+                    user_content += f"\nATTACHED VISUAL ASSET CONTEXT:\nAttached Photo ID: {attached_photo_id or 'None'}\nAttached Article ID: {attached_article_id or 'None'}\n"
                 user_content += "\nSchedule the exact tool calls needed to gather evidence for this query."
 
                 messages = [
@@ -195,6 +209,8 @@ class QueryPlanner:
                         enable_web_search=enable_web_search,
                         active_issue_date=active_issue_date,
                         active_newspapers=active_newspapers,
+                        attached_article_id=attached_article_id,
+                        attached_photo_id=attached_photo_id,
                     )
                 logger.warning(
                     "Provider returned unparseable plan output, attempting failover candidate",
@@ -212,6 +228,8 @@ class QueryPlanner:
             enable_web_search=enable_web_search,
             active_issue_date=active_issue_date,
             active_newspapers=active_newspapers,
+            attached_article_id=attached_article_id,
+            attached_photo_id=attached_photo_id,
         )
 
     def plan_query(
@@ -221,6 +239,8 @@ class QueryPlanner:
         archive_context: str | None = None,
         active_issue_date: str | None = None,
         active_newspapers: list[str] | None = None,
+        attached_article_id: int | None = None,
+        attached_photo_id: int | None = None,
     ) -> PlanResult:
         """Synchronous planning interface."""
         return self._plan_query_heuristic(
@@ -228,6 +248,8 @@ class QueryPlanner:
             enable_web_search=enable_web_search,
             active_issue_date=active_issue_date,
             active_newspapers=active_newspapers,
+            attached_article_id=attached_article_id,
+            attached_photo_id=attached_photo_id,
         )
 
     def classify_archetype(self, query: str) -> tuple[str, str]:
@@ -270,9 +292,15 @@ class QueryPlanner:
         enable_web_search: bool = False,
         active_issue_date: str | None = None,
         active_newspapers: list[str] | None = None,
+        attached_article_id: int | None = None,
+        attached_photo_id: int | None = None,
     ) -> PlanResult:
         """Translate AgentPlan into PlanResult, executing direct tool calls or legacy adapter."""
         extracted = extract_parameters_from_query(query)
+        if attached_article_id is not None:
+            extracted["attached_article_id"] = attached_article_id
+        if attached_photo_id is not None:
+            extracted["attached_photo_id"] = attached_photo_id
         tool_calls: list[PlannedToolCall] = []
 
         archetype = plan_obj.archetype
@@ -350,8 +378,8 @@ class QueryPlanner:
             else:
                 primary = plan_obj.primary_tool or ("sql_analytics" if archetype in ("quantitative_trend", "article_catalog") else "hybrid_search")
                 tool_calls.append(PlannedToolCall(tool_name=primary, arguments=args, purpose=f"Execute {primary}"))
-                if plan_obj.include_secondary_hybrid_search and primary != "hybrid_search":
-                    tool_calls.append(build_hybrid_search_tool(plan_obj.secondary_search_query or query, top_k=6, purpose="Corroborating search"))
+                if getattr(plan_obj, "include_secondary_hybrid_search", False) and primary != "hybrid_search":
+                    tool_calls.append(build_hybrid_search_tool(getattr(plan_obj, "secondary_search_query", None) or query, top_k=6, purpose="Corroborating search"))
 
         # 3. Fallback if no tool calls produced
         if not tool_calls:
@@ -360,13 +388,15 @@ class QueryPlanner:
                 enable_web_search=enable_web_search,
                 active_issue_date=active_issue_date,
                 active_newspapers=active_newspapers,
+                attached_article_id=attached_article_id,
+                attached_photo_id=attached_photo_id,
             )
             tool_calls = heur.tool_calls
 
         if enable_web_search and not any(t.tool_name == "web_search" for t in tool_calls):
             tool_calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))
 
-        return PlanResult(archetype=archetype, reasoning=plan_obj.thought_process, tool_calls=tool_calls)
+        return PlanResult(archetype=archetype, reasoning=plan_obj.thought_process or f"Structured agentic plan ({archetype})", tool_calls=tool_calls)
 
     def _plan_query_heuristic(
         self,
@@ -374,6 +404,8 @@ class QueryPlanner:
         enable_web_search: bool = False,
         active_issue_date: str | None = None,
         active_newspapers: list[str] | None = None,
+        attached_article_id: int | None = None,
+        attached_photo_id: int | None = None,
     ) -> PlanResult:
         """Clean, deterministic single-pass intent routing for offline fallback."""
         q_lower = query.lower().strip()
@@ -396,6 +428,33 @@ class QueryPlanner:
             page_filter = p_match.group(1)
 
         tool_calls: list[PlannedToolCall] = []
+
+        # 0. Visual Asset / Infographic Inspection
+        is_visual_query = any(w in q_lower for w in ["infographic", "data chart", "chart", "diagram", "table", "graph", "visual", "figure", "photograph", "photo"])
+        has_visual_trigger = any(w in q_lower for w in ["this", "the infographic", "attached", "chart", "diagram", "table", "above", "shown", "it have", "have any", "has any", "with it", "there any"])
+        if attached_photo_id or (attached_article_id and is_visual_query) or (is_visual_query and has_visual_trigger):
+            archetype = "factual_lookup"
+            tool_calls.append(build_inspect_visual_asset_tool(
+                photo_id=attached_photo_id,
+                article_id=attached_article_id,
+                query=query,
+                newspaper_name=newspaper or "",
+                issue_date=issue_date or "",
+                page_filter=page_filter or "",
+                purpose="Inspect visual crop and transcribe numerical data table",
+            ))
+            tool_calls.append(build_hybrid_search_tool(
+                query=query,
+                newspaper_name=newspaper,
+                date_from=date_from,
+                date_to=date_to,
+                page_filter=page_filter,
+                top_k=4,
+                purpose="Contextual article evidence",
+            ))
+            if enable_web_search:
+                tool_calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))
+            return PlanResult(archetype=archetype, reasoning=f"Deterministic visual inspection plan ({archetype})", tool_calls=tool_calls)
 
         # 1. Timeline / Chronological Trajectory
         if any(w in q_lower for w in ["timeline", "chronology", "chronological", "evolution", "over time", "history of", "progression"]):

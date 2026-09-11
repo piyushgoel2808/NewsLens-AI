@@ -14,6 +14,7 @@ ToolName = Literal[
     "entity_search",
     "coverage_analysis",
     "web_search",
+    "inspect_visual_asset",
 ]
 
 QueryArchetype = Literal[

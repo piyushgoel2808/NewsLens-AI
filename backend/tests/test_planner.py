@@ -638,6 +638,23 @@ class TestAgentWorkflowToolExecution:
         )
         assert res_no_ctx.tool_calls[0].arguments.get("newspaper_name") is None
 
+    def test_inspect_visual_asset_heuristic_routing(self) -> None:
+        """Verify queries with attached visual assets or asking about infographics schedule inspect_visual_asset."""
+        planner = QueryPlanner()
+        # Case 1: Explicit attached photo ID
+        res1 = planner.plan_query(
+            "What are the key statistics and routes shown here?",
+            attached_photo_id=5382,
+        )
+        assert any(t.tool_name == "inspect_visual_asset" for t in res1.tool_calls)
+        vis_call = next(t for t in res1.tool_calls if t.tool_name == "inspect_visual_asset")
+        assert vis_call.arguments.get("photo_id") == 5382
+
+        # Case 2: Visual infographic query text
+        res2 = planner.plan_query("What does the infographic on page 7 show?")
+        assert any(t.tool_name == "inspect_visual_asset" for t in res2.tool_calls)
+
+
 
 
 

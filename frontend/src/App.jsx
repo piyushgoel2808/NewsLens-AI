@@ -19,7 +19,7 @@ import ArchiveExplorer from './components/ArchiveExplorer';
 import TimelineWorkspace from './components/TimelineWorkspace';
 import EntityGraphWorkspace from './components/EntityGraphWorkspace';
 import UploadTrigger from './components/UploadTrigger';
-import RawDataViewer from './components/RawDataViewer';
+import ModelSettingsStudio from './components/ModelSettingsStudio';
 
 function MainApp() {
   const { activeTab, setActiveTab, selectedModel, taskBindings } = useActiveHighlight();
@@ -132,7 +132,7 @@ function MainApp() {
           <UploadTrigger />
         </div>
         <div className={activeTab === 'settings' ? 'h-full w-full' : 'hidden'}>
-          <RawDataViewer />
+          <ModelSettingsStudio />
         </div>
       </main>
     </div>

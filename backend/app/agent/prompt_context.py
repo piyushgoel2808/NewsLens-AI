@@ -67,17 +67,20 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
         seen_keys.add(dedup_key)
 
         is_manifest_or_matrix = (
-            item.get("source_tool") in ("sql_analytics", "coverage_analysis")
+            item.get("source_tool") in ("sql_analytics", "coverage_analysis", "inspect_visual_asset")
+            or item.get("is_visual_asset")
             or "RELATIONAL ARCHIVE MANIFEST" in text
             or "COVERAGE RECONCILIATION MATRIX" in text
             or "VERIFIED EXCLUSIVE COVERAGE" in text
+            or "VISUAL DATA ASSET:" in text
         )
-        max_chars = 4000 if is_manifest_or_matrix else 1200
+        max_chars = 4500 if is_manifest_or_matrix else 1200
         if len(text) > max_chars:
             text = text[:max_chars].rstrip() + " ... [excerpt truncated for length]"
 
         idx = len(context_blocks) + 1
         is_web = bool(item.get("is_web") or item.get("source_tool") == "web_search")
+        is_visual = bool(item.get("is_visual_asset") or item.get("source_tool") == "inspect_visual_asset")
 
         if is_web:
             url = item.get("url", "")
@@ -89,6 +92,24 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
                 f"Title: {hl}\n"
                 f"URL: {url}\n"
                 f"Date: {dt}\n"
+                f"Content:\n{text}\n"
+            )
+        elif is_visual:
+            np_name = item.get("newspaper_name", "Unknown Publication")
+            dt = item.get("issue_date", "Unknown Date")
+            pages = item.get("pages", [1])
+            page_val = int(pages[0]) if pages and pages[0] else 1
+            evidence_tag = f'[Evidence: {np_name}, {dt}, Page {page_val}, Headline: "{hl}"]'
+            v_pid = item.get("photo_id", "")
+            v_type = item.get("visual_type", "infographic")
+            context_blocks.append(
+                f"--- VISUAL INFOGRAPHIC & DATA ASSET EXCERPT [{idx}] ---\n"
+                f"{evidence_tag}\n"
+                f"Publication: {np_name}\n"
+                f"Date: {dt}\n"
+                f"Page: {page_val}\n"
+                f"Headline: {hl}\n"
+                f"Visual Asset #{v_pid} ({v_type})\n"
                 f"Content:\n{text}\n"
             )
         else:

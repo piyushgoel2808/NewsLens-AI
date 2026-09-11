@@ -31,6 +31,7 @@
    - [Tool 4: `timeline_builder` (Narrative Chronological Trajectory)](#tool-4-timeline_builder-narrative-chronological-trajectory)
    - [Tool 5: `coverage_analysis` (3-Tier Negative Coverage & Omission Audit)](#tool-5-coverage_analysis-3-tier-negative-coverage--omission-audit)
    - [Tool 6: `web_search` (Live Web Verification Fallback)](#tool-6-web_search-live-web-verification-fallback)
+   - [Tool 7: `inspect_visual_asset` (Deep Multimodal Chart, Table & Infographic Inspection)](#tool-7-inspect_visual_asset-deep-multimodal-chart-table--infographic-inspection)
 6. [Phase 5: Corrective RAG (CRAG) Relevance Gate & Fallbacks](#6-phase-5-corrective-rag-crag-relevance-gate--fallbacks)
    - [5.1 Stemmed Query Matching & Relevance Scoring](#51-stemmed-query-matching--relevance-scoring)
    - [5.2 Macro Manifest Protection](#52-macro-manifest-protection)
@@ -473,9 +474,29 @@ The chunk text is vectorized with `BAAI/bge-m3` ($1024$ dimensions) and upserted
 
 If the user asks:
 `"Which newspaper was this from?"` or `"What was the date?"`
-[`is_in_context_meta_query()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py#L44) evaluates to `True`. Retrieval is completely bypassed and answered from conversation history.
+[`is_in_context_meta_query()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py#L44) evaluates to `True`. Retrieval is completely bypassed and answered directly from conversation history.
 
-### 2.2 Active Context Extraction & Query-Aware Isolation
+### 2.2 Inline Citation Parsing (`parse_inline_citation`)
+
+Broadsheet conversational follow-ups often reference previous synthesizer citations. The condenser includes a dedicated parser [`parse_inline_citation()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py) that extracts metadata from both standard and broadsheet bracketed formats:
+
+- **Format A**: `[4] The Goan, 2026-08-01, Page 3, Headline: "Panaji Smart City AI Works Speed Up"`
+- **Format B**: `[{The Goan}, 2026-08-01, p. 3, "Panaji Smart City AI Works Speed Up"]`
+
+```python
+# Real parsed citation extraction trace
+citation_text = '[1] The Goan, 2026-08-01, Page 3, Headline: "Smart City Traffic Surveillance"'
+meta = parse_inline_citation(citation_text)
+# Result:
+{
+    "newspaper_name": "The Goan",
+    "issue_date": "2026-08-01",
+    "page_number": 3,
+    "headline": "Smart City Traffic Surveillance"
+}
+```
+
+### 2.3 Active Context Extraction, Reader Attachments & Guardrail Invalidation
 
 When evaluating Turn 2 follow-up: `"list all those 11 articles"`, [`extract_active_issue_from_history()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py#L125) reads Turn 1 and extracts:
 ```python
@@ -483,12 +504,22 @@ When evaluating Turn 2 follow-up: `"list all those 11 articles"`, [`extract_acti
     "newspaper_name": "The Goan",
     "comparison_newspaper": "The Morning Standard",
     "issue_date": "2026-08-01",
-    "is_differential": True
+    "is_differential": True,
+    "attached_article_id": None,
+    "attached_photo_id": None
 }
 ```
-If the user switches to a different publication or date, the guardrail purges stale active context to prevent cross-turn contamination.
 
-### 2.3 Coreference Resolution & Live Condensed Query Transformation
+#### Reader Attached Assets
+If the user arrived via the Broadsheet Reader's `"Ask Agent About This Infographic / Photo"` button, the incoming request payload contains `attached_article_id` (e.g. `40412`) and `attached_photo_id` (e.g. `1402`). These are bound directly into the active turn context for immediate visual tool scheduling.
+
+#### Strict Cross-Turn Invalidation Guardrails
+To prevent prior turn context from leaking into new queries, three strict guardrails are enforced:
+1. **Guardrail 1 (Date Switch)**: If the current user prompt mentions an explicit date that differs from the active historical date, `article_id`, `photo_id`, `headline`, `page_number`, and `newspaper_name` are unconditionally cleared.
+2. **Guardrail 2 (Publication Switch)**: If the current prompt specifies a different newspaper name, the prior article, photo, and page contexts are immediately purged.
+3. **Guardrail 3 (New Topic / Explicit Headline)**: If the prompt introduces a new explicit headline or unrelated topic, existing `article_id` and `photo_id` pointers are evicted, ensuring the agent retrieves fresh evidence.
+
+### 2.4 Coreference Resolution & Live Condensed Query Transformation
 
 ```text
 User Input: "list all those 11 articles"
@@ -812,6 +843,75 @@ Used when live search is toggled or when broadsheet archives lack coverage:
     "issue_date": "2026-08-01",
     "source_tool": "web_search",
     "is_web": true
+  }
+]
+```
+
+### Tool 7: `inspect_visual_asset` (Deep Multimodal Chart, Table & Infographic Inspection)
+
+Used when queries inquire about infographics, charts, tables, diagrams, or photographs (or when an asset is attached via the Broadsheet Reader):
+
+#### Concrete Invocation Arguments:
+```json
+{
+  "photo_id": 1402,
+  "article_id": 40412,
+  "query": "Explain the GDP growth and inflation metrics in this BRICS chart",
+  "newspaper_name": "The Goan",
+  "issue_date": "2026-08-01",
+  "page_filter": 5
+}
+```
+
+#### 5-Tier Strategy Cascade Execution:
+1. **Strategy A (Explicit `photo_id`)**:
+   - Queries `photos` joined with `articles`, `issues`, `newspapers` by primary key `p.id = 1402`.
+   - Executes defensive date and publication validation against parameters.
+   - Searches companion data charts within the same article.
+2. **Strategy B (Target Headline)**:
+   - Matches article headline in MySQL and retrieves associated chart/table visual assets on matching publication/date.
+3. **Strategy C (Explicit `article_id`)**:
+   - Queries all visual assets bound to `article_id = 40412`, prioritizing quantitative graphics (`table`, `data_chart`, `infographic`).
+4. **Strategy D (Multi-Criteria Database Search)**:
+   - Scopes by `newspaper_name`, `issue_date`, `page_filter`, and keyword matching across captions.
+5. **Strategy E (Scoped Caption / VLM Search)**:
+   - Semantic text search over `vlm_description` and `caption` strictly joined with `Issue` and `Newspaper` to prevent cross-publication photo bleed.
+
+#### Real Database Query (Strategy A):
+```sql
+SELECT p.id, p.article_id, p.caption, p.visual_type, p.vlm_description, p.image_path,
+       p.page_number, a.headline, i.issue_date, n.name AS newspaper_name
+FROM photos p
+LEFT JOIN articles a ON p.article_id = a.id
+LEFT JOIN issues i ON a.issue_id = i.id
+LEFT JOIN newspapers n ON i.newspaper_id = n.id
+WHERE p.id = 1402;
+```
+
+#### On-Demand MinIO VLM Fallback:
+If `target_photo.vlm_description` contains default placeholder text (`"Visual asset: data_chart from broadsheet."`), the tool:
+1. Downloads the raw crop PNG bytes directly from MinIO `bucket_pages` (`image_path`).
+2. Calls `VisualDataExtractor.process_image_crop(image_bytes)`.
+3. Runs multimodal inference to transcribe the Markdown table, key metrics, and scene summary.
+4. Dynamically persists the updated description to MySQL `article_photos.vlm_description`.
+
+#### Verified Output Payload Returned to State:
+```json
+[
+  {
+    "id": 1402,
+    "article_id": 40412,
+    "headline": "The growing bipolarity in the world complicates the ability of Brics-like groupings to push for a radical Global South agenda",
+    "newspaper_name": "The Goan",
+    "issue_date": "2026-08-01",
+    "page_number": 5,
+    "visual_type": "data_chart",
+    "caption": "Comparison of GDP share and trade volume across BRICS and G7 economies (2020-2026)",
+    "vlm_description": "### Visual Asset Breakdown\n**Type**: Comparative Data Chart\n| Metric | BRICS Share | G7 Share |\n|---|---|---|\n| Global GDP (PPP) | 36.2% | 29.8% |\n| Per Capita Income | $14,200 | $52,400 |\n| Global Oil Export Share | 43.1% | 18.5% |\n\n**Summary**: The chart illustrates that while BRICS nations have eclipsed the G7 in aggregate purchasing power parity GDP, severe disparity persists in per capita income and productivity.",
+    "image_url": "/api/photos/1402/image",
+    "is_visual_asset": true,
+    "source_tool": "inspect_visual_asset",
+    "confidence": 0.94
   }
 ]
 ```

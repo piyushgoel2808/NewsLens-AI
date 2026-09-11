@@ -20,6 +20,7 @@ import {
   Loader2,
   RefreshCw,
   CheckCircle2,
+  Bot,
 } from 'lucide-react';
 import CanvasOverlay from './CanvasOverlay';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
@@ -37,6 +38,7 @@ export default function BroadsheetReader() {
     hoveredArticleId,
     setHoveredArticleId,
     highlightArticle,
+    attachAssetForAgent,
   } = useActiveHighlight();
 
   const [issues, setIssues] = useState([]);
@@ -545,6 +547,85 @@ export default function BroadsheetReader() {
                   </div>
                 )}
 
+                {/* Prominent Visual Assets & Data Charts Top Banner */}
+                {articleDetails.photos && articleDetails.photos.length > 0 && (
+                  <div className="bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-slate-900/60 border border-purple-800/40 rounded-xl p-3.5 shadow-lg shadow-purple-950/20 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300">
+                          <Tag className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-purple-200 block">
+                            {articleDetails.photos.length} Visual Asset{articleDetails.photos.length > 1 ? 's' : ''} Attached
+                          </span>
+                          <span className="text-[10px] text-purple-400">
+                            {articleDetails.photos.filter((p) => ['data_chart', 'infographic', 'table'].includes(p.visual_type)).length || articleDetails.photos.length} Charts & Infographics available for AI Interrogation
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          const primaryChart =
+                            articleDetails.photos.find((p) => ['data_chart', 'infographic', 'table'].includes(p.visual_type)) ||
+                            articleDetails.photos[0];
+                          attachAssetForAgent({
+                            photoId: primaryChart.id,
+                            articleId: articleDetails.id,
+                            headline: articleDetails.headline,
+                            caption: primaryChart.caption || `${articleDetails.photos.length} visual assets attached`,
+                            visualType: primaryChart.visual_type || 'data_chart',
+                            imageUrl: primaryChart.image_url,
+                          });
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-xs flex items-center gap-1.5 transition-all shadow-md shadow-purple-900/30 hover:scale-[1.02] active:scale-[0.98] shrink-0"
+                      >
+                        <Bot className="w-3.5 h-3.5" />
+                        Ask Agent about Visuals
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+                      {articleDetails.photos.map((ph, pIdx) => (
+                        <button
+                          key={ph.id || pIdx}
+                          onClick={() => {
+                            attachAssetForAgent({
+                              photoId: ph.id,
+                              articleId: articleDetails.id,
+                              headline: articleDetails.headline,
+                              caption: ph.caption || (ph.vlm_description ? ph.vlm_description.slice(0, 100) : `Visual Asset #${ph.id}`),
+                              visualType: ph.visual_type || 'data_chart',
+                              imageUrl: ph.image_url,
+                            });
+                          }}
+                          className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900/90 hover:bg-purple-900/40 border border-slate-700/80 hover:border-purple-500/50 text-[11px] text-slate-300 hover:text-white transition-all whitespace-nowrap group shrink-0"
+                          title={ph.caption || ph.vlm_description || `Asset #${ph.id}`}
+                        >
+                          {ph.image_url ? (
+                            <img
+                              src={ph.image_url}
+                              alt=""
+                              className="w-5 h-5 rounded object-cover border border-slate-700 group-hover:border-purple-400"
+                            />
+                          ) : (
+                            <span className="text-xs">📊</span>
+                          )}
+                          <span className="font-medium">
+                            {ph.visual_type === 'data_chart'
+                              ? 'Data Chart'
+                              : ph.visual_type === 'infographic'
+                              ? 'Infographic'
+                              : ph.visual_type === 'table'
+                              ? 'Table'
+                              : 'Photo'} #{ph.id}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Full Article Text */}
                 <div className="prose prose-invert prose-sm max-w-none text-slate-300 leading-relaxed font-sans whitespace-pre-wrap">
                   {articleDetails.full_text}
@@ -676,6 +757,24 @@ export default function BroadsheetReader() {
                                       <span>{ph.vlm_description ? 'Re-Analyze with VLM' : '⚡ Analyze with Qwen-VL'}</span>
                                     </>
                                   )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    attachAssetForAgent({
+                                      photoId: ph.id,
+                                      articleId: articleDetails?.id,
+                                      headline: articleDetails?.headline,
+                                      caption: ph.caption,
+                                      visualType: ph.visual_type,
+                                      imageUrl: ph.image_url,
+                                    })
+                                  }
+                                  className="text-[10px] text-cyan-400 hover:text-cyan-300 font-medium flex items-center gap-1 bg-cyan-950/40 hover:bg-cyan-900/50 px-2.5 py-1 rounded border border-cyan-800/40 transition-colors shadow-sm"
+                                  title="Interrogate this infographic or chart in the Agent Assistant"
+                                >
+                                  <Bot className="w-3 h-3 text-cyan-400" />
+                                  <span>Ask Agent</span>
                                 </button>
                                 {ph.bbox && (
                                   <button

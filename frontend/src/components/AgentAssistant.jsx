@@ -18,6 +18,7 @@ import {
   Globe,
   GitMerge,
   Compass,
+  X,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -241,6 +242,11 @@ export default function AgentAssistant() {
     chatMessages: messages,
     setChatMessages: setMessages,
     openTimeline,
+    activeAttachedAsset,
+    clearAttachedAsset,
+    selectedArticleId,
+    selectedIssueId,
+    selectedPageNumber,
   } = useActiveHighlight();
 
   const [query, setQuery] = useState('');
@@ -274,7 +280,11 @@ export default function AgentAssistant() {
     const queryText = customQuery || query;
     if (!queryText.trim() || isStreaming) return;
 
-    const userMessage = { role: 'user', content: queryText };
+    const userMessage = {
+      role: 'user',
+      content: queryText,
+      attachedAsset: activeAttachedAsset ? { ...activeAttachedAsset } : null,
+    };
     const assistantMessage = {
       role: 'assistant',
       content: '',
@@ -316,6 +326,8 @@ export default function AgentAssistant() {
           model: selectedModel || undefined,
           model_override: selectedModel || undefined,
           enable_web_search: enableWebSearch,
+          attached_article_id: activeAttachedAsset?.articleId || selectedArticleId || undefined,
+          attached_photo_id: activeAttachedAsset?.photoId || undefined,
         }),
       });
 
@@ -465,7 +477,7 @@ export default function AgentAssistant() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 max-w-5xl mx-auto p-4">
+    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-4 md:px-8 py-4">
       {/* Top Controls & Model Selector */}
       <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-800 text-xs">
         <div className="flex items-center gap-2">
@@ -532,12 +544,35 @@ export default function AgentAssistant() {
             )}
 
             <div
-              className={`max-w-[85%] rounded-xl p-4 ${
+              className={`rounded-xl p-4 md:p-5 ${
                 msg.role === 'user'
-                  ? 'bg-emerald-600 text-white rounded-br-none'
-                  : 'bg-slate-900 border border-slate-800 rounded-bl-none shadow-lg'
+                  ? 'max-w-[85%] md:max-w-[75%] bg-emerald-600 text-white rounded-br-none shadow-md'
+                  : 'w-full bg-slate-900/95 border border-slate-800/80 rounded-bl-none shadow-xl'
               }`}
             >
+              {/* User Attached Visual Asset Chip */}
+              {msg.role === 'user' && msg.attachedAsset && (
+                <div className="mb-2 flex items-center gap-2 text-xs bg-emerald-700/80 border border-emerald-400/40 rounded-lg p-2 text-emerald-100 shadow-sm">
+                  {msg.attachedAsset.imageUrl && (
+                    <img
+                      src={msg.attachedAsset.imageUrl}
+                      alt="Attached"
+                      className="w-8 h-8 rounded object-cover border border-emerald-300/40 shrink-0 bg-slate-900"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <span className="font-bold text-[11px] block text-white">
+                      📊 Attached {msg.attachedAsset.visualType ? msg.attachedAsset.visualType.replace('_', ' ') : 'Visual Asset'} #{msg.attachedAsset.photoId}
+                    </span>
+                    {msg.attachedAsset.headline && (
+                      <span className="text-[10px] text-emerald-200 truncate block">
+                        {msg.attachedAsset.headline}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Dynamic Stage Indicator (while assistant is streaming) */}
               {msg.role === 'assistant' && msg.isStreaming && (
                 <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-800 text-xs text-emerald-400 font-medium">
@@ -547,6 +582,8 @@ export default function AgentAssistant() {
                       ? 'Resolving conversational coreference...'
                       : msg.stage === 'planning'
                       ? 'Formulating multi-step investigation plan...'
+                      : msg.stage === 'inspecting_visual_asset'
+                      ? 'Inspecting visual infographic & extracting numerical data...'
                       : msg.stage === 'web_search'
                       ? 'Searching live web and open sources...'
                       : msg.stage === 'tool_execution'
@@ -690,6 +727,8 @@ export default function AgentAssistant() {
                           <span>
                             {msg.stage === 'thinking'
                               ? 'Reasoning through evidence...'
+                              : msg.stage === 'inspecting_visual_asset'
+                              ? 'Inspecting visual infographic & extracting numerical data...'
                               : msg.stage === 'web_search'
                               ? 'Gathering web context...'
                               : 'Synthesizing response...'}
@@ -728,6 +767,48 @@ export default function AgentAssistant() {
                             </span>
                             <ExternalLink className="w-2.5 h-2.5 opacity-70 shrink-0" />
                           </a>
+                        );
+                      }
+
+                      // Visual Infographic / Chart Citation
+                      const isVisual = cit.source_type === 'visual_asset' || Boolean(cit.photo_id);
+                      if (isVisual) {
+                        const vType = cit.visual_type ? cit.visual_type.replace('_', ' ') : 'infographic';
+                        const imgUrl = cit.image_url || (cit.photo_id ? `/api/photos/${cit.photo_id}/image` : null);
+                        return (
+                          <button
+                            key={cIdx}
+                            onClick={() =>
+                              highlightArticle(
+                                cit.issue_id,
+                                cit.page_number || 1,
+                                cit.article_id,
+                                Array.isArray(cit.bboxes) ? cit.bboxes : []
+                              )
+                            }
+                            className="flex items-center gap-2 bg-purple-950/40 hover:bg-purple-900/50 text-purple-300 border border-purple-800/40 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105 max-w-full"
+                            title={`Visual Asset #${cit.photo_id} (${vType}) on Page ${cit.page_number || 1}. Click to view in broadsheet.`}
+                          >
+                            {imgUrl && (
+                              <img
+                                src={imgUrl}
+                                alt={vType}
+                                className="w-5 h-5 object-cover rounded border border-purple-700/50 shrink-0 bg-slate-950"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                            )}
+                            <span className="font-semibold text-purple-200 uppercase text-[11px] shrink-0">
+                              📊 {vType} #{cit.photo_id}
+                            </span>
+                            {cit.headline && (
+                              <span className="truncate max-w-[160px] sm:max-w-[220px] text-purple-300/80 font-normal">
+                                {cit.headline}
+                              </span>
+                            )}
+                            <ExternalLink className="w-2.5 h-2.5 opacity-60 shrink-0" />
+                          </button>
                         );
                       }
                       const pub = cit.newspaper_name || 'Daily News';
@@ -867,19 +948,65 @@ export default function AgentAssistant() {
         </div>
       )}
 
+      {/* Attached Visual Asset Pill Banner (if an asset is attached from Broadsheet Reader) */}
+      {activeAttachedAsset && (
+        <div className="flex items-center justify-between gap-3 bg-gradient-to-r from-cyan-950/80 via-slate-900/90 to-purple-950/60 border border-cyan-700/50 rounded-xl px-3 py-2 shadow-lg mb-2">
+          <div className="flex items-center gap-2.5 overflow-hidden">
+            {activeAttachedAsset.imageUrl ? (
+              <img
+                src={activeAttachedAsset.imageUrl}
+                alt="Attached asset"
+                className="w-10 h-10 object-cover rounded-lg border border-cyan-800/60 shrink-0 bg-slate-950"
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-lg bg-cyan-950 border border-cyan-800/60 flex items-center justify-center shrink-0 text-cyan-400">
+                <Layers className="w-5 h-5" />
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                  Attached {activeAttachedAsset.visualType ? activeAttachedAsset.visualType.replace('_', ' ') : 'Visual Asset'} #{activeAttachedAsset.photoId}
+                </span>
+                {activeAttachedAsset.articleId && (
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    Article #{activeAttachedAsset.articleId}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-200 font-medium truncate max-w-[320px] sm:max-w-[480px] mt-0.5">
+                {activeAttachedAsset.headline || activeAttachedAsset.caption || 'Attached visual clipping from broadsheet'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={clearAttachedAsset}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+            title="Detach asset"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Query Input Bar */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
           handleSend();
         }}
-        className="flex items-center gap-2 pt-2"
+        className="flex items-center gap-2 pt-1"
       >
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Ask research questions across historical newspaper issues..."
+          placeholder={
+            activeAttachedAsset
+              ? `Ask about this ${activeAttachedAsset.visualType ? activeAttachedAsset.visualType.replace('_', ' ') : 'infographic'} (e.g. "Extract all numbers and explain the trend")...`
+              : "Ask research questions across historical newspaper issues..."
+          }
           disabled={isStreaming}
           className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500 transition-colors disabled:opacity-50"
         />

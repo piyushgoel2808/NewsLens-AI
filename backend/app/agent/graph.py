@@ -169,6 +169,8 @@ class AgentWorkflow:
             archive_context=archive_context_str,
             active_issue_date=active_issue_date,
             active_newspapers=active_newspapers,
+            attached_article_id=state.get("attached_article_id"),
+            attached_photo_id=state.get("attached_photo_id"),
         )
 
         planned_calls = [
@@ -279,6 +281,8 @@ class AgentWorkflow:
         user_id: str | None = None,
         model_override: str | None = None,
         enable_web_search: bool = False,
+        attached_article_id: int | None = None,
+        attached_photo_id: int | None = None,
     ) -> AgentState:
         """Execute the complete agentic query cycle with caching and metrics."""
         t0 = time.monotonic()
@@ -286,7 +290,7 @@ class AgentWorkflow:
 
         # 1. Deterministic Redis Cache Check
         cache_key = compute_query_cache_key(
-            query=f"{query}__web_{enable_web_search}",
+            query=f"{query}__web_{enable_web_search}__art_{attached_article_id}__ph_{attached_photo_id}",
             model_id=model_override or "",
         )
         cached_result = await self._cache.get_query(cache_key)
@@ -320,6 +324,8 @@ class AgentWorkflow:
             "active_issue_id": active_ctx.get("issue_id"),
             "active_newspaper_name": active_ctx.get("newspaper_name"),
             "active_issue_date": active_ctx.get("issue_date"),
+            "attached_article_id": attached_article_id,
+            "attached_photo_id": attached_photo_id,
             "error": None,
         }
 

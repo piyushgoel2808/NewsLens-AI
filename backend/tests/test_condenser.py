@@ -101,3 +101,51 @@ def test_extract_parameters_the_goan():
     assert params.get("newspaper_name") == "The Goan"
     assert params.get("issue_id") == 94
     assert params.get("issue_date") == "2026-08-02"
+
+
+def test_parse_inline_citation_formats():
+    """Verify inline citation parsing across broadsheet and bracketed formats."""
+    from app.agent.condenser import parse_inline_citation
+
+    q1 = '[4] Hindustan Times, 2026-09-10, Page 4, Headline: "The growing bipolarity in the world complicates the ability of Brics-like groupings to push for a radical Global South agenda",, TWLL ME ABOUT THE INFOGRPHICS ATTACHED WITH THIS'
+    c1 = parse_inline_citation(q1)
+    assert c1.get("newspaper_name") == "Hindustan Times"
+    assert c1.get("issue_date") == "2026-09-10"
+    assert c1.get("page_number") == 4
+    assert "bipolarity" in c1.get("headline", "")
+
+    q2 = '[{The Hindu}, 2026-09-08, Page 1, "ISRO Launches Satellite"]'
+    c2 = parse_inline_citation(q2)
+    assert c2.get("newspaper_name") == "The Hindu"
+    assert c2.get("issue_date") == "2026-09-08"
+    assert c2.get("page_number") == 1
+    assert c2.get("headline") == "ISRO Launches Satellite"
+
+
+def test_cross_turn_article_eviction():
+    """Verify that stale article_id and photo_id from prior turn are strictly evicted when query specifies a new citation."""
+    history = [
+        {
+            "role": "assistant",
+            "content": "No infographics found for Brics... but Mint has photos: #8671...",
+            "citations": [
+                {
+                    "photo_id": 8671,
+                    "article_id": 42426,
+                    "headline": "SEBI APPROVES NSE IPO, CLEARS WAY FOR LISTING",
+                    "newspaper_name": "Mint",
+                    "issue_date": "2026-09-05",
+                }
+            ],
+        }
+    ]
+    turn3_query = '[4] Hindustan Times, 2026-09-10, Page 4, Headline: "The growing bipolarity in the world complicates the ability of Brics-like groupings to push for a radical Global South agenda",, TWLL ME ABOUT THE INFOGRPHICS ATTACHED WITH THIS'
+
+    ctx = extract_active_issue_from_history(history, turn3_query)
+    assert ctx.get("article_id") is None
+    assert ctx.get("photo_id") is None
+    assert ctx.get("newspaper_name") == "Hindustan Times"
+    assert ctx.get("issue_date") == "2026-09-10"
+    assert ctx.get("page_number") == 4
+    assert "bipolarity" in ctx.get("headline", "")
+

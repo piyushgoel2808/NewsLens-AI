@@ -304,7 +304,7 @@ export default function UploadTrigger() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 max-w-4xl mx-auto p-4 md:p-6 overflow-y-auto">
+    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 w-full max-w-6xl 2xl:max-w-7xl mx-auto px-4 md:px-8 py-6 overflow-y-auto">
       {/* Header */}
       <div className="pb-5 mb-5 border-b border-slate-800 flex items-center justify-between">
         <div>
