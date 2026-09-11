@@ -730,25 +730,34 @@ export default function AgentAssistant() {
                           </a>
                         );
                       }
+                      const pub = cit.newspaper_name || 'Daily News';
+                      const pg = cit.page_number || 1;
+                      const hl = cit.headline || '';
+                      const tooltip = `${pub} (Page ${pg})${hl ? `: "${hl}"` : ''}\nClick to jump and highlight article.`;
                       return (
                         <button
                           key={cIdx}
                           onClick={() =>
                             highlightArticle(
                               cit.issue_id,
-                              cit.page_number || 1,
+                              pg,
                               cit.article_id,
                               Array.isArray(cit.bboxes) ? cit.bboxes : []
                             )
                           }
-                          className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105"
-                          title="Jump to broadsheet scan and pulse article bounding box"
+                          className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105 max-w-full"
+                          title={tooltip}
                         >
-                          <MapPin className="w-3 h-3 text-emerald-400" />
-                          <span className="font-medium">
-                            {cit.newspaper_name || 'Daily News'}, Page {cit.page_number || 1}
+                          <MapPin className="w-3 h-3 text-emerald-400 shrink-0" />
+                          <span className="font-medium shrink-0">
+                            {pub} (p.{pg}){hl ? ':' : ''}
                           </span>
-                          <ExternalLink className="w-2.5 h-2.5 opacity-60" />
+                          {hl && (
+                            <span className="truncate max-w-[180px] sm:max-w-[260px] text-emerald-300/90 font-normal">
+                              {hl}
+                            </span>
+                          )}
+                          <ExternalLink className="w-2.5 h-2.5 opacity-60 shrink-0" />
                         </button>
                       );
                     })}

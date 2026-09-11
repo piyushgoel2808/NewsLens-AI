@@ -3119,3 +3119,49 @@ Following the proven decomposition patterns of **Phase 9.23** (`planner.py`) and
 - **Full Backend Test Suite**: **415/415 tests passing (100% green)** in 26.81s.
 - **End-to-End Simulation**: Verified zero brand stomping, explicit date-miss errors, and clean health manifests.
 
+---
+
+## Phase 9.33 — Elimination of Dual-Page/Folio Notations & Overhaul of Verified Source Citations
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problem Statement & Root Cause Analysis
+1. **Folio / Dual-Page Confusion**:
+   - Chunker, executor, and prompt context layers produced dual-page string notations: `Page(s): 1, 4 (PDF p.1, 4)` and `Page 5 (PDF Page 5)`.
+   - In `synthesizer.py`, system prompt templates instructed LLMs to output `[{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page}, "{Headline}"]`.
+   - In the frontend reader and inspection viewer, pages displayed redundant `(Folio 5)` or `Printed Folio: Page 5 ... (PDF p.5)`.
+   - This confused both users and LLMs, which hallucinated dual page numbers and caused reader jumps to misalign.
+2. **Verified Sources Citation Confusion**:
+   - In `backend/app/agent/synthesizer.py:520`, `citations = self.extract_citations("", evidence_items)` was executed with an empty string `""` before the model generated any tokens.
+   - Because `""` matched no headlines, it unconditionally fell back to `evidence_items[:2]`.
+   - `evidence_items[0]` was invariably `sql_analytics` (`article_id == 0`, `headline == "Issue Manifest: The Goan (2026-08-02)"`), which is an aggregate tool artifact, not an article.
+   - In `frontend/src/components/AgentAssistant.jsx`, the citation button showed only `{cit.newspaper_name}, Page {cit.page_number}` with no headline, making multiple citations indistinguishable and clicking the manifest jump to nothing.
+
+### Architectural Solutions & Implementations
+1. **Global Folio Elimination & Single-Page Standardization**:
+   - Standardized `backend/app/ingestion/chunker.py:create_header_context` to output clean `Page(s): {pages_str}` without `(PDF p.X)`.
+   - Standardized `backend/app/agent/executor.py:format_issue_manifest` and `format_coverage_difference_snippet` to output clean `(Page {pg_num})`.
+   - Standardized `backend/app/agent/prompt_context.py:build_evidence_context` to output clean `Page {page_val}`.
+   - Updated all synthesis templates in `backend/app/agent/synthesizer.py` (`_DEFAULT_STRUCTURE`, comparison matrices, article catalog, thematic timeline) to mandate `Page {Page_Number}` and added `SINGLE PAGE FORMAT MANDATE`.
+   - Removed `(Folio ...)` and dual-number labels in `frontend/src/components/BroadsheetReader.jsx` and `InspectionViewer.jsx`.
+2. **Verified Source Citation Engine Overhaul**:
+   - In `backend/app/agent/synthesizer.py:extract_citations`:
+     - Explicitly filtered candidates to real articles (`article_id > 0` or `is_web`), completely excluding `article_id == 0` aggregate manifests, matrices, and table analytics.
+     - Implemented multi-tier headline matching (exact substring, token overlap >= 65% for titles with >= 3 words, and punctuation-stripped normalized matching).
+     - Fallback strictly selects top genuine candidate articles (`article_id > 0`), never tool artifacts.
+   - In `backend/app/agent/synthesizer.py:synthesize`:
+     - Invoked `extract_citations(answer_text, evidence_items)` **after** `answer_text` is generated (and after deterministic summary for fallbacks).
+3. **Frontend Citation UX Upgrade (`AgentAssistant.jsx`)**:
+   - Rendered informative citation buttons showing `{pub} (p.{pg}): {headline}` with truncation and hover tooltip displaying publication, page, full headline, and jump action.
+
+### Test Verification & Quality Gates
+- **New Unit Tests** in `backend/tests/test_multi_newspaper_reconciliation.py`:
+  - `test_extract_citations_excludes_manifest_and_aggregate_tools`: **PASSED**
+  - `test_extract_citations_fallback_strictly_picks_real_articles`: **PASSED**
+  - `test_folio_elimination_clean_page_format`: **PASSED**
+- **Updated Test**: `backend/tests/test_chunk_quality_evaluation.py::test_chunk_context_header_injection`: **PASSED**
+- **Full Backend Test Suite**: **418/418 tests passing (100% green)** in 23.65s.
+- **Frontend Production Build**: `npm run build` completed in 961ms with 0 errors.
+
+

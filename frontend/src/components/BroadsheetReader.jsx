@@ -319,9 +319,6 @@ export default function BroadsheetReader() {
             </button>
             <span className="text-xs font-semibold px-2">
               Page {selectedPageNumber}
-              {currentPage?.printed_page_number && (
-                <span className="text-slate-400 font-normal"> (Folio {currentPage.printed_page_number})</span>
-              )}
               <span className="text-slate-500 font-normal"> / {issueData?.issue?.total_pages || 1}</span>
             </span>
             <button

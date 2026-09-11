@@ -185,9 +185,11 @@ _DEFAULT_STRUCTURE = """REQUIRED RESPONSE STRUCTURE:
 2. ### 📌 Key Verified Facts & Highlights
    - Bullet points of specific numbers, figures, dates, and quotes.
    - STRICT CITATION RULE: Every bullet point MUST end with an inline citation:
-     [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page}, "{Headline}"]
-     * For Charts & Infographics: [📊 Chart: {Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page}, "{Headline}"]
+     [{Newspaper Name}, {YYYY-MM-DD}, Page {Page_Number}, "{Headline}"]
+     * For Charts & Infographics: [📊 Chart: {Newspaper Name}, {YYYY-MM-DD}, Page {Page_Number}, "{Headline}"]
      * For Live Web Search (if provided): [Web: {Source Title}]({URL})
+   - SINGLE PAGE FORMAT MANDATE:
+     * Use the single standard page number (e.g. Page 1, Page 5). NEVER output dual-page or folio notation such as "Page X (PDF p.Y)".
 
 3. ### 📰 Broadsheet Perspectives & Focus Areas
    - Group reporting by publication (e.g. **Mint**, **Business Standard**, **The Hindu**).
@@ -340,7 +342,23 @@ class AnswerSynthesizer:
         seen_keys: set[str] = set()
         text_lower = (text or "").lower()
 
-        for item in evidence_items:
+        # Step 1: Filter candidates to genuine articles (article_id > 0) or web articles
+        # Strictly exclude aggregate tool artifacts (article_id == 0) like manifests and coverage matrices
+        candidate_items = [
+            item for item in evidence_items
+            if (bool(item.get("is_web") or item.get("source_tool") == "web_search") or int(item.get("article_id") or 0) > 0)
+        ]
+        # In case tests or mock fixtures omit article_id, keep non-manifest items
+        if not candidate_items and evidence_items:
+            candidate_items = [
+                item for item in evidence_items
+                if not str(item.get("headline", "")).startswith(
+                    ("Issue Manifest:", "Coverage Audit:", "Article Count Analysis:", "Archive Topic", "Frontpage Prominence")
+                )
+            ]
+
+        # Step 2: Check for references in synthesized text
+        for item in candidate_items:
             is_web = bool(item.get("is_web") or item.get("source_tool") == "web_search")
             raw_hl = item.get("headline", "")
             sub_hl = item.get("subheadline")
@@ -355,13 +373,22 @@ class AnswerSynthesizer:
                 if (url and url.lower() in text_lower) or (hl_clean and len(hl_clean) > 4 and hl_clean in text_lower):
                     is_referenced = True
             else:
-                np_name = str(item.get("newspaper_name", "")).lower()
-                pages = item.get("pages", [1])
-                page_num = int(pages[0]) if pages and pages[0] else 1
-                if (hl_clean and len(hl_clean) > 5 and hl_clean in text_lower) or (
-                    f"page {page_num}" in text_lower and np_name in text_lower
-                ):
+                # Check exact or substring headline match
+                if hl_clean and len(hl_clean) > 5 and hl_clean in text_lower:
                     is_referenced = True
+                elif hl_clean:
+                    # Match significant headline tokens (>= 4 chars)
+                    tokens = [w for w in re.findall(r"\w+", hl_clean) if len(w) > 3]
+                    if len(tokens) >= 3:
+                        matched_tokens = sum(1 for tok in tokens if tok in text_lower)
+                        if matched_tokens / len(tokens) >= 0.65:
+                            is_referenced = True
+
+                # Check punctuation-stripped headline
+                if not is_referenced and hl_clean:
+                    hl_simple = re.sub(r"[^\w\s]", "", hl_clean).strip()
+                    if len(hl_simple) > 8 and hl_simple in re.sub(r"[^\w\s]", "", text_lower):
+                        is_referenced = True
 
             if is_referenced:
                 dedup_key = f"{item.get('newspaper_name')}_{item.get('issue_date')}_{hl}"
@@ -369,10 +396,15 @@ class AnswerSynthesizer:
                     seen_keys.add(dedup_key)
                     citations.append(self._make_citation(item, headline=hl))
 
-        # Fallback if no specific inline references matched
-        if not citations and evidence_items:
-            for item in evidence_items[:2]:
-                citations.append(self._make_citation(item))
+        # Fallback if no specific inline references matched: strictly pick top genuine candidate articles
+        if not citations and candidate_items:
+            for item in candidate_items[:2]:
+                raw_hl = item.get("headline", "")
+                sub_hl = item.get("subheadline")
+                byline = item.get("byline_author")
+                snip = item.get("snippet") or item.get("summary") or ""
+                hl, _ = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
+                citations.append(self._make_citation(item, headline=hl))
 
         return citations
 
@@ -402,10 +434,12 @@ class AnswerSynthesizer:
 3. ### 📌 Key Verified Sector Highlights & Policies
    - Bullet points detailing specific sector decisions, fiscal moves, corporate actions, or metrics.
    - STRICT CITATION RULE: Every bullet point MUST end with an inline citation:
-     [{{Newspaper Name}}, {{YYYY-MM-DD}}, Page {{PDF_Page}}, "{{Headline}}"]
+     [{{Newspaper Name}}, {{YYYY-MM-DD}}, Page {{Page_Number}}, "{{Headline}}"]
    - CITATION FORMAT TEMPLATE:
      * [Specific factual finding derived exclusively from verified article] [Publication Name, YYYY-MM-DD, Page X, "Exact Headline"].
      (Do NOT copy placeholder text; cite ONLY real articles from the provided evidence!)
+   - SINGLE PAGE FORMAT MANDATE:
+     * Use the clean single page number (e.g. Page 1, Page 5). NEVER output dual-page or folio notation such as "Page X (PDF p.Y)".
 
 4. ### 📰 Broadsheet Editorial Framing & Divergence
    - Delineate differences in editorial tone, priorities, and depth between publications:
@@ -442,10 +476,12 @@ STRICT DOMAIN PURITY MANDATE & NEGATIVE CONSTRAINTS:
 3. ### 📌 Key Sector Highlights & Featured Stories
    - 3 to 5 bullet points highlighting the most notable stories, findings, policy decisions, or medical/business developments.
    - STRICT CITATION RULE: Every bullet point MUST end with an inline citation:
-     [{{Newspaper Name}}, {{YYYY-MM-DD}}, Page {{PDF_Page}}, "{{Headline}}"]
+     [{{Newspaper Name}}, {{YYYY-MM-DD}}, Page {{Page_Number}}, "{{Headline}}"]
    - CITATION FORMAT TEMPLATE:
      * [Specific factual finding derived exclusively from verified article] [Publication Name, YYYY-MM-DD, Page X, "Exact Headline"].
      (Do NOT copy placeholder text; cite ONLY real articles from the provided evidence!)
+   - SINGLE PAGE FORMAT MANDATE:
+     * Use the clean single page number (e.g. Page 1, Page 5). NEVER output dual-page or folio notation such as "Page X (PDF p.Y)".
 
 4. ### 🔍 Explore Further
    - 2 to 3 concise follow-up prompts formatted strictly as:
@@ -482,7 +518,9 @@ ANTI-REPETITION CONSTRAINT:
 
 2. ### 📅 Milestone Timeline & Event Progression
    - Chronological sequence of dated milestones and developments:
-     * **{Date / Phase}**: Specific development, key figures, actions taken. [{Newspaper Name}, {YYYY-MM-DD}, Page {PDF_Page}, "{Headline}"]
+     * **{Date / Phase}**: Specific development, key figures, actions taken. [{Newspaper Name}, {YYYY-MM-DD}, Page {Page_Number}, "{Headline}"]
+   - SINGLE PAGE FORMAT MANDATE:
+     * Use the clean single page number (e.g. Page 1, Page 5). NEVER output dual-page or folio notation such as "Page X (PDF p.Y)".
 
 3. ### 📈 Thematic Trajectory & Broadsheet Evolution
    - Analysis of how broadsheet coverage, sentiment, and editorial stance shifted across the timeline.
@@ -517,7 +555,6 @@ ANTI-REPETITION CONSTRAINT:
         if not has_evidence and not has_meta_history:
             return EMPTY_EVIDENCE_RESPONSE, [], 0.0
 
-        citations = self.extract_citations("", evidence_items)
         context = self._build_evidence_context(evidence_items, query=query)
         user_prompt = self._build_synthesizer_user_prompt(
             query=query, archetype=archetype, evidence_items=evidence_items, context=context,
@@ -553,6 +590,7 @@ ANTI-REPETITION CONSTRAINT:
                 )
                 cost_usd = max(calc_cost, response.cost_usd)
                 if answer_text.strip():
+                    citations = self.extract_citations(answer_text, evidence_items)
                     return answer_text, citations, cost_usd
                 logger.warning(
                     "Provider outputted reasoning without answer section, attempting failover candidate",
@@ -565,6 +603,7 @@ ANTI-REPETITION CONSTRAINT:
                 )
 
         answer_text = self._generate_deterministic_summary(query, evidence_items, archetype=archetype)
+        citations = self.extract_citations(answer_text, evidence_items)
         return answer_text, citations, cost_usd
 
     async def synthesize_stream(

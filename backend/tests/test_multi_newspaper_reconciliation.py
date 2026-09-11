@@ -121,3 +121,126 @@ def test_prompt_context_anchors_verified_dates():
     assert "Verified Target Issue Date(s): 2026-08-02" in prompt
     assert "strictly reflect the verified date(s): 2026-08-02" in prompt
     assert "The Goan" in prompt
+
+
+def test_extract_citations_excludes_manifest_and_aggregate_tools():
+    """Verify that extract_citations NEVER returns aggregate tool manifests (article_id == 0)."""
+    from app.agent.synthesizer import AnswerSynthesizer
+
+    synth = AnswerSynthesizer()
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Issue Manifest: The Goan (2026-08-02)",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-02",
+            "pages": [1],
+            "snippet": "Manifest of 20 articles in The Goan.",
+            "source_tool": "sql_analytics",
+        },
+        {
+            "article_id": 142,
+            "headline": "Understanding your gut health and brain connection",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-02",
+            "pages": [5],
+            "snippet": "Researchers explain the gut-brain axis and probiotics.",
+            "source_tool": "hybrid_search",
+        },
+    ]
+
+    answer_text = (
+        "### ⚡ Executive Summary\n"
+        "Recent research highlights gut health.\n\n"
+        "### 📌 Key Verified Facts & Highlights\n"
+        "- Studies demonstrate the gut-brain axis [The Goan, 2026-08-02, Page 5, \"Understanding your gut health and brain connection\"]."
+    )
+
+    citations = synth.extract_citations(answer_text, evidence)
+    assert len(citations) == 1
+    assert citations[0]["article_id"] == 142
+    assert citations[0]["headline"] == "Understanding your gut health and brain connection"
+    assert citations[0]["page_number"] == 5
+    assert not any(c["article_id"] == 0 for c in citations)
+
+
+def test_extract_citations_fallback_strictly_picks_real_articles():
+    """Verify that when inline citation matching misses, fallback only picks real articles."""
+    from app.agent.synthesizer import AnswerSynthesizer
+
+    synth = AnswerSynthesizer()
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Issue Manifest: The Goan (2026-08-02)",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-02",
+            "pages": [1],
+            "snippet": "Manifest text.",
+            "source_tool": "sql_analytics",
+        },
+        {
+            "article_id": 99,
+            "headline": "New Pediatric Ward Launched in South Goa",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-02",
+            "pages": [3],
+            "snippet": "Pediatric ward opened.",
+            "source_tool": "hybrid_search",
+        },
+    ]
+
+    # Vague text that doesn't mention the headline
+    answer_text = "Medical infrastructure saw new developments in healthcare facilities."
+    citations = synth.extract_citations(answer_text, evidence)
+
+    assert len(citations) == 1
+    assert citations[0]["article_id"] == 99
+    assert citations[0]["headline"] == "New Pediatric Ward Launched in South Goa"
+    assert not any(c["article_id"] == 0 for c in citations)
+
+
+def test_folio_elimination_clean_page_format():
+    """Verify that chunker and executor formats do NOT produce dual folio notations."""
+    from app.agent.executor import format_coverage_difference_snippet
+    from app.agent.synthesizer import _DEFAULT_STRUCTURE
+    from app.ingestion.chunker import NewspaperChunker
+
+    # 1. Synthesizer prompt structure has no PDF_Page
+    assert "{PDF_Page}" not in _DEFAULT_STRUCTURE
+    assert "Page {Page_Number}" in _DEFAULT_STRUCTURE
+    assert "SINGLE PAGE FORMAT MANDATE" in _DEFAULT_STRUCTURE
+
+    # 2. Coverage difference snippet uses clean Page <N>
+    diff_res = {
+        "source_newspaper": "The Goan",
+        "comparison_newspaper": "The Morning Standard",
+        "issue_date": "2026-08-02",
+        "total_source_articles": 1,
+        "total_comparison_articles": 0,
+        "exclusive_count": 1,
+        "shared_count": 0,
+        "exclusive_articles": [
+            {
+                "headline": "Exclusive Health Investigation",
+                "page_number": 4,
+                "section": "Health",
+            }
+        ],
+    }
+    snippet = format_coverage_difference_snippet(diff_res)
+    assert "[Page 4]" in snippet
+    assert "PDF Page" not in snippet
+
+    # 3. Chunker format uses clean Page(s)
+    chunker = NewspaperChunker()
+    hdr = chunker.create_header_context(
+        headline="Hospital Upgrades",
+        newspaper_name="The Goan",
+        issue_date="2026-08-02",
+        pages=[4],
+        printed_pages=["4"],
+    )
+    assert "Page(s): 4" in hdr
+    assert "(PDF p." not in hdr
+

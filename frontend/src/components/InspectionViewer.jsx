@@ -199,8 +199,8 @@ export default function InspectionViewer() {
                 <div key={p.id} style={{ border: '1px solid #ddd', padding: '10px', borderRadius: '4px', background: p.is_advertisement_page ? '#fffdf7' : '#fff' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <strong>Printed Folio: Page {p.printed_page_number || p.page_number}</strong>
-                      <div style={{ fontSize: '11px', color: '#666' }}>PDF Index: p.{p.page_number} ({p.width_px} x {p.height_px} px)</div>
+                      <strong>Page {p.page_number}</strong>
+                      <div style={{ fontSize: '11px', color: '#666' }}>Dimensions: {p.width_px} x {p.height_px} px</div>
                     </div>
                     {p.is_advertisement_page && (
                       <span style={{ fontSize: '11px', background: '#ffe082', color: '#b78103', padding: '2px 6px', borderRadius: '3px', fontWeight: 'bold' }}>
@@ -246,7 +246,7 @@ export default function InspectionViewer() {
                     <div>
                       <strong style={{ fontSize: '15px' }}>{art.headline}</strong>
                       <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
-                        Section: {art.section || 'General'} | Type: <code>{art.article_type}</code> | Folio: <strong>{art.printed_pages?.length ? art.printed_pages.join(', ') : (art.pages?.join(', ') || '1')}</strong> <span style={{ color: '#888' }}>(PDF p.{art.pages?.join(', ')})</span>
+                        Section: {art.section || 'General'} | Type: <code>{art.article_type}</code> | Page: <strong>{art.pages?.join(', ') || '1'}</strong>
                       </div>
                     </div>
                     <div style={{ textAlign: 'right', fontSize: '12px' }}>

@@ -47,23 +47,12 @@ def format_issue_manifest(
 
     manifest_lines: list[str] = []
     for idx, a in enumerate(articles_list[:max_articles], 1):
-        pr_page = str(a.get("printed_page") or "").strip()
         pg_num = a.get("page_number", 1)
-        if (
-            pr_page
-            and not pr_page.startswith("Unnumbered")
-            and not pr_page.startswith("PDF p.")
-            and pr_page != str(pg_num)
-        ):
-            folio_info = f"Page {pr_page} (PDF p.{pg_num})"
-        else:
-            folio_info = f"Page {pg_num}"
-
         author_info = f" by {a['byline_author']}" if a.get("byline_author") else ""
         clean_a_hl = repair_text_ligatures(a.get("headline") or "")
         manifest_lines.append(
             f'{idx}. [{a.get("section", "General")}] "{clean_a_hl}" '
-            f"({folio_info}{author_info}, {a.get('word_count', 0)} words)"
+            f"(Page {pg_num}{author_info}, {a.get('word_count', 0)} words)"
         )
 
     manifest_text = "\n".join(manifest_lines)
@@ -115,7 +104,7 @@ def format_coverage_difference_snippet(diff_res: dict[str, Any], max_articles: i
     exclusives = diff_res.get("exclusive_articles", [])
     ex_lines: list[str] = []
     for idx, ex in enumerate(exclusives[:max_articles], 1):
-        p_str = f"Page {ex.get('page_number')} (PDF Page {ex.get('page_number')})"
+        p_str = f"Page {ex.get('page_number', 1)}"
         ex_lines.append(
             f"{idx}. [{p_str}] ({ex.get('section')}) \"{ex.get('headline')}\""
         )

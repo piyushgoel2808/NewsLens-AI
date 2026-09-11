@@ -95,8 +95,8 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
             np_name = item.get("newspaper_name", "Unknown Publication")
             dt = item.get("issue_date", "Unknown Date")
             pages = item.get("pages", [1])
-            pdf_page = int(pages[0]) if pages and pages[0] else 1
-            evidence_tag = f'[Evidence: {np_name}, {dt}, Page {pdf_page} (PDF Page {pdf_page}), Headline: "{hl}"]'
+            page_val = int(pages[0]) if pages and pages[0] else 1
+            evidence_tag = f'[Evidence: {np_name}, {dt}, Page {page_val}, Headline: "{hl}"]'
 
             photos = item.get("photos") or []
             photos_text = ""
@@ -113,7 +113,7 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
                 f"{evidence_tag}\n"
                 f"Publication: {np_name}\n"
                 f"Date: {dt}\n"
-                f"Page(s): Page {pdf_page} (PDF Page {pdf_page})\n"
+                f"Page: {page_val}\n"
                 f"Headline: {hl}\n"
                 f"Content:\n{text}\n"
                 f"{photos_text}"

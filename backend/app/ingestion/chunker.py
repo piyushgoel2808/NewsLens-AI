@@ -59,16 +59,13 @@ class NewspaperChunker:
         if section:
             parts.append(f"Section: {section}")
         parts.append(f"Headline: {headline}")
-        if printed_pages:
-            p_str = ", ".join(printed_pages)
-            if pages:
-                pdf_str = ", ".join(str(p) for p in sorted(pages))
-                parts.append(f"Page(s): {p_str} (PDF p.{pdf_str})")
-            else:
-                parts.append(f"Page(s): {p_str}")
-        elif pages:
+        if pages:
             pages_str = ", ".join(str(p) for p in sorted(pages))
             parts.append(f"Page(s): {pages_str}")
+        elif printed_pages:
+            clean_pts = [p for p in printed_pages if not p.startswith("Unnumbered") and not p.startswith("PDF p.")]
+            p_str = ", ".join(clean_pts) if clean_pts else ", ".join(printed_pages)
+            parts.append(f"Page(s): {p_str}")
 
         return "[" + " | ".join(parts) + "]"
 

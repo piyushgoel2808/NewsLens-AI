@@ -51,7 +51,7 @@ def test_chunk_context_header_injection(chunker: NewspaperChunker) -> None:
 
     assert len(chunks) >= 1
     for c in chunks:
-        assert c.text.startswith("[Newspaper: Mint | Date: 2024-08-09 | Section: Economy & Policy | Headline: RBI Holds Repo Rate Steady at 6.5% | Page(s): 1, 4 (PDF p.1, 4)]")
+        assert c.text.startswith("[Newspaper: Mint | Date: 2024-08-09 | Section: Economy & Policy | Headline: RBI Holds Repo Rate Steady at 6.5% | Page(s): 1, 4]")
         assert c.header_context != ""
         assert len(c.raw_text) > 0
 

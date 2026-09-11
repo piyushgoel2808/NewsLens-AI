@@ -549,13 +549,13 @@ class SQLAnalyticsEngine:
                 printed_matches = [
                     m
                     for m in filtered_manifest
-                    if str(m["printed_page"]).lower() == p_target
-                    or str(m["printed_page"]).lower() == f"page {p_target}"
+                    if str(m.get("printed_page", "")).lower() == p_target
+                    or str(m.get("printed_page", "")).lower() == f"page {p_target}"
                 ]
                 filtered_manifest = (
                     printed_matches
                     if printed_matches
-                    else [m for m in filtered_manifest if str(m["page_number"]) == p_target]
+                    else [m for m in filtered_manifest if str(m.get("page_number")) == p_target]
                 )
 
             # 3. Apply negative page exclusion filter (hard safety net)
@@ -564,9 +564,9 @@ class SQLAnalyticsEngine:
                 excl_target = excl_raw.replace("page", "").replace("pg", "").strip()
                 filtered_manifest = [
                     m for m in filtered_manifest
-                    if str(m["page_number"]) != excl_target
-                    and str(m["printed_page"]).lower() != excl_target
-                    and str(m["printed_page"]).lower() != f"page {excl_target}"
+                    if str(m.get("page_number")) != excl_target
+                    and str(m.get("printed_page", "")).lower() != excl_target
+                    and str(m.get("printed_page", "")).lower() != f"page {excl_target}"
                 ]
 
             if section is not None or page_number is not None:
