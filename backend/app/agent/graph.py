@@ -14,6 +14,7 @@ from app.agent.condenser import (
     extract_active_issue_from_history,
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
+    needs_condensation,
     resolve_attached_asset_context,
 )
 from app.agent.evaluator import EvidenceEvaluator
@@ -115,8 +116,8 @@ class AgentWorkflow:
         chat_history = state.get("chat_history", [])
         original_query = state.get("original_query") or query
 
-        # Ambiguity Guardrail for Clean Sessions (e.g. 'summarize it' on turn 1)
-        if is_ambiguous_standalone_query(query, chat_history):
+        has_attached = bool(state.get("attached_photo_id") or state.get("attached_article_id"))
+        if is_ambiguous_standalone_query(query, chat_history, has_attached_asset=has_attached):
             return {
                 "query": query,
                 "original_query": original_query,
@@ -143,6 +144,16 @@ class AgentWorkflow:
         active_issue_date = state.get("active_issue_date")
         active_newspapers = [active_newspaper_name] if active_newspaper_name else []
 
+        attached_asset = state.get("attached_asset")
+        has_attached_asset = bool(
+            has_attached
+            or (attached_asset and (attached_asset.get("photo_id") or attached_asset.get("article_id") or attached_asset.get("newspaper_name")))
+        )
+        is_followup = bool(
+            (chat_history or has_attached_asset)
+            and needs_condensation(query, chat_history, attached_asset=attached_asset)
+        )
+
         condensed_query = await condense_conversational_query(
             query=query,
             chat_history=chat_history,
@@ -150,6 +161,7 @@ class AgentWorkflow:
             active_issue_id=active_issue_id,
             active_newspaper_name=active_newspaper_name,
             active_issue_date=active_issue_date,
+            attached_asset=attached_asset,
         )
 
         archive_context_str: str | None = None
@@ -163,13 +175,18 @@ class AgentWorkflow:
         except Exception as e:
             logger.warning("Failed to fetch archive metadata for planner", extra={"error": str(e)})
 
+        # Only pass active_issue_date and active_newspapers to planner if an asset is attached,
+        # or if this is an active follow-up query. Do NOT constrain standalone text queries.
+        planner_active_date = active_issue_date if (has_attached_asset or is_followup) else None
+        planner_active_newspapers = active_newspapers if (has_attached_asset or is_followup) else []
+
         plan_res = await self._planner.plan_query_async(
             condensed_query,
             enable_web_search=state.get("enable_web_search", False),
             model_override=state.get("model_override"),
             archive_context=archive_context_str,
-            active_issue_date=active_issue_date,
-            active_newspapers=active_newspapers,
+            active_issue_date=planner_active_date,
+            active_newspapers=planner_active_newspapers,
             attached_article_id=state.get("attached_article_id"),
             attached_photo_id=state.get("attached_photo_id"),
         )
@@ -307,13 +324,17 @@ class AgentWorkflow:
             )
             return cached_result  # type: ignore[return-value]
 
-        res_date, res_np, res_art_id, res_iss_id = await resolve_attached_asset_context(
+        attached_ctx = await resolve_attached_asset_context(
             session_factory=self._session_factory,
             attached_photo_id=attached_photo_id,
             attached_article_id=attached_article_id,
             attached_issue_date=attached_issue_date,
             attached_newspaper_name=attached_newspaper_name,
         )
+        res_date = attached_ctx.get("issue_date")
+        res_np = attached_ctx.get("newspaper_name")
+        res_art_id = attached_ctx.get("article_id")
+        res_iss_id = attached_ctx.get("issue_id")
         eff_attached_article_id = res_art_id or attached_article_id
         eff_attached_photo_id = attached_photo_id
 
@@ -324,6 +345,7 @@ class AgentWorkflow:
             attached_article_id=eff_attached_article_id,
             attached_issue_date=res_date,
             attached_newspaper_name=res_np,
+            attached_headline=attached_ctx.get("headline"),
         )
         if res_date:
             active_ctx["issue_date"] = res_date
@@ -335,6 +357,8 @@ class AgentWorkflow:
             active_ctx["article_id"] = eff_attached_article_id
         if eff_attached_photo_id:
             active_ctx["photo_id"] = eff_attached_photo_id
+        if attached_ctx.get("headline"):
+            active_ctx["headline"] = attached_ctx["headline"]
 
         initial_state: AgentState = {
             "query": query,
@@ -357,6 +381,7 @@ class AgentWorkflow:
             "active_issue_date": active_ctx.get("issue_date"),
             "attached_article_id": eff_attached_article_id,
             "attached_photo_id": eff_attached_photo_id,
+            "attached_asset": attached_ctx,
             "error": None,
         }
 

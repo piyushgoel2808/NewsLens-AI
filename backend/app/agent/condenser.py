@@ -14,11 +14,14 @@ from app.providers.registry import get_registry
 logger = get_logger(__name__)
 
 AMBIGUOUS_PRONOUNS_PATTERN = re.compile(
-    r"\b(it|this|that|these|those|they|them|he|him|she|her|its|there|their|"
+    r"\b(it|this|that|these|those|they|them|he|him|she|her|its|their|"
     r"the article|the news|the story|the company|the deal|the report|the issue|the paper|the event|the incident|"
+    r"the front page|the frontpage|the headline|the headlines|"
+    r"this photo|the photo|this image|the image|this picture|the picture|this chart|the chart|in the photo|in this photo|"
+    r"who is this|who is in|who is the person|what is the name of the person|"
     r"summarize it|more about this|tell me more|who was involved|what else|why did that happen|"
     r"what happened next|elaborate|explain it|give more details|"
-    r"all of them|all there|all their)\b",
+    r"in there|from there|out there|all of them|all there|all their)\b",
     re.IGNORECASE,
 )
 
@@ -51,9 +54,13 @@ def is_in_context_meta_query(query: str, chat_history: list[dict[str, Any]]) -> 
     return bool(IN_CONTEXT_META_QUERY_PATTERN.search(q_clean))
 
 
-def needs_condensation(query: str, chat_history: list[dict[str, Any]]) -> bool:
+def needs_condensation(
+    query: str,
+    chat_history: list[dict[str, Any]],
+    attached_asset: dict[str, Any] | None = None,
+) -> bool:
     """Determine whether the query contains coreferences or follow-up ambiguity."""
-    if not chat_history:
+    if not chat_history and not attached_asset:
         return False
 
     if is_in_context_meta_query(query, chat_history):
@@ -62,15 +69,33 @@ def needs_condensation(query: str, chat_history: list[dict[str, Any]]) -> bool:
     q_clean = query.strip()
     words = q_clean.split()
 
-    # Very short follow-up phrases (< 6 words) or queries matching ambiguous pronouns
-    if len(words) <= 6 and GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
-        return True
+    # If an attached asset is present, check if the query refers to it or contains pronouns
+    if attached_asset and (attached_asset.get("photo_id") or attached_asset.get("article_id")):
+        if AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean):
+            return True
+        if re.search(r"\b(photo|picture|image|graphic|figure|chart|article|headline|story|person|who is)\b", q_clean, re.I):
+            return True
+        if len(words) <= 6 and GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
+            return True
 
-    return bool(AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean))
+    # Check conversation follow-ups
+    if chat_history:
+        if len(words) <= 6 and GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
+            return True
+        if AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean):
+            return True
+
+    return False
 
 
-def is_ambiguous_standalone_query(query: str, chat_history: list[dict[str, Any]]) -> bool:
+def is_ambiguous_standalone_query(
+    query: str,
+    chat_history: list[dict[str, Any]],
+    has_attached_asset: bool = False,
+) -> bool:
     """Detect ungrounded ambiguous queries on clean sessions (e.g. 'summarize it' on turn 1)."""
+    if has_attached_asset:
+        return False
     if chat_history and len(chat_history) > 0:
         return False
 
@@ -144,6 +169,7 @@ def extract_active_issue_from_history(
     attached_article_id: int | None = None,
     attached_issue_date: str | None = None,
     attached_newspaper_name: str | None = None,
+    attached_headline: str | None = None,
 ) -> dict[str, Any]:
     """Scan chat history for previously mentioned newspaper names, issue IDs, and dates.
 
@@ -152,7 +178,7 @@ def extract_active_issue_from_history(
     - If current_query specifies its own date or date range, do not inherit stale issue_id/newspaper/article from a different date.
     - If current_query specifies its own newspaper brand, do not inherit a different newspaper brand or article.
     - If current_query specifies an inline citation or explicit headline, that citation is authoritative.
-    - If an attached photo or article is explicitly supplied on the current turn, its issue and newspaper are authoritative.
+    - If an attached photo or article is explicitly supplied on the current turn, its issue, newspaper, and headline are authoritative.
     """
     res: dict[str, Any] = {}
     current_citation = parse_inline_citation(current_query or "")
@@ -169,9 +195,13 @@ def extract_active_issue_from_history(
         res["issue_date"] = attached_issue_date
     if attached_newspaper_name:
         res["newspaper_name"] = attached_newspaper_name
+    if attached_headline:
+        res["headline"] = attached_headline
 
     if not chat_history:
         return res
+
+    has_explicit_asset = bool(attached_photo_id or attached_article_id or attached_headline)
 
     q_lower = (current_query or "").lower()
     is_cross_newspaper = bool(
@@ -199,8 +229,9 @@ def extract_active_issue_from_history(
             res["issue_date"] = params["issue_date"]
 
         # 0. Inspect structured citations and attached assets on the turn
-        # If current_query provided its own explicit headline or citation, do NOT inherit foreign article/photo IDs
-        if not current_citation.get("headline"):
+        # If current_query provided its own explicit headline/citation or an asset is explicitly attached on current turn,
+        # do NOT inherit foreign article/photo IDs or headlines from prior turns
+        if not current_citation.get("headline") and not has_explicit_asset:
             turn_citations = turn.get("citations") or []
             for cit in turn_citations:
                 if isinstance(cit, dict):
@@ -240,7 +271,7 @@ def extract_active_issue_from_history(
                 res["issue_date"] = hist_cite["issue_date"]
             if not res.get("page_number") and hist_cite.get("page_number"):
                 res["page_number"] = hist_cite["page_number"]
-            if not res.get("headline") and hist_cite.get("headline") and not current_citation.get("headline"):
+            if not res.get("headline") and hist_cite.get("headline") and not current_citation.get("headline") and not has_explicit_asset:
                 res["headline"] = hist_cite["headline"]
 
         # 2. Inspect executive summary headers: e.g. "The Goan newspaper issue 94 (2026-08-02)"
@@ -301,6 +332,8 @@ def extract_active_issue_from_history(
         res.pop("photo_id", None)
         res.pop("headline", None)
         res.pop("target_newspapers", None)
+        if not current_date:
+            res.pop("issue_date", None)
 
     # Re-apply explicit current query parameters
     if current_np:
@@ -308,7 +341,9 @@ def extract_active_issue_from_history(
         res["target_newspapers"] = [current_np]
     if current_date:
         res["issue_date"] = current_date
-    if current_citation.get("headline"):
+    if attached_headline:
+        res["headline"] = attached_headline
+    elif current_citation.get("headline"):
         res["headline"] = current_citation["headline"]
     if current_citation.get("page_number"):
         res["page_number"] = current_citation["page_number"]
@@ -340,6 +375,29 @@ def format_chat_history_for_prompt(chat_history: list[dict[str, Any]], max_turns
 _UNSET = object()
 
 
+CONDENSER_SYSTEM_PROMPT = (
+    "You are an expert search query reformulator and coreference resolver for a newspaper archive research system.\n"
+    "Given the chat history and latest user query, rewrite the latest query into "
+    "a single, standalone sentence that contains all necessary context (entities, dates, page numbers).\n\n"
+    "DECISION RULES:\n"
+    "1. ATTACHED ASSET REFERENCE:\n"
+    "   If a 'CURRENT WORKSPACE ATTACHED ASSET' is provided and the user query refers to it "
+    "(e.g., 'this photo', 'in the photo', 'this picture', 'the image', 'this article', 'this story', 'the person in the photo', 'who is this'):\n"
+    "   - Ground the rewritten query SOLELY in the CURRENT WORKSPACE ATTACHED ASSET (its newspaper, date, headline, photo ID, caption).\n"
+    "   - DO NOT inherit or contaminate the query with people, entities, or dates from prior CONVERSATION HISTORY.\n"
+    "2. CONVERSATION CONTINUATION:\n"
+    "   If the query is a follow-up continuing the discussion from CONVERSATION HISTORY (e.g., 'what else did he say?', 'did other papers cover this?'), "
+    "and does NOT refer to an attached asset:\n"
+    "   - Resolve pronouns ('it', 'they', 'he', 'this newspaper') using the conversation context.\n"
+    "3. TOPIC SWITCH OR INDEPENDENT QUERY:\n"
+    "   If the query introduces a NEW or DIFFERENT topic, entity, location, or subject not discussed in CONVERSATION HISTORY "
+    "(e.g., 'education policy in Maharashtra', 'ST quota protest in Goa', 'cricket match results'), treat it as a completely independent query:\n"
+    "   - STRICTLY DO NOT inject or force previous conversation entities, newspaper brands, dates, or people into the query.\n"
+    "   - Keep it as a clean, unconstrained standalone search query.\n\n"
+    "OUTPUT FORMAT: Output ONLY the plain rewritten query text. Do NOT include quotes, explanations, prefixes, or bullet points."
+)
+
+
 async def condense_conversational_query(
     query: str,
     chat_history: list[dict[str, Any]],
@@ -348,22 +406,59 @@ async def condense_conversational_query(
     active_issue_id: int | None = None,
     active_newspaper_name: str | None = None,
     active_issue_date: str | None = None,
+    attached_asset: dict[str, Any] | None = None,
 ) -> str:
-    """Rewrite a conversational follow-up query into a standalone search query with entities."""
-    if not chat_history or not needs_condensation(query, chat_history):
+    """Rewrite a conversational follow-up query into a standalone search query with entities.
+
+    The LLM reformulator is provided both conversation history and current workspace attached asset,
+    and decides whether to inherit previous context, bind to the attached asset, or treat as a new topic.
+    """
+    if not chat_history and not attached_asset:
+        return query
+    if not needs_condensation(query, chat_history, attached_asset=attached_asset):
         return query
 
-    active_ctx = extract_active_issue_from_history(chat_history)
-    np_name = active_newspaper_name or active_ctx.get("newspaper_name")
-    iss_id = active_issue_id or active_ctx.get("issue_id")
-    iss_date = active_issue_date or active_ctx.get("issue_date")
+    asset_photo_id = attached_asset.get("photo_id") if attached_asset else None
+    asset_art_id = attached_asset.get("article_id") if attached_asset else None
+    asset_np = attached_asset.get("newspaper_name") if attached_asset else None
+    asset_date = attached_asset.get("issue_date") if attached_asset else None
+    asset_iss_id = attached_asset.get("issue_id") if attached_asset else None
+    asset_hl = attached_asset.get("headline") if attached_asset else None
+    asset_cap = attached_asset.get("caption") if attached_asset else None
+    asset_type = attached_asset.get("visual_type") if attached_asset else None
+    asset_page = attached_asset.get("page_number") if attached_asset else None
+
+    if attached_asset and (asset_photo_id or asset_art_id):
+        np_name = asset_np or active_newspaper_name
+        iss_id = asset_iss_id or active_issue_id
+        iss_date = asset_date or active_issue_date
+        active_hl = asset_hl
+        active_pg = asset_page
+        comp_np = None
+        is_diff = False
+    else:
+        active_ctx = extract_active_issue_from_history(
+            chat_history,
+            current_query=query,
+            attached_photo_id=asset_photo_id,
+            attached_article_id=asset_art_id,
+            attached_issue_date=active_issue_date,
+            attached_newspaper_name=active_newspaper_name,
+            attached_headline=asset_hl,
+        )
+        np_name = active_newspaper_name or active_ctx.get("newspaper_name")
+        iss_id = active_issue_id or active_ctx.get("issue_id")
+        iss_date = active_issue_date or active_ctx.get("issue_date")
+        comp_np = active_ctx.get("comparison_newspaper")
+        is_diff = active_ctx.get("is_differential")
+        active_hl = active_ctx.get("headline")
+        active_pg = active_ctx.get("page_number")
 
     # Resolve LLM provider (prefer lightweight/fast model like groq_llama or query_planner)
     resolved_provider: Any
     if provider is _UNSET:
         try:
             registry = get_registry()
-            # Try to resolve lightweight query condenser provider first, falling back to query_planner
             try:
                 resolved_provider = registry.get_chat_provider(model_override or "query_condenser")
             except Exception:
@@ -377,25 +472,37 @@ async def condense_conversational_query(
     else:
         resolved_provider = provider
 
-    formatted_history = format_chat_history_for_prompt(chat_history)
-    comp_np = active_ctx.get("comparison_newspaper")
-    is_diff = active_ctx.get("is_differential")
-    active_hl = active_ctx.get("headline")
-    active_pg = active_ctx.get("page_number")
-    ctx_hint = ""
-    if comp_np and np_name and is_diff:
-        ctx_hint = f" Active Differential Comparison: {np_name} vs {comp_np} (Stories in {np_name} but not in {comp_np})" + (f" dated {iss_date}" if iss_date else "") + "."
-    elif comp_np and np_name:
-        ctx_hint = f" Active Publication Comparison: {np_name} vs {comp_np}" + (f" dated {iss_date}" if iss_date else "") + "."
-    elif active_hl and np_name:
-        ctx_hint = f" Active Article: \"{active_hl}\" in {np_name}" + (f" (Page {active_pg})" if active_pg else "") + (f" dated {iss_date}" if iss_date else "") + "."
-    elif np_name or iss_id:
-        ctx_hint = " Active Publication: " + (f"{np_name} " if np_name else "") + (f"(Issue {iss_id})" if iss_id else "") + (f" dated {iss_date}" if iss_date else "") + "."
+    formatted_history = format_chat_history_for_prompt(chat_history) if chat_history else ""
+
+    attached_asset_block = ""
+    if attached_asset and (asset_photo_id or asset_art_id or asset_cap or asset_hl):
+        asset_lines: list[str] = []
+        if asset_photo_id:
+            asset_lines.append(f"- Asset Type: Photo (ID: #{asset_photo_id})")
+        elif asset_art_id:
+            asset_lines.append(f"- Asset Type: Article (ID: #{asset_art_id})")
+        if asset_type:
+            asset_lines.append(f"- Visual Classification: {asset_type}")
+        if np_name:
+            asset_lines.append(f"- Newspaper: {np_name}")
+        if iss_date:
+            date_str = f"- Issue Date: {iss_date}"
+            if active_pg:
+                date_str += f" (Page {active_pg})"
+            asset_lines.append(date_str)
+        if active_hl:
+            asset_lines.append(f"- Associated Article Headline: \"{active_hl}\"")
+        if asset_cap:
+            asset_lines.append(f"- Caption / Text: \"{asset_cap}\"")
+
+        attached_asset_block = "CURRENT WORKSPACE ATTACHED ASSET:\n" + "\n".join(asset_lines) + "\n\n"
+
+    history_block = f"CONVERSATION HISTORY:\n{formatted_history}\n\n" if formatted_history else ""
 
     prompt = (
-        f"Chat History:\n{formatted_history}\n\n"
-        f"Latest User Query: {query}\n\n"
-        f"Context Clue:{ctx_hint}\n"
+        f"{attached_asset_block}"
+        f"{history_block}"
+        f"LATEST USER QUERY: {query}\n\n"
         "Rewritten Standalone Query:"
     )
 
@@ -404,14 +511,7 @@ async def condense_conversational_query(
             messages = [
                 Message(
                     role="system",
-                    content=(
-                        "You are an expert search query reformulator. "
-                        "Given the chat history and latest user query, rewrite the latest query into "
-                        "a single, standalone sentence that contains all necessary context (entities, dates, page numbers). "
-                        "Replace relative pronouns ('its', 'this', 'the newspaper', 'it') with the explicit "
-                        "newspaper brand, issue ID, and date from the conversation context. "
-                        "Output ONLY the rewritten query text. Do NOT add reasoning, bullets, quotes, or preambles."
-                    ),
+                    content=CONDENSER_SYSTEM_PROMPT,
                 ),
                 Message(role="user", content=prompt),
             ]
@@ -449,6 +549,35 @@ async def condense_conversational_query(
             )
 
     # Deterministic Heuristic Coreference Fallback:
+    if attached_asset and (asset_photo_id or asset_art_id or asset_hl):
+        pub_desc = " ".join([p for p in [np_name, f"dated {iss_date}" if iss_date else ""] if p])
+        if asset_photo_id and re.search(r"\b(photo|picture|image|graphic|figure|person|who is)\b", query, re.I):
+            base_q = re.sub(r"\b(this|the)\s+(photo|picture|image|graphic|figure)\b", f"photo #{asset_photo_id}", query, flags=re.I)
+            if asset_hl:
+                q_resolved = f"{base_q} for article '{asset_hl}' in {pub_desc}".strip()
+            else:
+                q_resolved = f"{base_q} in {pub_desc}".strip()
+            logger.info(
+                "Conversational query resolved via attached photo fallback",
+                extra={"original_query": query, "resolved_query": q_resolved},
+            )
+            return q_resolved
+        elif asset_art_id and re.search(r"\b(article|story|news|report)\b", query, re.I):
+            base_q = re.sub(r"\b(this|the)\s+(article|story|news|report)\b", f"article '{asset_hl or asset_art_id}'", query, flags=re.I)
+            q_resolved = f"{base_q} in {pub_desc}".strip()
+            logger.info(
+                "Conversational query resolved via attached article fallback",
+                extra={"original_query": query, "resolved_query": q_resolved},
+            )
+            return q_resolved
+        elif asset_hl:
+            q_resolved = f"{query} regarding '{asset_hl}' in {pub_desc}".strip()
+            logger.info(
+                "Conversational query resolved via attached headline fallback",
+                extra={"original_query": query, "resolved_query": q_resolved},
+            )
+            return q_resolved
+
     if comp_np and np_name and is_diff:
         dt_suffix = f" dated {iss_date}" if iss_date else ""
         q_resolved = f"{query} in {np_name} but not in {comp_np}{dt_suffix}"
@@ -506,20 +635,27 @@ async def resolve_attached_asset_context(
     attached_article_id: int | None = None,
     attached_issue_date: str | None = None,
     attached_newspaper_name: str | None = None,
-) -> tuple[str | None, str | None, int | None, int | None]:
-    """Resolve ground truth issue date, newspaper name, article ID, and issue ID for attached assets."""
+) -> dict[str, Any]:
+    """Resolve ground truth issue date, newspaper name, article ID, issue ID, headline, and caption for attached assets."""
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
     from app.models.article import Article, Photo
-    from app.models.newspaper import Issue, Newspaper
+    from app.models.newspaper import Issue, Newspaper, Page
 
-    resolved_date = attached_issue_date
-    resolved_np = attached_newspaper_name
-    resolved_art_id = attached_article_id
-    resolved_issue_id: int | None = None
+    res: dict[str, Any] = {
+        "photo_id": int(attached_photo_id) if attached_photo_id else None,
+        "article_id": int(attached_article_id) if attached_article_id else None,
+        "issue_date": attached_issue_date,
+        "newspaper_name": attached_newspaper_name,
+        "issue_id": None,
+        "headline": None,
+        "caption": None,
+        "visual_type": None,
+        "page_number": None,
+    }
 
     if not session_factory or (not attached_photo_id and not attached_article_id):
-        return resolved_date, resolved_np, resolved_art_id, resolved_issue_id
+        return res
 
     try:
         async with session_factory() as session:
@@ -534,14 +670,28 @@ async def resolve_attached_asset_context(
                     )
                 )
                 photo = (await session.execute(stmt)).scalar_one_or_none()
-                if photo and photo.article:
-                    if not resolved_art_id:
-                        resolved_art_id = photo.article.id
-                    if photo.article.issue:
-                        resolved_issue_id = photo.article.issue.id
-                        resolved_date = str(photo.article.issue.issue_date)
-                        if photo.article.issue.newspaper:
-                            resolved_np = photo.article.issue.newspaper.name
+                if photo:
+                    res["photo_id"] = photo.id
+                    if photo.caption:
+                        res["caption"] = photo.caption
+                    if photo.visual_type:
+                        res["visual_type"] = photo.visual_type
+
+                    if photo.page_id:
+                        pg_stmt = select(Page.page_number).where(Page.id == photo.page_id)
+                        pg_num = (await session.execute(pg_stmt)).scalar_one_or_none()
+                        if pg_num is not None:
+                            res["page_number"] = pg_num
+
+                    if photo.article:
+                        res["article_id"] = photo.article.id
+                        if photo.article.headline:
+                            res["headline"] = photo.article.headline
+                        if photo.article.issue:
+                            res["issue_id"] = photo.article.issue.id
+                            res["issue_date"] = str(photo.article.issue.issue_date)
+                            if photo.article.issue.newspaper:
+                                res["newspaper_name"] = photo.article.issue.newspaper.name
             elif attached_article_id:
                 stmt = (
                     select(Article)
@@ -551,20 +701,30 @@ async def resolve_attached_asset_context(
                     )
                 )
                 art = (await session.execute(stmt)).scalar_one_or_none()
-                if art and art.issue:
-                    resolved_issue_id = art.issue.id
-                    resolved_date = str(art.issue.issue_date)
-                    if art.issue.newspaper:
-                        resolved_np = art.issue.newspaper.name
+                if art:
+                    res["article_id"] = art.id
+                    if art.headline:
+                        res["headline"] = art.headline
+                    if art.primary_page_id:
+                        pg_stmt = select(Page.page_number).where(Page.id == art.primary_page_id)
+                        pg_num = (await session.execute(pg_stmt)).scalar_one_or_none()
+                        if pg_num is not None:
+                            res["page_number"] = pg_num
+                    if art.issue:
+                        res["issue_id"] = art.issue.id
+                        res["issue_date"] = str(art.issue.issue_date)
+                        if art.issue.newspaper:
+                            res["newspaper_name"] = art.issue.newspaper.name
     except Exception as ex:
         logger.warning("Failed to resolve attached asset metadata", extra={"error": str(ex)})
 
-    return resolved_date, resolved_np, resolved_art_id, resolved_issue_id
+    return res
 
 
 __all__ = [
     "AMBIGUOUS_PRONOUNS_PATTERN",
     "CLEAN_SESSION_CLARIFICATION_MESSAGE",
+    "CONDENSER_SYSTEM_PROMPT",
     "GENERIC_FOLLOWUP_SHORT_PATTERN",
     "IN_CONTEXT_META_QUERY_PATTERN",
     "condense_conversational_query",

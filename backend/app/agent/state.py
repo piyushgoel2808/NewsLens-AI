@@ -56,6 +56,7 @@ class AgentState(TypedDict):
     active_issue_date: str | None
     attached_article_id: int | None
     attached_photo_id: int | None
+    attached_asset: dict[str, Any] | None
     error: str | None
 
 

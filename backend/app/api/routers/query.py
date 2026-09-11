@@ -105,13 +105,16 @@ async def execute_query(
     """Execute the multi-stage LangGraph query workflow."""
     factory = get_session_factory()
     workflow = AgentWorkflow(session_factory=factory)
-    res_date, res_np, res_art_id, _ = await resolve_attached_asset_context(
+    attached_ctx = await resolve_attached_asset_context(
         session_factory=factory,
         attached_photo_id=request.attached_photo_id,
         attached_article_id=request.attached_article_id,
         attached_issue_date=request.attached_issue_date,
         attached_newspaper_name=request.attached_newspaper_name,
     )
+    res_date = attached_ctx.get("issue_date")
+    res_np = attached_ctx.get("newspaper_name")
+    res_art_id = attached_ctx.get("article_id")
     result = await workflow.run(
         query=request.query,
         chat_history=request.chat_history,
@@ -158,7 +161,8 @@ async def stream_query(
         effective_model = request.effective_model
 
         # 0. Ambiguity Guardrail for Clean Sessions
-        if is_ambiguous_standalone_query(query, chat_history):
+        has_attached = bool(request.attached_photo_id or request.attached_article_id)
+        if is_ambiguous_standalone_query(query, chat_history, has_attached_asset=has_attached):
             yield f"event: stage\ndata: {json.dumps({'stage': 'completed'})}\n\n"
             token_payload = json.dumps({"delta": CLEAN_SESSION_CLARIFICATION_MESSAGE})
             yield f"event: token\ndata: {token_payload}\n\n"
@@ -185,13 +189,17 @@ async def stream_query(
             tool_data = json.dumps({"evidence_count": 0, "tools": []})
             yield f"event: tool_results\ndata: {tool_data}\n\n"
         else:
-            res_date, res_np, res_art_id, res_iss_id = await resolve_attached_asset_context(
+            attached_ctx = await resolve_attached_asset_context(
                 session_factory=workflow._session_factory,
                 attached_photo_id=request.attached_photo_id,
                 attached_article_id=request.attached_article_id,
                 attached_issue_date=request.attached_issue_date,
                 attached_newspaper_name=request.attached_newspaper_name,
             )
+            res_date = attached_ctx.get("issue_date")
+            res_np = attached_ctx.get("newspaper_name")
+            res_art_id = attached_ctx.get("article_id")
+            res_iss_id = attached_ctx.get("issue_id")
             eff_attached_article_id = res_art_id or request.attached_article_id
             eff_attached_photo_id = request.attached_photo_id
 
@@ -202,6 +210,7 @@ async def stream_query(
                 attached_article_id=eff_attached_article_id,
                 attached_issue_date=res_date,
                 attached_newspaper_name=res_np,
+                attached_headline=attached_ctx.get("headline"),
             )
             if res_date:
                 active_ctx["issue_date"] = res_date
@@ -213,8 +222,20 @@ async def stream_query(
                 active_ctx["article_id"] = eff_attached_article_id
             if eff_attached_photo_id:
                 active_ctx["photo_id"] = eff_attached_photo_id
+            if attached_ctx.get("headline"):
+                active_ctx["headline"] = attached_ctx["headline"]
 
-            if chat_history and needs_condensation(query, chat_history):
+            has_attached_asset = bool(
+                eff_attached_photo_id
+                or eff_attached_article_id
+                or (attached_ctx and (attached_ctx.get("photo_id") or attached_ctx.get("article_id") or attached_ctx.get("newspaper_name")))
+            )
+            is_followup = bool(
+                (chat_history or has_attached_asset)
+                and needs_condensation(query, chat_history, attached_asset=attached_ctx)
+            )
+
+            if is_followup:
                 yield f"event: stage\ndata: {json.dumps({'stage': 'condensing_query'})}\n\n"
                 condensed = await condense_conversational_query(
                     query=query,
@@ -223,19 +244,29 @@ async def stream_query(
                     active_issue_id=active_ctx.get("issue_id"),
                     active_newspaper_name=active_ctx.get("newspaper_name"),
                     active_issue_date=active_ctx.get("issue_date"),
+                    attached_asset=attached_ctx,
                 )
                 query = condensed
                 cond_data = json.dumps({"condensed_query": condensed})
                 yield f"event: query_condensed\ndata: {cond_data}\n\n"
 
             # 2. Planning Stage
+            # Only pass active_issue_date and active_newspapers to planner if an asset is attached,
+            # or if this is an active follow-up query. Do NOT constrain standalone text queries.
+            planner_active_date = active_ctx.get("issue_date") if (has_attached_asset or is_followup) else None
+            planner_active_nps = (
+                [active_ctx.get("newspaper_name")]
+                if ((has_attached_asset or is_followup) and active_ctx.get("newspaper_name"))
+                else None
+            )
+
             yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
             plan_res = await workflow._planner.plan_query_async(
                 query,
                 enable_web_search=request.enable_web_search,
                 model_override=effective_model,
-                active_issue_date=active_ctx.get("issue_date"),
-                active_newspapers=[active_ctx.get("newspaper_name")] if active_ctx.get("newspaper_name") else None,
+                active_issue_date=planner_active_date,
+                active_newspapers=planner_active_nps,
                 attached_article_id=eff_attached_article_id,
                 attached_photo_id=eff_attached_photo_id,
             )

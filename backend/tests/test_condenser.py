@@ -191,46 +191,350 @@ def test_attached_asset_supersedes_stale_history_date():
 
 @pytest.mark.asyncio
 async def test_resolve_attached_asset_context_mock():
-    """Verify resolve_attached_asset_context queries session for photo and extracts attributes."""
+    """Verify resolve_attached_asset_context queries session for photo and extracts full attributes."""
     from unittest.mock import AsyncMock, MagicMock
     from app.agent.condenser import resolve_attached_asset_context
 
     mock_newspaper = MagicMock()
-    mock_newspaper.name = "Hindustan Times"
+    mock_newspaper.name = "The Goan"
 
     mock_issue = MagicMock()
-    mock_issue.id = 107
-    mock_issue.issue_date = "2026-08-03"
+    mock_issue.id = 97
+    mock_issue.issue_date = "2026-08-05"
     mock_issue.newspaper = mock_newspaper
 
     mock_article = MagicMock()
-    mock_article.id = 42869
+    mock_article.id = 41142
+    mock_article.headline = "Ahead of protest, CM meets Shah on quota for STs"
     mock_article.issue = mock_issue
 
     mock_photo = MagicMock()
-    mock_photo.id = 9607
-    mock_photo.article_id = 42869
+    mock_photo.id = 7645
+    mock_photo.article_id = 41142
+    mock_photo.caption = "Chief Minister Pramod Sawant with Union Home Minister Amit Shah in New Delhi on Tuesday."
+    mock_photo.visual_type = "photo"
+    mock_photo.page_id = 101
     mock_photo.article = mock_article
 
-    mock_res = MagicMock()
-    mock_res.scalar_one_or_none.return_value = mock_photo
+    mock_photo_res = MagicMock()
+    mock_photo_res.scalar_one_or_none.return_value = mock_photo
+
+    mock_page_res = MagicMock()
+    mock_page_res.scalar_one_or_none.return_value = 1
 
     mock_session = AsyncMock()
-    mock_session.execute.return_value = mock_res
+    # First query is for Photo, second query is for Page number
+    mock_session.execute.side_effect = [mock_photo_res, mock_page_res]
     mock_session.__aenter__.return_value = mock_session
     mock_session.__aexit__.return_value = None
 
     mock_factory = MagicMock()
     mock_factory.return_value = mock_session
 
-    res_date, res_np, res_art_id, res_iss_id = await resolve_attached_asset_context(
+    res = await resolve_attached_asset_context(
         session_factory=mock_factory,
-        attached_photo_id=9607,
+        attached_photo_id=7645,
     )
 
-    assert res_date == "2026-08-03"
-    assert res_np == "Hindustan Times"
-    assert res_art_id == 42869
-    assert res_iss_id == 107
+    assert isinstance(res, dict)
+    assert res.get("issue_date") == "2026-08-05"
+    assert res.get("newspaper_name") == "The Goan"
+    assert res.get("article_id") == 41142
+    assert res.get("issue_id") == 97
+    assert res.get("photo_id") == 7645
+    assert res.get("headline") == "Ahead of protest, CM meets Shah on quota for STs"
+    assert "Pramod Sawant" in res.get("caption", "")
+    assert res.get("visual_type") == "photo"
+    assert res.get("page_number") == 1
+
+
+@pytest.mark.asyncio
+async def test_condense_query_with_attached_asset_prevents_context_leakage():
+    """Verify that an attached asset strictly isolates the query from prior turn's unrelated entities."""
+    history = [
+        {
+            "role": "user",
+            "content": "Drugs can give brief high but make life low: Modi to youth",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "In Hindustan Times on 2026-08-03, Prime Minister Narendra Modi addressed youth "
+                "during the launch of Nasha Mukt Bharat Sankalp Abhiyan."
+            ),
+            "citations": [
+                {
+                    "photo_id": 9607,
+                    "article_id": 42869,
+                    "headline": "Drugs can give brief high but make life low: Modi to youth",
+                    "newspaper_name": "Hindustan Times",
+                    "issue_date": "2026-08-03",
+                    "page_number": 5,
+                }
+            ],
+        },
+    ]
+
+    attached_asset = {
+        "photo_id": 7645,
+        "article_id": 41142,
+        "issue_date": "2026-08-05",
+        "newspaper_name": "The Goan",
+        "headline": "Ahead of protest, CM meets Shah on quota for STs",
+        "caption": "Chief Minister Pramod Sawant with Union Home Minister Amit Shah in New Delhi on Tuesday.",
+        "visual_type": "photo",
+        "page_number": 1,
+    }
+
+    # User asks "name the pearson in this photo" (with realistic typo)
+    resolved = await condense_conversational_query(
+        query="name the pearson in this photo",
+        chat_history=history,
+        provider=None,  # Tests deterministic fallback grounding
+        attached_asset=attached_asset,
+    )
+
+    # Must target The Goan and the attached photo/headline
+    assert "The Goan" in resolved
+    assert "2026-08-05" in resolved
+    assert "photo #7645" in resolved
+    assert "Ahead of protest, CM meets Shah on quota for STs" in resolved
+
+    # MUST NOT contain any leakage from Turn 1
+    assert "Hindustan Times" not in resolved
+    assert "Modi" not in resolved
+    assert "2026-08-03" not in resolved
+    assert "brief high" not in resolved
+
+
+@pytest.mark.asyncio
+async def test_condense_query_with_mock_llm_provider_decision():
+    """Verify LLM reformulator prompt includes attached asset block and decision rules."""
+    from unittest.mock import AsyncMock, MagicMock
+    from app.providers.base import ModelResponse
+
+    history = [
+        {
+            "role": "user",
+            "content": "Drugs can give brief high but make life low: Modi to youth",
+        },
+        {
+            "role": "assistant",
+            "content": "In Hindustan Times on 2026-08-03, Narendra Modi launched Nasha Mukt Abhiyan.",
+        },
+    ]
+
+    attached_asset = {
+        "photo_id": 7645,
+        "article_id": 41142,
+        "issue_date": "2026-08-05",
+        "newspaper_name": "The Goan",
+        "headline": "Ahead of protest, CM meets Shah on quota for STs",
+        "caption": "Chief Minister Pramod Sawant with Union Home Minister Amit Shah in New Delhi on Tuesday.",
+        "visual_type": "photo",
+        "page_number": 1,
+    }
+
+    mock_provider = MagicMock()
+    mock_provider.complete = AsyncMock(
+        return_value=ModelResponse(
+            text="What is the name of the person in photo #7645 from The Goan dated 2026-08-05 regarding Chief Minister Pramod Sawant and Amit Shah?",
+        )
+    )
+
+    resolved = await condense_conversational_query(
+        query="name the pearson in this photo",
+        chat_history=history,
+        provider=mock_provider,
+        attached_asset=attached_asset,
+    )
+
+    # Check that LLM complete was called
+    assert mock_provider.complete.called
+    call_args = mock_provider.complete.call_args[1]
+    messages = call_args["messages"]
+
+    # Verify system prompt has decision rules
+    system_content = messages[0].content
+    assert "ATTACHED ASSET REFERENCE" in system_content
+    assert "CONVERSATION CONTINUATION" in system_content
+    assert "DO NOT inherit or contaminate" in system_content
+
+    # Verify user prompt includes attached asset details
+    user_content = messages[1].content
+    assert "CURRENT WORKSPACE ATTACHED ASSET:" in user_content
+    assert "Photo (ID: #7645)" in user_content
+    assert "The Goan" in user_content
+    assert "2026-08-05 (Page 1)" in user_content
+    assert "Ahead of protest, CM meets Shah on quota for STs" in user_content
+    assert "Pramod Sawant" in user_content
+
+    assert resolved == "What is the name of the person in photo #7645 from The Goan dated 2026-08-05 regarding Chief Minister Pramod Sawant and Amit Shah?"
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_attached_asset_planning_with_dirty_history():
+    """Verify that planner schedules inspect_visual_asset on The Goan (not Hindustan Times) despite dirty history."""
+    dirty_history = [
+        {
+            "role": "user",
+            "content": "Drugs can give brief high but make life low: Modi to youth",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "In Hindustan Times on 2026-08-03, Prime Minister Narendra Modi addressed youth "
+                "during the launch of Nasha Mukt Bharat Sankalp Abhiyan."
+            ),
+            "citations": [
+                {
+                    "photo_id": 9607,
+                    "article_id": 42869,
+                    "headline": "Drugs can give brief high but make life low: Modi to youth",
+                    "newspaper_name": "Hindustan Times",
+                    "issue_date": "2026-08-03",
+                    "page_number": 5,
+                }
+            ],
+        },
+    ]
+
+    attached_asset = {
+        "photo_id": 7645,
+        "article_id": 41142,
+        "issue_date": "2026-08-05",
+        "newspaper_name": "The Goan",
+        "headline": "Ahead of protest, CM meets Shah on quota for STs",
+        "caption": "Chief Minister Pramod Sawant with Union Home Minister Amit Shah in New Delhi on Tuesday.",
+        "visual_type": "photo",
+        "page_number": 1,
+    }
+
+    # 1. Condenser resolves query cleanly
+    condensed_q = await condense_conversational_query(
+        query="name the pearson in this photo",
+        chat_history=dirty_history,
+        provider=None,  # deterministic fallback
+        attached_asset=attached_asset,
+    )
+
+    assert "The Goan" in condensed_q
+    assert "2026-08-05" in condensed_q
+    assert "photo #7645" in condensed_q
+    assert "Hindustan Times" not in condensed_q
+    assert "Modi" not in condensed_q
+
+    # 2. QueryPlanner builds plan
+    planner = QueryPlanner()
+    plan_result = await planner.plan_query_async(
+        condensed_q,
+        enable_web_search=False,
+        active_issue_date="2026-08-05",
+        active_newspapers=["The Goan"],
+        attached_article_id=41142,
+        attached_photo_id=7645,
+    )
+
+    tool_names = [call.tool_name for call in plan_result.tool_calls]
+    assert "inspect_visual_asset" in tool_names
+
+    # Verify arguments of inspect_visual_asset
+    visual_call = next(call for call in plan_result.tool_calls if call.tool_name == "inspect_visual_asset")
+    assert visual_call.arguments.get("photo_id") == 7645
+    assert visual_call.arguments.get("newspaper_name") == "The Goan"
+    assert visual_call.arguments.get("issue_date") == "2026-08-05"
+
+    # Verify NO tool call targets Hindustan Times or 2026-08-03
+    for call in plan_result.tool_calls:
+        args = call.arguments
+        assert args.get("newspaper_name") != "Hindustan Times"
+        assert args.get("issue_date") != "2026-08-03"
+        assert args.get("date_from") != "2026-08-03"
+        assert args.get("date_to") != "2026-08-03"
+
+
+def test_normal_text_query_existential_there_does_not_trigger_condensation():
+    """Verify existential 'is there', 'are there', 'was there' do NOT trigger condensation."""
+    dirty_history = [
+        {"role": "user", "content": "Show me Hindustan Times on 2026-08-03"},
+        {
+            "role": "assistant",
+            "content": "Narendra Modi launched Nasha Mukt Yuva for Viksit Bharat Sankalp Abhiyan in Hindustan Times on 2026-08-03.",
+            "citations": [{"newspaper_name": "Hindustan Times", "issue_date": "2026-08-03", "page_number": 1}],
+        },
+    ]
+
+    assert needs_condensation("Is there any news about education policy in Maharashtra?", dirty_history) is False
+    assert needs_condensation("Are there any articles about renewable energy?", dirty_history) is False
+    assert needs_condensation("Was there any coverage of the budget?", dirty_history) is False
+    assert needs_condensation("Tell me about the ST quota protest in Goa", dirty_history) is False
+
+
+def test_normal_text_query_newspaper_switch_purges_stale_date_in_guardrail3():
+    """Verify switching newspaper in normal text query purges prior newspaper's date."""
+    dirty_history = [
+        {"role": "user", "content": "Show me Hindustan Times on 2026-08-03"},
+        {
+            "role": "assistant",
+            "content": "Narendra Modi launched Nasha Mukt Yuva for Viksit Bharat Sankalp Abhiyan in Hindustan Times on 2026-08-03.",
+            "citations": [{"newspaper_name": "Hindustan Times", "issue_date": "2026-08-03", "page_number": 1}],
+        },
+    ]
+
+    ctx = extract_active_issue_from_history(dirty_history, current_query="Summarize the front page of The Goan")
+    assert ctx.get("newspaper_name") == "The Goan"
+    assert "issue_date" not in ctx  # Crucial: must NOT inherit 2026-08-03 from Hindustan Times!
+    assert ctx.get("target_newspapers") == ["The Goan"]
+
+
+@pytest.mark.asyncio
+async def test_normal_text_query_topic_switch_e2e_no_leakage():
+    """Verify normal text topic switch query produces clean plan without prior turn constraints."""
+    dirty_history = [
+        {"role": "user", "content": "Show me Hindustan Times on 2026-08-03"},
+        {
+            "role": "assistant",
+            "content": "Narendra Modi launched Nasha Mukt Yuva for Viksit Bharat Sankalp Abhiyan in Hindustan Times on 2026-08-03.",
+            "citations": [{"newspaper_name": "Hindustan Times", "issue_date": "2026-08-03", "page_number": 1}],
+        },
+    ]
+
+    query = "Tell me about the ST quota protest in Goa"
+    # 1. Not flagged as follow-up needing condensation
+    assert needs_condensation(query, dirty_history) is False
+
+    # 2. Standalone planning: active_date and active_newspapers must be None/empty
+    planner = QueryPlanner()
+    plan_result = await planner.plan_query_async(
+        query,
+        enable_web_search=False,
+        active_issue_date=None,
+        active_newspapers=None,
+    )
+
+    for call in plan_result.tool_calls:
+        args = call.arguments
+        assert args.get("newspaper_name") != "Hindustan Times"
+        assert args.get("issue_date") != "2026-08-03"
+        assert args.get("date_from") != "2026-08-03"
+        assert args.get("date_to") != "2026-08-03"
+
+
+def test_normal_text_query_legitimate_followup_preserves_context():
+    """Verify true conversational follow-up queries continue to trigger condensation."""
+    dirty_history = [
+        {"role": "user", "content": "Show me Hindustan Times on 2026-08-03"},
+        {
+            "role": "assistant",
+            "content": "Narendra Modi launched Nasha Mukt Yuva for Viksit Bharat Sankalp Abhiyan in Hindustan Times on 2026-08-03.",
+            "citations": [{"newspaper_name": "Hindustan Times", "issue_date": "2026-08-03", "page_number": 1}],
+        },
+    ]
+
+    assert needs_condensation("what else did he say about youth?", dirty_history) is True
+    assert needs_condensation("Summarize the front page", dirty_history) is True
+    assert needs_condensation("Did any other newspaper cover this event?", dirty_history) is True
+
+
 
 

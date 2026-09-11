@@ -393,6 +393,18 @@ class QueryPlanner:
             )
             tool_calls = heur.tool_calls
 
+        if attached_photo_id and not any(t.tool_name == "inspect_visual_asset" for t in tool_calls):
+            np_target = (active_newspapers[0] if active_newspapers else None) or extracted.get("newspaper_name") or ""
+            dt_target = active_issue_date or extracted.get("issue_date") or ""
+            tool_calls.insert(0, build_inspect_visual_asset_tool(
+                photo_id=attached_photo_id,
+                article_id=attached_article_id,
+                query=query,
+                newspaper_name=np_target,
+                issue_date=dt_target,
+                purpose="Inspect attached visual asset and transcribe metadata",
+            ))
+
         if enable_web_search and not any(t.tool_name == "web_search" for t in tool_calls):
             tool_calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))
 
