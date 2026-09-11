@@ -61,13 +61,13 @@ flowchart TD
 ### Stage 2: Masthead Verification & Publication Consensus
 *Broadsheet newspapers often have complex scanned headers, non-standard unicode dates, or irregular fonts.*
 
-1. **Visual Masthead Verifier** ([`backend/app/ingestion/masthead_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/masthead_verifier.py)):
+1. **Visual Masthead Verifier** ([`backend/app/ingestion/metadata.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/metadata.py)):
    - PyMuPDF crops the **top 22% of Page 1** (the masthead banner).
    - Runs high-speed local OCR using `RapidOCR` (ONNX Runtime with PP-OCRv6 models, `<0.6s`).
    - Normalizes Unicode superscripts (e.g., `²⁷⁰⁸²⁰²⁶` $\to$ `27082026`).
    - Matches brand rules (e.g., `The Economic Times`, `Mint`, `The Hindu`, `Business Standard`, `The Indian Express`, `The Times of India`).
    - Parses diverse broadsheet date formats (e.g., `Thursday, 27 August 2026`, `Aug 27, 2026`, `27-08-2026`).
-2. **Multi-Page Consensus Extractor** ([`backend/app/ingestion/consensus_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/consensus_extractor.py)):
+2. **Multi-Page Consensus Extractor** ([`backend/app/ingestion/metadata.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/metadata.py)):
    - Inspects headers/running folios across pages 1 to 15.
    - Applies a **5x weighting** to header-zone dates over body-text dates.
    - Updates the MySQL `Issue` row with verified `newspaper_id`, publication `issue_date`, and `edition`.
@@ -87,6 +87,7 @@ flowchart TD
 ---
 
 ### Stage 4: Layout Parsing & 2D Article Segmentation
+Handled by the `backend/app/ingestion/parsers/` and `backend/app/ingestion/layout/` subpackages:
 
 NewsLens-AI supports multiple configurable layout engines selected via `parser_engine`:
 
@@ -96,26 +97,23 @@ NewsLens-AI supports multiple configurable layout engines selected via `parser_e
 ├──────────────────────┬──────────────────────────────────────────────────────┤
 │ Engine Option        │ Underlying Technology & Purpose                      │
 ├──────────────────────┼──────────────────────────────────────────────────────┤
-│ "docling" (Default)  │ DocLayNet 2D neural layout + RapidOCR                │
-│ "gemini" / "gemma"   │ VLM-based visual polygon extraction & crop OCR       │
-│ "google_vision"      │ Google Cloud Vision Document Text API                │
+│ "docling" (Default)  │ DocLayNet 2D neural layout + RapidOCR (parsers/docling)│
+│ "gemini" / "gemma"   │ VLM-based visual polygon extraction (parsers/vlm.py) │
+│ "google_vision"      │ Google Cloud Vision Document Text API (parsers/ocr.py)│
 │ "mineru"             │ Magic-PDF / MinerU broadsheet pipeline               │
 │ "auto"               │ Docling 2D Neural with automatic fallback            │
 └──────────────────────┴──────────────────────────────────────────────────────┘
 ```
 
-#### The Docling 2D Neural Layout Parser (`DoclingLayoutParser`):
+#### The Docling 2D Neural Layout Parser ([`backend/app/ingestion/parsers/docling.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/parsers/docling.py)):
 * **Neural Object Detection**: Docling's vision backbone identifies 2D document elements:
   * `title`: Article headlines and major banners.
   * `section_header`: Editorial category markers (`MARKETS`, `NATIONAL`, `OPINION`).
   * `paragraph`: Columnar body text blocks.
   * `table`: Tabular grids and financial reports.
   * `picture`: Editorial photographs, charts, and infographics.
-* **Elimination of Cross-Column Bleeding**: Unlike naive 1D reading order heuristics (which read across column gutters), Docling tracks vertical column geometries, ensuring stories in parallel columns never mix.
-* **Byline & Dateline Isolation**:
-  * Matches author names (`Manu Pubby`, `Krishna Kumar`, `Dipanjan Roy Chaudhury`) and agency slugs (`PTI`, `Reuters`, `Our Bureau`).
-  * Extracts dateline markers (`New Delhi:`, `Mumbai:`, `Bengaluru:`).
-* **Subhead Coalescence**: Coalesces internal all-caps section dividers (e.g. `### STRONG FOUNDATION`) into the active article body rather than creating false orphan articles.
+* **Elimination of Cross-Column Bleeding**: Handled via `LayoutAnalyzer` ([`backend/app/ingestion/layout/analyzer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout/analyzer.py)), which tracks vertical column geometries, ensuring stories in parallel columns never mix.
+* **Article Segmentation & Cross-Page Jump Stitching**: Handled by `ArticleSegmenter` and `CrossPageAssembler` ([`backend/app/ingestion/layout/segmenter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout/segmenter.py)), linking split stories across pages.
 
 ---
 

@@ -145,7 +145,7 @@ VALUES
 
 ### 1.2 Docling 2D Layout, Vision OCR & CMap Corruption Detection
 
-[`backend/app/ingestion/docling_parser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/docling_parser.py) runs the page image and PDF text layer through DocLayNet:
+[`backend/app/ingestion/parsers/docling.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/parsers/docling.py) runs the page image and PDF text layer through DocLayNet:
 
 1. **Bounding Box Normalization**: Converts PDF coordinates into standard pixel bounding boxes `[x0, y0, x1, y1]`.
 2. **Corrupted Font CMap Guard**: Notice in our live database, the headline contains `tra  c` because the embedded font lacked a `ToUnicode` mapping for the `ffi` ligature. The system computes the replacement character ratio:

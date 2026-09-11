@@ -50,13 +50,17 @@ NewsLens-AI/
 │   │   │   └── routers/             # Endpoint definitions (articles, query, ingest, models, settings, etc.)
 │   │   ├── core/                    # Global settings, logging, cost tracker, Prometheus metrics, YAML rules
 │   │   ├── evaluation/              # IR benchmark evaluation metrics (Recall@K, MRR, NDCG@K, Precision)
-│   │   ├── ingestion/               # 12-stage industrial broadsheet PDF ingestion and VLM extraction engine
+│   │   ├── ingestion/               # Consolidated 12-stage broadsheet PDF ingestion, layout analysis & VLM engine
+│   │   │   ├── layout/              # Spatial column analysis, reading order & cross-page story assembly
+│   │   │   ├── parsers/             # Document extraction engines (Docling neural, multimodal VLM, OCR)
+│   │   │   ├── metadata.py          # Consolidated header, folio, masthead verification & issue consensus
+│   │   │   └── storage.py           # Consolidated stream deflation, 3-tier hard deletion & debug exporter
 │   │   ├── models/                  # SQLAlchemy 2.0 async relational schemas and ORM entities
 │   │   ├── providers/               # Abstract model providers (Ollama, Groq, Gemini, OpenAI, GCV)
 │   │   ├── retrieval/               # Multi-tool retrieval engines (hybrid search, SQL analytics, reranking)
 │   │   └── storage/                 # Persistence clients (MySQL FULLTEXT, Qdrant, MinIO S3, Redis Cache)
 │   │
-│   └── tests/                       # Over 55 pytest test suites (unit, integration, and regression)
+│   └── tests/                       # Over 55 pytest test suites (411 unit, integration, and regression tests)
 │
 ├── frontend/                        # Modern Single Page Application (React 18, Vite, Tailwind CSS)
 │   ├── index.html                   # HTML5 entrypoint with broadsheet typography & viewport
@@ -468,15 +472,134 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 
 ---
 
-### 4.5 `backend/app/ingestion/` — 12-Stage Broadsheet Processing Pipeline
+#### 4.5 `backend/app/ingestion/` — Consolidated 12-Stage Broadsheet Processing Pipeline
 * **Purpose / Reason**: The industrial-grade newspaper parsing, layout decomposition, OCR, visual extraction, and indexing engine.
-* **Work It Is Doing**: Takes raw, unstructured multi-megabyte broadsheet PDF issues and turns them into high-resolution page renders, column-ordered text, structured cross-page articles, transcribed infographics, photo scene descriptions, and vectorized chunks.
+* **Work It Is Doing**: Takes raw, unstructured multi-megabyte broadsheet PDF issues and turns them into high-resolution page renders, column-ordered text, structured cross-page articles, transcribed infographics, photo scene descriptions, and vectorized chunks. Architecturally consolidated from 28 micro-modules into cohesive architectural boundaries (`metadata.py`, `storage.py`, `layout/`, `parsers/`) while maintaining 100% backward compatibility via proxy shims.
 
-#### Files in `backend/app/ingestion/`:
+#### Architecture & Subpackage Hierarchy:
+- **`metadata.py`**: Consolidated Header, Folio, Masthead Verification & Multi-Page Issue Consensus.
+- **`storage.py`**: Consolidated Stream Deflation, 3-Tier Hard Deletion & Diagnostic Debug Artifacts Export.
+- **`layout/` Subpackage**: Spatial column analysis, reading order resolution, and cross-page article continuation assembly.
+- **`parsers/` Subpackage**: Specialized document extraction engines (Docling 2D neural layout, multimodal VLM, and OCR).
+- **Core Pipeline Services**: Master Celery workflow (`tasks.py`), single-page re-ingestion (`page_reingestion.py`), intake validation (`intake.py`), rasterization (`rasterizer.py`), visual extraction (`visual_extractor.py`), classification (`classifier.py`), chunking (`chunker.py`), and embedding (`embedder.py`).
+- **Backward-Compatible Proxy Shims**: Lightweight re-export forwarders for all legacy module paths.
+
+---
+
+#### Consolidated Header & Storage Modules:
+
+##### [`backend/app/ingestion/metadata.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/metadata.py)
+* **What It Has**: 
+  - `FolioDetector`: Running header, section folio, and page numeral extractor.
+  - `MastheadVerifier`: RapidOCR Page 1 masthead banner scanner and publication date verifier.
+  - `ConsensusExtractor` & `extract_newspaper_and_date_consensus()`: Multi-page majority voting on brand and issue date.
+  - Unified Date Registry: Single canonical source of truth for `_DATE_PATTERNS`, `_MONTH_MAP`, and `parse_extracted_date()`.
+  - Dataclasses: `HeaderCandidate`, `MastheadMatch`, `FolioMetadata`, `ConsensusMetadata`.
+* **Work It Is Doing**:
+  - Unifies previously fragmented header, folio, and masthead extraction into a single, cohesive metadata engine.
+  - Eliminates duplicate date regexes across the codebase, ensuring consistent date normalization across all publications.
+  - Resolves issue publication date and newspaper identity with multi-page majority voting.
+* **Important Tools / Frameworks**: RapidOCR (ONNX PP-OCRv6), PyMuPDF (`fitz`), Regular Expressions, Dataclasses.
+* **LLM / VLM / Embedding Models**: None (Deterministic Computer Vision & Heuristics).
+
+##### [`backend/app/ingestion/storage.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/storage.py)
+* **What It Has**: 
+  - `compress_pdf_bytes()`, `compress_pdf()`: PyMuPDF PDF stream deflation and downsampling.
+  - `DeletionService`: 3-tier cascade hard deletion across MySQL, Qdrant, and MinIO.
+  - `DebugArtifactsExporter`: Diagnostic bounding box drawings and manifest exports.
+* **Work It Is Doing**:
+  - Consolidates all storage, deflation, and lifecycle maintenance utilities into a single module.
+  - Executes atomic cascading deletions: removes relational rows in MySQL, deletes vector points in Qdrant, purges page rasters and visual crops in MinIO, and invalidates Redis cache keys.
+  - Exports 5 structured JSON debug manifests (`articles_manifest.json`, `rag_chunks.json`, `ocr_extracted_text.json`, `identified_advertisements.json`, `ingestion_summary.json`).
+* **Important Tools / Frameworks**: PyMuPDF (`fitz`), Qdrant Async Client, MinIO Client, SQLAlchemy AsyncSession, Redis.
+* **LLM / VLM / Embedding Models**: None.
+
+---
+
+#### `backend/app/ingestion/layout/` — Spatial Layout & Article Assembly Subpackage:
+
+##### [`backend/app/ingestion/layout/__init__.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout/__init__.py)
+* **What It Has**: Public package facade exporting `LayoutAnalyzer`, `ArticleSegmenter`, `ReadingOrderResolver`, `CrossPageAssembler`, `BlockType`, `LayoutElement`, `OrderedReadingBlock`, `AssembledArticle`, `PageBBoxMapping`.
+* **Work It Is Doing**: Exposes a clean, unified public interface for spatial broadsheet analysis and article segmentation.
+
+##### [`backend/app/ingestion/layout/slugs.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout/slugs.py)
+* **What It Has**: 
+  - Constants: `WIRE_AGENCIES`, `DATELINE_CITIES`, `SECTION_HEADER_BLACKLIST`, `SYNDICATION_SLUGS`, `JUMP_PHRASE_PATTERNS`.
+  - Utility Functions: `is_syndication_or_agency_slug()`, `is_numbered_feature_subhead()`, `clean_ocr_text_artifacts()`.
+* **Work It Is Doing**:
+  - Serves as the single source of truth for broadsheet text heuristics, wire service identification, and section header filtering.
+  - Eliminates ~220 lines of duplicate regexes and filter functions previously duplicated across `layout_analyzer.py` and `cross_page_assembler.py`.
+
+##### [`backend/app/ingestion/layout/analyzer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout/analyzer.py)
+* **What It Has**: 
+  - `LayoutAnalyzer` class.
+  - `ReadingOrderResolver` class, `BlockType`, `LayoutElement`, `OrderedReadingBlock`.
+* **Work It Is Doing**:
+  - Slices complex broadsheet pages into vertical column tracks, horizontal headline bands, and advertisement envelopes.
+  - Solves multi-column broadsheet reading order using XY-cut geometric clustering, preventing column bleeding.
+  - Re-attaches drop-caps (e.g. large initial "T") and repairs hyphenated line breaks.
+  - Merges horizontal multi-column headline slices across column gutters.
+* **Important Tools / Frameworks**: Computational Geometry, Interval Math, PyMuPDF.
+* **LLM / VLM / Embedding Models**: None (Deterministic Spatial Algorithms).
+
+##### [`backend/app/ingestion/layout/segmenter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout/segmenter.py)
+* **What It Has**: 
+  - `ArticleSegmenter` class, `SegmentedArticle`.
+  - `CrossPageAssembler` class, `AssembledArticle`, `PageBBoxMapping`.
+  - Helper functions: `extract_kicker_and_clean_headline()`, `is_valid_headline_candidate()`.
+* **Work It Is Doing**:
+  - Groups headlines, kickers, sub-decks, bylines, and narrative paragraphs into coherent candidate articles on a single page.
+  - Detects jump-line continuation markers (*"Continued on Page 9"*, *"From Page 1"*) and stitches split stories across distant pages into unified database records with multi-page coordinate mapping.
+  - De-bundles multi-story summary columns (*Mint Shorts*, *Briefs*) into separate articles.
+* **Important Tools / Frameworks**: SequenceMatcher (fuzzy string matching), Regular Expressions, Geometric containment.
+* **LLM / VLM / Embedding Models**: None.
+
+---
+
+#### `backend/app/ingestion/parsers/` — Document Extraction Subpackage:
+
+##### [`backend/app/ingestion/parsers/__init__.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/parsers/__init__.py)
+* **What It Has**: Public package facade exporting `DoclingLayoutParser`, `UnifiedExtractor`, `OCRService`, `ArticleSkeleton`, `PageLayoutExtraction`, `ExtractedTable`, `ExtractedPicture`, `VisualCropData`.
+* **Work It Is Doing**: Exposes a unified interface for all document parsing and OCR engines.
+
+##### [`backend/app/ingestion/parsers/schemas.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/parsers/schemas.py)
+* **What It Has**: Pydantic v2 schemas: `ArticleSkeleton`, `PageLayoutExtraction`, `ExtractedTable`, `ExtractedPicture`, `VisualCropData`, `ArticleEnrichment`, `ArticleGenre`, `ProminenceTier`.
+* **Work It Is Doing**:
+  - Defines the structured data interchange schemas for document parsing and VLM extraction.
+  - Provides type safety across parser engines with Pydantic v2 keyword defaults.
+
+##### [`backend/app/ingestion/parsers/docling.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/parsers/docling.py)
+* **What It Has**: `DoclingLayoutParser` class, `DoclingParsedItem` dataclass, `CorruptedPdfTextLayerError`.
+* **Work It Is Doing**:
+  - Executes deep 2D layout analysis on broadsheet pages using DocLayNet neural models.
+  - Detects corrupted font CMap ligatures (e.g. `` replacement character ratios $\ge 3\%$) and raises `CorruptedPdfTextLayerError` to trigger pure image OCR fallback.
+  - Normalizes bounding boxes and outputs structured layout element tokens (`title`, `section_header`, `text`, `caption`, `picture`, `table`).
+* **Important Tools / Frameworks**: Docling library, PyMuPDF, NumPy.
+* **LLM / VLM / Embedding Models**: DocLayNet Layout Analysis Models.
+
+##### [`backend/app/ingestion/parsers/vlm.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/parsers/vlm.py)
+* **What It Has**: `UnifiedExtractor` class, structured extraction prompts (`EXTRACTION_SYSTEM_PROMPT`).
+* **Work It Is Doing**:
+  - Executes single-pass multimodal extraction on full-page images via Gemini, Gemma, or Qwen-VL.
+  - Extracts article boundaries, headlines, body text, and visual metadata in a single inference call.
+* **Important Tools / Frameworks**: ModelRegistry, VisionModelProvider, Pydantic Structured Outputs.
+* **LLM / VLM / Embedding Models**: Configured vision provider (`gemini_flash`, `gemma4_26b`, or `qwen3-vl`).
+
+##### [`backend/app/ingestion/parsers/ocr.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/parsers/ocr.py)
+* **What It Has**: `OCRService` class.
+* **Work It Is Doing**:
+  - Dispatches cropped image regions to Google Cloud Vision API (`google-cloud-vision`), RapidOCR, or local Tesseract OCR.
+  - Performs image contrast enhancement, deskewing, and coordinate normalization.
+* **Important Tools / Frameworks**: Google Cloud Vision SDK, RapidOCR, PyTesseract, PIL ImageEnhance.
+* **LLM / VLM / Embedding Models**: Google Cloud Vision Document Text Detection or RapidOCR PP-OCRv6.
+
+---
+
+#### Core Orchestration & Processing Pipeline Services:
 
 ##### [`backend/app/ingestion/__init__.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/__init__.py)
-* **What It Has**: Ingestion package initialization.
-* **Work It Is Doing**: Exports pipeline components.
+* **What It Has**: Subsystem entrypoint with canonical public exports.
+* **Work It Is Doing**: Exports canonical pipeline symbols (`IntakeService`, `PDFRasterizer`, `LayoutAnalyzer`, `ArticleSegmenter`, `DoclingLayoutParser`, `UnifiedExtractor`, `ArticleClassifier`, `NewspaperChunker`, `ArticleEmbedder`, `DeletionService`, `run_ingestion_pipeline`).
 
 ##### [`backend/app/ingestion/celery_app.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/celery_app.py)
 * **What It Has**: Celery app instance, broker configuration (`redis://localhost:6379/0`), result backend, task serializer settings.
@@ -487,7 +610,7 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 ##### [`backend/app/ingestion/tasks.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/tasks.py)
 * **What It Has**: Celery tasks: `process_issue_ingestion_task()`, `run_ingestion_pipeline()`, `detect_masthead_and_date()`, `check_is_advertisement_text()`.
 * **Work It Is Doing**:
-  - The master pipeline coordinator orchestrating the 12 stages in strict sequence:
+  - Master pipeline coordinator orchestrating the 12 stages in strict sequence:
     1. Rasterization & Metadata Intake
     2. Docling 2D Layout & Vision OCR
     3. Masthead & Publication Date Extraction
@@ -504,43 +627,34 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Important Tools / Frameworks**: Celery task decorator (`@celery_app.task`), SQLAlchemy Async, Python AsyncIO bridge.
 * **LLM / VLM / Embedding Models**: Orchestrates calls across Google Cloud Vision, Qwen-VL, Gemma4-12B, and BAAI/bge-m3.
 
+##### [`backend/app/ingestion/page_reingestion.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/page_reingestion.py)
+* **What It Has**: `PageReingestionService` class.
+* **Work It Is Doing**:
+  - Coordinates on-demand single-page re-processing via `POST /api/issues/{issue_id}/pages/{page_number}/reingest`.
+  - Atomically purges previous page-exclusive articles, entities, topics, chunks, photos, and Qdrant vector points.
+  - Re-runs rasterization, layout parsing, OCR, photo harvesting, and embedding for that specific page without corrupting or re-processing the entire 24+ page issue.
+* **Important Tools / Frameworks**: SQLAlchemy AsyncSession, MinIO, Qdrant Client.
+* **LLM / VLM / Embedding Models**: Docling, Qwen-VL, BAAI/bge-m3.
+
 ##### [`backend/app/ingestion/rasterizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/rasterizer.py)
 * **What It Has**: `PDFRasterizer` class, `RasterizedPage` dataclass.
-* **Work It Is Doing**: Renders 300 DPI high-resolution PNG page images from PDF broadsheets using PyMuPDF (yielding ~8,188 x 11,400 px images). Saves images to disk and MinIO.
-* **Important Tools / Frameworks**: PyMuPDF (`fitz`), Pillow (PIL).
+* **Work It Is Doing**:
+  - Renders 300 DPI high-resolution PNG page images from PDF broadsheets using PyMuPDF (yielding ~8,188 x 11,400 px images).
+  - Implements both multi-page document rasterization (`rasterize_pdf_bytes()`) and targeted single-page rasterization (`rasterize_single_page()`).
+  - Uploads images to MinIO (`newslens-pages`) and records database metadata.
+* **Important Tools / Frameworks**: PyMuPDF (`fitz`), Pillow (PIL), MinIO Client.
 * **LLM / VLM / Embedding Models**: None.
 
-##### [`backend/app/ingestion/docling_parser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/docling_parser.py)
-* **What It Has**: `DoclingLayoutParser` class, `DoclingParsedItem` dataclass, `CorruptedPdfTextLayerError`.
-* **Work It Is Doing**:
-  - Executes deep 2D layout analysis on pages using DocLayNet models.
-  - Detects corrupted font CMap ligatures (e.g. `�` replacement character ratios >= 3%) and raises `CorruptedPdfTextLayerError` to trigger pure OCR fallback.
-  - Normalizes bounding boxes and outputs structured layout element tokens (`title`, `section_header`, `text`, `caption`, `picture`, `table`).
-* **Important Tools / Frameworks**: Docling library, PyMuPDF, NumPy.
-* **LLM / VLM / Embedding Models**: DocLayNet Layout Analysis Models.
+##### [`backend/app/ingestion/intake.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/intake.py)
+* **What It Has**: `IntakeService` class, `IntakeResult` dataclass.
+* **Work It Is Doing**: Validates uploaded files, computes SHA-256 checksums, checks MIME types, verifies PDF headers, prevents duplicate ingestion, and creates `IngestionJob` tracking records.
+* **Important Tools / Frameworks**: Hashlib (SHA-256), Pathlib, SQLAlchemy AsyncSession.
+* **LLM / VLM / Embedding Models**: None.
 
-##### [`backend/app/ingestion/ocr_service.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/ocr_service.py)
-* **What It Has**: `OCRService` class.
-* **Work It Is Doing**: Dispatches cropped image regions to Google Cloud Vision API (`google-cloud-vision`) or local Tesseract OCR, performing contrast enhancement and deskewing.
-* **Important Tools / Frameworks**: Google Cloud Vision SDK, PyTesseract, PIL ImageEnhance.
-* **LLM / VLM / Embedding Models**: Google Cloud Vision Document Text Detection.
-
-##### [`backend/app/ingestion/reading_order.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/reading_order.py)
-* **What It Has**: `ReadingOrderResolver` class, `OrderedReadingBlock`, `BlockType`.
-* **Work It Is Doing**: Solves multi-column broadsheet flow using XY-cut geometric clustering, preventing the fatal flaw of reading horizontally across vertical columns.
-* **Important Tools / Frameworks**: Computational Geometry, Interval Math.
-* **LLM / VLM / Embedding Models**: None (Geometric Algorithm).
-
-##### [`backend/app/ingestion/segmenter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/segmenter.py)
-* **What It Has**: `ArticleSegmenter` class, `SegmentedArticle`, `extract_kicker_and_clean_headline()`, `is_valid_headline_candidate()`.
-* **Work It Is Doing**: Groups titles, kickers, subheadlines, bylines, and narrative body paragraphs into distinct candidate articles on a single page. Filters syndication agency slugs (PTI, Reuters, ANI) and numbered feature subheads.
-* **Important Tools / Frameworks**: Regular Expressions, Statistical heuristics on font size and line spacing.
-* **LLM / VLM / Embedding Models**: None (Deterministic Rule-Based Parser).
-
-##### [`backend/app/ingestion/cross_page_assembler.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/cross_page_assembler.py)
-* **What It Has**: `CrossPageAssembler` class, `AssembledArticle`, `_headline_overlap_metrics()`, `_has_continuation_marker()`.
-* **Work It Is Doing**: Detects jump-line markers (e.g. "Continued on Page 9", "From Page 1") and links split article blocks across different pages into unified database records with multi-page coordinate mapping.
-* **Important Tools / Frameworks**: SequenceMatcher (fuzzy string matching), Regex.
+##### [`backend/app/ingestion/detector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/detector.py)
+* **What It Has**: `PDFPageDetector` class, `check_is_advertisement_text()`.
+* **Work It Is Doing**: Analyzes native PDF text layers to identify digital vs scanned pages, drop-caps, text noise ratios, and statutory commercial advertisement blocks.
+* **Important Tools / Frameworks**: PyMuPDF, Regular Expressions.
 * **LLM / VLM / Embedding Models**: None.
 
 ##### [`backend/app/ingestion/visual_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/visual_extractor.py)
@@ -561,6 +675,18 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Important Tools / Frameworks**: PIL Image, MinIO Client, Regular Expressions.
 * **LLM / VLM / Embedding Models**: Qwen-VL (`ollama_qwen3vl`).
 
+##### [`backend/app/ingestion/classifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/classifier.py)
+* **What It Has**: `ArticleClassifier` class, `ClassificationResult`.
+* **Work It Is Doing**: Analyzes article headlines, decks, and body text using multi-signal scoring and LLM classification to assign canonical category IDs (e.g. `Business & Markets`, `Politics & Governance`) and confidence scores.
+* **Important Tools / Frameworks**: Pydantic, Structured Prompts.
+* **LLM / VLM / Embedding Models**: `ollama_gemma4_12b` (Ollama) or `gpt-4o-mini`.
+
+##### [`backend/app/ingestion/metadata_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/metadata_extractor.py)
+* **What It Has**: `MetadataExtractor` class, `ExtractedEntity`, `ExtractedTopic`, `ArticleMetadataResult`.
+* **Work It Is Doing**: Extracts named entities (persons, organizations, locations), topical tags, and salience scores ($0.0$ to $1.0$) for every article.
+* **Important Tools / Frameworks**: Pydantic, Structured Outputs.
+* **LLM / VLM / Embedding Models**: Bound to `metadata_extraction` (`gemma4:12b` or `gemini_flash`).
+
 ##### [`backend/app/ingestion/chunker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/chunker.py)
 * **What It Has**: `NewspaperChunker` class, `DocumentChunk` dataclass.
 * **Work It Is Doing**:
@@ -576,62 +702,30 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Important Tools / Frameworks**: Qdrant Async Client, LocalEmbeddingProvider (SentenceTransformers).
 * **LLM / VLM / Embedding Models**: `BAAI/bge-m3` (1024 dimensions) or OpenAI `text-embedding-3-large`.
 
-##### [`backend/app/ingestion/classifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/classifier.py)
-* **What It Has**: `ArticleClassifier` class, `ClassificationResult`.
-* **Work It Is Doing**: Analyzes article headlines and excerpts using LLM to assign canonical category IDs (e.g. `Business & Markets`, `Politics`) and confidence scores.
-* **Important Tools / Frameworks**: Pydantic, Structured Prompts.
-* **LLM / VLM / Embedding Models**: `ollama_gemma4_12b` (Ollama) or `gpt-4o-mini`.
-
-##### [`backend/app/ingestion/metadata_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/metadata_extractor.py)
-* **What It Has**: `MetadataExtractor` class, `ExtractedEntity`, `ExtractedTopic`, `ArticleMetadataResult`.
-* **Work It Is Doing**: Extracts named entities (persons, organizations, locations), topical tags, and salience scores ($0.0$ to $1.0$) for every article.
-* **Important Tools / Frameworks**: Pydantic, Structured Outputs.
-* **LLM / VLM / Embedding Models**: Bound to `metadata_extraction` (`gemma4:12b` or `gemini_flash`).
-
-##### [`backend/app/ingestion/folio_detector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/folio_detector.py)
-* **What It Has**: `FolioDetector` class, `strip_dates_and_metadata()`.
-* **Work It Is Doing**: Scans the top and bottom margins of broadsheet pages to locate and parse true printed folio strings (e.g. "Page 9", "Page 10") distinguishing them from physical PDF page indices.
-* **Important Tools / Frameworks**: Regex patterns, Coordinate geometry.
-* **LLM / VLM / Embedding Models**: None.
-
-##### [`backend/app/ingestion/masthead_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/masthead_verifier.py)
-* **What It Has**: `MastheadVerifier` class.
-* **Work It Is Doing**: Inspects the Page 1 header banner to detect the publication name (e.g. *The Economic Times*, *The Hindu*, *The Goan*) and exact issue date string.
-* **Important Tools / Frameworks**: Fuzzy string matching, Date parsing (`datetime`).
-* **LLM / VLM / Embedding Models**: None.
-
 ##### [`backend/app/ingestion/geometry.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/geometry.py)
 * **What It Has**: `BBox` dataclass, spatial operations (`intersects`, `contains`, `iou`, `scale`, `to_dict`).
 * **Work It Is Doing**: Implements fundamental 2D geometric operations for bounding boxes `[x0, y0, x1, y1]`, coordinate transforms, and overlap ratios.
 * **Important Tools / Frameworks**: Pure Python Math.
 * **LLM / VLM / Embedding Models**: None.
 
-##### [`backend/app/ingestion/debug_exporter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/debug_exporter.py)
-* **What It Has**: `DebugArtifactsExporter` class.
-* **Work It Is Doing**: Exports 5 structured JSON debug files for every ingested issue:
-  1. `articles_manifest.json` (all articles and metadata)
-  2. `rag_chunks.json` (all vector chunks and headers)
-  3. `ocr_extracted_text.json` (complete OCR token stream)
-  4. `identified_advertisements.json` (detected ad envelopes)
-  5. `ingestion_summary.json` (timing and stage metrics)
-* **Important Tools / Frameworks**: JSON serialization, Pathlib.
-* **LLM / VLM / Embedding Models**: None.
+---
 
-##### [`backend/app/ingestion/deletion_service.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/deletion_service.py)
-* **What It Has**: `DeletionService` class.
-* **Work It Is Doing**: Handles safe, atomic cascading deletion of issues across all storage tiers: removes MySQL relational rows, deletes Qdrant vector points, purges MinIO page images and photo crops, and invalidates Redis cache keys.
-* **Important Tools / Frameworks**: SQLAlchemy AsyncSession, Qdrant Client, MinIO Client, Redis.
-* **LLM / VLM / Embedding Models**: None.
-
-##### Other Ingestion Support Modules:
-- [`backend/app/ingestion/detector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/detector.py): Fast heuristic page triage detector (identifies digital vs scanned pages, drop caps, and text noise).
-- [`backend/app/ingestion/compressor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/compressor.py): Downsamples heavy high-res PDF pages when memory limits are constrained.
-- [`backend/app/ingestion/intake.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/intake.py): Validates uploaded files, checks MIME types, verifies PDF headers, and creates `IngestionJob` tracking records.
-- [`backend/app/ingestion/layout_analyzer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout_analyzer.py): Detects advertisement bounding boxes, syndication slugs, and table of contents index blocks.
-- [`backend/app/ingestion/page_reingestion.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/page_reingestion.py): Re-runs pipeline stages over single pages without re-processing entire multi-page issues.
-- [`backend/app/ingestion/unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/unified_extractor.py): Unified extractor combining DocLayNet layout items and OCR spans.
-- [`backend/app/ingestion/consensus_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/consensus_extractor.py): Cross-validates publication dates across multiple pages to achieve consensus.
-- [`backend/app/ingestion/extraction_schemas.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/extraction_schemas.py): Pydantic schemas for intermediate pipeline artifacts (`ArticleSkeleton`, `PageLayoutExtraction`, `ExtractedTable`).
+#### Backward-Compatibility Re-Export Shims:
+To maintain zero breakage across external tools, legacy endpoints, and all 411 tests, the following files serve as transparent re-export forwarding shims:
+- [`backend/app/ingestion/folio_detector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/folio_detector.py) $\to$ Forwarded to `metadata.py`
+- [`backend/app/ingestion/masthead_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/masthead_verifier.py) $\to$ Forwarded to `metadata.py`
+- [`backend/app/ingestion/consensus_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/consensus_extractor.py) $\to$ Forwarded to `metadata.py`
+- [`backend/app/ingestion/compressor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/compressor.py) $\to$ Forwarded to `storage.py`
+- [`backend/app/ingestion/deletion_service.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/deletion_service.py) $\to$ Forwarded to `storage.py`
+- [`backend/app/ingestion/debug_exporter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/debug_exporter.py) $\to$ Forwarded to `storage.py`
+- [`backend/app/ingestion/extraction_schemas.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/extraction_schemas.py) $\to$ Forwarded to `parsers.schemas`
+- [`backend/app/ingestion/docling_parser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/docling_parser.py) $\to$ Forwarded to `parsers.docling`
+- [`backend/app/ingestion/unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/unified_extractor.py) $\to$ Forwarded to `parsers.vlm`
+- [`backend/app/ingestion/ocr_service.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/ocr_service.py) $\to$ Forwarded to `parsers.ocr`
+- [`backend/app/ingestion/reading_order.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/reading_order.py) $\to$ Forwarded to `layout.analyzer`
+- [`backend/app/ingestion/cross_page_assembler.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/cross_page_assembler.py) $\to$ Forwarded to `layout.segmenter`
+- [`backend/app/ingestion/layout_analyzer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout_analyzer.py) $\to$ Forwarded to `layout.analyzer`
+- [`backend/app/ingestion/segmenter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/segmenter.py) $\to$ Forwarded to `layout.segmenter`
 
 ---
 

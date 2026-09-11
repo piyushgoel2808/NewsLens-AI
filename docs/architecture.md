@@ -130,6 +130,14 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
    └─────────────────────────────────────────────────────────────┘
 ```
 
+> [!NOTE]
+> **Subsystem Modularization & Clean Boundaries**:
+> The broadsheet ingestion pipeline is organized into 4 cohesive architectural modules:
+> - **`metadata.py`**: Consolidated Folio detection, RapidOCR masthead verification, and multi-page majority voting on issue date and brand consensus.
+> - **`storage.py`**: Consolidated PDF stream deflation, 3-tier cascade hard deletion across storage tiers, and diagnostic debug artifact exports.
+> - **`layout/` Subpackage**: Broadsheet spatial geometry, column slicing, reading order (`analyzer.py`), multi-page jump stitching (`segmenter.py`), and shared agency/dateline heuristics (`slugs.py`).
+> - **`parsers/` Subpackage**: Extraction schemas (`schemas.py`), DocLayNet 2D neural parsing (`docling.py`), single-pass multimodal VLM (`vlm.py`), and OCR orchestrator (`ocr.py`).
+
 ---
 
 ### B. Dual-Engine Visual Infographic & Table Intelligence (`visual_extractor.py`)
@@ -165,7 +173,7 @@ Broadsheet language is heavily idiomatic. Financial and political articles frequ
 
 ---
 
-### D. Geometric Advertisement Barrier Isolation (`layout_analyzer.py`, `segmenter.py`)
+### D. Geometric Advertisement Barrier Isolation (`layout/analyzer.py`, `layout/segmenter.py`)
 
 Statutory and commercial disclosures (*QIP announcements, IPO prospectus summaries, tender notices*) often lack standard news headlines and occupy multi-column rectangular zones.
 
