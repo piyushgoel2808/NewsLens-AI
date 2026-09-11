@@ -40,11 +40,31 @@ class WebSearchEngine:
 
     def __init__(
         self,
+        newsdata_api_key: str | None = None,
         serper_api_key: str | None = None,
         tavily_api_key: str | None = None,
     ) -> None:
-        self._serper_key = serper_api_key or os.getenv("SERPER_API_KEY")
-        self._tavily_key = tavily_api_key or os.getenv("TAVILY_API_KEY")
+        try:
+            from app.core.config import get_settings
+            settings = get_settings()
+        except Exception:
+            settings = None
+
+        self._newsdata_key = (
+            newsdata_api_key
+            if newsdata_api_key is not None
+            else (os.getenv("NEWSDATA_API_KEY") or (getattr(settings, "newsdata_api_key", None) if settings else None))
+        )
+        self._serper_key = (
+            serper_api_key
+            if serper_api_key is not None
+            else (os.getenv("SERPER_API_KEY") or (getattr(settings, "serper_api_key", None) if settings else None))
+        )
+        self._tavily_key = (
+            tavily_api_key
+            if tavily_api_key is not None
+            else (os.getenv("TAVILY_API_KEY") or (getattr(settings, "tavily_api_key", None) if settings else None))
+        )
 
     async def search(self, query: str, num_results: int = 5) -> list[WebSearchResult]:
         """Search the live web using the best available search provider."""
@@ -57,7 +77,16 @@ class WebSearchEngine:
             extra={"query": clean_query, "num_results": num_results},
         )
 
-        # 1. Try Serper (Google Search API) if key is set
+        # 1. Try NewsData.io (High-fidelity news & journalism search) if key is set
+        if self._newsdata_key:
+            try:
+                results = await self._search_newsdata(clean_query, num_results)
+                if results:
+                    return results
+            except Exception as e:
+                logger.warning("NewsData.io web search failed, falling back", extra={"error": str(e)})
+
+        # 2. Try Serper (Google Search API) if key is set
         if self._serper_key:
             try:
                 results = await self._search_serper(clean_query, num_results)
@@ -66,7 +95,7 @@ class WebSearchEngine:
             except Exception as e:
                 logger.warning("Serper web search failed, falling back", extra={"error": str(e)})
 
-        # 2. Try Tavily Search API if key is set
+        # 3. Try Tavily Search API if key is set
         if self._tavily_key:
             try:
                 results = await self._search_tavily(clean_query, num_results)
@@ -75,12 +104,49 @@ class WebSearchEngine:
             except Exception as e:
                 logger.warning("Tavily web search failed, falling back", extra={"error": str(e)})
 
-        # 3. Default: DuckDuckGo HTML / Instant Search (no API key required)
+        # 4. Default: DuckDuckGo HTML / Instant Search (no API key required)
         try:
             return await self._search_duckduckgo(clean_query, num_results)
         except Exception as e:
             logger.warning("DuckDuckGo web search failed", extra={"error": str(e)})
             return []
+
+    async def _search_newsdata(self, query: str, num_results: int) -> list[WebSearchResult]:
+        """Execute news search via NewsData.io API."""
+        url = "https://newsdata.io/api/1/news"
+        params = {
+            "apikey": self._newsdata_key,
+            "q": query[:256],
+            "language": "en",
+        }
+
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code != 200:
+                logger.warning(
+                    "NewsData.io returned non-200 status",
+                    extra={"status_code": resp.status_code, "body": resp.text[:200]},
+                )
+                return []
+            data = resp.json()
+
+        results: list[WebSearchResult] = []
+        for item in data.get("results", [])[:num_results]:
+            title = item.get("title") or "Live News"
+            link = item.get("link") or ""
+            snippet = item.get("description") or item.get("title") or ""
+            source = item.get("source_name") or item.get("source_id") or "NewsData.io"
+            published_date = item.get("pubDate")
+            results.append(
+                WebSearchResult(
+                    title=title,
+                    url=link,
+                    snippet=snippet,
+                    source=source,
+                    published_date=published_date,
+                )
+            )
+        return results
 
     async def _search_serper(self, query: str, num_results: int) -> list[WebSearchResult]:
         """Execute Google Search via Serper API."""

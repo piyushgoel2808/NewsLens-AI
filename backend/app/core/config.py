@@ -332,6 +332,11 @@ class Settings(BaseSettings):
     nvidia_api_key: str | None = None
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
 
+    # --- Live Web / News Search Providers ---
+    newsdata_api_key: str | None = None
+    serper_api_key: str | None = None
+    tavily_api_key: str | None = None
+
     @field_validator(
         "groq_api_key",
         "gemini_api_key",
@@ -339,6 +344,9 @@ class Settings(BaseSettings):
         "openai_api_key",
         "openrouter_api_keys",
         "nvidia_api_key",
+        "newsdata_api_key",
+        "serper_api_key",
+        "tavily_api_key",
         "google_api_key",
         "google_application_credentials",
         "gcp_service_account_key",

@@ -14,11 +14,89 @@ from app.retrieval.web_search import WebSearchEngine, WebSearchResult
 class TestWebSearchEngine:
     """Unit tests for WebSearchEngine retrieval and fallbacks."""
 
+    @pytest.fixture(autouse=True)
+    def clean_search_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure ambient environment keys or cached settings do not contaminate mock tests."""
+        monkeypatch.delenv("NEWSDATA_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        mock_settings = MagicMock()
+        mock_settings.newsdata_api_key = None
+        mock_settings.serper_api_key = None
+        mock_settings.tavily_api_key = None
+        monkeypatch.setattr("app.core.config.get_settings", lambda: mock_settings)
+
     @pytest.mark.asyncio
     async def test_empty_query_returns_empty_list(self) -> None:
         engine = WebSearchEngine()
         results = await engine.search("   ")
         assert results == []
+
+    @pytest.mark.asyncio
+    async def test_newsdata_search_mock(self) -> None:
+        engine = WebSearchEngine(newsdata_api_key="test-newsdata-key")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "success",
+            "totalResults": 1,
+            "results": [
+                {
+                    "title": "BRICS Summit 2026 Concludes in New Delhi",
+                    "link": "https://www.thehindu.com/news/national/brics-summit-2026",
+                    "description": "Leaders of the BRICS grouping agreed on a joint financial framework...",
+                    "source_name": "The Hindu",
+                    "source_id": "thehindu",
+                    "pubDate": "2026-09-11 12:00:00",
+                }
+            ],
+        }
+
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_response
+            results = await engine.search("brics summit 2026")
+
+            assert len(results) == 1
+            assert isinstance(results[0], WebSearchResult)
+            assert results[0].title == "BRICS Summit 2026 Concludes in New Delhi"
+            assert results[0].url == "https://www.thehindu.com/news/national/brics-summit-2026"
+            assert "joint financial framework" in results[0].snippet
+            assert results[0].source == "The Hindu"
+            assert results[0].published_date == "2026-09-11 12:00:00"
+
+    @pytest.mark.asyncio
+    async def test_newsdata_fallback_on_error(self) -> None:
+        engine = WebSearchEngine(
+            newsdata_api_key="test-newsdata-key",
+            serper_api_key="test-serper-key",
+        )
+        mock_newsdata_resp = MagicMock()
+        mock_newsdata_resp.status_code = 500
+
+        mock_serper_resp = MagicMock()
+        mock_serper_resp.status_code = 200
+        mock_serper_resp.json.return_value = {
+            "organic": [
+                {
+                    "title": "Fallback Search Result",
+                    "link": "https://www.example.com/fallback",
+                    "snippet": "Fallback content from Serper...",
+                    "date": "2026-09-11",
+                }
+            ]
+        }
+
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get, patch(
+            "httpx.AsyncClient.post", new_callable=AsyncMock
+        ) as mock_post:
+            mock_get.return_value = mock_newsdata_resp
+            mock_post.return_value = mock_serper_resp
+
+            results = await engine.search("resilience test")
+
+            assert len(results) == 1
+            assert results[0].title == "Fallback Search Result"
+            assert results[0].url == "https://www.example.com/fallback"
 
     @pytest.mark.asyncio
     async def test_serper_search_mock(self) -> None:

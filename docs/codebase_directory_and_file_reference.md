@@ -899,8 +899,8 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 
 ##### [`backend/app/retrieval/web_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/web_search.py)
 * **What It Has**: `WebSearchResult`, `WebSearchEngine`.
-* **Work It Is Doing**: DuckDuckGo live web search fallback for recent/unarchived events.
-* **Important Tools / Frameworks**: `duckduckgo_search` library.
+* **Work It Is Doing**: Multi-tier live internet retrieval cascading across Tier 1 NewsData.io (accredited journalistic press & newspapers), Tier 2 Serper (Google Search API), Tier 3 Tavily (AI research search), and Tier 4 DuckDuckGo HTML scraping fallback. Formats live web results into structured citations with publisher names, article URLs, and publication dates.
+* **Important Tools / Frameworks**: `httpx` (async HTTP client), NewsData.io API, Serper API, Tavily API, DuckDuckGo HTML parser.
 * **LLM / VLM / Embedding Models**: None.
 
 ---

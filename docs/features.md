@@ -258,5 +258,18 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 
 ## 11. Dual-Mode Archive & Live Internet Web Search Grounding
 
-* **Live Web Search Fallback**: Toggle live internet search (via Serper, Tavily, or DuckDuckGo) alongside archived broadsheets.
-* **Source Badge Differentiation**: Clear UI tags separating verified `[Broadsheet Archive]` citations from `[Live Web]` sources.
+* **Journalism-First Multi-Tier Live Search Cascade**:
+  * Seamlessly augments historical newspaper archives with real-time live internet grounding when `enable_web_search = True` is selected.
+  * **Tier 1: NewsData.io API (Primary Journalism Engine)**:
+    * Queries global journalistic press agencies, wire feeds, and accredited broadsheet publishers (Reuters, The Hindu, Mint, ANI, The Economic Times, Bloomberg, etc.).
+    * Captures authoritative publisher attribution (`source_name`), original canonical URLs, publication timestamps (`pubDate`), and journalistic abstracts.
+  * **Tier 2: Serper API (Google Search Engine)**: High-precision Google Web Search engine fallback for encyclopedic context and general web queries.
+  * **Tier 3: Tavily Search API (AI Research Engine)**: Fact-dense search engine optimized for AI synthesis and contextual snippet extraction.
+  * **Tier 4: DuckDuckGo HTML / Instant Search**: Zero-configuration, zero-API-key fallback ensuring 100% resilient live web grounding even without external credentials.
+* **Dual-Mode Visual Citation Badging**:
+  * Explicit provenance segregation between physical broadsheet print archives and live internet sources.
+  * Printed broadsheet citations: `[Broadsheet Archive]` (`[{Newspaper}, YYYY-MM-DD, Page X, "Headline"]`).
+  * Live web citations: `[Live Web]` (`[{Publisher/Domain}, YYYY-MM-DD, Live Web, "Headline"]`).
+* **Zero-Failure Cascade & Graceful Degradation**:
+  * Network timeouts, HTTP 5xx errors, and rate limits trigger immediate, non-blocking fallback to subsequent search tiers, maintaining sub-second response times without breaking the agent graph.
+

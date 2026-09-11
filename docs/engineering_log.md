@@ -3264,5 +3264,45 @@ When users interacted with broadsheet articles containing companion infographics
   - Retrieved all 4 genuine data charts (`#8408`, `#8409`, `#8410`, `#8411`).
   - Synthesized accurate quantitative metrics (Brics-ex China rising from 7.4 to 8.0, G7-ex US declining from 29.8 to 17.8, US and China GDP trajectories) with zero hallucination from Mint.
 
+---
+
+## Phase 9.31 — NewsData.io Journalistic Search API Integration & Resilient Multi-Tier Web Grounding
+
+**Date**: 2026-09-11  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Generic Web Noise vs. Accredited Broadsheet Journalism**:
+   - Generic search engines (DuckDuckGo, general Google scraping) often return forum posts, SEO content farms, commercial blogs, or unstructured web pages when querying current news topics.
+   - For a newspaper intelligence platform like NewsLens-AI, live internet grounding requires accredited journalistic sources (Reuters, The Hindu, Mint, ANI, Bloomberg, The Economic Times) with structured publisher metadata and publication dates.
+2. **Missing Publisher & Publication Date Attribution**:
+   - Generic web scrapers often omit explicit publisher names (`source_name`) and canonical publication timestamps (`pubDate`), degrading the accuracy of NewsLens-AI's dual-mode citation system (`[{Publisher}, YYYY-MM-DD, Live Web, "Headline"]`).
+3. **Multi-Tier Cascade Resilience**:
+   - Required a robust, non-blocking fallback cascade starting from professional news APIs (NewsData.io), cascading through Google Search (Serper), AI research synthesis (Tavily), down to zero-credential HTML fallback (DuckDuckGo).
+
+### Architectural Solutions & Implementations
+1. **Pydantic Settings & Environment Configuration**:
+   - Added `newsdata_api_key: str | None = Field(default=None, validation_alias="NEWSDATA_API_KEY")` alongside `serper_api_key` and `tavily_api_key` in `backend/app/core/config.py`.
+   - Updated `.env` and `.env.example` with the active NewsData.io API key configuration.
+2. **Multi-Tier Web Search Engine (`backend/app/retrieval/web_search.py`)**:
+   - Integrated `_search_newsdata(query, num_results)` as **Tier 1**:
+     - Endpoints: `https://newsdata.io/api/1/news` with parameters `apikey`, `q`, `language=en`.
+     - Maps `title`, `link`, `description`, `source_name` / `source_id`, and `pubDate` into `WebSearchResult`.
+     - Gracefully falls back to Tier 2 (Serper), Tier 3 (Tavily), or Tier 4 (DuckDuckGo) upon HTTP non-200 or network timeout.
+   - Fixed constructor key resolution with explicit `is not None` checks to allow deterministic test mocks and override isolation.
+3. **Isolated Test Harness & Coverage (`backend/tests/test_web_search.py`)**:
+   - Added `clean_search_env` autouse fixture to isolate test cases from ambient `.env` credentials.
+   - Added `test_newsdata_search_mock` verifying JSON deserialization, attribution, and `WebSearchResult` mapping.
+   - Added `test_newsdata_fallback_on_error` asserting seamless fallback to Serper on NewsData.io HTTP 500 errors.
+
+### Verification Results
+- **Automated Tests**:
+  - `backend/tests/test_web_search.py`: **13/13 tests passing (100% green)**.
+  - Full Agent Pipeline (`test_planner.py`, `test_condenser.py`, `test_synthesizer.py`, `test_graph.py`): **67/67 tests passing (100% green)**.
+  - Complete Backend Test Suite (`backend/tests/`): **423/423 tests passing (100% green)** in 36.15s.
+- **Live Search Verification**:
+  - Successfully retrieved accredited journalistic articles from *The Hindu*, *Reuters*, *Menafn*, and *TRT World* for live queries.
+
+
 
 
