@@ -3303,6 +3303,98 @@ When users interacted with broadsheet articles containing companion infographics
 - **Live Search Verification**:
   - Successfully retrieved accredited journalistic articles from *The Hindu*, *Reuters*, *Menafn*, and *TRT World* for live queries.
 
+---
+
+## Phase 9.32 — LLM-as-Tool-Maker, AST Sandbox Execution & Two-Layer Dynamic Fallback
+
+**Date**: 2026-09-12  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Unforeseen Analytical & Aggregational Queries**:
+   - Users frequently ask questions requiring complex relational aggregations, custom filtering, or broadsheet calculations not supported by static tools (e.g., *"How many total pages were in each edition published on August 1, 2026?"*, *"Compare average article length across sections"*).
+   - In static agent architectures, these queries either fail with missing tool errors, cause hallucinations, or hit empty-evidence hard-stops.
+2. **Unsupported Parameter Collisions**:
+   - The Cognitive Query Planner sometimes generated plausible but unsupported arguments for static tools (e.g., `analysis_type="page_count"` in `sql_analytics`). Rather than failing or returning empty data, the system needed an intelligent parameter handoff mechanism.
+3. **CRAG Zero-Evidence Recovery Failure**:
+   - When standard vector and keyword search returned zero relevant chunks for computational queries, Corrective RAG (CRAG) had no recourse other than declaring an anti-hallucination stop.
+4. **Security & Data Integrity Risks of Code Execution**:
+   - Allowing an LLM to generate executable Python code introduces severe security vectors: arbitrary file reads/writes, network sockets, shell execution, process spawning, and accidental MySQL data mutation (`DROP`, `DELETE`, `UPDATE`).
+
+### Architectural Solutions & Implementations
+1. **Dynamic Tool Maker (`backend/app/agent/tool_maker.py`)**:
+   - Implemented the **LLM-as-Tool-Maker** pattern.
+   - Engineered `TOOL_MAKER_SYSTEM_PROMPT` containing complete DDL definitions for all 17 MySQL tables, relational join paths, and few-shot analytical Python examples.
+   - Generates typed, standalone Python functions matching the contract:
+     ```python
+     def execute(connection, **kwargs) -> Dict[str, Any]: ...
+     ```
+   - Includes automatic retry and self-correction loops when generated code fails syntax, safety, or runtime checks.
+2. **AST Safety Scanner (`backend/app/agent/sandbox.py:ASTSafetyScanner`)**:
+   - Static analysis inspecting Python's Abstract Syntax Tree (`ast.parse`) prior to execution:
+     - **Whitelisted Safe Modules**: `math`, `datetime`, `re`, `json`, `collections`, `itertools`, `typing`, `sqlalchemy`, `decimal`.
+     - **Blacklisted Forbidden Modules**: `os`, `sys`, `subprocess`, `socket`, `shutil`, `urllib`, `requests`, `pathlib`, `pickle`, `ctypes`, etc.
+     - **Blacklisted Dangerous Builtins**: `open`, `eval`, `exec`, `compile`, `__import__`, `globals`, `locals`, `getattr`, `setattr`.
+     - **Dunder Protection**: Prohibits access to `__subclasses__`, `__bases__`, `__globals__`, `__code__`.
+     - **Contract Enforcement**: Validates that `def execute(connection)` exists and accepts arguments.
+3. **Subprocess Sandbox Runner (`backend/app/agent/sandbox_runner.py` & `SandboxedExecutor`)**:
+   - Spawns worker processes using `subprocess.Popen([sys.executable])`.
+   - Communicates via non-blocking JSON IPC over `stdin`/`stdout`.
+   - Enforces OS-level memory ceilings (`resource.RLIMIT_AS` = 512MB) and a hard 15-second execution timeout.
+   - Connects to MySQL with `autocommit=False` and enforces unconditional `connection.rollback()` inside a `finally` block, guaranteeing zero database mutations.
+4. **Two-Layer Dynamic Fallback Architecture**:
+   - **Layer 1 (Unsupported Parameter Handoff in `executor.py`)**:
+     - Automatically intercepts tool calls with unsupported `analysis_type` values (e.g. `"page_count"`, `"edition_distribution"`) and routes them directly to `dynamic_analysis`.
+   - **Layer 2 (CRAG Zero-Evidence Dynamic Toolmaker in `evaluator.py`)**:
+     - When retrieval yields zero evidence or relevance score $< 0.4$ on quantitative/analytical queries, the CRAG evaluator dynamically invokes `ToolMaker` to synthesize a focused analysis tool, injecting the recovered data with confidence $1.0$.
+5. **Python Logging Telemetry Sanitization (`executor.py`)**:
+   - Resolved a critical bug where logging calls used `extra={"tool_args": ...}`, which collided with Python stdlib `logging.LogRecord` reserved attributes and triggered `KeyError`/`TypeError`. Replaced with `extra={"planned_tool_args": ...}`.
+
+### Verification Results
+- **Automated Tests**:
+  - `backend/tests/test_sandbox.py`: **11/11 tests passing (100% green)** verifying AST safety parsing, forbidden module blocking, timeout handling, memory limits, and read-only rollback.
+  - `backend/tests/test_tool_maker.py`: **8/8 tests passing (100% green)** verifying prompt generation, 17-table schema exposure, and self-correction retry logic.
+
+---
+
+## Phase 9.33 — Cross-Date Context Isolation & Anti-Leakage Shield
+
+**Date**: 2026-09-12  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Cross-Date Asset Context Poisoning**:
+   - In multi-turn chat sessions with reader-attached visual assets (e.g., an infographic from August 5, 2026), when the user subsequently asked a question about a completely different date (e.g., *"What is the name of the person in the photo featured on August 1, 2026?"*), the system carried forward the attached asset from August 5.
+2. **Query Date Overwritten by Asset Metadata**:
+   - In `executor.py`, visual inspection Strategy A and Strategy C overwrote the user's explicit query date (`1/8/2026`) with the attached asset's date (`2026-08-05`), resulting in database queries against the wrong newspaper edition.
+3. **Contaminated Memory in Conversation Condenser**:
+   - `condenser.py`'s `extract_active_issue_from_history()` retained previous turn dates and issue IDs, polluting the condensed query.
+
+### Architectural Solutions & Implementations
+1. **Conflict-Aware History Condensation (`backend/app/agent/condenser.py`)**:
+   - Upgraded `extract_active_issue_from_history()` to detect date and newspaper mentions in the incoming prompt.
+   - If the prompt mentions a date or brand differing from history, all previous issue IDs, dates, and newspaper context are immediately evicted.
+2. **Attached Asset Eviction Gate (`backend/app/api/routers/query.py` & `backend/app/agent/graph.py`)**:
+   - Compares the attached visual asset's publication date and newspaper against explicit entities extracted from the query.
+   - If a conflict is found (e.g. query date is `2026-08-01` but asset date is `2026-08-05`), `attachedAsset` is pruned before reaching the planner.
+3. **Date Reconciliation in Tool Factory (`backend/app/agent/tool_factory.py`)**:
+   - `reconcile_and_sanitize_arguments()` compares planned tool arguments against query dates, sanitizing any stale dates carried forward from attached asset metadata.
+4. **Strict Date Non-Overwriting Invariant (`backend/app/agent/executor.py`)**:
+   - Implemented an immutable priority rule across all visual inspection strategies:
+     ```python
+     if explicit_query_date:
+         effective_date = explicit_query_date
+     else:
+         effective_date = asset_date or default_date
+     ```
+   - Guarantees that an explicit date from the user query cannot be overwritten by asset metadata.
+
+### Verification Results
+- **Automated Tests**:
+  - `backend/tests/test_cross_date_contamination.py`: **6/6 tests passing (100% green)** verifying complete cross-date isolation across condenser, graph, router, and executor.
+  - Full Agent Pipeline Test Suite: **90/90 tests passing (100% green)** in 12.35s.
+
+
 
 
 

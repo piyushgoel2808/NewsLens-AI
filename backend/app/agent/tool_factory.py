@@ -50,17 +50,29 @@ def reconcile_and_sanitize_arguments(
     sanitized = dict(args)
     q_lower = query.lower()
 
+    if tool_name == "dynamic_analysis":
+        if "query" not in sanitized:
+            sanitized["query"] = query
+        return sanitized
+
     if tool_name == "inspect_visual_asset":
-        if extracted.get("attached_photo_id") and "photo_id" not in sanitized:
-            sanitized["photo_id"] = extracted["attached_photo_id"]
-        if extracted.get("attached_article_id") and "article_id" not in sanitized:
-            sanitized["article_id"] = extracted["attached_article_id"]
+        target_date = extracted.get("issue_date") or sanitized.get("issue_date") or active_issue_date
+        attached_date = extracted.get("attached_issue_date")
+        date_conflict = bool(target_date and attached_date and target_date != attached_date)
+
+        if not date_conflict:
+            if extracted.get("attached_photo_id") and "photo_id" not in sanitized:
+                sanitized["photo_id"] = extracted["attached_photo_id"]
+            if extracted.get("attached_article_id") and "article_id" not in sanitized:
+                sanitized["article_id"] = extracted["attached_article_id"]
         if "query" not in sanitized:
             sanitized["query"] = query
         if extracted.get("newspaper_name") and "newspaper_name" not in sanitized:
             sanitized["newspaper_name"] = extracted["newspaper_name"]
         if extracted.get("issue_date") and "issue_date" not in sanitized:
             sanitized["issue_date"] = extracted["issue_date"]
+        elif active_issue_date and "issue_date" not in sanitized:
+            sanitized["issue_date"] = active_issue_date
         if extracted.get("page_number") and "page_filter" not in sanitized:
             sanitized["page_filter"] = str(extracted["page_number"])
         return sanitized
@@ -343,9 +355,24 @@ def build_inspect_visual_asset_tool(
     return PlannedToolCall("inspect_visual_asset", args, purpose or default_purpose)
 
 
+def build_dynamic_analysis_tool(
+    query: str,
+    analysis_description: str = "",
+    purpose: str = "",
+) -> PlannedToolCall:
+    """Build a planned dynamic_analysis tool invocation."""
+    args = {
+        "query": query,
+        "analysis_description": analysis_description or f"Statistical computation: {query}",
+    }
+    default_purpose = "Synthesize and execute dynamic Python analytical tool"
+    return PlannedToolCall("dynamic_analysis", args, purpose or default_purpose)
+
+
 __all__ = [
     "_GENERIC_FILLER_QUERIES",
     "build_coverage_analysis_tool",
+    "build_dynamic_analysis_tool",
     "build_entity_search_tool",
     "build_hybrid_search_tool",
     "build_inspect_visual_asset_tool",

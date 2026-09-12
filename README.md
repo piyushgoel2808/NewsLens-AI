@@ -42,6 +42,12 @@
 - **🔍 Deep Multimodal Visual Asset Inspection (`inspect_visual_asset`)**: Equips the agent with a 5-tier Strategy Cascade (A: `photo_id` + companion charts; B: headline lookup; C: `article_id` + companion charts; D: multi-criteria DB search; E: scoped caption/VLM search) and lazy on-demand VLM extraction streaming raw crops directly from MinIO `bucket_pages` to enrich placeholder descriptions into structured Markdown tables and quantitative metrics.
 - **🔗 Broadsheet Reader & Agent Assistant Visual Deep-Linking**: Interactive `"Ask Agent About This Infographic / Photo"` buttons on visual asset overlays and inspector cards, opening the Agent Assistant with an active attached asset pill (`attachedAsset`), automatically binding asset IDs for immediate multimodal analysis and streaming visual citation cards with image thumbnails (`/api/photos/{id}/image`).
 - **🛡️ Conversational Citation Parsing & Anti-Leakage Guardrails**: Features `parse_inline_citation()` supporting broadsheet bracketed formats (`[4] Newspaper, Date, Page, Headline: "..."`) combined with 3 strict cross-turn parameter eviction guardrails purging stale `article_id`, `photo_id`, `headline`, and `target_newspapers` when switching dates, publications, or topics.
+- **🛠️ Dynamic Tool Synthesis (LLM-as-Tool-Maker)**: When broadsheet research queries exceed the capabilities of predefined tools (e.g. multi-page layout distributions, custom cross-section aggregations, complex editorial comparisons), the agent synthesizes ad-hoc Python/SQL analysis tools on demand (`backend/app/agent/tool_maker.py`).
+- **🔒 Subprocess AST Sandbox Execution Engine**: Executes dynamically generated tools in a isolated subprocess sandbox (`backend/app/agent/sandbox.py`) with strict Abstract Syntax Tree (AST) safety inspection—blocking unauthorized imports (`os`, `sys`, `subprocess`, `socket`, etc.) and dangerous builtins (`open`, `eval`, `exec`)—backed by a 15-second timeout, 512MB memory limit, and read-only database transactions.
+- **🛡️ Two-Layer Reactive Dynamic Fallback**:
+  - *Layer 1 (Parameter Handoff)*: Transparently intercepts unsupported parameter combinations or query types (e.g., unsupported `analysis_type` in `sql_analytics`) and routes them directly to `dynamic_analysis`.
+  - *Layer 2 (CRAG Zero-Evidence Fallback)*: When standard retrieval tools return zero/insufficient evidence during Corrective RAG (CRAG) evaluation, the evaluator dynamically generates and executes an ad-hoc data analysis tool to retrieve the required metrics before synthesis.
+- **📅 Cross-Date Context Isolation & Anti-Leakage Shield**: Eliminates cross-turn date and asset contamination across multi-turn sessions. Explicit user query dates (e.g. Aug 1, 2026) strictly override stale attached visual assets or previous-turn metadata (e.g. Aug 5, 2026), with automatic conflict eviction in `condenser.py`, `graph.py`, `query.py`, and non-overwriting date invariants in `executor.py`.
 - **🎛️ Dynamic Model Settings Studio (`ModelSettingsStudio.jsx`)**: Comprehensive interactive settings studio for managing hosted and local AI providers (NVIDIA NIM, Ollama, Anthropic, OpenAI, Gemini, Groq), real-time API key configuration, live connectivity/latency health checks, visual capability indicators, and hot-swappable task bindings (`query_planner`, `synthesizer`, `vlm_extractor`, `embedding`, `ocr`) without server restarts.
 - **📦 Consolidated Modular Ingestion Architecture**: Engineered along 4 cohesive architectural boundaries: dedicated subpackages for spatial layout (`layout/slugs.py`, `layout/analyzer.py`, `layout/segmenter.py`) and document parsers (`parsers/schemas.py`, `parsers/docling.py`, `parsers/vlm.py`, `parsers/ocr.py`), plus unified header metadata (`metadata.py`) and storage maintenance (`storage.py`), eliminating ~220 LOC duplicated regexes while guaranteeing 100% backward compatibility via proxy shims.
 
@@ -66,8 +72,8 @@
 │   Document Ingestion Flow   │    Retrieval Toolbelt & DB    │   Agentic Reasoning Flow    │
 │  • Celery Async Ingestion   │  • MySQL 8 (System of Record) │  • LangGraph State Machine  │
 │  • IBM Docling (DocLayNet)  │  • Qdrant Dense Vector Store  │  • Dynamic Query Planner    │
-│  • Multi-Page Consensus     │  • MinIO Object Storage (S3)  │  • 2-Stage Rerank Cascade   │
-│  • 2D Spatial Photo Binding │  • Redis 7 (Cache & Lock)     │  • 4-Tier Synthesizer       │
+│  • Multi-Page Consensus     │  • MinIO Object Storage (S3)  │  • Dynamic Tool Synthesis   │
+│  • 2D Spatial Photo Binding │  • Redis 7 (Cache & Lock)     │  • Subprocess AST Sandbox   │
 │  • Qwen3-VL Visual Extract  │  • RRF (Dense + Sparse Fusion)│  • Corrective RAG (CRAG)    │
 └─────────────────────────────┴───────────────────────────────┴─────────────────────────────┘
 ```
@@ -176,7 +182,7 @@ cd backend
 uv run ruff check .
 uv run mypy app/
 
-# Run complete test suite (411 unit & integration tests — 100% passing)
+# Run complete test suite (436 unit & integration tests — 100% passing)
 uv run pytest tests/ -v
 
 # Verify frontend production build
@@ -187,8 +193,11 @@ npm run build
 
 ## 📚 Documentation & Technical Deep-Dives
 
-- **[End-to-End Data Flow & Data Structure Guide](docs/end_to_end_data_flow_guide.md)**: Exhaustive walkthrough of every stage from raw PDF ingestion, Docling layout parsing, and 12+ SQL tables to query condensation, cognitive planning, all 6 tool executions, CRAG evaluation, Synthesizer prompt budgeting, SSE streaming, and IR evaluation metrics with concrete JSON and SQL examples.
+- **[End-to-End Data Flow & Data Structure Guide](docs/end_to_end_data_flow_guide.md)**: Exhaustive walkthrough of every stage from raw PDF ingestion, Docling layout parsing, and 12+ SQL tables to query condensation, cognitive planning, all 8 tool executions (including `dynamic_analysis`), CRAG evaluation, Synthesizer prompt budgeting, SSE streaming, and IR evaluation metrics.
+- **[System Architecture & Subsystems](docs/architecture.md)**: Full architecture breakdown covering the 10 core subsystems, LangGraph agent workflows, AST sandbox execution, cross-date anti-leakage shield, and performance profiles.
+- **[Data Flow Architecture](docs/data_flow_architecture.md)**: Visual architectural diagrams depicting the ingestion pipeline, tool maker sandbox execution, dual-mode retrieval, and agent state transitions.
+- **[Data Flow & Sequence Specs](docs/data_flow.md)**: Step-by-step sequence diagrams, tool routing matrices, and error fallback recovery chains.
+- **[Feature Matrix & Capabilities](docs/features.md)**: Complete guide to all broadsheet capabilities, negative coverage audits, VLM extraction, and on-demand tool synthesis.
 - **[Codebase Architecture & File Reference Guide](docs/codebase_directory_and_file_reference.md)**: Complete directory tree, folder responsibilities, and file-by-file technical reference detailing classes, functions, external tools/frameworks, and LLM/VLM models used.
 - **[Relational Database Schema & Manifest Reference](docs/database_schema.md)**: Deep dive into all 17 MySQL tables, relational invariants, foreign keys, spatial bounding boxes, and manifest queries.
-- **[System Architecture & Subsystems](docs/architecture.md)**: Full architecture breakdown covering the 9 micro-subsystems, LangGraph agent workflows, and performance profiles.
-- **[Feature Matrix & Capabilities](docs/features.md)**: Complete guide to all broadsheet capabilities, negative coverage audits, and VLM extraction.
+- **[Engineering & Incident Log](docs/engineering_log.md)**: Chronological engineering log documenting architectural decisions, performance milestones, and bug resolutions (Phases 1 through 13).

@@ -15,13 +15,18 @@ from app.agent.condenser import (
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
     needs_condensation,
+    parse_inline_citation,
     resolve_attached_asset_context,
 )
+from app.agent.extractor import extract_parameters_from_query
 from app.agent.evaluator import EvidenceEvaluator
 from app.agent.executor import ToolExecutor
 from app.agent.planner import QueryPlanner
 from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.synthesizer import AnswerSynthesizer
+from app.agent.sandbox import ASTSafetyScanner, SandboxedExecutor
+from app.agent.tool_maker import ToolMaker
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics import record_agent_query
 from app.models.query import QueryLog
@@ -54,6 +59,18 @@ class AgentWorkflow:
         self._web_search = WebSearchEngine()
         self._cache = CacheStore()
 
+        # Dynamic Tool Maker (LLM-as-Tool-Maker)
+        settings = get_settings()
+        tool_maker = None
+        if settings.enable_dynamic_tools:
+            scanner = ASTSafetyScanner()
+            sandbox = SandboxedExecutor(
+                db_url_readonly=settings.mysql_readonly_url,
+                timeout_seconds=settings.dynamic_tool_timeout_seconds,
+                max_memory_mb=settings.dynamic_tool_max_memory_mb,
+            )
+            tool_maker = ToolMaker(scanner=scanner, sandbox=sandbox)
+
         # Modular Tool Execution and Evidence Evaluation Engines
         self._executor = ToolExecutor(
             session_factory=session_factory,
@@ -63,10 +80,13 @@ class AgentWorkflow:
             sql_analytics=self._sql_analytics,
             coverage_analyzer=self._coverage_analyzer,
             web_search=self._web_search,
+            tool_maker=tool_maker,
         )
         self._evaluator = EvidenceEvaluator(
             entity_search=self._entity_search,
             web_search=self._web_search,
+            tool_maker=tool_maker,
+            sql_analytics=self._sql_analytics,
         )
 
         # Build Graph
@@ -335,30 +355,50 @@ class AgentWorkflow:
         res_np = attached_ctx.get("newspaper_name")
         res_art_id = attached_ctx.get("article_id")
         res_iss_id = attached_ctx.get("issue_id")
-        eff_attached_article_id = res_art_id or attached_article_id
-        eff_attached_photo_id = attached_photo_id
+        q_params = extract_parameters_from_query(query) if query else {}
+        q_cite = parse_inline_citation(query or "")
+        explicit_q_date = q_params.get("issue_date") or q_cite.get("issue_date")
+        explicit_q_np = q_params.get("newspaper_name") or q_cite.get("newspaper_name")
+
+        has_date_conflict = bool(explicit_q_date and res_date and explicit_q_date != res_date)
+        has_np_conflict = bool(
+            explicit_q_np
+            and res_np
+            and explicit_q_np.lower() not in res_np.lower()
+            and res_np.lower() not in explicit_q_np.lower()
+        )
+
+        eff_attached_article_id = (res_art_id or attached_article_id) if not has_date_conflict and not has_np_conflict else None
+        eff_attached_photo_id = attached_photo_id if not has_date_conflict and not has_np_conflict else None
 
         active_ctx = extract_active_issue_from_history(
             history,
             current_query=query,
             attached_photo_id=eff_attached_photo_id,
             attached_article_id=eff_attached_article_id,
-            attached_issue_date=res_date,
-            attached_newspaper_name=res_np,
-            attached_headline=attached_ctx.get("headline"),
+            attached_issue_date=res_date if not has_date_conflict else None,
+            attached_newspaper_name=res_np if not has_np_conflict else None,
+            attached_headline=attached_ctx.get("headline") if not has_date_conflict and not has_np_conflict else None,
         )
-        if res_date:
-            active_ctx["issue_date"] = res_date
-        if res_np:
-            active_ctx["newspaper_name"] = res_np
-        if res_iss_id:
-            active_ctx["issue_id"] = res_iss_id
-        if eff_attached_article_id:
-            active_ctx["article_id"] = eff_attached_article_id
-        if eff_attached_photo_id:
-            active_ctx["photo_id"] = eff_attached_photo_id
-        if attached_ctx.get("headline"):
-            active_ctx["headline"] = attached_ctx["headline"]
+
+        if not has_date_conflict and not has_np_conflict:
+            if res_date:
+                active_ctx["issue_date"] = res_date
+            if res_np:
+                active_ctx["newspaper_name"] = res_np
+            if res_iss_id:
+                active_ctx["issue_id"] = res_iss_id
+            if eff_attached_article_id:
+                active_ctx["article_id"] = eff_attached_article_id
+            if eff_attached_photo_id:
+                active_ctx["photo_id"] = eff_attached_photo_id
+            if attached_ctx.get("headline"):
+                active_ctx["headline"] = attached_ctx["headline"]
+        else:
+            if explicit_q_date:
+                active_ctx["issue_date"] = explicit_q_date
+            if explicit_q_np:
+                active_ctx["newspaper_name"] = explicit_q_np
 
         initial_state: AgentState = {
             "query": query,

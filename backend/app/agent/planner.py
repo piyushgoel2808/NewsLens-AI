@@ -30,6 +30,7 @@ from app.agent.models import (
 )
 from app.agent.tool_factory import (
     build_coverage_analysis_tool,
+    build_dynamic_analysis_tool,
     build_entity_search_tool,
     build_hybrid_search_tool,
     build_inspect_visual_asset_tool,
@@ -75,10 +76,16 @@ Analyze the user's query, understand their underlying intent, produce step-by-st
 7. `inspect_visual_asset`: Deep multimodal visual inspection, numerical table extraction, and chart axis reading from broadsheet visual crops.
    - Arguments: {"photo_id": int, "article_id": int, "query": str, "newspaper_name": str, "issue_date": str, "page_filter": str}
    - Use for: Extracting specific numbers, data tables, infographic graphics, charts, and captions from an attached, cited, or inquired broadsheet visual asset, or checking if an article/page has infographics or graphs.
+8. `dynamic_analysis`: LLM-synthesized custom Python analysis engine for complex statistical and analytical computations.
+   - Arguments: {"query": str, "analysis_description": str}
+   - Use ONLY when existing tools cannot answer the question: custom statistical aggregations (mean, median, variance, standard deviation, percentile), mathematical correlations (Pearson/Spearman correlation between publications), regression/trend line computation, or custom pivots not supported by `sql_analytics`.
 
 ### 📚 FEW-SHOT EXAMPLES
 Query: "What happened to Tata Power on page 3?"
 Output: {"thought_process": "Factual question about Tata Power on page 3. Direct hybrid search bounded to page 3.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "hybrid_search", "arguments": {"query": "Tata Power", "page_filter": "3", "top_k": 6}, "purpose": "Search page 3 for Tata Power reporting"}]}
+
+Query: "Calculate the Pearson correlation between daily article counts in Hindustan Times and The Goan over August 2026"
+Output: {"thought_process": "Mathematical correlation between daily article volumes across two newspapers. Requires statistical computation beyond sql_analytics.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "Pearson correlation between daily article counts in Hindustan Times and The Goan over August 2026", "analysis_description": "Compute Pearson correlation between daily article counts of Hindustan Times and The Goan in August 2026"}, "purpose": "Synthesize and execute dynamic Python correlation tool"}]}
 
 Query: "What are the exact figures and routes shown in this infographic?" (Attached asset photo_id: 5382)
 Output: {"thought_process": "User is asking about specific figures and content in an attached infographic. Schedule inspect_visual_asset.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "inspect_visual_asset", "arguments": {"photo_id": 5382, "query": "transport routes and figures"}, "purpose": "Transcribe and analyze infographic visual crop"}]}
@@ -481,7 +488,28 @@ class QueryPlanner:
             tool_calls.append(build_entity_search_tool(entity_name=clean_ent, top_k=10))
             tool_calls.append(build_hybrid_search_tool(query=query, top_k=8, purpose="Semantic context"))
 
-        # 3. Single Newspaper Multi-Issue Comparison (same newspaper brand across multiple dates)
+        # 3. Analytical Computation / Statistical Analysis (Dynamic Tool)
+        elif any(w in q_lower for w in [
+            "correlation", "regression", "variance", "standard deviation",
+            "percentile", "median word count", "histogram", "distribution of word",
+            "moving average", "pearson", "spearman", "gini coefficient",
+        ]):
+            archetype = "analytical_computation"
+            tool_calls.append(build_dynamic_analysis_tool(
+                query=query,
+                analysis_description=f"Statistical computation: {query}",
+                purpose="Execute custom analytical computation",
+            ))
+            tool_calls.append(build_hybrid_search_tool(
+                query=query,
+                newspaper_name=newspaper,
+                date_from=date_from,
+                date_to=date_to,
+                top_k=4,
+                purpose="Contextual evidence for analytical results",
+            ))
+
+        # 4. Single Newspaper Multi-Issue Comparison (same newspaper brand across multiple dates)
         elif newspaper and not comp_newspaper and len(target_dates) >= 2:
             archetype = "quantitative_trend"
             for dt_val in target_dates:

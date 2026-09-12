@@ -231,15 +231,19 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │    - timeline_builder (thematic chronological progression)   │
    │    - coverage_analyzer (cross-newspaper comparison)          │
    │    - web_search (real-time live internet grounding)          │
+   │    - dynamic_analysis (on-demand synthesized Python/SQL tool)│
    └──────────────────────────────┬───────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
    │      Concurrent Tool Dispatch & Adaptive Execution Engine   │
    │  • Executes planned tools in parallel via asyncio.gather    │
+   │  • Layer 1 Fallback: Intercepts unsupported parameter types │
+   │    and transparently routes to dynamic_analysis             │
    │  • Deep Visual Inspection Cascade (Strategies A through E)  │
    │  • On-demand VLM extraction from MinIO on placeholder crops │
    │  • Defensive publication & date validation in executor      │
+   │  • Cross-Date Invariant: Query date strictly overrides asset│
    │  • Real-time adaptive fallback on 0-hit category filters    │
    │  • Resilient multi-tier issue ID fallback in sql_analytics  │
    │  • Scoped coverage analyzer targeting active date editions  │
@@ -250,6 +254,9 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    ┌─────────────────────────────────────────────────────────────┐
    │          Corrective RAG (CRAG) Retrieval Evaluator          │
    │  • Grades keyword relevance & density of retrieved evidence │
+   │  • Layer 2 Fallback: If evidence is 0 or low-confidence and │
+   │    the query requires data computation, invokes ToolMaker   │
+   │    to synthesize and execute an ad-hoc analysis tool        │
    │  • Triggers broadened fallback query if confidence is low   │
    │  • Enforces anti-hallucination hard stops on empty evidence │
    │  • Automatic 1.0 score protection for structural manifests  │
@@ -278,6 +285,103 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │  • Logs execution latency, cost, and query audit in MySQL   │
    └─────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+### F. Dynamic Tool Generation & AST Sandbox Execution Engine (`tool_maker.py`, `sandbox.py`, `sandbox_runner.py`)
+
+When broadsheet analytical queries cannot be satisfied by static tools (e.g. "How many pages are in the Aug 1 edition?", "Compare average article length across editions", "Find pages with more than 3 photos"), NewsLens-AI dynamically synthesizes and safely executes ad-hoc tools via the **LLM-as-Tool-Maker** pattern.
+
+```
+┌────────────────────────────┐
+│ User Query / Fallback Event │
+└─────────────┬──────────────┘
+              │
+              ▼
+┌──────────────────────────────────────────────────────────┐
+│      LLM Tool Maker (tool_maker.py)                      │
+│ • Schema Prompt with 17 MySQL tables & columns           │
+│ • Few-shot analytical code generation patterns           │
+│ • Synthesizes self-contained Python function:            │
+│   `def execute(connection, **kwargs) -> Dict[str, Any]` │
+└─────────────┬────────────────────────────────────────────┘
+              │ Generated Code
+              ▼
+┌──────────────────────────────────────────────────────────┐
+│      AST Safety Scanner (sandbox.py: ASTSafetyScanner)   │
+│ • Parses code into Python Abstract Syntax Tree (ast.parse)│
+│ • Whitelist: math, datetime, re, json, collections,      │
+│   itertools, typing, sqlalchemy, decimal                 │
+│ • Blacklist Modules: os, sys, subprocess, socket,        │
+│   shutil, urllib, requests, pathlib, pickle, ctypes      │
+│ • Blacklist Builtins: eval, exec, compile, open, input,   │
+│   __import__, globals, locals, getattr, setattr          │
+│ • Blacklist Dunders: __subclasses__, __bases__, __code__ │
+│ • Validates mandatory `execute(connection)` signature     │
+└─────────────┬────────────────────────────────────────────┘
+              │ Validated Safe AST
+              ▼
+┌──────────────────────────────────────────────────────────┐
+│      Subprocess Sandbox Runner (sandbox_runner.py)       │
+│ • Runs in isolated subprocess (sys.executable)           │
+│ • Resource Caps: 15s execution timeout, 512MB RAM cap    │
+│ • Non-blocking JSON-based IPC over stdin/stdout          │
+│ • Read-Only DB Transaction:                              │
+│   - Autocommit disabled                                  │
+│   - Explicit `connection.rollback()` in `finally` block  │
+│   - Zero database mutations permitted                    │
+└─────────────┬────────────────────────────────────────────┘
+              │ Execution Telemetry & Result
+              ▼
+┌──────────────────────────────────────────────────────────┐
+│      Agent Evidence Pool & Reasoning Trace               │
+│ • Injects ToolExecutionRecord into AgentState            │
+│ • Emits SSE stage `generating_analysis_tool`             │
+│ • CRAG evaluator validates synthesized evidence metrics  │
+└──────────────────────────────────────────────────────────┘
+```
+
+#### Two-Layer Reactive Dynamic Fallback Architecture
+
+1. **Layer 1: Unsupported Parameter Handoff (`executor.py`)**:
+   - If the Planner dispatches `sql_analytics` with an unsupported `analysis_type` (such as `"page_count"`, `"edition_distribution"`, or custom multi-table aggregations not built into static methods), the executor automatically intercepts the call.
+   - It delegates execution to `dynamic_analysis`, synthesizing a custom Python/SQL query tool on-the-fly and returning the analytical results without crashing or returning empty data.
+
+2. **Layer 2: CRAG Zero-Evidence Dynamic Fallback (`evaluator.py`)**:
+   - When primary retrieval tools (e.g. `hybrid_search`) return zero hits or insufficient evidence (score $< 0.4$) on analytical queries, the Corrective RAG (CRAG) Evaluator intercepts the failure.
+   - It invokes `ToolMaker` asynchronously to generate and execute a targeted ad-hoc analysis tool.
+   - The recovered telemetry is injected into `AgentState["tool_executions"]` as high-confidence evidence ($1.0$), ensuring the Synthesizer has verified database facts to ground the final response.
+
+---
+
+### G. Cross-Date Context Isolation & Anti-Leakage Shield
+
+In multi-turn broadsheet research, conversational context leakage poses a major hallucination hazard—specifically when users transition from exploring an attached visual asset on one date (e.g., Aug 5, 2026) to asking a general or specific question about another date (e.g., Aug 1, 2026). 
+
+NewsLens-AI implements a **4-Tier Cross-Date Anti-Leakage Shield**:
+
+1. **Query Condenser Isolation (`condenser.py`)**:
+   - `extract_active_issue_from_history()` scans the new user query for explicit dates and newspaper brands.
+   - If the user specifies a date that differs from the issue date stored in chat history, the condenser automatically evicts the stale history issue context, preventing date drift.
+
+2. **Attached Asset Eviction Gate (`query.py`, `graph.py`)**:
+   - When a user query includes an attached asset (e.g., an infographic from Page 12 on Aug 5), the router compares the asset's metadata against any explicit date mentioned in the query text.
+   - If a conflict is detected (e.g., query specifies `Aug 1, 2026` while asset is `Aug 5, 2026`), the asset is pruned before entering the planning and execution graph.
+
+3. **Sanitizer Date Reconciliation (`tool_factory.py`)**:
+   - `reconcile_and_sanitize_arguments()` checks planned tool inputs against user query dates.
+   - Any stale date filters inherited from attached asset parameters are sanitized to match the explicit query intention.
+
+4. **Executor Date Non-Overwriting Invariant (`executor.py`)**:
+   - In Strategy A and Strategy C of visual inspection and analytical dispatch, the executor enforces an immutable rule:
+   ```python
+   # Explicit query date strictly overrides attached asset date
+   if explicit_query_date:
+       effective_date = explicit_query_date
+   else:
+       effective_date = asset_date or default_date
+   ```
+   - Prevents stale asset metadata from poisoning database queries.
 
 ---
 
@@ -351,6 +455,8 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 9.28: Decoupled Modular Synthesizer Architecture** | Monolithic 1,073-line `synthesizer.py` conflated 6 responsibilities (domain classification, context formatting, token budgeting, prompt templating, LLM streaming, and deterministic report generation). | Decoupled into single-responsibility modules: `taxonomy.py` (domain classification & scoring), `prompt_context.py` (evidence context & budgeting), and `fallback_presenter.py` (deterministic report engine), shrinking `synthesizer.py` to a lean coordinator (~320 lines) while preserving 100% backward compatibility and test coverage. |
 | **Phase 10: Ingestion Subsystem Consolidation & Remediation** | Ingestion pipeline sprawl across ad-hoc modules; ad bleed into editorial text; phantom publication dates; false-positive article segmentation. | Consolidated ingestion into structured `layout/` and `parsers/` subpackages; implemented geometric ad barrier isolation; added multi-page majority voting for masthead dates; refined newsroom taxonomy with geopolitical domain anchors and contextual dampening. |
 | **Phase 11: Multimodal Visual Intelligence & Conversational Guardrails** | Complex broadsheet charts and infographics were ignored during agent QA; conversational multi-turn context leaked outdated article/issue metadata; dual-page citation noise degraded credibility; hardcoded provider configs caused lock-in. | Introduced `inspect_visual_asset` tool with 5-tier Strategy Cascade A–E and on-demand MinIO VLM extraction; added Broadsheet Reader `"Ask Agent About This Infographic / Photo"` deep-link integration; engineered `parse_inline_citation` with strict cross-turn parameter eviction guardrails; eliminated dual-page citation formatting; added dynamic `ModelSettingsStudio.jsx`. |
+| **Phase 12: Dynamic Tool Synthesis & AST Sandbox** | Unforeseen user analytics queries (page counts, edition size distributions, ad-hoc aggregations) failed on static tool definitions; CRAG had no recovery path for zero-evidence computational queries; running arbitrary LLM code posed security and data mutation risks. | Engineered LLM-as-Tool-Maker pattern (`tool_maker.py`) generating ad-hoc Python/SQL tools; built subprocess AST Sandbox (`sandbox.py`) with strict module/builtin whitelisting, 15s timeout, 512MB RAM cap, and read-only rollback transactions; integrated Two-Layer Dynamic Fallback (Layer 1 in `executor.py` for unsupported parameters; Layer 2 in `evaluator.py` for zero-evidence CRAG recovery). |
+| **Phase 13: Cross-Date Context Isolation & Anti-Leakage Shield** | In multi-turn sessions with attached assets, asking a question about a different date (e.g. Aug 1 vs Aug 5) caused the agent to leak the attached asset date or overwrite user queries, querying the wrong newspaper edition. | Implemented 4-Tier Cross-Date Anti-Leakage Shield: conflict-aware date eviction in `condenser.py`, asset eviction gate in `query.py` and `graph.py`, tool argument reconciliation in `tool_factory.py`, and strict date non-overwriting invariant in `executor.py`. |
 
 ---
 

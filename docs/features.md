@@ -273,3 +273,53 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Zero-Failure Cascade & Graceful Degradation**:
   * Network timeouts, HTTP 5xx errors, and rate limits trigger immediate, non-blocking fallback to subsequent search tiers, maintaining sub-second response times without breaking the agent graph.
 
+---
+
+## 12. Dynamic Tool Synthesis & Subprocess AST Sandbox
+
+* **On-Demand Dynamic Tool Synthesis (`tool_maker.py`)**:
+  * Employs the **LLM-as-Tool-Maker** pattern to synthesize bespoke Python/SQL analysis functions when user inquiries exceed the scope of predefined static tools (e.g. newspaper page count distributions, cross-section statistics, custom multi-table aggregations).
+  * Prompts the LLM with the complete 17-table MySQL schema, column definitions, and example analytical queries to generate self-contained, typed functions matching the signature:
+    ```python
+    def execute(connection, **kwargs) -> Dict[str, Any]: ...
+    ```
+* **Subprocess AST Sandbox Execution Engine (`sandbox.py`, `sandbox_runner.py`)**:
+  * **Abstract Syntax Tree (AST) Safety Scanner**:
+    * Pre-execution static analysis verifying AST node safety via `ASTSafetyScanner`.
+    * **Whitelisted Safe Modules**: `math`, `datetime`, `re`, `json`, `collections`, `itertools`, `typing`, `sqlalchemy`, `decimal`.
+    * **Blacklisted Forbidden Modules**: `os`, `sys`, `subprocess`, `socket`, `shutil`, `urllib`, `requests`, `pathlib`, `pickle`, `ctypes`, etc.
+    * **Blacklisted Dangerous Builtins**: `open`, `eval`, `exec`, `compile`, `__import__`, `globals`, `locals`, `getattr`, `setattr`.
+    * **Dunder Attribute Protection**: Prohibits access to `__subclasses__`, `__bases__`, `__globals__`, `__code__`, etc.
+  * **Subprocess Process Isolation**:
+    * Spawns an isolated subprocess (`sys.executable`) via non-blocking JSON IPC over stdin/stdout.
+    * Enforces a hard **15-second execution timeout** and **512MB memory limit**.
+  * **Read-Only Database Transactions**:
+    * Executes all dynamic tool queries under an uncommitted, read-only transaction.
+    * Forces `connection.rollback()` unconditionally in a `finally` block, completely preventing any accidental table updates, inserts, or deletions.
+* **Two-Layer Reactive Dynamic Fallback Architecture**:
+  * **Layer 1 (Unsupported Parameter Handoff in `executor.py`)**:
+    * Intercepts tool execution when the Planner passes unsupported arguments (such as `analysis_type="page_count"` in `sql_analytics`).
+    * Transparently hands off the request to `dynamic_analysis`, synthesizing a custom script on-the-fly and returning verified metrics without raising runtime errors.
+  * **Layer 2 (CRAG Zero-Evidence Dynamic Toolmaker in `evaluator.py`)**:
+    * When primary retrieval tools return zero hits or insufficient evidence ($< 0.4$) on quantitative or analytical queries, the Corrective RAG (CRAG) Evaluator intercepts the failure.
+    * Invokes `ToolMaker` asynchronously to synthesize and run a focused analysis script, injecting high-confidence evidence ($1.0$) into the agent's context before final synthesis.
+
+---
+
+## 13. Cross-Date Context Isolation & Anti-Leakage Shield
+
+* **Multi-Turn Date Drift Prevention**:
+  * Eliminates cross-turn context contamination when users explore an attached visual asset on one date (e.g., Aug 5, 2026) and subsequently ask a question about another date (e.g., Aug 1, 2026).
+* **4-Tier Anti-Leakage Shield**:
+  1. **Query Condenser Isolation (`condenser.py`)**:
+     * Detects explicit date and newspaper mentions in the incoming query.
+     * Automatically evicts stale historical issue IDs, dates, and newspaper brands from conversation memory if a mismatch is found.
+  2. **Attached Asset Eviction Gate (`query.py`, `graph.py`)**:
+     * Inspects attached visual assets from the Broadsheet Reader.
+     * Automatically prunes `attachedAsset` from the active query state if its publication date or newspaper conflicts with the explicit query intention.
+  3. **Sanitizer Reconciliation (`tool_factory.py`)**:
+     * Verifies planned tool arguments against explicit query dates, sanitizing any stale date filters carried over from earlier turns.
+  4. **Executor Date Non-Overwriting Invariant (`executor.py`)**:
+     * Enforces an immutable priority rule during tool execution: explicit user query dates strictly override attached asset metadata (`effective_date = explicit_query_date or asset_date or default_date`), guaranteeing that queries never target the wrong newspaper issue.
+
+

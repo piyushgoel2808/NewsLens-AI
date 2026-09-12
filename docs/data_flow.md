@@ -153,6 +153,7 @@ sequenceDiagram
     participant Planner as Cognitive Query Planner
     participant Tools as Multi-Tool Dispatcher
     participant DB as MySQL & Qdrant Vector DB
+    participant ToolMaker as LLM Tool Maker & Sandbox
     participant CRAG as Corrective RAG (CRAG) Evaluator
     participant Synth as 4-Tier Answer Synthesizer
     participant SSE as SSE Streaming Response
@@ -162,7 +163,7 @@ sequenceDiagram
         Cache-->>User: Return Cached Response (<5ms)
     else Cache Miss
         Cache->>Condenser: Pass Raw Query, History, and Attached Asset IDs
-        Condenser->>Condenser: Resolve Pronouns, Bind Active Issue & Retain Attached Assets
+        Condenser->>Condenser: Resolve Pronouns, Evict Cross-Date Conflicts & Retain Valid Assets
         Condenser->>Planner: Pass Condensed Query & Asset Context
         Planner->>Planner: Classify 1 of 7 Archetypes & Generate Tool Plan
         Planner->>Tools: Dispatch Planned Tool Calls (Asynchronous)
@@ -174,11 +175,20 @@ sequenceDiagram
             Tools->>DB: timeline_builder (Chronological Progression)
             Tools->>DB: coverage_analyzer (Cross-Broadsheet Comparative Audit)
             Tools->>DB: web_search (Live Internet Search if Enabled)
+            Tools->>ToolMaker: dynamic_analysis (Ad-hoc Python/SQL in AST Sandbox)
+        end
+        opt Layer 1 Fallback (Unsupported Parameters in sql_analytics)
+            Tools->>ToolMaker: Hand off unsupported analysis_type to dynamic_analysis
         end
         DB-->>Tools: Tool Results & Structured Evidence
         Tools->>CRAG: Raw Retrieved Evidence Items
         CRAG->>CRAG: Grade Keyword Relevance & Density
-        alt Low Retrieval Confidence
+        alt Low Retrieval Confidence / 0 Evidence on Quantitative Queries
+            CRAG->>ToolMaker: Layer 2 Fallback: Synthesize Ad-Hoc Tool via ToolMaker
+            ToolMaker->>DB: Execute in Read-Only AST Sandbox
+            DB-->>ToolMaker: Return Structured Aggregate Telemetry
+            ToolMaker-->>CRAG: Injected High-Confidence Evidence (1.0)
+        else Low Retrieval Confidence on Factual Queries
             CRAG->>Tools: Trigger Broadened Query Fallback
             Tools->>DB: Re-execute Hybrid Search
             DB-->>CRAG: Secondary Fallback Snippets
@@ -200,7 +210,7 @@ sequenceDiagram
 |---|---|---|---|---|
 | **`factual_lookup`** | Specific fact, figure, event, statement, or quote from an article, chart, or page. | `hybrid_search` (Dense BGE-M3 + Sparse MySQL RRF) | `inspect_visual_asset` (when chart/table/photo mentioned), `entity_search` | Direct verified answer with exact page and article citation. |
 | **`article_catalog`** | Fast manifest listing of articles, front-page leads, or section indices (<200ms). | `sql_analytics` (`issue_summary` / `list_articles`) | None | Tabular manifest by newspaper, date, page, headline, and category. |
-| **`quantitative_trend`** | Aggregate metrics, distribution of topics, page counts, or volume analytics. | `sql_analytics` (`aggregate_metrics` / `count_articles`) | `hybrid_search` (for sample excerpts) | Statistical summary breakdown with data tables. |
+| **`quantitative_trend`** | Aggregate metrics, distribution of topics, page counts, or volume analytics. | `sql_analytics` (`aggregate_metrics` / `count_articles`); transparent Layer 1 handoff to `dynamic_analysis` for unsupported analytics | `dynamic_analysis` (Subprocess AST Sandbox) / `hybrid_search` | Statistical summary breakdown with data tables. |
 | **`thematic_timeline`** | Chronological progression, evolution, history, or milestone development over time. | `timeline_builder` | `hybrid_search` | Date-ordered milestone trajectory with narrative trajectory canvas links. |
 | **`cross_newspaper_comparison`** | Comparative coverage, framing differences, contrasting editorial perspectives, or differential exclusions (*"In X but not in Y"*). | `sql_analytics` (`coverage_difference`) for exclusions; `coverage_analyzer` for multi-broadsheet audits | `hybrid_search` (scoped to target publication and date) | Verified exclusive article manifest with page folios, or side-by-side editorial matrix. |
 | **`entity_deep_dive`** | Comprehensive profile of a person, company, agency, or geopolitical entity. | `entity_search` | `timeline_builder` + `hybrid_search` | Entity salience stats, co-occurring entities, and key storylines. |
@@ -326,4 +336,67 @@ sequenceDiagram
    - `extract_active_issue_from_history()` and `condenser.py` bind these IDs directly to tool arguments (`photo_id`, `article_id`).
 3. **Cross-Turn Parameter Purge**:
    - On the next turn, if the user asks an unrelated question or references a different date/newspaper, Guardrails 1, 2, and 3 immediately purge `photo_id`, `article_id`, `headline`, and `page_number`, preventing visual context leakage across independent questions.
+4. **Cross-Date Asset Conflict Eviction**:
+   - In `query.py` and `graph.py`, if the user explicitly specifies a publication date (e.g. `1/8/2026`) that conflicts with the attached asset's date (e.g. `2026-08-05`), the attached asset is immediately evicted.
+   - In `executor.py`, an immutable invariant dictates: `effective_date = explicit_query_date or asset_date or default_date`, ensuring attached asset dates can never overwrite explicit user query dates.
+
+---
+
+## 8. Dynamic Tool Synthesis & Subprocess AST Sandbox Execution Flow
+
+When broadsheet analytical queries require bespoke aggregations or relational calculations that do not exist in predefined static tools, NewsLens-AI dynamically synthesizes and executes custom Python functions within a secure, sandboxed subprocess.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ 1. Trigger Event                                                       │
+│    • Direct Agent Plan: Archetype planner schedules `dynamic_analysis` │
+│    • Layer 1 Fallback: Unsupported parameter in `sql_analytics`        │
+│    • Layer 2 Fallback: CRAG evaluator encounters 0-evidence on an      │
+│      analytical/computational query                                    │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 2. LLM Tool Maker Synthesis (`tool_maker.py`)                         │
+│    • Loads comprehensive 17-table MySQL schema prompt                  │
+│    • Formulates prompt with user question & analytical goal            │
+│    • Generates Python script with typed contract:                      │
+│      `def execute(connection, **kwargs) -> Dict[str, Any]`             │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 3. AST Pre-Execution Safety Inspection (`sandbox.py: ASTSafetyScanner`)│
+│    • Static inspection of Python Abstract Syntax Tree (ast.parse)      │
+│    • Checks Whitelist: `math`, `datetime`, `re`, `json`, `collections`,│
+│      `itertools`, `typing`, `sqlalchemy`, `decimal`                    │
+│    • Rejects Blacklisted Modules: `os`, `sys`, `subprocess`, `socket`, │
+│      `shutil`, `urllib`, `requests`, `pathlib`, `ctypes`, etc.         │
+│    • Rejects Blacklisted Builtins: `open`, `eval`, `exec`, `compile`,  │
+│      `__import__`, `globals`, `locals`, `getattr`, `setattr`           │
+│    • Verifies absence of dunder attribute escape patterns              │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 4. Subprocess Sandbox Execution (`sandbox_runner.py`)                  │
+│    • Spawns isolated worker via `subprocess.Popen([sys.executable])`   │
+│    • Passes code, arguments, and credentials via JSON stdin            │
+│    • Enforces 15-second timeout and 512MB RAM resource limit           │
+│    • Establishes read-only DB connection with autocommit disabled      │
+│    • Executes `execute(connection)` inside try/finally                 │
+│    • Unconditional `connection.rollback()` guarantees zero mutations   │
+│    • Returns structured JSON payload to stdout                         │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 5. Evidence Injection & Agent Reasoning Continuation                   │
+│    • Encapsulates result into `ToolExecutionRecord` with `tool_input`  │
+│    • Injects high-confidence evidence ($1.0$) into `AgentState`        │
+│    • Emits SSE stage `generating_analysis_tool`                        │
+│    • Hands over to Synthesizer for 4-tier journalistic brief           │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
 

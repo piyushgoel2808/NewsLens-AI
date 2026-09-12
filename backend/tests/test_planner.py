@@ -654,6 +654,26 @@ class TestAgentWorkflowToolExecution:
         res2 = planner.plan_query("What does the infographic on page 7 show?")
         assert any(t.tool_name == "inspect_visual_asset" for t in res2.tool_calls)
 
+    def test_dynamic_analysis_heuristic_routing(self) -> None:
+        """Verify statistical and analytical queries route to dynamic_analysis."""
+        planner = QueryPlanner()
+
+        # Case 1: Pearson correlation
+        res_corr = planner.plan_query("Calculate the Pearson correlation between daily article counts in HT and The Goan")
+        assert res_corr.archetype == "analytical_computation"
+        assert any(t.tool_name == "dynamic_analysis" for t in res_corr.tool_calls)
+
+        # Case 2: Variance computation
+        res_var = planner.plan_query("What is the variance of word counts across categories in August?")
+        assert res_var.archetype == "analytical_computation"
+        assert any(t.tool_name == "dynamic_analysis" for t in res_var.tool_calls)
+
+        # Case 3: Simple factual query does NOT route to dynamic_analysis
+        res_fact = planner.plan_query("What did Modi say about drugs?")
+        assert res_fact.archetype == "factual_lookup"
+        assert not any(t.tool_name == "dynamic_analysis" for t in res_fact.tool_calls)
+
+
 
 
 

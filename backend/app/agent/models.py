@@ -15,6 +15,7 @@ ToolName = Literal[
     "coverage_analysis",
     "web_search",
     "inspect_visual_asset",
+    "dynamic_analysis",
 ]
 
 QueryArchetype = Literal[
@@ -26,6 +27,7 @@ QueryArchetype = Literal[
     "article_catalog",
     "macro_summary",
     "negative_coverage_audit",
+    "analytical_computation",
 ]
 
 

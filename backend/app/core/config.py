@@ -291,6 +291,14 @@ class Settings(BaseSettings):
     mysql_user: str = "newslens"
     mysql_password: str = "newslens_pass"
     mysql_db: str = "newslens"
+    mysql_readonly_user: str | None = None
+    mysql_readonly_password: str | None = None
+
+    # --- Dynamic Tool Generation ---
+    enable_dynamic_tools: bool = True
+    dynamic_tool_timeout_seconds: int = 10
+    dynamic_tool_max_memory_mb: int = 256
+    dynamic_tool_max_retries: int = 2
 
     # --- Qdrant ---
     qdrant_host: str = "localhost"
@@ -382,6 +390,16 @@ class Settings(BaseSettings):
             user=self.mysql_user,
             password=self.mysql_password,
             db=self.mysql_db,
+        )
+
+    @property
+    def mysql_readonly_url(self) -> str:
+        """Async connection string for read-only dynamic tool execution."""
+        user = self.mysql_readonly_user or self.mysql_user
+        pwd = self.mysql_readonly_password or self.mysql_password
+        return (
+            f"mysql+aiomysql://{user}:{pwd}"
+            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
         )
 
     @property

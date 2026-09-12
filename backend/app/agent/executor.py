@@ -7,12 +7,14 @@ evidence formatting across all broadsheet retrieval tools with zero dynamic impo
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.state import AgentState, ToolExecutionRecord
+from app.agent.tool_maker import ToolMaker
 from app.core.logging import get_logger
 from app.retrieval.coverage_analyzer import CoverageAnalyzer, CoverageMatrix
 from app.retrieval.entity_filter import EntitySearchEngine
@@ -136,6 +138,7 @@ class ToolExecutor:
         sql_analytics: SQLAnalyticsEngine,
         coverage_analyzer: CoverageAnalyzer,
         web_search: WebSearchEngine,
+        tool_maker: ToolMaker | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._hybrid_search = hybrid_search
@@ -144,6 +147,7 @@ class ToolExecutor:
         self._sql_analytics = sql_analytics
         self._coverage_analyzer = coverage_analyzer
         self._web_search = web_search
+        self._tool_maker = tool_maker
 
     async def execute_tools(
         self,
@@ -227,6 +231,9 @@ class ToolExecutor:
 
             elif name == "inspect_visual_asset":
                 evidence_items, hits_count = await self._execute_inspect_visual_asset(args, state)
+
+            elif name == "dynamic_analysis":
+                evidence_items, hits_count = await self._execute_dynamic_analysis(args, state)
 
         except Exception as e:
             logger.error(f"Error executing tool '{name}'", extra={"error": str(e)})
@@ -716,6 +723,16 @@ class ToolExecutor:
                         }
                     )
 
+        else:
+            # Unsupported or custom analysis type requested by LLM (e.g. count_pages, word_count_by_author)
+            # Delegate directly to ToolMaker dynamic code synthesis.
+            if self._tool_maker:
+                logger.info(
+                    f"Unsupported sql_analytics analysis_type '{analysis_type}'; delegating to dynamic tool synthesis."
+                )
+                dyn_items, dyn_hits = await self._execute_dynamic_analysis(args, state)
+                return dyn_items, dyn_hits, context_updates
+
         return items, hits_count, context_updates
 
     async def _execute_coverage_analysis(
@@ -780,6 +797,7 @@ class ToolExecutor:
         from app.models.article import Article, ArticlePage, Photo
         from app.models.newspaper import Issue, Newspaper
         from app.agent.condenser import parse_inline_citation
+        from app.agent.extractor import extract_parameters_from_query
 
         photo_id = args.get("photo_id") or state.get("attached_photo_id")
         article_id = args.get("article_id") or state.get("attached_article_id")
@@ -790,7 +808,7 @@ class ToolExecutor:
 
         target_headline: str | None = None
 
-        # 0. Check for authoritative inline citation in query_text or current state
+        # 0. Check for authoritative inline citation or extracted parameters in query_text or current state
         q_citation = (
             parse_inline_citation(query_text)
             or parse_inline_citation(state.get("query") or "")
@@ -804,6 +822,18 @@ class ToolExecutor:
             page_filter = str(q_citation["page_number"])
         if q_citation.get("headline"):
             target_headline = q_citation["headline"]
+
+        q_ext = (
+            extract_parameters_from_query(query_text)
+            or extract_parameters_from_query(state.get("query") or "")
+            or extract_parameters_from_query(state.get("original_query") or "")
+        )
+        if not newspaper_name and q_ext.get("newspaper_name"):
+            newspaper_name = q_ext["newspaper_name"]
+        if not issue_date and q_ext.get("issue_date"):
+            issue_date = q_ext["issue_date"]
+        if not page_filter and q_ext.get("page_filter"):
+            page_filter = str(q_ext["page_filter"])
 
         # 1. If photo_id or article_id not provided and no current query headline, try resolving from conversation history
         if not photo_id and not article_id and not target_headline:
@@ -828,17 +858,22 @@ class ToolExecutor:
                             if cit.get("headline") and not target_headline:
                                 target_headline = str(cit["headline"]).strip()
 
-                # Check turn attached asset
+                # Check turn attached asset (only inherit if matching known newspaper/date filters)
                 att = turn.get("attachedAsset") or {}
                 if isinstance(att, dict):
-                    if att.get("photoId") and not photo_id:
-                        with contextlib.suppress(ValueError):
-                            photo_id = int(att["photoId"])
-                    if att.get("articleId") and not article_id:
-                        with contextlib.suppress(ValueError):
-                            article_id = int(att["articleId"])
-                    if att.get("headline") and not target_headline:
-                        target_headline = str(att["headline"]).strip()
+                    att_np = att.get("newspaperName") or att.get("newspaper_name") or ""
+                    att_dt = att.get("issueDate") or att.get("issue_date") or ""
+                    att_np_ok = not newspaper_name or not att_np or (newspaper_name.lower() in att_np.lower() or att_np.lower() in newspaper_name.lower())
+                    att_dt_ok = not issue_date or not att_dt or att_dt == issue_date
+                    if att_np_ok and att_dt_ok:
+                        if att.get("photoId") and not photo_id:
+                            with contextlib.suppress(ValueError):
+                                photo_id = int(att["photoId"])
+                        if att.get("articleId") and not article_id:
+                            with contextlib.suppress(ValueError):
+                                article_id = int(att["articleId"])
+                        if att.get("headline") and not target_headline:
+                            target_headline = str(att["headline"]).strip()
 
                 # Check turn message text for inline citation
                 c_text = str(turn.get("content", ""))
@@ -899,8 +934,29 @@ class ToolExecutor:
                         (state.get("attached_photo_id") and int(state["attached_photo_id"]) == single_photo.id)
                         or (args.get("photo_id") and int(args["photo_id"]) == single_photo.id)
                     ):
-                        explicit_query_date = q_citation.get("issue_date")
-                        if not explicit_query_date:
+                        explicit_query_date = (
+                            q_citation.get("issue_date")
+                            or q_ext.get("issue_date")
+                        )
+                        explicit_query_np = (
+                            q_citation.get("newspaper_name")
+                            or q_ext.get("newspaper_name")
+                        )
+                        has_date_conflict = bool(
+                            explicit_query_date
+                            and p_art
+                            and p_art.issue
+                            and str(p_art.issue.issue_date) != explicit_query_date
+                        )
+                        has_np_conflict = bool(
+                            explicit_query_np
+                            and p_art
+                            and p_art.issue
+                            and p_art.issue.newspaper
+                            and explicit_query_np.lower() not in p_art.issue.newspaper.name.lower()
+                            and p_art.issue.newspaper.name.lower() not in explicit_query_np.lower()
+                        )
+                        if not has_date_conflict and not has_np_conflict:
                             # Stale conversation context mismatch - adopt photo's true issue date and publication
                             photos_to_process.append(single_photo)
                             if p_art and p_art.issue:
@@ -908,7 +964,14 @@ class ToolExecutor:
                                 if p_art.issue.newspaper:
                                     newspaper_name = p_art.issue.newspaper.name
                         else:
-                            logger.warning("Photo ID %s rejected for visual inspection due to explicit query date mismatch", photo_id)
+                            logger.warning(
+                                "Photo ID %s rejected for visual inspection due to explicit query entity mismatch (requested %s %s, photo %s %s)",
+                                photo_id,
+                                explicit_query_np,
+                                explicit_query_date,
+                                p_art.issue.newspaper.name if p_art and p_art.issue and p_art.issue.newspaper else "unknown",
+                                p_art.issue.issue_date if p_art and p_art.issue else "unknown",
+                            )
                             photo_id = None
                     else:
                         logger.warning("Photo ID %s rejected for visual inspection due to newspaper/date mismatch", photo_id)
@@ -982,21 +1045,53 @@ class ToolExecutor:
                     or (args.get("article_id") and int(args["article_id"]) == int(article_id))
                 )
                 if not is_compat and is_explicit_article:
-                    explicit_query_date = q_citation.get("issue_date")
-                    if not explicit_query_date:
+                    explicit_query_date = (
+                        q_citation.get("issue_date")
+                        or q_ext.get("issue_date")
+                    )
+                    explicit_query_np = (
+                        q_citation.get("newspaper_name")
+                        or q_ext.get("newspaper_name")
+                    )
+                    has_date_conflict = bool(
+                        explicit_query_date
+                        and chk_art
+                        and chk_art.issue
+                        and str(chk_art.issue.issue_date) != explicit_query_date
+                    )
+                    has_np_conflict = bool(
+                        explicit_query_np
+                        and chk_art
+                        and chk_art.issue
+                        and chk_art.issue.newspaper
+                        and explicit_query_np.lower() not in chk_art.issue.newspaper.name.lower()
+                        and chk_art.issue.newspaper.name.lower() not in explicit_query_np.lower()
+                    )
+                    if not has_date_conflict and not has_np_conflict:
                         is_compat = True
                         if chk_art and chk_art.issue:
                             issue_date = str(chk_art.issue.issue_date)
                             if chk_art.issue.newspaper:
                                 newspaper_name = chk_art.issue.newspaper.name
+                    else:
+                        logger.warning(
+                            "Article ID %s rejected for visual inspection due to explicit query entity mismatch (requested %s %s, article %s %s)",
+                            article_id,
+                            explicit_query_np,
+                            explicit_query_date,
+                            chk_art.issue.newspaper.name if chk_art and chk_art.issue and chk_art.issue.newspaper else "unknown",
+                            chk_art.issue.issue_date if chk_art and chk_art.issue else "unknown",
+                        )
+                        article_id = None
 
                 if not is_compat:
-                    logger.warning(
-                        "Article ID %s rejected for visual inspection due to newspaper/date mismatch: requested %s (%s)",
-                        article_id,
-                        newspaper_name,
-                        issue_date,
-                    )
+                    if article_id:
+                        logger.warning(
+                            "Article ID %s rejected for visual inspection due to newspaper/date mismatch: requested %s (%s)",
+                            article_id,
+                            newspaper_name,
+                            issue_date,
+                        )
                     article_id = None
 
             if article_id and not photos_to_process:
@@ -1105,7 +1200,12 @@ class ToolExecutor:
 
             # Strategy E: Fallback search on Photo captions and VLM descriptions
             if not photos_to_process and query_text:
-                q_tokens = [w.lower() for w in re.findall(r"\w+", query_text) if len(w) > 3]
+                _photo_stopwords = {
+                    "the", "and", "for", "any", "have", "with", "from", "that", "this",
+                    "what", "does", "dated", "photo", "photos", "picture", "pictures",
+                    "image", "images", "there",
+                }
+                q_tokens = [w.lower() for w in re.findall(r"\w+", query_text) if len(w) >= 3 and w.lower() not in _photo_stopwords]
                 if q_tokens:
                     p_search_stmt = (
                         select(Photo)
@@ -1144,7 +1244,7 @@ class ToolExecutor:
                         photos_to_process = [sp[1] for sp in scored_photos[:4]]
 
             if not photos_to_process:
-                logger.warning("No photo found for inspect_visual_asset", extra={"args": args})
+                logger.warning("No photo found for inspect_visual_asset", extra={"tool_args": args})
                 return [], 0
 
             # Process all resolved visual assets
@@ -1240,8 +1340,43 @@ class ToolExecutor:
                 )
 
         return items, len(items)
- 
- 
+
+    async def _execute_dynamic_analysis(
+        self,
+        args: dict[str, Any],
+        state: AgentState,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Execute dynamically synthesized Python analysis tool via ToolMaker."""
+        if not self._tool_maker:
+            logger.warning("dynamic_analysis tool requested but ToolMaker is not configured")
+            return [], 0
+
+        query = args.get("query") or state.get("query", "")
+        context: dict[str, Any] = {
+            "available_newspapers": [],
+            "available_dates": [],
+            "categories": [],
+        }
+        with contextlib.suppress(Exception):
+            meta = await self._sql_analytics.get_archive_metadata()
+            context["available_newspapers"] = meta.get("newspapers", [])
+            context["available_dates"] = list(meta.get("available_dates", {}).keys())
+            context["categories"] = meta.get("categories", [])
+
+        model_override = state.get("model_override")
+        res = await self._tool_maker.generate_and_execute(
+            query=query,
+            context=context,
+            model_override=model_override,
+        )
+
+        if res.success:
+            return res.evidence_items, len(res.evidence_items)
+
+        logger.warning("Dynamic tool generation/execution failed", extra={"error": res.error})
+        return [], 0
+
+
 __all__ = [
     "ToolExecutor",
     "format_coverage_difference_snippet",

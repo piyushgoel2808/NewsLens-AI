@@ -185,32 +185,53 @@ def extract_active_issue_from_history(
     if current_citation:
         res.update(current_citation)
 
-    if attached_photo_id:
-        with contextlib.suppress(ValueError, TypeError):
-            res["photo_id"] = int(attached_photo_id)
-    if attached_article_id:
-        with contextlib.suppress(ValueError, TypeError):
-            res["article_id"] = int(attached_article_id)
-    if attached_issue_date:
-        res["issue_date"] = attached_issue_date
-    if attached_newspaper_name:
-        res["newspaper_name"] = attached_newspaper_name
-    if attached_headline:
-        res["headline"] = attached_headline
+    current_params = extract_parameters_from_query(current_query) if current_query else {}
+    explicit_query_date = current_params.get("issue_date") or current_citation.get("issue_date")
+    explicit_query_np = current_params.get("newspaper_name") or current_citation.get("newspaper_name")
+
+    has_date_conflict = bool(explicit_query_date and attached_issue_date and explicit_query_date != attached_issue_date)
+    has_np_conflict = bool(
+        explicit_query_np
+        and attached_newspaper_name
+        and explicit_query_np.lower() not in attached_newspaper_name.lower()
+        and attached_newspaper_name.lower() not in explicit_query_np.lower()
+    )
+
+    if not has_date_conflict and not has_np_conflict:
+        if attached_photo_id:
+            with contextlib.suppress(ValueError, TypeError):
+                res["photo_id"] = int(attached_photo_id)
+        if attached_article_id:
+            with contextlib.suppress(ValueError, TypeError):
+                res["article_id"] = int(attached_article_id)
+        if attached_issue_date:
+            res["issue_date"] = attached_issue_date
+        if attached_newspaper_name:
+            res["newspaper_name"] = attached_newspaper_name
+        if attached_headline:
+            res["headline"] = attached_headline
+    else:
+        if explicit_query_date:
+            res["issue_date"] = explicit_query_date
+        if explicit_query_np:
+            res["newspaper_name"] = explicit_query_np
 
     if not chat_history:
         return res
 
-    has_explicit_asset = bool(attached_photo_id or attached_article_id or attached_headline)
+    has_explicit_asset = bool(
+        (attached_photo_id or attached_article_id or attached_headline)
+        and not has_date_conflict
+        and not has_np_conflict
+    )
 
     q_lower = (current_query or "").lower()
     is_cross_newspaper = bool(
         re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff(?:erence[s]?|ering)?|versus|vs\.?)\b", q_lower)
         or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper", "different newspaper"])
     )
-    current_params = extract_parameters_from_query(current_query) if current_query else {}
-    current_date = current_params.get("issue_date") or current_citation.get("issue_date") or attached_issue_date
-    current_np = current_params.get("newspaper_name") or current_citation.get("newspaper_name") or attached_newspaper_name
+    current_date = explicit_query_date or (attached_issue_date if not has_date_conflict else None)
+    current_np = explicit_query_np or (attached_newspaper_name if not has_np_conflict else None)
 
     for turn in reversed(chat_history):
         content = str(turn.get("content", ""))
@@ -341,18 +362,17 @@ def extract_active_issue_from_history(
         res["target_newspapers"] = [current_np]
     if current_date:
         res["issue_date"] = current_date
-    if attached_headline:
-        res["headline"] = attached_headline
-    elif current_citation.get("headline"):
-        res["headline"] = current_citation["headline"]
+    if not has_date_conflict and not has_np_conflict:
+        if attached_headline:
+            res["headline"] = attached_headline
+        if attached_photo_id:
+            with contextlib.suppress(ValueError, TypeError):
+                res["photo_id"] = int(attached_photo_id)
+        if attached_article_id:
+            with contextlib.suppress(ValueError, TypeError):
+                res["article_id"] = int(attached_article_id)
     if current_citation.get("page_number"):
         res["page_number"] = current_citation["page_number"]
-    if attached_photo_id:
-        with contextlib.suppress(ValueError, TypeError):
-            res["photo_id"] = int(attached_photo_id)
-    if attached_article_id:
-        with contextlib.suppress(ValueError, TypeError):
-            res["article_id"] = int(attached_article_id)
 
     return res
 
@@ -428,7 +448,20 @@ async def condense_conversational_query(
     asset_type = attached_asset.get("visual_type") if attached_asset else None
     asset_page = attached_asset.get("page_number") if attached_asset else None
 
-    if attached_asset and (asset_photo_id or asset_art_id):
+    q_params = extract_parameters_from_query(query) if query else {}
+    q_cite = parse_inline_citation(query or "")
+    explicit_q_date = q_params.get("issue_date") or q_cite.get("issue_date")
+    explicit_q_np = q_params.get("newspaper_name") or q_cite.get("newspaper_name")
+
+    has_date_conflict = bool(explicit_q_date and asset_date and explicit_q_date != asset_date)
+    has_np_conflict = bool(
+        explicit_q_np
+        and asset_np
+        and explicit_q_np.lower() not in asset_np.lower()
+        and asset_np.lower() not in explicit_q_np.lower()
+    )
+
+    if attached_asset and (asset_photo_id or asset_art_id) and not has_date_conflict and not has_np_conflict:
         np_name = asset_np or active_newspaper_name
         iss_id = asset_iss_id or active_issue_id
         iss_date = asset_date or active_issue_date
@@ -440,15 +473,15 @@ async def condense_conversational_query(
         active_ctx = extract_active_issue_from_history(
             chat_history,
             current_query=query,
-            attached_photo_id=asset_photo_id,
-            attached_article_id=asset_art_id,
-            attached_issue_date=active_issue_date,
-            attached_newspaper_name=active_newspaper_name,
-            attached_headline=asset_hl,
+            attached_photo_id=asset_photo_id if not has_date_conflict and not has_np_conflict else None,
+            attached_article_id=asset_art_id if not has_date_conflict and not has_np_conflict else None,
+            attached_issue_date=asset_date if not has_date_conflict and not has_np_conflict else None,
+            attached_newspaper_name=asset_np if not has_date_conflict and not has_np_conflict else None,
+            attached_headline=asset_hl if not has_date_conflict and not has_np_conflict else None,
         )
-        np_name = active_newspaper_name or active_ctx.get("newspaper_name")
+        np_name = explicit_q_np or active_newspaper_name or active_ctx.get("newspaper_name")
         iss_id = active_issue_id or active_ctx.get("issue_id")
-        iss_date = active_issue_date or active_ctx.get("issue_date")
+        iss_date = explicit_q_date or active_issue_date or active_ctx.get("issue_date")
         comp_np = active_ctx.get("comparison_newspaper")
         is_diff = active_ctx.get("is_differential")
         active_hl = active_ctx.get("headline")
@@ -475,7 +508,12 @@ async def condense_conversational_query(
     formatted_history = format_chat_history_for_prompt(chat_history) if chat_history else ""
 
     attached_asset_block = ""
-    if attached_asset and (asset_photo_id or asset_art_id or asset_cap or asset_hl):
+    if (
+        attached_asset
+        and not has_date_conflict
+        and not has_np_conflict
+        and (asset_photo_id or asset_art_id or asset_cap or asset_hl)
+    ):
         asset_lines: list[str] = []
         if asset_photo_id:
             asset_lines.append(f"- Asset Type: Photo (ID: #{asset_photo_id})")

@@ -52,11 +52,14 @@ flowchart TD
         Dispatcher --> Tool_Entity["EntityFilter<br/>(N-Hop Relational Search)"]
         Dispatcher --> Tool_Timeline["TimelineBuilder<br/>(Narrative Trajectories)"]
         Dispatcher --> Tool_Web["WebSearchEngine (4-Tier Grounding)<br/>NewsData.io ➔ Serper ➔ Tavily ➔ DDG"]
+        Dispatcher --> Tool_Dynamic["DynamicAnalysis<br/>(Subprocess AST Sandbox)"]
 
         Tool_Hybrid --> RRF["Reciprocal Rank Fusion (RRF)<br/>+ Cross-Encoder Reranker (CPU)"]
-        RRF & Tool_Visual & Tool_SQL & Tool_Entity & Tool_Timeline & Tool_Web --> CRAG{"Evidence Relevance Gate (CRAG)<br/>(Stemmed Query Pruning)"}
+        RRF & Tool_Visual & Tool_SQL & Tool_Entity & Tool_Timeline & Tool_Web & Tool_Dynamic --> CRAG{"Evidence Relevance Gate (CRAG)<br/>(Stemmed Query Pruning)"}
         
         CRAG -->|Sufficient Grounding| Synthesizer["AnswerSynthesizer<br/>(4-Tier Grounded Brief)"]
+        CRAG -->|Zero Evidence / Analytical Query| ToolMaker["LLM Tool Maker<br/>(Ad-Hoc Tool Synthesis)"]
+        ToolMaker --> Tool_Dynamic
         CRAG -->|Zero Evidence / Ambiguous| FallbackRouter["Fallback Web/Entity Search<br/>or Anti-Hallucination Notice"]
         FallbackRouter --> Synthesizer
 
@@ -385,8 +388,8 @@ sequenceDiagram
 
 1. **Conversational Query Condensation** ([`backend/app/agent/condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py)):
    - **Inline Citation Extraction**: Parses complex broadsheet citations such as `[4] Hindustan Times, 2026-08-03, Page 4, Headline: "The growing bipolarity in the world..."`.
-   - **Attached Asset Propagation**: Carries forward `attached_article_id` or `attached_photo_id` selected in the broadsheet viewer.
-   - **3 Anti-Leakage Guardrails**: Prevents bleed-over of past query constraints when the user asks about a different newspaper, date, or topic.
+   - **Attached Asset Propagation & Date Isolation**: Carries forward `attached_article_id` or `attached_photo_id` selected in the broadsheet viewer, but strictly evicts attached assets if their publication date conflicts with explicit query dates.
+   - **4-Tier Anti-Leakage Shield**: Prevents bleed-over of past query constraints, dates, or attached assets when switching dates, publications, or topics.
    - **Differential Exclusion Retention**: Preserves comparative context (*"list all those 11 articles"* $\to$ *"list all articles in The Goan but not in The Morning Standard on 2026-08-01"*).
 2. **Query Planner & 7 Archetypes** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)):
    - Grounded with live archive metadata (`get_archive_metadata()`), preventing the model from inventing dates or newspapers.
@@ -399,13 +402,13 @@ sequenceDiagram
      - `entity_deep_dive`: Multi-hop entity exploration and salience profiling.
      - `negative_coverage_audit`: Rigorous proof of unreported topics across publications.
 3. **Specialized Tool Execution** ([`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)):
-   - `InspectVisualAsset`: Executes 5-Tier Strategy Cascade:
-     - Strategy A: Direct `photo_id` lookup + companion charts.
-     - Strategy B: Canonical `headline` lookup + companion charts.
-     - Strategy C: Direct `article_id` lookup + companion charts.
-     - Strategy D: Multi-criteria database search (`newspaper_name`, `issue_date`, `page_number`).
-     - Strategy E: Scoped caption and VLM keyword search.
-     - **Multi-Chart Return**: Emits all companion charts (e.g. all 4 charts for a BRICS infographic article) simultaneously.
+   - `InspectVisualAsset`: Executes 5-Tier Strategy Cascade (A: photo_id; B: headline; C: article_id; D: multi-criteria DB; E: scoped caption/VLM).
+     - Enforces query-date priority invariant (`effective_date = explicit_query_date or asset_date`).
+     - Streams on-demand raw crop bytes from MinIO for lazy VLM table transcription.
+   - `DynamicAnalysis` & `ToolMaker` ([`backend/app/agent/tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_maker.py), [`backend/app/agent/sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox.py)):
+     - Synthesizes bespoke Python/SQL functions for novel analytical queries.
+     - Runs in an isolated subprocess with strict AST safety scanning (blocks forbidden modules/builtins), 15s timeout, 512MB RAM cap, and read-only DB transactions.
+     - **Layer 1 Fallback**: Automatically intercepts unsupported parameters in `sql_analytics` and hands off to `dynamic_analysis`.
    - `SQLAnalytics`: Whole-issue catalogs and deterministic coverage differences (`get_newspaper_coverage_difference`) computing exact article exclusions between publications on the same date via headline token overlap.
    - `CoverageAnalyzer`: Multi-newspaper 3-tier negative coverage matrix audits.
    - `EntityFilter`: Relational entity lookups and co-occurrence graphs.
@@ -414,6 +417,7 @@ sequenceDiagram
 4. **Corrective RAG (CRAG) Relevance Gate** ([`backend/app/agent/graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py), [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)):
    - Evaluates retrieved evidence items against query token stems.
    - Automatically drops ungrounded chunks (score = 0) so they cannot pollute synthesis.
+   - **Layer 2 Dynamic Toolmaker Fallback**: When standard retrieval returns zero or low-relevance evidence ($< 0.4$) on quantitative queries, dynamically invokes `ToolMaker` to synthesize and execute an ad-hoc analysis tool, injecting recovered evidence with confidence $1.0$.
 5. **Answer Synthesizer & Visual Citation Cards** ([`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)):
    - Formats response into structured broadsheet sections:
      - `### ⚡ Executive Summary`
@@ -422,7 +426,7 @@ sequenceDiagram
      - `### 🔍 Explore Further`
    - Emits visual citation metadata with thumbnail endpoints (`/api/photos/{id}/image`).
 6. **Server-Sent Events (SSE) Protocol** ([`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py)):
-   - `event: stage`: Live progress notifications (`condensing_query`, `planning_tools`, `executing_tools`, `inspecting_visual_asset`, `synthesizing_answer`).
+   - `event: stage`: Live progress notifications (`condensing_query`, `planning_tools`, `executing_tools`, `inspecting_visual_asset`, `generating_analysis_tool`, `synthesizing_answer`).
    - `event: thought`: Model internal chain-of-thought tokens.
    - `event: token`: Streaming answer tokens.
    - `event: citations`: Fully resolved textual and visual citation cards.
@@ -486,4 +490,6 @@ graph LR
 | **Malformed VLM Output** | VLM returns conversational text instead of structured JSON | Regex extraction of Markdown table blocks (`extract_markdown_table_from_raw_text`) | Deterministic OCR text density fallback |
 | **Low-Confidence OCR** | Poor print quality, bleed-through, or broken text on old broadsheets | Consensus multi-page folio voting across Pages 1–15; RapidOCR ONNX with Unicode superscript normalization | Minimum confidence threshold filter; human verification flag in DB |
 | **Zero Retrieval Hits** | Query mentions unindexed historical date or outside broadsheet scope | Evidence Relevance Gate detects 0 grounded chunks; triggers fallback web search via NewsData.io | Enforces strict Anti-Hallucination notice; explicitly states zero archival evidence found |
+| **Unforeseen Analytics / Unsupported Parameters** | Query asks for custom metrics (page counts, size distribution) exceeding static tools | Layer 1 intercepts unsupported parameter and hands off to `dynamic_analysis`; Layer 2 CRAG invokes `ToolMaker` | Synthesizes ad-hoc tool; executes safely in subprocess AST Sandbox with 15s timeout, 512MB RAM cap, and read-only rollback |
+| **Cross-Date Asset / Stale Context Leakage** | User switches dates across multi-turn session with active attached asset | Query condenser and graph routers detect date conflict and prune attached asset | Executor strictly enforces `effective_date = explicit_query_date`, preventing queries against mismatched issues |
 | **Network Outage / Cloud Down** | All external APIs (OpenRouter, Gemini, OpenAI) unreachable | Model Settings Studio switches to **Local Sovereign Preset** | 100% offline air-gapped execution via Ollama (Llama 3.1, DeepSeek R1, Qwen 3 VL), Docling, and local BGE-M3 |

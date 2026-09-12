@@ -18,8 +18,10 @@ from app.agent.condenser import (
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
     needs_condensation,
+    parse_inline_citation,
     resolve_attached_asset_context,
 )
+from app.agent.extractor import extract_parameters_from_query
 from app.agent.graph import AgentWorkflow
 from app.agent.planner import QueryPlanner
 from app.agent.synthesizer import parse_thought_and_answer
@@ -200,35 +202,54 @@ async def stream_query(
             res_np = attached_ctx.get("newspaper_name")
             res_art_id = attached_ctx.get("article_id")
             res_iss_id = attached_ctx.get("issue_id")
-            eff_attached_article_id = res_art_id or request.attached_article_id
-            eff_attached_photo_id = request.attached_photo_id
+            q_params = extract_parameters_from_query(query) if query else {}
+            q_cite = parse_inline_citation(query or "")
+            explicit_q_date = q_params.get("issue_date") or q_cite.get("issue_date")
+            explicit_q_np = q_params.get("newspaper_name") or q_cite.get("newspaper_name")
+
+            has_date_conflict = bool(explicit_q_date and res_date and explicit_q_date != res_date)
+            has_np_conflict = bool(
+                explicit_q_np
+                and res_np
+                and explicit_q_np.lower() not in res_np.lower()
+                and res_np.lower() not in explicit_q_np.lower()
+            )
+
+            eff_attached_article_id = (res_art_id or request.attached_article_id) if not has_date_conflict and not has_np_conflict else None
+            eff_attached_photo_id = request.attached_photo_id if not has_date_conflict and not has_np_conflict else None
 
             active_ctx = extract_active_issue_from_history(
                 chat_history,
                 current_query=query,
                 attached_photo_id=eff_attached_photo_id,
                 attached_article_id=eff_attached_article_id,
-                attached_issue_date=res_date,
-                attached_newspaper_name=res_np,
-                attached_headline=attached_ctx.get("headline"),
+                attached_issue_date=res_date if not has_date_conflict else None,
+                attached_newspaper_name=res_np if not has_np_conflict else None,
+                attached_headline=attached_ctx.get("headline") if not has_date_conflict and not has_np_conflict else None,
             )
-            if res_date:
-                active_ctx["issue_date"] = res_date
-            if res_np:
-                active_ctx["newspaper_name"] = res_np
-            if res_iss_id:
-                active_ctx["issue_id"] = res_iss_id
-            if eff_attached_article_id:
-                active_ctx["article_id"] = eff_attached_article_id
-            if eff_attached_photo_id:
-                active_ctx["photo_id"] = eff_attached_photo_id
-            if attached_ctx.get("headline"):
-                active_ctx["headline"] = attached_ctx["headline"]
+            if not has_date_conflict and not has_np_conflict:
+                if res_date:
+                    active_ctx["issue_date"] = res_date
+                if res_np:
+                    active_ctx["newspaper_name"] = res_np
+                if res_iss_id:
+                    active_ctx["issue_id"] = res_iss_id
+                if eff_attached_article_id:
+                    active_ctx["article_id"] = eff_attached_article_id
+                if eff_attached_photo_id:
+                    active_ctx["photo_id"] = eff_attached_photo_id
+                if attached_ctx.get("headline"):
+                    active_ctx["headline"] = attached_ctx["headline"]
+            else:
+                if explicit_q_date:
+                    active_ctx["issue_date"] = explicit_q_date
+                if explicit_q_np:
+                    active_ctx["newspaper_name"] = explicit_q_np
 
             has_attached_asset = bool(
-                eff_attached_photo_id
-                or eff_attached_article_id
-                or (attached_ctx and (attached_ctx.get("photo_id") or attached_ctx.get("article_id") or attached_ctx.get("newspaper_name")))
+                (eff_attached_photo_id or eff_attached_article_id)
+                and not has_date_conflict
+                and not has_np_conflict
             )
             is_followup = bool(
                 (chat_history or has_attached_asset)
@@ -279,7 +300,9 @@ async def stream_query(
             yield f"event: plan\ndata: {plan_data}\n\n"
 
             # 3. Tool Execution Stage
-            if any(c.get("tool_name") == "inspect_visual_asset" for c in planned_calls):
+            if any(c.get("tool_name") == "dynamic_analysis" for c in planned_calls):
+                yield f"event: stage\ndata: {json.dumps({'stage': 'generating_analysis_tool'})}\n\n"
+            elif any(c.get("tool_name") == "inspect_visual_asset" for c in planned_calls):
                 yield f"event: stage\ndata: {json.dumps({'stage': 'inspecting_visual_asset'})}\n\n"
             elif any(c.get("tool_name") == "web_search" for c in planned_calls):
                 yield f"event: stage\ndata: {json.dumps({'stage': 'web_search'})}\n\n"

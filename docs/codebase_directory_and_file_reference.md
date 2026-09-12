@@ -161,6 +161,7 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - **Inline Citation Parsing**: Parses quoted citations from previous turns in formats like `[4] Newspaper, YYYY-MM-DD, Page X, Headline: "..."` and `[{Newspaper}, ...]`, extracting headline, newspaper, date, and page number.
   - **Conversational Meta-Query Short-Circuit**: Checks if a query is purely asking about previous turn metadata (e.g. "What was the date?", "Which paper was this from?") and bypasses heavy retrieval to answer instantly from chat context.
   - **Reader Attached Asset Binding**: Binds active reader attached assets (`attached_article_id`, `attached_photo_id`) for immediate visual query routing.
+  - **Cross-Date Conflict Invalidation**: In `extract_active_issue_from_history()`, detects explicit date or publication mentions in the new query and automatically purges conflicting historical context, preventing cross-date context contamination.
   - **Strict Cross-Turn Invalidation Guardrails**: Evaluates Guardrails 1, 2, and 3 to strictly purge `article_id`, `photo_id`, `headline`, `page_number`, and `target_newspapers` when switching dates, publications, or topics.
   - **Coreference Resolution**: Rewrites ambiguous follow-up questions (e.g. "list all those 11 articles") into complete, standalone search queries ("list all those 11 articles in The Goan but not in The Morning Standard dated 2026-08-01").
 * **Important Tools / Frameworks**: Python AsyncIO, Regular Expressions (`re`), Pydantic.
@@ -168,11 +169,11 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 
 ##### [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)
 * **What It Has**: 
-  - Domain Data Models: `ToolName` (including `INSPECT_VISUAL_ASSET`), `QueryArchetype` (7 archetypes: `factual_lookup`, `quantitative_trend`, `thematic_timeline`, `cross_newspaper_comparison`, `entity_deep_dive`, `negative_coverage_audit`, `article_catalog`), `PlannedToolCall`, `PlanResult`, `ToolCallSpec`, `AgentPlan`.
+  - Domain Data Models: `ToolName` (including `INSPECT_VISUAL_ASSET` and `DYNAMIC_ANALYSIS`), `QueryArchetype` (7 archetypes: `factual_lookup`, `quantitative_trend`, `thematic_timeline`, `cross_newspaper_comparison`, `entity_deep_dive`, `negative_coverage_audit`, `article_catalog`), `PlannedToolCall`, `PlanResult`, `ToolCallSpec`, `AgentPlan`.
   - Backward compatibility aliases and containers: `QueryPlan`, `ExtractedToolArguments`.
 * **Work It Is Doing**:
   - Defines the core type-safe schema contracts for agentic query planning and tool execution.
-  - Encapsulates tool argument contracts for visual inspection (`photo_id`, `article_id`, `page_filter`, `target_headline`, `query_text`).
+  - Encapsulates tool argument contracts for visual inspection (`photo_id`, `article_id`, `page_filter`, `target_headline`, `query_text`) and dynamic tool synthesis (`code`, `query_text`, `language`).
   - Decouples Pydantic models and dataclasses from orchestration logic for zero-dependency reuse across retrieval and graph nodes.
 
 ##### [`backend/app/agent/extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py)
@@ -186,19 +187,20 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 
 ##### [`backend/app/agent/tool_factory.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_factory.py)
 * **What It Has**: 
-  - Canonical Tool Builders: `build_sql_summary_tool()`, `build_sql_difference_tool()`, `build_sql_coverage_comparison_tool()`, `build_hybrid_search_tool()`, `build_coverage_analysis_tool()`, `build_timeline_tool()`, `build_entity_search_tool()`, `build_web_search_tool()`, `build_inspect_visual_asset_tool()`.
+  - Canonical Tool Builders: `build_sql_summary_tool()`, `build_sql_difference_tool()`, `build_sql_coverage_comparison_tool()`, `build_hybrid_search_tool()`, `build_coverage_analysis_tool()`, `build_timeline_tool()`, `build_entity_search_tool()`, `build_web_search_tool()`, `build_inspect_visual_asset_tool()`, `build_dynamic_analysis_tool()`.
   - Reconcilers: `reconcile_and_sanitize_arguments()`, `sanitize_generic_filler_query()`.
 * **Work It Is Doing**:
   - **Single Source of Truth for Tool Construction**: Centralizes the generation of `PlannedToolCall` objects with clean parameter filtering.
-  - **Visual Asset Tool Construction**: Builds `inspect_visual_asset` tool calls with normalized `photo_id`, `article_id`, and scoping parameters.
+  - **Visual Asset & Dynamic Tool Construction**: Builds `inspect_visual_asset` and `dynamic_analysis` tool calls with normalized parameters.
   - **Hallucination Pruner**: Checks LLM-generated arguments against query ground truth and prunes hallucinated brand names, dates, or page numbers.
+  - **Date Reconciliation**: Prevents stale attached asset dates from overriding explicit query dates.
   - **Filler Sanitization**: Detects few-shot prompt contamination and restores substantive user domain queries.
 
 ##### [`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)
 * **What It Has**: 
   - `QueryPlanner` class coordinating direct tool planning and fallback.
   - Re-exports of `models`, `extractor`, and `tool_factory` symbols via `__all__` for 100% backward compatibility.
-  - Lean `PLANNER_SYSTEM_PROMPT` with canonical few-shot examples including visual asset queries.
+  - Lean `PLANNER_SYSTEM_PROMPT` with canonical few-shot examples including visual asset queries and dynamic analysis.
 * **Work It Is Doing**:
   - **True Agentic Direct Tool Planning (Option 2)**: Directly prompts LLMs to schedule ordered tool calls (`[ToolCallSpec(tool_name, arguments, purpose)]`) inside `AgentPlan`.
   - **Lean Deterministic Heuristic Router**: Clean single-pass intent classifier mapping queries to 7 core archetypes:
@@ -224,26 +226,28 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **LLM / VLM / Embedding Models**: None (State Definition).
 
 ##### [`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)
-* **What It Has**: `ToolExecutor` class, `execute_inspect_visual_asset()`, presentation formatting helpers (`format_issue_manifest()`, `format_coverage_matrix_snippet()`, `format_coverage_difference_snippet()`).
+* **What It Has**: `ToolExecutor` class, `execute_inspect_visual_asset()`, `execute_dynamic_tool()`, presentation formatting helpers (`format_issue_manifest()`, `format_coverage_matrix_snippet()`, `format_coverage_difference_snippet()`).
 * **Work It Is Doing**:
-  - Encapsulates isolated, concurrent tool dispatch for all planned tool calls (`hybrid_search`, `sql_analytics`, `inspect_visual_asset`, `entity_search`, `web_search`) via `asyncio.gather(*tasks, return_exceptions=True)`.
+  - Encapsulates isolated, concurrent tool dispatch for all planned tool calls (`hybrid_search`, `sql_analytics`, `inspect_visual_asset`, `entity_search`, `web_search`, `dynamic_analysis`) via `asyncio.gather(*tasks, return_exceptions=True)`.
+  - **Layer 1 Dynamic Fallback**: Intercepts unsupported parameters (e.g. `analysis_type="page_count"` in `sql_analytics`) and automatically delegates to `dynamic_analysis`.
+  - **Cross-Date Anti-Leakage Invariant**: In Strategy A and Strategy C visual asset lookups, verifies that explicit user query dates are strictly preserved over attached asset dates.
   - **5-Tier Visual Inspection Cascade**: Implements Strategy Cascade (A: photo_id lookup + companion charts; B: headline lookup; C: article_id lookup + companion charts; D: multi-criteria DB search; E: scoped caption/VLM search) with defensive publication and date validation.
   - **On-Demand MinIO VLM Fallback**: If a targeted asset has a default placeholder description, streams raw crop bytes from MinIO `bucket_pages`, passes them to `VisualDataExtractor.process_image_crop()`, transcribes the Markdown table/metrics, and persists the result to MySQL `article_photos.vlm_description`.
-  - **Zero Dynamic Imports**: Eliminates Python import-lock contention (`_ModuleLock`) during high-concurrency coroutine execution.
+  - **Safe Logging Telemetry**: Sanitizes extra logging dictionaries to avoid colliding with Python stdlib `logging.LogRecord` reserved attributes.
   - **Single-Source Formatters**: Unifies relational SQL manifests and coverage matrix text representations.
-  - **Date Normalization & Zero-Hit Fallback**: Normalizes non-ISO dates and transparently falls back when category constraints yield zero hits.
-* **Important Tools / Frameworks**: Python AsyncIO, SQLAlchemy Async Engine, Retrieval Engine Tools, MinIO Client, VisualDataExtractor.
+* **Important Tools / Frameworks**: Python AsyncIO, SQLAlchemy Async Engine, Retrieval Engine Tools, MinIO Client, VisualDataExtractor, SandboxedExecutor.
 * **LLM / VLM / Embedding Models**: Bound to `visual_extraction` for on-demand VLM enrichment.
 
 ##### [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)
 * **What It Has**: `EvidenceEvaluator` class, `_stem()`, `_stem_phrase()`, `is_structural_or_relevant_evidence()`.
 * **Work It Is Doing**:
   - Encapsulates Corrective RAG (CRAG) grading, noise filtering, and corrective fallback decisions.
+  - **Layer 2 Dynamic Tool Fallback**: When standard retrieval returns zero or low-relevance evidence ($< 0.4$) on quantitative queries, dynamically invokes `ToolMaker` to synthesize and execute an ad-hoc analysis tool, injecting the recovered evidence with confidence $1.0$.
   - **Semantic Hit Protection**: Protects high-confidence dense vector hits (`prominence_score >= 0.65`) from naive token stem pruning when lexical stems don't match conceptually similar queries (e.g., "pharmaceuticals" $\to$ "drugs"/"vaccines").
   - **Structural Archetype Protection**: Safeguards macro manifests and cross-newspaper comparison tables with 1.0 relevance scores.
   - **Corrective Fallback Routing**: Determines when retrieval results are insufficient, triggering secondary fallback tools.
-* **Important Tools / Frameworks**: Deterministic Stemming, Vector Hit Safeguards, CRAG Rules.
-* **LLM / VLM / Embedding Models**: Deterministic algorithms.
+* **Important Tools / Frameworks**: Deterministic Stemming, Vector Hit Safeguards, CRAG Rules, ToolMaker integration.
+* **LLM / VLM / Embedding Models**: Deterministic algorithms, plus configured `query_planner` LLM when Layer 2 ToolMaker triggers.
 
 ##### [`backend/app/agent/graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py)
 * **What It Has**: 
@@ -252,12 +256,47 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - Lean node handlers (`_classify_and_plan_node()`, `_execute_tools_node()`, `_evaluate_evidence_node()`, `_synthesize_answer_node()`, `_corrective_fallback_node()`, `_log_query_node()`).
   - Native LangGraph conditional edge router: `_route_after_planning()`.
 * **Work It Is Doing**:
-  - Orchestrates the full conversational RAG lifecycle in ~260 lines of clean code by delegating to `ToolExecutor` and `EvidenceEvaluator`.
-  - **Concurrent Tool Dispatch**: Executes all scheduled tools in parallel, including `inspect_visual_asset`, yielding `inspecting_visual_asset` stage updates.
+  - Orchestrates the full conversational RAG lifecycle in ~280 lines of clean code by delegating to `ToolExecutor` and `EvidenceEvaluator`.
+  - **Attached Asset Conflict Eviction**: Compares attached asset date and publication against query entities, evicting mismatched assets before planning.
+  - **Concurrent Tool Dispatch**: Executes all scheduled tools in parallel, including `inspect_visual_asset` and `dynamic_analysis`, yielding real-time SSE stage updates (`generating_analysis_tool`, `inspecting_visual_asset`).
   - **Native Conditional Edge Routing**: Short-circuits directly from `classify_and_plan` to `log_query` (for `clarification_needed`) or to `synthesize_answer` (for `conversational_meta_query`), completely bypassing tool execution and CRAG evaluation.
   - **Direct State Context Propagation**: Eliminates redundant history re-parsing in intermediate nodes by reading active issue context directly from `AgentState`.
 * **Important Tools / Frameworks**: LangGraph `StateGraph`, Python AsyncIO.
 * **LLM / VLM / Embedding Models**: Orchestrates planning and synthesis models.
+
+##### [`backend/app/agent/tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_maker.py)
+* **What It Has**: 
+  - `ToolMaker` class, `DynamicToolSpec` dataclass, `DynamicToolResult` dataclass.
+  - `TOOL_MAKER_SYSTEM_PROMPT` containing full 17-table MySQL schema definitions and few-shot analytical coding patterns.
+* **Work It Is Doing**:
+  - Implements the **LLM-as-Tool-Maker** pattern for synthesizing ad-hoc Python/SQL analysis tools on demand.
+  - Prompts the LLM with relational schemas and user query goals to generate a typed `def execute(connection, **kwargs) -> Dict[str, Any]` function.
+  - Validates generated code using `ASTSafetyScanner` and executes it inside `SandboxedExecutor`.
+  - Implements automated self-correction with retry on syntax, safety, or runtime execution errors.
+* **Important Tools / Frameworks**: Python AST, Pydantic, Regular Expressions.
+* **LLM / VLM / Embedding Models**: Invokes the configured `query_planner` LLM.
+
+##### [`backend/app/agent/sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox.py)
+* **What It Has**: 
+  - `ASTSafetyScanner` class: `scan_code()`, `ALLOWED_MODULES`, `FORBIDDEN_BUILTINS`, `FORBIDDEN_MODULES`, `FORBIDDEN_ATTRS`.
+  - `SandboxedExecutor` class: `execute_code()`, `ExecutionResult`.
+  - `SecurityError`, `SandboxExecutionError`, `SandboxTimeoutError` custom exceptions.
+* **Work It Is Doing**:
+  - Performs pre-execution static AST analysis of dynamically synthesized Python code to reject unsafe operations (file I/O, OS commands, network calls, dynamic code evaluation, dunder traversal).
+  - Spawns an isolated worker subprocess executing `sandbox_runner.py` with resource constraints (15s timeout, 512MB RAM cap).
+  - Manages read-only database connections with unconditional rollback in a `finally` block to protect against data mutation.
+* **Important Tools / Frameworks**: Python `ast`, `subprocess`, `resource` (Unix memory limits), SQLAlchemy.
+* **LLM / VLM / Embedding Models**: None (Security & Execution Engine).
+
+##### [`backend/app/agent/sandbox_runner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox_runner.py)
+* **What It Has**: Standalone subprocess runner script invoked by `SandboxedExecutor`.
+* **Work It Is Doing**:
+  - Reads JSON payload containing Python code, arguments, and DB connection credentials from stdin.
+  - Sets up OS-level resource limits (`RLIMIT_AS` memory ceiling).
+  - Establishes a read-only database transaction with autocommit disabled.
+  - Executes the verified `execute(connection)` function and outputs structured JSON results to stdout.
+* **Important Tools / Frameworks**: Python `sys`, `json`, `traceback`, `pymysql`.
+* **LLM / VLM / Embedding Models**: None.
 
 ##### [`backend/app/agent/taxonomy.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/taxonomy.py)
 * **What It Has**:
@@ -955,6 +994,9 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 - [`test_condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_condenser.py): Validates multi-turn pronoun resolution and context isolation.
 - [`test_graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_graph.py): Tests the LangGraph workflow, CRAG relevance gate, and fallback triggers.
 - [`test_synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_synthesizer.py): Verifies 4-tier response formatting, `<think>` tag stripping, and 100% citation precision.
+- [`test_sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_sandbox.py): Verifies AST safety scanning, forbidden module/builtin detection, timeout enforcement, memory capping, and read-only rollback transactions.
+- [`test_tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_tool_maker.py): Validates dynamic tool synthesis, prompt formatting with 17-table schema, and automatic retry on execution errors.
+- [`test_cross_date_contamination.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_cross_date_contamination.py): Tests cross-date anti-leakage shield, ensuring query dates override attached asset dates across condenser, router, and executor.
 - [`test_docling_parser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_docling_parser.py): Tests 2D layout bounding box extraction and font CMap corruption detection.
 - [`test_visual_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_visual_extractor.py): Tests Qwen-VL infographic transcription and OCR cross-validation.
 - [`test_vlm_grounding.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_vlm_grounding.py): Tests coordinate parsing from Qwen-VL's native `<think>` stream.
