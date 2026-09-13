@@ -122,6 +122,28 @@ def format_coverage_difference_snippet(diff_res: dict[str, Any], max_articles: i
     )
 
 
+def format_shared_coverage_snippet(shared_res: dict[str, Any], max_articles: int = 40) -> str:
+    """Render a verified shared syndicated wire coverage manifest string."""
+    shared_stories = shared_res.get("shared_stories", [])
+    sh_lines: list[str] = []
+    for idx, story in enumerate(shared_stories[:max_articles], 1):
+        tier_tag = f"[{story.get('match_tier', 'Match')}]"
+        sh_lines.append(
+            f"{idx}. {tier_tag} \"{story.get('headline_a')}\" ({story.get('newspaper_a')}, P.{story.get('page_a')}, {story.get('section_a')}) "
+            f"↔ \"{story.get('headline_b')}\" ({story.get('newspaper_b')}, P.{story.get('page_b')}, {story.get('section_b')}) "
+            f"[Overlap: {story.get('shared_keywords', '')}]"
+        )
+    shared_manifest_text = "\n".join(sh_lines)
+    return (
+        f"=== VERIFIED SHARED SYNDICATED WIRE COVERAGE: {shared_res.get('newspaper_a')} "
+        f"AND {shared_res.get('newspaper_b')} ({shared_res.get('issue_date')}) ===\n"
+        f"• Total {shared_res.get('newspaper_a')} Articles: {shared_res.get('total_newspaper_a_articles')}\n"
+        f"• Total {shared_res.get('newspaper_b')} Articles: {shared_res.get('total_newspaper_b_articles')}\n"
+        f"• Total Verified Shared Wire Stories: {shared_res.get('shared_count')}\n\n"
+        f"Shared Stories Manifest:\n{shared_manifest_text}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # ToolExecutor Engine
 # ---------------------------------------------------------------------------
@@ -194,8 +216,8 @@ class ToolExecutor:
     ) -> tuple[list[dict[str, Any]], ToolExecutionRecord, dict[str, Any]]:
         """Execute an individual planned tool call with resilience and adaptive fallbacks."""
         t_start = time.monotonic()
-        name = call.get("tool_name")
-        args = call.get("arguments", {})
+        name = call.get("tool_name") if isinstance(call, dict) else getattr(call, "tool_name", None)
+        args = call.get("arguments", {}) if isinstance(call, dict) else getattr(call, "arguments", {})
         hits_count = 0
         evidence_items: list[dict[str, Any]] = []
         context_updates: dict[str, Any] = {}
@@ -283,6 +305,7 @@ class ToolExecutor:
                 p_num = int(p_filt)
             filters = SearchFilter(
                 newspaper_id=np_id,
+                newspaper_name=np_name,
                 date_from=args.get("date_from"),
                 date_to=args.get("date_to"),
                 page_number=p_num,
@@ -303,6 +326,7 @@ class ToolExecutor:
             logger.info("Hybrid search with category '%s' returned 0 hits, retrying without category filter", filters.category_name)
             filters_no_cat = SearchFilter(
                 newspaper_id=filters.newspaper_id,
+                newspaper_name=filters.newspaper_name,
                 date_from=filters.date_from,
                 date_to=filters.date_to,
                 page_number=filters.page_number,
@@ -342,9 +366,12 @@ class ToolExecutor:
                     "snippet": clean_snip,
                     "prominence_score": hr.prominence_score,
                     "source_tool": "hybrid_search",
+                    "section": hr.section,
+                    "word_count": getattr(hr, "word_count", 0),
                     "photos": hr.photos,
                     "has_visual_data": hr.has_visual_data,
                     "visual_type": hr.visual_type,
+                    "parent_article_text": hr.parent_article_text,
                 }
             )
         return items, hits_count
@@ -580,28 +607,210 @@ class ToolExecutor:
                             "source_tool": "sql_analytics",
                         }
                     )
+                    for a in summary.get("articles", [])[:30]:
+                        art_id = a.get("id") or a.get("article_id")
+                        if art_id:
+                            items.append(
+                                {
+                                    "article_id": art_id,
+                                    "headline": a.get("headline", ""),
+                                    "newspaper_name": summary.get("newspaper", "Archive"),
+                                    "issue_date": summary.get("issue_date", "Overview"),
+                                    "pages": [a.get("page_number", 1)],
+                                    "snippet": f"\"{a.get('headline')}\" published in {summary.get('newspaper', 'Archive')} on Page {a.get('page_number', 1)} ({summary.get('issue_date', '')}). Section: {a.get('section', 'General')}, Word count: {a.get('word_count', 0)}.",
+                                    "prominence_score": 0.85,
+                                    "source_tool": "sql_analytics_manifest",
+                                }
+                            )
+
+        elif analysis_type in ("count_advertisements", "count_ads", "advertisements", "ad_counts") or (
+            analysis_type == "count_articles" and (args.get("article_type") == "advertisement" or "advertis" in str(args.get("section") or "").lower())
+        ):
+            np_name = args.get("newspaper_name") or active_newspaper_name
+            iss_date = args.get("issue_date") or active_issue_date
+            ad_res = await self._sql_analytics.count_advertisements(
+                newspaper_name=np_name,
+                issue_date=iss_date,
+                date_from=args.get("date_from"),
+                date_to=args.get("date_to"),
+                issue_id=args.get("issue_id") or active_issue_id,
+            )
+            c_val = ad_res.get("count", 0)
+            hits_count = c_val
+            ads_list = ad_res.get("advertisements", [])
+            filt_info = ", ".join(f"{k}: {v}" for k, v in ad_res.get("filters", {}).items() if v)
+
+            lines = [
+                "=== RELATIONAL ADVERTISEMENT COUNT AUDIT ===",
+                f"• Publication: {np_name or 'Archive'}",
+                f"• Issue Date: {iss_date or 'Archive'}",
+                f"• Total Matching Advertisements: {c_val}",
+                f"• Active Filters: {filt_info or 'None'}",
+            ]
+            if ads_list:
+                lines.append("\nVerified Advertisements in Archive:")
+                for ad in ads_list[:20]:
+                    lines.append(
+                        f"• Page {ad.get('page_number', 1)}: [{ad.get('article_id')}] \"{ad.get('headline')}\" "
+                        f"({ad.get('section')}, {ad.get('word_count')} words)"
+                    )
+            summary_str = "\n".join(lines)
+
+            # 1. Macro overview snippet (article_id: 0)
+            items.append(
+                {
+                    "article_id": 0,
+                    "headline": f"Advertisement Count Analysis: {c_val} advertisements found in {np_name or 'Archive'}",
+                    "newspaper_name": np_name or "Archive",
+                    "issue_date": iss_date or "Overview",
+                    "pages": [ad.get("page_number", 1) for ad in ads_list] or [1],
+                    "snippet": summary_str,
+                    "prominence_score": 1.0,
+                    "source_tool": "sql_analytics",
+                }
+            )
+
+            # 2. Individual article evidence items with real article_id > 0 for citations
+            for ad in ads_list:
+                items.append(
+                    {
+                        "article_id": ad["article_id"],
+                        "headline": ad["headline"],
+                        "newspaper_name": ad["newspaper_name"],
+                        "issue_date": ad["issue_date"],
+                        "pages": [ad["page_number"]],
+                        "snippet": (
+                            f"[Advertisement] \"{ad['headline']}\" published on Page {ad['page_number']} "
+                            f"in {ad['newspaper_name']} ({ad['issue_date']}). "
+                            f"Section: {ad['section']}, Word count: {ad['word_count']}."
+                        ),
+                        "prominence_score": 0.85,
+                        "source_tool": "sql_analytics_advertisement",
+                    }
+                )
+
+        elif analysis_type in ("count_issues", "issue_counts", "total_issues"):
+            np_name = args.get("newspaper_name") or active_newspaper_name
+            iss_res = await self._sql_analytics.count_issues(
+                newspaper_name=np_name,
+                date_from=args.get("date_from"),
+                date_to=args.get("date_to"),
+            )
+            c_val = iss_res.get("count", 0)
+            hits_count = c_val
+            filt_info = ", ".join(f"{k}: {v}" for k, v in iss_res.get("filters", {}).items() if v)
+            summary_str = (
+                f"=== RELATIONAL ISSUE COUNT AUDIT ===\n"
+                f"• Total Matching Issues: {c_val}\n"
+                f"• Newspaper: {np_name or 'All Newspapers'}\n"
+                f"• Active Filters: {filt_info or 'None'}\n"
+            )
+            items.append(
+                {
+                    "article_id": 0,
+                    "headline": f"Issue Count Analysis: {c_val} issues found",
+                    "newspaper_name": np_name or "Archive",
+                    "issue_date": "Overview",
+                    "pages": [1],
+                    "snippet": summary_str,
+                    "prominence_score": 1.0,
+                    "source_tool": "sql_analytics",
+                }
+            )
 
         elif analysis_type == "count_articles":
             count_res = await self._sql_analytics.count_articles(
                 newspaper_name=args.get("newspaper_name"),
                 issue_date=args.get("issue_date"),
+                date_from=args.get("date_from"),
+                date_to=args.get("date_to"),
                 section=args.get("section") or args.get("category_filter"),
                 article_type=args.get("article_type"),
             )
             c_val = count_res.get("count", 0)
             hits_count = c_val
+            art_list = count_res.get("articles", [])
             filt_info = ", ".join(f"{k}: {v}" for k, v in count_res.get("filters", {}).items() if v)
-            summary_str = (
-                f"=== RELATIONAL ARTICLE COUNT AUDIT ===\n"
-                f"• Total Matching Articles: {c_val}\n"
-                f"• Active Filters: {filt_info or 'None (Total Ingested)'}\n"
-            )
+
+            lines = [
+                "=== RELATIONAL ARTICLE COUNT AUDIT ===",
+                f"• Total Matching Articles: {c_val}",
+                f"• Active Filters: {filt_info or 'None (Total Ingested)'}",
+            ]
+            if art_list:
+                lines.append("\nVerified Matching Articles in Archive:")
+                for a in art_list[:20]:
+                    lines.append(
+                        f"• Page {a.get('page_number', 1)}: [{a.get('article_id')}] \"{a.get('headline')}\" "
+                        f"({a.get('section')}, {a.get('word_count')} words)"
+                    )
+            summary_str = "\n".join(lines)
+
+            # 1. Macro overview snippet (article_id: 0)
             items.append(
                 {
                     "article_id": 0,
                     "headline": f"Article Count Analysis: {c_val} articles found",
                     "newspaper_name": args.get("newspaper_name") or "Archive",
                     "issue_date": args.get("issue_date") or "Overview",
+                    "pages": [a.get("page_number", 1) for a in art_list] or [1],
+                    "snippet": summary_str,
+                    "prominence_score": 1.0,
+                    "source_tool": "sql_analytics",
+                }
+            )
+
+            # 2. Individual article evidence items with real article_id > 0 for citations
+            for a in art_list:
+                items.append(
+                    {
+                        "article_id": a["article_id"],
+                        "headline": a["headline"],
+                        "newspaper_name": a["newspaper_name"],
+                        "issue_date": a["issue_date"],
+                        "pages": [a["page_number"]],
+                        "snippet": (
+                            f"\"{a['headline']}\" published in {a['newspaper_name']} on Page {a['page_number']} "
+                            f"({a['issue_date']}). Section: {a['section']}, Type: {a['article_type']}, Word count: {a['word_count']}."
+                        ),
+                        "prominence_score": 0.85,
+                        "source_tool": "sql_analytics_article",
+                    }
+                )
+
+        elif analysis_type in ("photo_count_per_section", "count_photos", "photo_counts", "photos_by_section"):
+            np_name = args.get("newspaper_name") or active_newspaper_name
+            iss_date = args.get("issue_date") or active_issue_date
+            sec_filter = args.get("section") or args.get("category_filter")
+
+            photo_res = await self._sql_analytics.get_photo_counts_by_section(
+                newspaper_name=np_name,
+                issue_date=iss_date,
+                date_from=args.get("date_from"),
+                date_to=args.get("date_to"),
+                issue_id=args.get("issue_id") or active_issue_id,
+                section=sec_filter,
+            )
+            total_photos = photo_res.get("total_photos", 0)
+            hits_count = total_photos
+            sec_counts = photo_res.get("section_counts", [])
+
+            table_rows = [f"| {sc['section']} | {sc['count']} |" for sc in sec_counts]
+            table_md = "| Section | Photo Count |\n| :--- | :--- |\n" + "\n".join(table_rows) if table_rows else "No photos found."
+
+            filt_info = ", ".join(f"{k}: {v}" for k, v in photo_res.get("filters", {}).items() if v)
+            summary_str = (
+                f"=== RELATIONAL PHOTO COUNT AUDIT ===\n"
+                f"• Total Matching Photos: {total_photos}\n"
+                f"• Active Filters: {filt_info or 'None'}\n\n"
+                f"{table_md}\n"
+            )
+            items.append(
+                {
+                    "article_id": 0,
+                    "headline": f"Photo Count Analysis: {total_photos} photos found",
+                    "newspaper_name": np_name or "Archive",
+                    "issue_date": iss_date or "Overview",
                     "pages": [1],
                     "snippet": summary_str,
                     "prominence_score": 1.0,
@@ -722,6 +931,126 @@ class ToolExecutor:
                             "source_tool": "sql_analytics",
                         }
                     )
+                    for a in diff_res.get("exclusive_articles", [])[:30]:
+                        art_id = a.get("id") or a.get("article_id")
+                        if art_id:
+                            items.append(
+                                {
+                                    "article_id": art_id,
+                                    "headline": a.get("headline", ""),
+                                    "newspaper_name": diff_res["source_newspaper"],
+                                    "issue_date": diff_res["issue_date"],
+                                    "pages": [a.get("page_number", 1)],
+                                    "snippet": f"[Exclusive] \"{a.get('headline')}\" published in {diff_res['source_newspaper']} on Page {a.get('page_number', 1)} ({diff_res['issue_date']}). Section: {a.get('section', 'General')}.",
+                                    "prominence_score": 0.85,
+                                    "source_tool": "sql_analytics_exclusive",
+                                }
+                            )
+
+        elif analysis_type in ("shared_coverage", "similar_articles", "common_stories", "shared_stories"):
+            src_np = str(args.get("newspaper_name") or args.get("source_newspaper") or "").strip()
+            cmp_np = str(args.get("comparison_newspaper") or "").strip()
+            iss_dt = args.get("issue_date") or args.get("target_date") or active_issue_date
+
+            if not src_np or not cmp_np:
+                items.append(
+                    {
+                        "article_id": 0,
+                        "headline": "Shared Coverage Error: Missing newspaper arguments",
+                        "newspaper_name": src_np or "Archive",
+                        "issue_date": iss_dt or "Overview",
+                        "pages": [1],
+                        "snippet": "⚠️ Shared coverage requires two distinct newspapers (e.g. newspaper_name and comparison_newspaper).",
+                        "prominence_score": 1.0,
+                        "source_tool": "sql_analytics",
+                    }
+                )
+            else:
+                shared_res = await self._sql_analytics.get_newspaper_shared_coverage(
+                    newspaper_a=src_np,
+                    newspaper_b=cmp_np,
+                    issue_date=iss_dt,
+                )
+                if "error" in shared_res:
+                    items.append(
+                        {
+                            "article_id": 0,
+                            "headline": f"Shared Coverage Error: {shared_res['error']}",
+                            "newspaper_name": f"{src_np} & {cmp_np}",
+                            "issue_date": iss_dt or "Overview",
+                            "pages": [1],
+                            "snippet": f"⚠️ {shared_res['error']}",
+                            "prominence_score": 1.0,
+                            "source_tool": "sql_analytics",
+                        }
+                    )
+                else:
+                    shared_stories = shared_res.get("shared_stories", [])
+                    hits_count = len(shared_stories)
+
+                    # 1. Macro overview snippet (article_id: 0)
+                    items.append(
+                        {
+                            "article_id": 0,
+                            "headline": f"Verified Shared Wire Coverage: {shared_res['newspaper_a']} & {shared_res['newspaper_b']}",
+                            "newspaper_name": f"{shared_res['newspaper_a']} & {shared_res['newspaper_b']}",
+                            "issue_date": shared_res["issue_date"],
+                            "pages": [1],
+                            "snippet": format_shared_coverage_snippet(shared_res),
+                            "prominence_score": 1.0,
+                            "source_tool": "sql_analytics",
+                        }
+                    )
+
+                    # 2. Individual article evidence items with real article_id > 0 for citation pills
+                    for story in shared_stories:
+                        art_id_a = story.get("article_id_a")
+                        art_id_b = story.get("article_id_b")
+                        np_a = story.get("newspaper_a")
+                        np_b = story.get("newspaper_b")
+                        hl_a = story.get("headline_a") or ""
+                        hl_b = story.get("headline_b") or ""
+                        pg_a = story.get("page_a", 1)
+                        pg_b = story.get("page_b", 1)
+                        sec_a = story.get("section_a", "General")
+                        sec_b = story.get("section_b", "General")
+                        tier = story.get("match_tier", "Match")
+                        kw = story.get("shared_keywords", "")
+
+                        if art_id_a:
+                            items.append(
+                                {
+                                    "article_id": art_id_a,
+                                    "headline": hl_a,
+                                    "newspaper_name": np_a,
+                                    "issue_date": shared_res["issue_date"],
+                                    "pages": [pg_a],
+                                    "snippet": (
+                                        f"[{tier}] \"{hl_a}\" in {np_a} (Page {pg_a}, {sec_a}). "
+                                        f"Shared syndicated wire reporting with {np_b} (Page {pg_b}, \"{hl_b}\"). "
+                                        f"Identified overlap: {kw}."
+                                    ),
+                                    "prominence_score": 0.95,
+                                    "source_tool": "sql_analytics_shared",
+                                }
+                            )
+                        if art_id_b:
+                            items.append(
+                                {
+                                    "article_id": art_id_b,
+                                    "headline": hl_b,
+                                    "newspaper_name": np_b,
+                                    "issue_date": shared_res["issue_date"],
+                                    "pages": [pg_b],
+                                    "snippet": (
+                                        f"[{tier}] \"{hl_b}\" in {np_b} (Page {pg_b}, {sec_b}). "
+                                        f"Shared syndicated wire reporting with {np_a} (Page {pg_a}, \"{hl_a}\"). "
+                                        f"Identified overlap: {kw}."
+                                    ),
+                                    "prominence_score": 0.95,
+                                    "source_tool": "sql_analytics_shared",
+                                }
+                            )
 
         else:
             # Unsupported or custom analysis type requested by LLM (e.g. count_pages, word_count_by_author)
@@ -1382,4 +1711,5 @@ __all__ = [
     "format_coverage_difference_snippet",
     "format_coverage_matrix_snippet",
     "format_issue_manifest",
+    "format_shared_coverage_snippet",
 ]

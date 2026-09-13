@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -378,6 +378,156 @@ async def test_get_newspaper_coverage_difference() -> None:
         assert diff["shared_count"] == 1
         assert diff["exclusive_articles"][0]["headline"] == "Beware! AI-enabled traffic challans go live from today"
         assert diff["shared_articles"][0]["source_headline"] == "Modi, Burnham talk better bilateral ties"
+
+
+@pytest.mark.asyncio
+async def test_get_photo_counts_by_section() -> None:
+    """Verify get_photo_counts_by_section returns aggregated counts and section breakdown."""
+    mock_db = AsyncMock()
+    mock_res = MagicMock()
+    mock_res.all.return_value = [("National", 19), ("Health", 12), ("Front Page", 11)]
+    mock_db.execute.return_value = mock_res
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__.return_value = mock_db
+
+    engine = SQLAnalyticsEngine(session_factory=mock_session_factory)
+    result = await engine.get_photo_counts_by_section(
+        newspaper_name="The Goan",
+        issue_date="2026-08-05",
+    )
+
+    assert result["total_photos"] == 42
+    assert len(result["section_counts"]) == 3
+    assert result["by_section"]["National"] == 19
+    assert result["by_section"]["Health"] == 12
+    assert result["by_section"]["Front Page"] == 11
+    assert result["filters"]["newspaper_name"] == "The Goan"
+    assert result["filters"]["issue_date"] == "2026-08-05"
+
+
+@pytest.mark.asyncio
+async def test_get_newspaper_shared_coverage() -> None:
+    """Verify 2-tier hybrid shared coverage matching and metadata."""
+    mock_session_factory = MagicMock()
+    engine = SQLAnalyticsEngine(session_factory=mock_session_factory)
+
+    source_summary = {
+        "newspaper": "The Goan",
+        "issue_date": "2026-08-01",
+        "articles": [
+            {
+                "id": 1,
+                "headline": "SC stays stray animal compensation order",
+                "page_number": 5,
+                "section": "National",
+                "byline_author": "PTI",
+                "word_count": 250,
+            },
+            {
+                "id": 2,
+                "headline": "Local Goa Panchayat meets on beach cleaning",
+                "page_number": 2,
+                "section": "Goa",
+                "byline_author": "Staff Reporter",
+                "word_count": 180,
+            },
+        ],
+    }
+
+    comp_summary = {
+        "newspaper": "The Morning Standard",
+        "issue_date": "2026-08-01",
+        "articles": [
+            {
+                "id": 101,
+                "headline": "Apex court puts hold on stray animal compensation",
+                "page_number": 7,
+                "section": "Nation",
+                "byline_author": "PTI",
+                "word_count": 260,
+            },
+            {
+                "id": 102,
+                "headline": "Delhi Metro extends yellow line services",
+                "page_number": 3,
+                "section": "City",
+                "byline_author": "Express News",
+                "word_count": 150,
+            },
+        ],
+    }
+
+    with patch.object(engine, "list_issue_articles", side_effect=[source_summary, comp_summary]):
+        res = await engine.get_newspaper_shared_coverage(
+            newspaper_a="The Goan",
+            newspaper_b="The Morning Standard",
+            issue_date="2026-08-01",
+        )
+
+        assert res["newspaper_a"] == "The Goan"
+        assert res["newspaper_b"] == "The Morning Standard"
+        assert res["issue_date"] == "2026-08-01"
+        assert res["shared_count"] == 1
+        assert len(res["shared_stories"]) == 1
+
+        story = res["shared_stories"][0]
+        assert story["article_id_a"] == 1
+        assert story["article_id_b"] == 101
+        assert story["headline_a"] == "SC stays stray animal compensation order"
+        assert story["headline_b"] == "Apex court puts hold on stray animal compensation"
+        assert story["newspaper_a"] == "The Goan"
+        assert story["newspaper_b"] == "The Morning Standard"
+        assert "stray" in story["shared_keywords"]
+        assert "animal" in story["shared_keywords"]
+        assert "compensation" in story["shared_keywords"]
+
+
+@pytest.mark.asyncio
+async def test_count_advertisements() -> None:
+    from collections import namedtuple
+
+    mock_db = AsyncMock()
+    mock_res = MagicMock()
+
+    Row = namedtuple("Row", ["id", "headline", "section", "article_type", "word_count", "issue_date", "newspaper_name", "page_number"])
+    mock_rows = [
+        Row(42923, "[Advertisement] Test Ad 1", "Advertisements & Notices", "advertisement", 400, datetime.date(2026, 9, 11), "Hindustan Times", 1),
+        Row(42931, "[Advertisement] Test Ad 2", "Advertisements & Notices", "advertisement", 150, datetime.date(2026, 9, 11), "Hindustan Times", 3),
+    ]
+    mock_res.all.return_value = mock_rows
+    mock_db.execute.return_value = mock_res
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__.return_value = mock_db
+
+    engine = SQLAnalyticsEngine(session_factory=mock_session_factory)
+    res = await engine.count_advertisements(newspaper_name="Hindustan Times", issue_date="2026-09-11")
+
+    assert res["count"] == 2
+    assert len(res["advertisements"]) == 2
+    assert res["advertisements"][0]["headline"] == "[Advertisement] Test Ad 1"
+    assert res["advertisements"][0]["page_number"] == 1
+    assert res["advertisements"][1]["page_number"] == 3
+
+
+@pytest.mark.asyncio
+async def test_count_issues() -> None:
+    mock_db = AsyncMock()
+    mock_res = MagicMock()
+    mock_res.scalar.return_value = 8
+    mock_db.execute.return_value = mock_res
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__.return_value = mock_db
+
+    engine = SQLAnalyticsEngine(session_factory=mock_session_factory)
+    res = await engine.count_issues(newspaper_name="The Goan")
+
+    assert res["count"] == 8
+    assert res["filters"]["newspaper_name"] == "The Goan"
+
+
 
 
 

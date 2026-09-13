@@ -151,8 +151,27 @@ def generate_deterministic_summary(
         item for item in filtered_evidence
         if not (item.get("headline") or "").startswith("Issue Manifest:")
         and "exact chunk match" not in (item.get("headline") or "").lower()
-        and item.get("newspaper_name") not in ("Multi-Newspaper Audit", "Aggregated Archive Analytics")
+        and item.get("newspaper_name") not in ("Multi-Newspaper Audit", "Aggregated Archive Analytics", "Archive Analytics", "Statistical Engine")
+        and not item.get("is_statistical_metric")
     ]
+
+    # If evidence consists solely of statistical/analytical calculations, return direct quantitative finding
+    if not real_articles and any(it.get("is_statistical_metric") or it.get("source_tool") in ("dynamic_analysis", "sql_analytics") for it in filtered_evidence):
+        stat_item = filtered_evidence[0]
+        stat_snip = clean_snippet(stat_item.get("snippet") or stat_item.get("summary") or "")
+        lines = [
+            "### ⚡ Direct Finding\n",
+            stat_snip,
+            "\n### 📊 Key Computed Metrics",
+        ]
+        meta = stat_item.get("metadata") or {}
+        if meta:
+            for k, v in meta.items():
+                k_clean = k.replace("_", " ").title()
+                lines.append(f"- **{k_clean}**: {v}")
+        else:
+            lines.append(f"- **Verified Archive Metadata**: {stat_snip}")
+        return "\n".join(lines)
 
     first = (real_articles or filtered_evidence)[0]
     first_np = first.get("newspaper_name", "Daily News")
@@ -173,6 +192,14 @@ def generate_deterministic_summary(
 
     # 4. Render sections by archetype
     if archetype == "cross_newspaper_comparison":
+        shared_manifest = next((it for it in filtered_evidence if "VERIFIED SHARED SYNDICATED WIRE COVERAGE" in (it.get("snippet") or "")), None)
+        if shared_manifest:
+            lines.append("### ⚡ Executive Summary: Shared Syndicated Coverage\n")
+            lines.append(clean_snippet(shared_manifest.get("snippet") or "") + "\n")
+            lines.extend(render_broadsheet_perspectives(pub_groups, domain))
+            lines.extend(render_explore_further(pub_groups))
+            return "\n".join(lines)
+
         summary_desc = (
             f"Comparative analysis across verified broadsheet archives covering {domain or 'regional news'} developments."
         )

@@ -32,6 +32,7 @@ class LocalEmbeddingProvider:
         self._model_name = model
         self._model: object | None = None
         self._lock = asyncio.Lock()
+        self._encode_lock = asyncio.Lock()
         self._dim = _KNOWN_DIMS.get(model, 1024)
 
     @property
@@ -82,24 +83,50 @@ class LocalEmbeddingProvider:
             return self._model
 
     def _detect_device(self) -> str:
-        """Detect best available hardware accelerator (CUDA -> MPS -> CPU)."""
+        """Detect best available hardware accelerator (CUDA -> CPU).
+
+        Note: On macOS, CPU is explicitly preferred over MPS for SentenceTransformer
+        because CPU executes in ~100ms without the 10-15s Metal shader compilation lag,
+        memory synchronization stalls, and MPS concurrency lockups.
+        """
         try:
             import torch
 
             if torch.cuda.is_available():
                 return "cuda"
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                return "mps"
         except Exception:
             pass
         return "cpu"
 
     def _load_model(self) -> object:
         try:
+            # Suppress noisy HF Hub warnings and progress bars
+            try:
+                import huggingface_hub.constants
+                huggingface_hub.constants.HF_HUB_OFFLINE = True
+            except Exception:
+                pass
+
+            try:
+                import transformers
+                transformers.utils.logging.disable_progress_bar()
+            except Exception:
+                pass
+
             from sentence_transformers import SentenceTransformer
 
             device = self._detect_device()
-            return SentenceTransformer(self._model_name, device=device)
+            try:
+                # 1. Try fast offline load from local cache
+                return SentenceTransformer(self._model_name, device=device)
+            except Exception:
+                # 2. Fall back to online download if cache is missing
+                try:
+                    import huggingface_hub.constants
+                    huggingface_hub.constants.HF_HUB_OFFLINE = False
+                except Exception:
+                    pass
+                return SentenceTransformer(self._model_name, device=device)
         except ImportError as e:
             raise ProviderError(
                 "sentence-transformers is not installed. Run: pip install sentence-transformers"
@@ -124,7 +151,8 @@ class LocalEmbeddingProvider:
                 return cast(list[list[float]], vecs.tolist())
             return [list(v) for v in vecs]
 
-        return await loop.run_in_executor(None, _encode)
+        async with self._encode_lock:
+            return await loop.run_in_executor(None, _encode)
 
     async def embed_one(self, text: str) -> list[float]:
         result = await self.embed([text])

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import re
 import time
 from typing import Any
 
@@ -17,6 +19,7 @@ from app.agent.condenser import (
     needs_condensation,
     parse_inline_citation,
     resolve_attached_asset_context,
+    resolve_authoritative_article_id,
 )
 from app.agent.extractor import extract_parameters_from_query
 from app.agent.evaluator import EvidenceEvaluator
@@ -70,6 +73,7 @@ class AgentWorkflow:
                 max_memory_mb=settings.dynamic_tool_max_memory_mb,
             )
             tool_maker = ToolMaker(scanner=scanner, sandbox=sandbox)
+        self._tool_maker = tool_maker
 
         # Modular Tool Execution and Evidence Evaluation Engines
         self._executor = ToolExecutor(
@@ -98,6 +102,8 @@ class AgentWorkflow:
         workflow.add_node("classify_and_plan", self._classify_and_plan_node)
         workflow.add_node("execute_tools", self._execute_tools_node)
         workflow.add_node("evaluate_and_fallback", self._evaluate_and_fallback_node)
+        workflow.add_node("execute_adaptive_replan", self._execute_adaptive_replan_node)
+        workflow.add_node("execute_dynamic_code", self._execute_dynamic_code_node)
         workflow.add_node("synthesize_answer", self._synthesize_answer_node)
         workflow.add_node("log_query", self._log_query_node)
 
@@ -114,11 +120,42 @@ class AgentWorkflow:
             },
         )
         workflow.add_edge("execute_tools", "evaluate_and_fallback")
-        workflow.add_edge("evaluate_and_fallback", "synthesize_answer")
+
+        # Closed-loop reflexive routing after evidence evaluation
+        workflow.add_conditional_edges(
+            "evaluate_and_fallback",
+            self._route_after_evaluation,
+            {
+                "synthesize_answer": "synthesize_answer",
+                "execute_adaptive_replan": "execute_adaptive_replan",
+                "execute_dynamic_code": "execute_dynamic_code",
+            },
+        )
+        workflow.add_edge("execute_adaptive_replan", "synthesize_answer")
+        workflow.add_edge("execute_dynamic_code", "synthesize_answer")
         workflow.add_edge("synthesize_answer", "log_query")
         workflow.add_edge("log_query", END)
 
         return workflow.compile()
+
+    def _route_after_evaluation(self, state: AgentState) -> str:
+        """Route conditionally based on reflexive evaluation verdict with 1-cycle ceiling."""
+        if state.get("recovery_attempts", 0) >= 1:
+            return "synthesize_answer"
+
+        verdict = state.get("evaluation_verdict")
+        if not verdict or verdict.get("is_sufficient", True):
+            return "synthesize_answer"
+
+        action = verdict.get("recommended_action")
+        if action == "synthesize_dynamic_tool":
+            if self._tool_maker:
+                return "execute_dynamic_code"
+            return "execute_adaptive_replan"
+        elif action == "replan_static_tools":
+            return "execute_adaptive_replan"
+
+        return "synthesize_answer"
 
     @staticmethod
     def _route_after_planning(state: AgentState) -> str:
@@ -220,11 +257,18 @@ class AgentWorkflow:
             for c in plan_res.tool_calls
         ]
 
+        blueprint_dict = (
+            plan_res.answer_blueprint.model_dump()
+            if hasattr(plan_res.answer_blueprint, "model_dump")
+            else (plan_res.answer_blueprint if isinstance(plan_res.answer_blueprint, dict) else None)
+        )
+
         return {
             "query": condensed_query,
             "original_query": original_query,
             "archetype": plan_res.archetype,
             "plan": planned_calls,
+            "answer_blueprint": blueprint_dict,
         }
 
     async def _execute_single_tool(
@@ -255,14 +299,167 @@ class AgentWorkflow:
         }
 
     async def _evaluate_and_fallback_node(self, state: AgentState) -> dict[str, Any]:
-        """Corrective RAG (CRAG) Node: Grade retrieval quality and execute corrective fallback if needed."""
+        """Corrective RAG (CRAG) Node: Grade retrieval quality using reflexive evaluator."""
         evidence = state.get("evidence_items", [])
-        tool_records = list(state.get("tool_executions", []))
-
-        filtered_evidence, fallback_records = await self._evaluator.evaluate_and_fallback(evidence, state)
+        filtered_evidence = self._evaluator.filter_evidence(
+            evidence,
+            state.get("query", ""),
+            state.get("archetype", "factual_lookup"),
+        )
+        verdict = await self._evaluator.evaluate_evidence_async(
+            filtered_evidence,
+            state,
+            model_override=state.get("model_override"),
+        )
         return {
             "evidence_items": filtered_evidence,
-            "tool_executions": tool_records + fallback_records,
+            "evaluation_verdict": verdict.to_dict(),
+            "gap_diagnosis": verdict.gap_reason,
+            "recovery_attempts": state.get("recovery_attempts", 0),
+        }
+
+    async def _execute_adaptive_replan_node(self, state: AgentState) -> dict[str, Any]:
+        """Adaptive closed-loop recovery: re-plan targeted tools and execute them."""
+        query = state.get("query", "")
+        plan = state.get("plan", [])
+        tool_records = list(state.get("tool_executions", []))
+        existing_evidence = list(state.get("evidence_items", []))
+        gap_diag = state.get("gap_diagnosis")
+
+        logger.info(
+            "Adaptive replan recovery initiated",
+            extra={"query": query, "gap_diagnosis": gap_diag},
+        )
+
+        replan_res = await self._planner.replan_with_feedback_async(
+            query=query,
+            previous_plan=plan,
+            tool_executions=tool_records,
+            gap_diagnosis=gap_diag,
+            model_override=state.get("model_override"),
+            active_issue_date=state.get("active_issue_date"),
+            active_newspapers=[state["active_newspaper_name"]] if state.get("active_newspaper_name") else [],
+        )
+
+        new_tool_calls = [
+            {
+                "tool_name": c.tool_name,
+                "arguments": c.arguments,
+                "purpose": c.purpose,
+            }
+            for c in replan_res.tool_calls
+        ]
+
+        combined_evidence = existing_evidence
+        combined_records = tool_records
+        ctx_updates: dict[str, Any] = {}
+
+        if new_tool_calls:
+            new_evidence, new_records, ctx_updates = await self._executor.execute_tools(new_tool_calls, state)
+            for rec in new_records:
+                rec["is_recovery"] = True
+            combined_evidence = new_evidence + existing_evidence
+            combined_records = tool_records + new_records
+
+        # If still empty and web search is enabled, execute web fallback
+        if not combined_evidence and state.get("enable_web_search", False):
+            t_web = time.monotonic()
+            web_res = await self._web_search.search(query=query, num_results=4)
+            if web_res:
+                web_items = [
+                    {
+                        "article_id": 0,
+                        "headline": wr.title,
+                        "newspaper_name": wr.source,
+                        "issue_date": wr.published_date or "Live Web",
+                        "pages": [1],
+                        "snippet": f"[CRAG Web Fallback]: {wr.snippet}",
+                        "url": wr.url,
+                        "is_web": True,
+                        "prominence_score": 0.8,
+                        "source_tool": "crag_web_fallback",
+                    }
+                    for wr in web_res
+                ]
+                combined_evidence = web_items
+                dur_ms = round((time.monotonic() - t_web) * 1000)
+                combined_records.append(
+                    ToolExecutionRecord(
+                        tool_name="crag_web_fallback",
+                        tool_input={"query": query},
+                        results_count=len(web_res),
+                        execution_time_ms=dur_ms,
+                    )
+                )
+
+        replan_blueprint = (
+            replan_res.answer_blueprint.model_dump()
+            if hasattr(replan_res.answer_blueprint, "model_dump")
+            else state.get("answer_blueprint")
+        )
+
+        return {
+            "evidence_items": combined_evidence,
+            "tool_executions": combined_records,
+            "recovery_attempts": state.get("recovery_attempts", 0) + 1,
+            "active_issue_id": ctx_updates.get("active_issue_id", state.get("active_issue_id")),
+            "active_newspaper_name": ctx_updates.get("active_newspaper_name", state.get("active_newspaper_name")),
+            "active_issue_date": ctx_updates.get("active_issue_date", state.get("active_issue_date")),
+            "answer_blueprint": replan_blueprint,
+        }
+
+    async def _execute_dynamic_code_node(self, state: AgentState) -> dict[str, Any]:
+        """Dynamic Python/SQL tool synthesis node via ToolMaker."""
+        existing_evidence = list(state.get("evidence_items", []))
+        tool_records = list(state.get("tool_executions", []))
+
+        if not self._tool_maker:
+            return {
+                "recovery_attempts": state.get("recovery_attempts", 0) + 1,
+            }
+
+        t_dyn = time.monotonic()
+        context: dict[str, Any] = {
+            "available_newspapers": [],
+            "available_dates": [],
+            "categories": [],
+        }
+        with contextlib.suppress(Exception):
+            meta = await self._sql_analytics.get_archive_metadata()
+            context["available_newspapers"] = meta.get("newspapers", [])
+            context["available_dates"] = list(meta.get("available_dates", {}).keys())
+            context["categories"] = meta.get("categories", [])
+
+        dyn_res = await self._tool_maker.generate_and_execute(
+            query=state.get("query", ""),
+            context=context,
+            model_override=state.get("model_override"),
+            attempted_tools=tool_records,
+            gap_diagnosis=state.get("gap_diagnosis"),
+        )
+
+        if dyn_res.success and dyn_res.evidence_items:
+            combined_evidence = dyn_res.evidence_items + existing_evidence
+            dur_ms = round((time.monotonic() - t_dyn) * 1000)
+            tool_records.append(
+                ToolExecutionRecord(
+                    tool_name="crag_dynamic_tool_fallback",
+                    tool_input={
+                        "query": state.get("query", ""),
+                        "gap_diagnosis": state.get("gap_diagnosis"),
+                    },
+                    results_count=len(dyn_res.evidence_items),
+                    execution_time_ms=dur_ms,
+                )
+            )
+            return {
+                "evidence_items": combined_evidence,
+                "tool_executions": tool_records,
+                "recovery_attempts": state.get("recovery_attempts", 0) + 1,
+            }
+
+        return {
+            "recovery_attempts": state.get("recovery_attempts", 0) + 1,
         }
 
     async def _synthesize_answer_node(self, state: AgentState) -> dict[str, Any]:
@@ -285,6 +482,7 @@ class AgentWorkflow:
             evidence_items=evidence,
             model_override=model_override,
             chat_history=state.get("chat_history", []),
+            answer_blueprint=state.get("answer_blueprint"),
         )
 
         return {
@@ -300,7 +498,10 @@ class AgentWorkflow:
                 user_id=state.get("user_id"),
                 query_text=state["query"],
                 query_type=state.get("archetype"),
-                plan_json={"plan": state.get("plan", [])},
+                plan_json={
+                    "plan": state.get("plan", []),
+                    "answer_blueprint": state.get("answer_blueprint"),
+                },
                 tool_calls_json={"tools": state.get("tool_executions", [])},
                 answer_text=state.get("synthesized_answer"),
                 citations_json={"citations": state.get("citations", [])},
@@ -358,9 +559,15 @@ class AgentWorkflow:
         q_params = extract_parameters_from_query(query) if query else {}
         q_cite = parse_inline_citation(query or "")
         explicit_q_date = q_params.get("issue_date") or q_cite.get("issue_date")
+        explicit_q_date_from = q_params.get("date_from")
+        explicit_q_date_to = q_params.get("date_to")
         explicit_q_np = q_params.get("newspaper_name") or q_cite.get("newspaper_name")
+        explicit_q_hl = q_params.get("headline") or q_cite.get("headline")
 
-        has_date_conflict = bool(explicit_q_date and res_date and explicit_q_date != res_date)
+        has_date_conflict = bool(
+            (explicit_q_date and res_date and explicit_q_date != res_date)
+            or (explicit_q_date_from and explicit_q_date_to and res_date and not (explicit_q_date_from <= res_date <= explicit_q_date_to))
+        )
         has_np_conflict = bool(
             explicit_q_np
             and res_np
@@ -368,8 +575,42 @@ class AgentWorkflow:
             and res_np.lower() not in explicit_q_np.lower()
         )
 
-        eff_attached_article_id = (res_art_id or attached_article_id) if not has_date_conflict and not has_np_conflict else None
-        eff_attached_photo_id = attached_photo_id if not has_date_conflict and not has_np_conflict else None
+        attached_hl = attached_ctx.get("headline")
+        has_headline_conflict = False
+        if attached_hl and query:
+            if explicit_q_hl and explicit_q_hl.lower() != attached_hl.lower():
+                has_headline_conflict = True
+            else:
+                def _sig_tokens(s: str) -> set[str]:
+                    stop = {"the", "a", "an", "and", "or", "in", "on", "at", "for", "to", "of", "with", "by", "from", "is", "are", "was", "were", "this", "that", "these", "those", "about", "article", "story", "news", "report"}
+                    return {w for w in re.findall(r"[a-z0-9]+", s.lower()) if len(w) > 2 and w not in stop}
+                att_tokens = _sig_tokens(attached_hl)
+                q_tokens = _sig_tokens(query)
+                is_pronoun_ref = bool(re.search(r"\b(?:this|that|the|it)\s+(?:article|story|news|report|headline|piece)\b|\b(?:tell me more|explain this|summarize it)\b", query, re.I))
+                if not is_pronoun_ref and att_tokens and q_tokens and not (att_tokens & q_tokens):
+                    has_headline_conflict = True
+
+        eff_attached_article_id = (res_art_id or attached_article_id) if not has_date_conflict and not has_np_conflict and not has_headline_conflict else None
+        eff_attached_photo_id = attached_photo_id if not has_date_conflict and not has_np_conflict and not has_headline_conflict else None
+
+        # Authoritative headline DB binding: if query has an explicit or quoted headline,
+        # resolve its true article_id and override attached IDs
+        cand_hl = explicit_q_hl
+        if not cand_hl and query:
+            hl_m = re.search(r"[\"“]([^\"”]{8,150})[\"”]", query, re.I)
+            if hl_m:
+                cand_hl = hl_m.group(1).strip()
+        if cand_hl:
+            bound_art_id = await resolve_authoritative_article_id(
+                headline=cand_hl,
+                newspaper_name=explicit_q_np or res_np,
+                issue_date=explicit_q_date or res_date,
+            )
+            if bound_art_id:
+                eff_attached_article_id = bound_art_id
+                eff_attached_photo_id = None
+                if not attached_ctx.get("headline") or has_headline_conflict:
+                    attached_ctx["headline"] = cand_hl
 
         active_ctx = extract_active_issue_from_history(
             history,
@@ -378,10 +619,10 @@ class AgentWorkflow:
             attached_article_id=eff_attached_article_id,
             attached_issue_date=res_date if not has_date_conflict else None,
             attached_newspaper_name=res_np if not has_np_conflict else None,
-            attached_headline=attached_ctx.get("headline") if not has_date_conflict and not has_np_conflict else None,
+            attached_headline=attached_ctx.get("headline") if not has_date_conflict and not has_np_conflict and not has_headline_conflict else None,
         )
 
-        if not has_date_conflict and not has_np_conflict:
+        if not has_date_conflict and not has_np_conflict and not has_headline_conflict:
             if res_date:
                 active_ctx["issue_date"] = res_date
             if res_np:
@@ -399,6 +640,14 @@ class AgentWorkflow:
                 active_ctx["issue_date"] = explicit_q_date
             if explicit_q_np:
                 active_ctx["newspaper_name"] = explicit_q_np
+            if eff_attached_article_id:
+                active_ctx["article_id"] = eff_attached_article_id
+            if cand_hl:
+                active_ctx["headline"] = cand_hl
+
+        if explicit_q_date_from and explicit_q_date_to and not explicit_q_date:
+            # Current query explicitly targets a date range (e.g. Month YYYY) - clear single-day constraint
+            active_ctx["issue_date"] = None
 
         initial_state: AgentState = {
             "query": query,
@@ -423,6 +672,10 @@ class AgentWorkflow:
             "attached_photo_id": eff_attached_photo_id,
             "attached_asset": attached_ctx,
             "error": None,
+            "evaluation_verdict": None,
+            "recovery_attempts": 0,
+            "gap_diagnosis": None,
+            "answer_blueprint": None,
         }
 
         try:

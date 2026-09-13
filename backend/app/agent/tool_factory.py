@@ -129,13 +129,30 @@ def reconcile_and_sanitize_arguments(
             elif extracted.get("source_newspaper"):
                 sanitized["source_newspaper"] = extracted["source_newspaper"]
 
+    if sanitized.get("analysis_type") in ("shared_coverage", "coverage_difference"):
+        if not sanitized.get("comparison_newspaper"):
+            if extracted.get("comparison_newspaper"):
+                sanitized["comparison_newspaper"] = extracted["comparison_newspaper"]
+            elif len(valid_brands) >= 2:
+                sanitized["comparison_newspaper"] = valid_brands[1]
+        if not sanitized.get("newspaper_name"):
+            if extracted.get("source_newspaper"):
+                sanitized["newspaper_name"] = extracted["source_newspaper"]
+            elif extracted.get("newspaper_name"):
+                sanitized["newspaper_name"] = extracted["newspaper_name"]
+            elif valid_brands:
+                sanitized["newspaper_name"] = valid_brands[0]
+
     # 2. Issue Date & Date Range Ground Truth & Active Context Retention
     valid_dates: list[str] = (
         extracted.get("target_dates")
         or ([extracted["issue_date"]] if extracted.get("issue_date") else [])
     )
     if sanitized.get("issue_date"):
-        if valid_dates:
+        if extracted.get("date_from") and extracted.get("date_to") and not extracted.get("issue_date"):
+            # Explicit date range present in query - remove single day constraint
+            sanitized.pop("issue_date", None)
+        elif valid_dates:
             if sanitized["issue_date"] not in valid_dates:
                 sanitized["issue_date"] = valid_dates[0]
         else:
@@ -158,6 +175,11 @@ def reconcile_and_sanitize_arguments(
                     if not any(part in query for part in d_parts):
                         sanitized.pop(d_key, None)
 
+    if active_issue_date and not extracted.get("date_from") and not extracted.get("date_to"):
+        for d_key in ("date_from", "date_to"):
+            if not sanitized.get(d_key) or not str(sanitized[d_key]).strip():
+                sanitized[d_key] = active_issue_date
+
     # 3. Category Filter Ground Truth
     if sanitized.get("category_filter"):
         cat_val = str(sanitized["category_filter"]).strip().lower()
@@ -179,13 +201,20 @@ def reconcile_and_sanitize_arguments(
     if extracted.get("issue_id") is not None and "issue_id" not in sanitized:
         sanitized["issue_id"] = extracted["issue_id"]
 
-    # 6. Generic Filler Query Sanitization
+    # 6. Generic Filler Query Sanitization & Truncation Guard
     if "query" in sanitized and sanitized["query"]:
         sanitized["query"] = sanitize_generic_filler_query(
             query=query,
             raw_query_arg=str(sanitized["query"]),
             category_filter=sanitized.get("category_filter") or extracted.get("category_filter"),
         )
+        q_words = [w for w in query.strip("?.,!").split() if len(w) > 2]
+        arg_words = [w for w in str(sanitized["query"]).split() if len(w) > 2]
+        if len(q_words) >= 5 and len(arg_words) <= 1 and not sanitized.get("page_filter"):
+            from app.agent.extractor import build_targeted_web_query
+            sanitized["query"] = build_targeted_web_query(query)
+    elif "query" not in sanitized or not sanitized["query"]:
+        sanitized["query"] = query
 
     return sanitized
 
@@ -242,6 +271,27 @@ def build_sql_difference_tool(
     if issue_date:
         args["issue_date"] = issue_date
     default_purpose = f"Compute stories in {source_newspaper} absent from {comparison_newspaper}"
+    return PlannedToolCall("sql_analytics", args, purpose or default_purpose)
+
+
+def build_sql_shared_coverage_tool(
+    newspaper_a: str,
+    newspaper_b: str,
+    issue_date: str | None = None,
+    query: str | None = None,
+    purpose: str = "",
+) -> PlannedToolCall:
+    """Build a planned sql_analytics shared_coverage tool invocation."""
+    args: dict[str, Any] = {
+        "analysis_type": "shared_coverage",
+        "newspaper_name": newspaper_a,
+        "comparison_newspaper": newspaper_b,
+    }
+    if issue_date:
+        args["issue_date"] = issue_date
+    if query:
+        args["query"] = query
+    default_purpose = f"Compute verified shared syndicated wire coverage between {newspaper_a} and {newspaper_b}"
     return PlannedToolCall("sql_analytics", args, purpose or default_purpose)
 
 
@@ -378,6 +428,7 @@ __all__ = [
     "build_inspect_visual_asset_tool",
     "build_sql_coverage_comparison_tool",
     "build_sql_difference_tool",
+    "build_sql_shared_coverage_tool",
     "build_sql_summary_tool",
     "build_timeline_tool",
     "build_web_search_tool",

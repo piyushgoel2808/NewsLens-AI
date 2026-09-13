@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import AsyncIterator
 from typing import Any
+
+from app.agent.models import AnswerBlueprint, SectionSpec
 
 from app.agent.fallback_presenter import (
     EMPTY_EVIDENCE_RESPONSE,
@@ -147,6 +150,41 @@ def deduplicate_repetitive_lines(text: str) -> str:
     return "\n".join(deduped)
 
 
+_CATALOG_BLOCK_REGEX = re.compile(
+    r"(?:^|\n)#{1,4}\s*📊\s*(?:Key Findings and Statistics|Article Breakdown by Section|Article Details|Key Visual Elements|Conclusion)[\s\S]*?(?=(?:\n#{1,4}\s+|\Z))",
+    re.IGNORECASE,
+)
+
+
+def clean_synthesized_answer(
+    text: str,
+    query: str,
+    archetype: str,
+    evidence_items: list[dict[str, Any]] | None = None,
+) -> str:
+    """Clean and post-process synthesized answer to eliminate robotic catalog blocks in single-article mode."""
+    q_lower = query.lower()
+    is_single = bool(
+        re.search(
+            r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|ir)?\s*(?:article|story|piece|it)\b"
+            r"|\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b",
+            q_lower,
+        )
+        or bool(re.search(r"[\"“][^\"”]{8,150}[\"”]", query))
+    ) and not any(w in q_lower for w in ["how many", "count", "list all", "catalog", "compare all"])
+
+    if not is_single:
+        return text
+
+    if _CATALOG_BLOCK_REGEX.search(text):
+        cleaned = _CATALOG_BLOCK_REGEX.sub("\n", text)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        if len(cleaned) >= 80:
+            text = cleaned
+
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Modular System Prompt Sections
 # ---------------------------------------------------------------------------
@@ -176,6 +214,22 @@ COMMON_ANALYTICAL_GUIDELINES = """CRITICAL ANALYTICAL GUIDELINES:
      * Explicitly inform the user that the requested publication/issue is not in the archive.
      * NEVER pretend that another newspaper's articles belong to the requested publication.
    - Do NOT synthesize from ungrounded pre-training memory; rely solely on the verified evidence.
+   - DYNAMIC ANALYTICAL & STATISTICAL FIDELITY: When evidence from "Dynamic Analytical Computation" or "Statistical Engine" is present, all mathematical counts, page numbers, percentages, distributions, or correlations in your answer MUST strictly match the exact figures in the dynamic tool output or metadata. NEVER invent or extrapolate statistics not explicitly present in the dynamic evidence.
+   - QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP:
+     * If the user query specifically asks for mathematical, numerical, or statistical calculations (such as variance, standard deviation, correlation, averages, ratios, or specific category count breakdowns), and those exact calculated metrics are NOT present in the verified retrieved evidence or tool outputs, you MUST explicitly state that the requested statistical calculation could not be computed or is unavailable in the archive data.
+     * You are STRICTLY AND ABSOLUTELY FORBIDDEN from estimating, guessing, fabricating, or synthesizing numerical metrics, variances, standard deviations, or category breakdown tables from intuition or pre-training memory.
+     * If a dynamic analytical tool failed or returned 0 results, truthfully report that the statistical computation could not be completed, rather than inventing placeholder numbers.
+   - EDITORIAL REASONING & INTENT-PROPORTIONAL SIZING:
+     * Exercise editorial reasoning: Adapt the format, sections, and length of your response to the user's query intent.
+     * ATOMIC / SCALAR / METADATA QUESTIONS (e.g. "how many issues", "count of pages", "who is X", "what date"):
+       Deliver a direct, authoritative, and concise response (1 to 2 paragraphs or compact metric cards).
+       NEVER force artificial multi-section structures: DO NOT generate empty or single-row catalog tables, fake sector highlights, or artificial "Explore Further" prompts.
+     * CATALOG & MANIFEST TABLES:
+       ONLY render an Articles Catalog Table if the user explicitly asked to list, enumerate, or browse multiple articles, AND real article records (with valid headlines/sections) exist in the evidence.
+       NEVER display "Statistical Engine", "Archive Analytics", or tool names as newspaper publishers or article headlines in tables!
+     * SINGLE-ARTICLE DEEP-DIVES & FACTUAL SUMMARIES:
+       When analyzing or summarizing a specific article, deliver a rich narrative brief covering the events, numbers, personnel, and implications directly from the text.
+       Never format a single article response as a metadata catalog or inventory list.
 4. CONVERSATION HISTORY & PUBLICATION ISOLATION:
    - The conversation history is ONLY for understanding conversational context and follow-up intent.
    - Substantive facts, headlines, and analysis must be derived EXCLUSIVELY from the "Available Newspaper Evidence" for the CURRENT turn.
@@ -234,6 +288,57 @@ SYNTHESIZER_SYSTEM_PROMPT = (
     f"{_DEFAULT_STRUCTURE}\n\n"
     f"{COMMON_MEMORY_AND_CONSTRAINTS}"
 )
+
+
+def compile_structure_from_blueprint(
+    blueprint: AnswerBlueprint | dict[str, Any],
+    domain: str | None = None,
+) -> str:
+    """Compile a Planner-designed AnswerBlueprint into targeted response structure instructions."""
+    if isinstance(blueprint, dict):
+        with contextlib.suppress(Exception):
+            blueprint = AnswerBlueprint(**blueprint)
+    if not isinstance(blueprint, AnswerBlueprint) or not blueprint.sections:
+        return ""
+
+    lines: list[str] = [
+        "REQUIRED RESPONSE STRUCTURE (DESIGNED BY QUERY PLANNER FOR THIS INQUIRY):"
+    ]
+
+    for idx, sec in enumerate(blueprint.sections, 1):
+        lines.append(f"{idx}. {sec.title}")
+        if sec.target_length:
+            lines.append(f"   - Target Length: {sec.target_length}.")
+        if sec.content_focus:
+            lines.append(f"   - Focus & Content: {sec.content_focus}")
+        if sec.format_type == "markdown_table":
+            if blueprint.table_columns:
+                col_header = " | ".join(blueprint.table_columns)
+                lines.append(f"   - Format as Markdown Table with columns: | {col_header} |")
+            else:
+                lines.append("   - Format as a clean, structured Markdown table.")
+        elif sec.format_type == "bullet_list":
+            lines.append("   - Format as clean, factual bullet points.")
+            lines.append('   - STRICT CITATION RULE: Every bullet point MUST end with an inline citation: [{Newspaper Name}, {YYYY-MM-DD}, Page {Page_Number}, "{Headline}"].')
+        elif sec.format_type == "metric_card":
+            lines.append("   - Format as clean, compact metric cards or bullet points summarizing verified counts.")
+        elif sec.format_type == "timeline":
+            lines.append('   - Format as chronological milestones: * **{Date / Phase}**: Specific development. [{Newspaper Name}, {YYYY-MM-DD}, Page {Page_Number}, "{Headline}"]')
+        else:
+            lines.append("   - Format as authoritative, narrative journalistic paragraphs.")
+
+    if blueprint.target_word_count:
+        lines.append(f"\nCRITICAL WORD COUNT CEILING:\n- Your entire response MUST be approximately {blueprint.target_word_count} words or fewer. Respect this concise constraint strictly!")
+
+    if blueprint.prohibited_elements:
+        lines.append("\nSTRICT PROHIBITIONS FOR THIS RESPONSE:")
+        for p in blueprint.prohibited_elements:
+            lines.append(f"- DO NOT output {p}.")
+
+    lines.append("\nANTI-REPETITION CONSTRAINT:")
+    lines.append("- Do NOT repeat the same sentences, statistics, or phrasing across sections. Each section must provide distinct, complementary value.")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -450,9 +555,10 @@ class AnswerSynthesizer:
                     seen_keys.add(dedup_key)
                     citations.append(self._make_citation(item, headline=hl))
 
-        # Fallback if no specific inline references matched: strictly pick top genuine candidate articles
+        # Fallback / Comprehensive Grounding: For quantitative counts or if no inline references matched,
+        # ensure genuine candidate articles from evidence are cited up to 15 items
         if not citations and candidate_items:
-            for item in candidate_items[:4]:
+            for item in candidate_items[:15]:
                 photo_id = item.get("photo_id")
                 if photo_id:
                     dedup_key = f"visual_{photo_id}"
@@ -466,19 +572,73 @@ class AnswerSynthesizer:
                     snip = item.get("snippet") or item.get("summary") or ""
                     hl, _ = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
                     citations.append(self._make_citation(item, headline=hl))
+        elif len(citations) < len(candidate_items) and any(it.get("source_tool", "").startswith("sql_analytics") for it in candidate_items):
+            # For SQL analytics manifests, counts, and shared coverage, include all retrieved articles up to 15
+            for item in candidate_items[:15]:
+                raw_hl = item.get("headline", "")
+                sub_hl = item.get("subheadline")
+                byline = item.get("byline_author")
+                snip = item.get("snippet") or item.get("summary") or ""
+                hl, _ = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
+                dedup_key = f"{item.get('newspaper_name')}_{item.get('issue_date')}_{hl}"
+                if dedup_key not in seen_keys:
+                    seen_keys.add(dedup_key)
+                    citations.append(self._make_citation(item, headline=hl))
 
         return citations
+
+    _compile_structure_from_blueprint = staticmethod(compile_structure_from_blueprint)
 
     def _build_synthesizer_system_prompt(
         self,
         archetype: str,
         query: str,
         evidence_items: list[dict[str, Any]] | None = None,
+        answer_blueprint: AnswerBlueprint | dict[str, Any] | None = None,
     ) -> str:
-        """Construct intent-aware dynamic system prompt tailored to query archetype and domain."""
+        """Construct intent-aware dynamic system prompt tailored to query archetype, blueprint, and domain."""
         domain = detect_domain_from_query(query, evidence_items)
+        ev_items = evidence_items or []
+        has_real_articles = any(int(it.get("article_id") or 0) > 0 for it in ev_items)
 
-        if archetype == "cross_newspaper_comparison" and domain:
+        # 1. If an answer blueprint was designed by the planner, compile it into dynamic instructions
+        if answer_blueprint:
+            custom_structure = compile_structure_from_blueprint(answer_blueprint, domain=domain)
+            if custom_structure:
+                return (
+                    f"You are NewsLens-AI, an elite broadsheet intelligence assistant.\n"
+                    f"Your goal is to analyze, explain, and synthesize coverage into a structured, highly readable brief.\n\n"
+                    f"{COMMON_ANALYTICAL_GUIDELINES}\n\n"
+                    f"{custom_structure}\n\n"
+                    f"{COMMON_MEMORY_AND_CONSTRAINTS}"
+                )
+
+        # 2. Fallback to archetype-based prompt structures
+        # Detect whether the query is scalar, counting, or pure archive metadata
+        is_scalar_or_count = bool(
+            re.search(
+                r"\b(how many|no of|number of|count of|total issues|total pages|total articles|count issues|count pages)\b",
+                query.lower(),
+            )
+            or (
+                archetype in ("quantitative_trend", "factual_lookup", "article_catalog")
+                and bool(ev_items)
+                and not has_real_articles
+            )
+        )
+
+        if is_scalar_or_count:
+            structure = """REQUIRED RESPONSE STRUCTURE (DIRECT SCALAR & QUANTITATIVE FINDING):
+1. ### ⚡ Direct Finding
+   - 1 to 2 authoritative, direct sentences answering the exact user question with verified numbers, publication, and scope.
+   - Present the answer immediately without meta-commentary or conversational filler.
+
+2. ### 📊 Key Computed Metrics
+   - Clean, compact bullet points or a concise metric summary of the verified figures (e.g. Total Issues, Total Articles, Newspaper, Date Scope).
+   - DO NOT generate empty or single-item article catalog tables.
+   - DO NOT invent fake sector highlights or artificial 'Explore Further' questions when answering an atomic count or metadata query."""
+
+        elif archetype == "cross_newspaper_comparison" and domain:
             metric_col = DOMAIN_TAXONOMY.get(domain, {}).get("metric_col", "Key Takeaways & Core Findings")
             structure = f"""REQUIRED RESPONSE STRUCTURE:
 1. ### ⚡ Executive Summary: {domain} Intelligence
@@ -529,6 +689,7 @@ STRICT DOMAIN PURITY MANDATE & NEGATIVE CONSTRAINTS:
    - 1 to 2 crisp, authoritative sentences synthesizing the catalog scope: total articles identified, publication editions, active date, and primary topical coverage.
 
 2. ### 📋 Comprehensive {display_domain} Articles Catalog
+   - CONDITIONAL TABLE RULE: ONLY render this Markdown table if real broadsheet article records (with valid headlines/sections) exist in the evidence. If the evidence contains only statistical counts or metadata, do NOT generate an article catalog table.
    - A comprehensive Markdown table listing all matching articles from the archive manifest:
      | # | Publication | Issue Date | Page | Section | Headline | Author / Byline |
    - Use the sanitized, clean headlines from the evidence. Never display author/doctor names as headlines!
@@ -552,7 +713,48 @@ ANTI-REPETITION CONSTRAINT:
 - Do NOT repeat the same sentences, statistics, or phrasing across the Executive Summary, Catalog Table, and Key Highlights. Each section must provide distinct, complementary value."""
 
         elif archetype == "cross_newspaper_comparison":
-            structure = """REQUIRED RESPONSE STRUCTURE:
+            is_shared_query = any(
+                w in query.lower()
+                for w in [
+                    "similar", "shared", "common", "same article", "same articles",
+                    "same story", "same stories", "both newspaper", "both newspapers",
+                    "both paper", "both papers", "in both", "covered by both", "both carried",
+                    "syndicated", "wire stories", "wire story",
+                ]
+            ) or any(
+                "VERIFIED SHARED SYNDICATED WIRE COVERAGE" in str(it.get("snippet", ""))
+                or it.get("source_tool") == "sql_analytics_shared"
+                for it in evidence_items
+            )
+
+            if is_shared_query:
+                structure = """REQUIRED RESPONSE STRUCTURE:
+1. ### ⚡ Executive Summary: Shared Syndicated Coverage
+   - 2 to 3 authoritative sentences synthesizing the scale and nature of shared syndicated wire coverage between the two broadsheets on the target date (total verified shared wire stories, primary thematic domains like National Policy, World, Legal, and Sports).
+
+2. ### 📰 Verified Shared Coverage Matrix
+   - A clean Markdown comparison table mapping the verified shared wire stories across both newspapers:
+     | # | Shared Wire Story / Event | Newspaper A Headline (Page, Section) | Newspaper B Headline (Page, Section) | Overlap Basis & Match Confidence |
+   - Use the verified shared wire pairs from the evidence.
+   - Every row MUST represent a genuine shared wire report or syndicated development present in both broadsheets.
+
+3. ### 🎯 Regional Framing & Placement Divergence
+   - 2 to 4 analytical paragraphs comparing how each editorial board handled these identical syndicated stories:
+     * Placement and prominence divergence (e.g. front-page lead vs inside brief).
+     * Headline framing differences (e.g. neutral wire agency phrasing vs regional angle).
+     * Depth, byline attribution, and editorial tone differences.
+
+4. ### 🔍 Explore Further
+   - 2 to 3 concise follow-up prompts formatted strictly as:
+     > 💡 Explore: <Specific comparative follow-up question>
+
+STRICT SIMILARITY & SHARED STORY INTEGRITY:
+- ABSOLUTE PROHIBITION ON FALSE EQUIVALENCE: You are strictly forbidden from pairing unrelated local stories (e.g., pairing local fishing labor in Goa with a police officer video in Uttarakhand, or pairing local university appointments with out-of-state municipal plans).
+- Articles may ONLY be matched if they report on the EXACT SAME event, policy announcement, wire dispatch, legal verdict, or sporting match.
+- If the verified shared coverage evidence lists verified wire matches, you must adhere strictly to those verified pairings.
+- If no shared stories exist between the newspapers, explicitly state: "The two newspapers did not share any identical wire or syndicated stories on this date; their reporting agendas were entirely distinct." """
+            else:
+                structure = """REQUIRED RESPONSE STRUCTURE:
 1. ### ⚡ Executive Summary: Broadsheet Edition Overview
    - 2 to 3 authoritative sentences comparing the editions: overall news agendas, scale, and top themes of the day across publications.
 
@@ -591,7 +793,60 @@ ANTI-REPETITION CONSTRAINT:
      > 💡 Explore: <Specific timeline follow-up question>"""
 
         else:
-            structure = _DEFAULT_STRUCTURE
+            unique_art_ids = {
+                int(it["article_id"])
+                for it in (evidence_items or [])
+                if it.get("article_id") and int(it.get("article_id") or 0) > 0
+            }
+            is_single_article_query = bool(
+                re.search(
+                    r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|ir)?\s*(?:article|story|piece|it)\b"
+                    r"|\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b",
+                    query.lower(),
+                )
+                or (len(unique_art_ids) == 1 and archetype in ("factual_lookup", "article_deep_dive", "single_article"))
+                or bool(re.search(r"[\"“][^\"”]{8,150}[\"”]", query))
+            ) and not any(w in query.lower() for w in ["how many", "count", "list all", "catalog", "compare all"])
+
+            if is_single_article_query and unique_art_ids:
+                # If query contains a quoted headline, find exact or best headline match
+                quoted_hl = re.search(r"[\"“]([^\"”]{8,150})[\"”]", query)
+                target_art = None
+                if quoted_hl:
+                    q_hl = quoted_hl.group(1).strip().lower()
+                    for it in (evidence_items or []):
+                        it_hl = (it.get("headline") or "").lower()
+                        if q_hl in it_hl or it_hl in q_hl:
+                            target_art = it
+                            break
+                if not target_art:
+                    target_art = next((it for it in (evidence_items or []) if int(it.get("article_id") or 0) in unique_art_ids), {})
+
+                single_hl = target_art.get("headline", "")
+                pages = target_art.get("pages", [10])
+                page_str = str(pages[0]) if pages else "10"
+                hl_suffix = f": {single_hl}" if single_hl else ""
+
+                has_word_limit = bool(re.search(r"\b(?:in\s+\d+\s+words?|brief\s+summary|concise\s+summary)\b", query.lower()))
+                limit_clause = " Strictly adhere to the requested length constraint (e.g. ~150 words). Do NOT exceed it." if has_word_limit else ""
+
+                structure = f"""REQUIRED RESPONSE STRUCTURE (ARTICLE SYNTHESIS & KEY TAKEAWAYS):
+1. ### ⚡ Executive Summary{hl_suffix}
+   - Crisp, authoritative narrative summary synthesizing the central news story, core developments, operations, and policy implications reported in this article.{limit_clause}
+   - Deliver the narrative directly without conversational filler, catalog tables, or metadata cards.
+
+2. ### 📌 Key Takeaways & Operational Highlights
+   - Detailed bullet points of specific numbers, statistics, personnel deployments, security protocols, locations, quotes, and decisions reported directly in the article text.
+   - Ground all details strictly in the verified text.
+   - Strict inline citation at the end of each bullet point: [{{Newspaper Name}}, {{YYYY-MM-DD}}, Page {page_str}, "{single_hl}"]
+   - SINGLE PAGE FORMAT MANDATE:
+     * Use the clean single page number (e.g. Page {page_str}). NEVER output dual-page or folio notation such as "Page X (PDF p.Y)".
+
+3. ### 🔍 Explore Further
+   - 2 to 3 concise journalistic follow-up questions exploring deeper context:
+     > 💡 Explore: <Specific follow-up question>"""
+            else:
+                structure = _DEFAULT_STRUCTURE
 
         return (
             f"You are NewsLens-AI, an elite broadsheet intelligence assistant.\n"
@@ -608,6 +863,7 @@ ANTI-REPETITION CONSTRAINT:
         evidence_items: list[dict[str, Any]],
         model_override: str | None = None,
         chat_history: list[dict[str, Any]] | None = None,
+        answer_blueprint: AnswerBlueprint | dict[str, Any] | None = None,
     ) -> tuple[str, list[AgentCitation], float]:
         """Synthesize answer with citations from evidence and conversation context with failover."""
         has_evidence = self._has_valid_evidence(evidence_items)
@@ -621,7 +877,10 @@ ANTI-REPETITION CONSTRAINT:
             query=query, archetype=archetype, evidence_items=evidence_items, context=context,
         )
         system_prompt = self._build_synthesizer_system_prompt(
-            archetype=archetype, query=query, evidence_items=evidence_items,
+            archetype=archetype,
+            query=query,
+            evidence_items=evidence_items,
+            answer_blueprint=answer_blueprint,
         )
 
         messages = [Message(role="system", content=system_prompt)]
@@ -651,6 +910,7 @@ ANTI-REPETITION CONSTRAINT:
                 )
                 cost_usd = max(calc_cost, response.cost_usd)
                 if answer_text.strip():
+                    answer_text = clean_synthesized_answer(answer_text, query, archetype, evidence_items)
                     citations = self.extract_citations(answer_text, evidence_items)
                     return answer_text, citations, cost_usd
                 logger.warning(
@@ -664,8 +924,11 @@ ANTI-REPETITION CONSTRAINT:
                 )
 
         answer_text = self._generate_deterministic_summary(query, evidence_items, archetype=archetype)
+        answer_text = clean_synthesized_answer(answer_text, query, archetype, evidence_items)
         citations = self.extract_citations(answer_text, evidence_items)
         return answer_text, citations, cost_usd
+
+    clean_synthesized_answer = staticmethod(clean_synthesized_answer)
 
     async def synthesize_stream(
         self,
@@ -674,6 +937,7 @@ ANTI-REPETITION CONSTRAINT:
         evidence_items: list[dict[str, Any]],
         model_override: str | None = None,
         chat_history: list[dict[str, Any]] | None = None,
+        answer_blueprint: AnswerBlueprint | dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """Stream synthesized answer token by token with conversational context and failover."""
         has_evidence = self._has_valid_evidence(evidence_items)
@@ -688,7 +952,10 @@ ANTI-REPETITION CONSTRAINT:
             query=query, archetype=archetype, evidence_items=evidence_items, context=context,
         )
         system_prompt = self._build_synthesizer_system_prompt(
-            archetype=archetype, query=query, evidence_items=evidence_items,
+            archetype=archetype,
+            query=query,
+            evidence_items=evidence_items,
+            answer_blueprint=answer_blueprint,
         )
 
         messages = [Message(role="system", content=system_prompt)]
@@ -718,6 +985,7 @@ ANTI-REPETITION CONSTRAINT:
                 )
 
         summary = self._generate_deterministic_summary(query, evidence_items, archetype=archetype)
+        summary = clean_synthesized_answer(summary, query, archetype, evidence_items)
         for word in summary.split(" "):
             yield word + " "
 
@@ -740,6 +1008,7 @@ __all__ = [
     "DOMAIN_TAXONOMY",
     "EMPTY_EVIDENCE_RESPONSE",
     "SYNTHESIZER_SYSTEM_PROMPT",
+    "clean_synthesized_answer",
     "detect_domain_from_query",
     "is_domain_match",
     "parse_thought_and_answer",

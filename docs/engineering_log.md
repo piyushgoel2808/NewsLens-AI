@@ -3394,7 +3394,180 @@ When users interacted with broadsheet articles containing companion infographics
   - `backend/tests/test_cross_date_contamination.py`: **6/6 tests passing (100% green)** verifying complete cross-date isolation across condenser, graph, router, and executor.
   - Full Agent Pipeline Test Suite: **90/90 tests passing (100% green)** in 12.35s.
 
+---
 
+## Phase 9.34 — Closed-Loop Dynamic Tool Critic & Self-Refinement Architecture
 
+**Date**: 2026-09-13  
+**Status**: Completed ✅
 
+### Problems Addressed & Motivation
+1. **Unchecked Hallucinations in Dynamic Python Tools**:
+   - While `ASTSafetyScanner` verified syntactic safety, generated tools frequently hallucinated non-existent database columns (e.g. `articles.published_at` instead of `issues.issue_date`), triggering runtime SQL errors.
+2. **Multi-Table Cartesian Multipliers**:
+   - Dynamic tools joining `articles` and `pages` via `issues` ran `COUNT(a.id)` without `DISTINCT`, inflating counts by $N$ pages.
+3. **Data-to-Summary Hallucinations (DSF)**:
+   - When dynamic tools executed queries that returned 0 rows (`data: []`), LLM-generated summaries occasionally fabricated positive narratives and article counts.
+4. **NameErrors on Standard Libraries**:
+   - Smaller models (`llama3.1:8b`) frequently used `re.search` or `math.sqrt` without including `import re` or `import math`, crashing with `NameError` and wasting 20 seconds.
 
+### Architectural Solutions & Implementations
+1. **Diagnostic ToolCritic Framework (`backend/app/agent/tool_critic.py`)**:
+   - Implemented a 5-dimension quantitative quality critic:
+     * **SASC** (Syntactic & AST Security Compliance): 1.0 or 0.0 hard gate.
+     * **SRF** (SQL Relational & Schema Fidelity): AST SQL extraction; remaps known column hallucinations (`published_at` $\to$ `issues.issue_date`); requires `DISTINCT` on multi-table joins.
+     * **REH** (Runtime Execution Health): Subprocess exit code and exception audit.
+     * **DSF** (Data-to-Summary Faithfulness): Distinguishes legitimate absence (1.0) from hallucinated claims (0.1–0.4); numerical consistency check against metadata metrics.
+     * **RPS** (Intent Alignment & Filter Plausibility): Audits date ISO normalization (`2/8/2026` $\to$ `2026-08-02`) and newspaper alias matching (`goan` $\to$ `The Goan`).
+2. **Closed-Loop Self-Refinement Loop (`backend/app/agent/tool_maker.py`)**:
+   - If `scorecard.is_acceptable` is False, `ToolMaker` re-prompts the LLM with structured diagnostic critique (`all_issues`, `suggested_fixes`) over a token-budgeted 4-message trace: System prompt, User query, Assistant prior code, User diagnostic critique.
+   - Bounded to 3 retry attempts; populates descriptive errors upon exhaustion.
+3. **Auto-Import Pre-Injection (`ensure_standard_imports`) & Subprocess Resiliency**:
+   - Detects unimported `re`, `math`, `statistics`, `json`, `pd`, `np`, `text` and prepends missing imports before safety scanning.
+   - Pre-populates `exec_globals` in `sandbox_runner.py` with safe modules.
+
+### Verification Results
+- **Targeted Tests**:
+  - `backend/tests/test_tool_critic.py`: **11/11 tests passing (100% green)**.
+  - `backend/tests/test_tool_maker.py`: **12/12 tests passing (100% green)**.
+
+---
+
+## Phase 9.35 — Temporal Range Parsing, Native Photo Analytics & Metric Absence Hard-Stop
+
+**Date**: 2026-09-13  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Month-Wide Range Locking**:
+   - Queries targeting entire months (e.g., *"The Goan during August 2026"*) were not captured by single-day date regexes, defaulting to stale single-day history (`2026-08-01`) and starving whole-month analytics.
+2. **Dynamic Tool Timeout on Aggregate Tables**:
+   - Queries like *"How many photos appear in each section of The Goan on August 5, 2026?"* burned 102 seconds across 3 retries because `ToolCritic` saw `data: []` and falsely flagged the markdown section table as a "narrative over 0 records", yielding 0 evidence.
+3. **Downstream Statistical Hallucinations**:
+   - When dynamic variance or standard deviation tools failed, the synthesizer saw only static article counts (174 articles) and fabricated plausible-sounding variances (`1,234.56`) and category tables from pre-training intuition.
+
+### Architectural Solutions & Implementations
+1. **Month + Year Date Range Extraction (`backend/app/agent/extractor.py`)**:
+   - Added regex matching for `"Month Year"` patterns (e.g. `"August 2026"`) using `calendar.monthrange`.
+   - Populates `date_from = "2026-08-01"`, `date_to = "2026-08-31"`, and sets `issue_date = None`.
+   - Updated `graph.py` and `planner.py` to clear single-day issue date when explicit ranges are present.
+   - Extended `sql_analytics.count_articles` to filter by `date_from` and `date_to`.
+2. **Critic Aggregate Output Recognition (`backend/app/agent/tool_critic.py`)**:
+   - Updated `audit_data_to_summary` and `evaluate` to check `has_metadata_metrics` and `has_markdown_table`.
+   - Guardrail 1 now only triggers when neither article data nor aggregate computations exist (`not has_data and not is_aggregate_computation`), allowing markdown tables with empty article data.
+   - Added photo numerical consistency auditing (`metadata['total_photos']` vs summary narrative).
+3. **Native Photo Analytics Engine (`backend/app/retrieval/sql_analytics.py` & `executor.py`)**:
+   - Added `get_photo_counts_by_section` executing grouped SQL across `Photo`, `Article`, `Issue`, and `Newspaper` with ISO date normalization.
+   - Dispatches `photo_count_per_section`, `count_photos`, `photo_counts`, and `photos_by_section` directly in `executor.py`, dropping latency from 102s to **~10ms**.
+4. **Synthesizer Quantitative Metric Absence Hard-Stop (`backend/app/agent/synthesizer.py`)**:
+   - Injected mandatory constraint into `COMMON_ANALYTICAL_GUIDELINES`: strictly forbids estimating or fabricating numbers, variances, standard deviations, or category tables when tool evidence lacks them.
+   - Mandates truthful reporting of computational unavailability.
+
+### Verification Results
+- **Targeted Tests**:
+  - `backend/tests/test_sql_analytics.py`: **8/8 tests passing (100% green)**.
+  - `backend/tests/test_synthesizer.py`: **27/27 tests passing (100% green)**.
+  - `backend/tests/test_planner.py`: **31/31 tests passing (100% green)**.
+- **Full Backend Suite**: **479/479 tests passing (100% green)** in 36.80s.
+
+---
+
+## Phase 9.40 — Reflexive CRAG Evaluator & Closed-Loop Adaptive Re-Planning
+
+**Date**: 2026-09-13  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Static Keyword Relevance Traps**:
+   - The legacy evaluator relied purely on token-overlap counting against raw query strings. This caused valid evidence retrieved via dynamic Python/SQL tools to be discarded or misgraded, while failing to assess the actual semantic and factual sufficiency of broadsheet articles.
+2. **One-Way Retrieval Dead-Ends**:
+   - When initial hybrid or SQL retrieval returned zero hits or insufficient evidence, the agent lacked a closed-loop mechanism to adaptively formulate a targeted recovery search, adjust date boundaries, or shift retrieval strategies.
+3. **Infinite Re-Planning Risk**:
+   - Without an anti-repetition guard, automated agent re-planning risked repeating identical failing tool invocations in an unbounded loop.
+
+### Architectural Solutions & Implementations
+1. **Hybrid Fast-Floor Evaluation Bypass (`backend/app/agent/evaluator.py`)**:
+   - Implemented a sub-5ms fast-floor check: if retrieved evidence contains $\ge 1$ high-relevance broadsheet article with $\ge 100$ words of clean editorial content, the evaluation immediately short-circuits with `is_sufficient=True` and `quality_score=1.0`, avoiding unnecessary LLM latency and token costs.
+2. **Reflexive LLM-as-Judge Evidence Evaluation (`evaluate_evidence_async`)**:
+   - When evidence falls below the fast-floor threshold, an LLM judge evaluates evidence sufficiency against the user query using `EVALUATOR_SYSTEM_PROMPT`.
+   - Produces a structured `EvaluationVerdict`:
+     * `is_sufficient: bool`
+     * `quality_score: float` (0.0 to 1.0)
+     * `gap_diagnosis: str` (identifies specific missing entities, dates, or data points)
+     * `recommended_action: Literal["proceed", "replan_static_tools", "synthesize_dynamic_tool"]`
+     * `corrective_hints: list[str]` (concrete search reformulation suggestions)
+3. **Closed-Loop Adaptive Re-Planner with Anti-Repetition Guard (`backend/app/agent/planner.py`)**:
+   - `replan_with_feedback_async()` consumes the original query, prior plan, tool execution records, and gap diagnosis.
+   - Automatically relaxes narrow date bounds, broadens semantic keywords, increases `top_k`, or switches to alternative relational tools.
+   - Strictly forbids duplicating tool invocations that already ran and failed.
+4. **LangGraph State Machine Dynamic Routing (`backend/app/agent/graph.py`)**:
+   - Integrated `_route_after_evaluation` conditional routing edge from `evaluate_and_fallback`.
+   - Added `execute_adaptive_replan` and `execute_dynamic_code` recovery branches.
+   - Enforces a strict 1-cycle ceiling (`recovery_attempts < 1`) guaranteeing bounded execution latency.
+
+### Verification Results
+- `backend/tests/test_reflexive_evaluator.py`: **7/7 tests passing (100% green)**.
+- `backend/tests/test_evaluator_crag_dynamic.py`: **5/5 tests passing (100% green)**.
+
+---
+
+## Phase 9.45 — Context Full-Text Budgeting, Photo Sanitization & Robotic Catalog Table Elimination
+
+**Date**: 2026-09-13  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Single-Article Budget Starvation**:
+   - When users asked detailed narrative questions about a specific article, legacy chunking retrieved truncated snippet windows, depriving the synthesizer of complete context.
+2. **Visual Dump Noise in Editorial Tasks**:
+   - Multi-kilobyte VLM object detections, bounding box polygons, and visual scene annotations leaked into prompt context, distracting the model during purely editorial tasks.
+3. **Robotic Catalog Tables in Narrative Queries**:
+   - The rigid static prompt structure forced single-article queries to output robotic metadata tables (`| # | Headline | Section | Page | Words |`), cluttering concise narrative summaries.
+4. **Cross-Turn Headline Conflict Drift**:
+   - When switching from discussing one article to asking about a completely different headline, the attached article ID remained pinned, causing mismatched responses.
+
+### Architectural Solutions & Implementations
+1. **Single-Article Full-Text Context Budgeting (`backend/app/agent/prompt_context.py`)**:
+   - When a query targets a single identified article, the prompt context builder preserves `parent_article_text` up to 7,500 characters, prioritizing editorial depth over snippet fragmentation.
+   - Strips redundant chunk repetitions when master full text is loaded.
+2. **Photo Annotation Noise Sanitization (`backend/app/agent/prompt_context.py`)**:
+   - Filters out raw coordinate lists and repetitive visual token dumps unless the query explicitly requests visual inspection (`inspect_visual_asset`).
+3. **Deterministic Robotic Catalog Table Stripping (`backend/app/agent/synthesizer.py`)**:
+   - Implemented `clean_robotic_catalog_tables(ans)` to detect and strip mechanical metadata tables from single-article narrative or summary responses, preserving clean, professional prose.
+4. **Headline Conflict Detection & Dynamic Asset Eviction (`backend/app/agent/condenser.py`, `graph.py`)**:
+   - Detects headline tokens in incoming queries. When the user introduces a new headline conflicting with the prior turn's attached article, the stale article ID is automatically invalidated.
+
+### Verification Results
+- `backend/tests/test_condenser.py`: **12/12 tests passing (100% green)**.
+- `backend/tests/test_synthesizer.py`: **27/27 tests passing (100% green)**.
+
+---
+
+## Phase 9.50 — Dynamic Answer Blueprint Architecture
+
+**Date**: 2026-09-14  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Rigid Static Templates**:
+   - The legacy synthesizer relied on a 300+ line static `if/elif/else` template cascade for 7 archetypes. Any explicit user format request (e.g. *"summarize in 150 words"*, *"bullet points only"*, *"no tables"*, *"provide a timeline"*) was frequently overridden by hardcoded archetype templates.
+2. **Inflexible Format Enforcement**:
+   - Analytical queries requiring blended presentations (e.g. executive summary + metric cards + narrative) had no clean representation in the planner.
+
+### Architectural Solutions & Implementations
+1. **Pydantic Answer Blueprint Schemas (`backend/app/agent/models.py`)**:
+   - Defined `SectionSpec`: `title`, `format_type` (`narrative`, `bullet_list`, `markdown_table`, `metric_card`, `timeline`), `content_guideline`, `is_optional`.
+   - Defined `AnswerBlueprint`: `archetype`, `executive_framing`, `sections` (list of `SectionSpec`), `target_word_count`, `table_columns`, `prohibited_elements`, `tone_and_style`.
+   - Embedded `answer_blueprint` directly in `AgentPlan` and `PlanResult`.
+2. **Cognitive Blueprint Generation in Planner (`backend/app/agent/planner.py`)**:
+   - Updated `QueryPlanner.plan_query_async()` to dynamically synthesize an `AnswerBlueprint` alongside tool invocations based on query constraints and user requests.
+   - Added heuristic blueprint builder `_build_blueprint_heuristic` covering all 7 archetypes with constraint-aware customizations (word limits, table vs narrative preferences).
+3. **Dynamic Prompt Compilation (`backend/app/agent/synthesizer.py`)**:
+   - Implemented `compile_structure_from_blueprint(blueprint)` translating the Pydantic blueprint into dynamic structural rules in the LLM prompt.
+   - Replaced static template cascades while preserving non-negotiable broadsheet citations `[Newspaper, YYYY-MM-DD, Page N, "Headline"]` and factual invariants.
+4. **End-to-End Pipeline Propagation (`graph.py`, `query.py`)**:
+   - Carried `answer_blueprint` through `AgentState`, consumed by streaming and non-streaming synthesis, and persisted into `QueryLog.plan_json["answer_blueprint"]`.
+
+### Verification Results
+- `backend/tests/test_dynamic_answer_blueprint.py`: **10/10 tests passing (100% green)**.
+- **Full Backend Suite**: **512/512 tests passing (100% green)** in 80s.

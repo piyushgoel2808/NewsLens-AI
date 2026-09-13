@@ -9,11 +9,31 @@ from __future__ import annotations
 import asyncio
 import builtins
 import contextlib
+import datetime
 import json
+import math
+import re
 import resource
+import statistics
 import sys
 import traceback
 from typing import Any
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+try:
+    from sqlalchemy import text
+except ImportError:
+    text = None
+
 
 # ---------------------------------------------------------------------------
 # Safe Built-ins & Import Interceptor
@@ -101,7 +121,20 @@ async def main() -> None:
     exec_globals: dict[str, Any] = {
         "__builtins__": SAFE_BUILTINS,
         "__name__": "__dynamic_tool__",
+        "re": re,
+        "math": math,
+        "statistics": statistics,
+        "json": json,
+        "datetime": datetime,
     }
+    if np is not None:
+        exec_globals["np"] = np
+        exec_globals["numpy"] = np
+    if pd is not None:
+        exec_globals["pd"] = pd
+        exec_globals["pandas"] = pd
+    if text is not None:
+        exec_globals["text"] = text
 
     try:
         compiled = compile(code, "<dynamic_tool>", "exec")

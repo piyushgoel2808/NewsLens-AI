@@ -153,7 +153,9 @@ sequenceDiagram
     participant Planner as Cognitive Query Planner
     participant Tools as Multi-Tool Dispatcher
     participant DB as MySQL & Qdrant Vector DB
-    participant ToolMaker as LLM Tool Maker & Sandbox
+    participant ToolMaker as LLM Tool Maker
+    participant Sandbox as Subprocess Sandbox
+    participant Critic as ToolCritic (5-Metric Audit)
     participant CRAG as Corrective RAG (CRAG) Evaluator
     participant Synth as 4-Tier Answer Synthesizer
     participant SSE as SSE Streaming Response
@@ -163,41 +165,55 @@ sequenceDiagram
         Cache-->>User: Return Cached Response (<5ms)
     else Cache Miss
         Cache->>Condenser: Pass Raw Query, History, and Attached Asset IDs
-        Condenser->>Condenser: Resolve Pronouns, Evict Cross-Date Conflicts & Retain Valid Assets
-        Condenser->>Planner: Pass Condensed Query & Asset Context
-        Planner->>Planner: Classify 1 of 7 Archetypes & Generate Tool Plan
+        Condenser->>Condenser: Resolve Pronouns, Evict Cross-Date & Headline Conflicts, Retain Valid Assets
+        Condenser->>Planner: Pass Condensed Query & Grounding Context
+        Planner->>Planner: Classify Archetype, Synthesize Tool Plan & Dynamic AnswerBlueprint
         Planner->>Tools: Dispatch Planned Tool Calls (Asynchronous)
         par Concurrent Tool Invocations
             Tools->>DB: inspect_visual_asset (Charts/Tables/Photos via Strategies A-E & On-Demand VLM)
-            Tools->>DB: sql_analytics (Manifest / Aggregate Stats / Issue Summary)
+            Tools->>DB: sql_analytics (Fast-Path Manifest / Photo Counts / Ad Audits / Issue Summary)
             Tools->>DB: hybrid_search (Dense Qdrant BGE-M3 + Sparse MySQL RRF)
             Tools->>DB: entity_search (Knowledge Graph & Mentions)
             Tools->>DB: timeline_builder (Chronological Progression)
             Tools->>DB: coverage_analyzer (Cross-Broadsheet Comparative Audit)
             Tools->>DB: web_search (Live Internet Search if Enabled)
-            Tools->>ToolMaker: dynamic_analysis (Ad-hoc Python/SQL in AST Sandbox)
+            Tools->>ToolMaker: dynamic_analysis (Ad-hoc Python/SQL Synthesis)
         end
-        opt Layer 1 Fallback (Unsupported Parameters in sql_analytics)
-            Tools->>ToolMaker: Hand off unsupported analysis_type to dynamic_analysis
+        opt Dynamic Tool Execution & Closed-Loop Critic
+            ToolMaker->>Sandbox: Execute in Subprocess AST Sandbox (512MB RAM, 15s timeout)
+            Sandbox->>DB: Read-Only Query Execution
+            DB-->>Sandbox: Raw Query Records & Aggregates
+            Sandbox-->>Critic: Execution Result / Error
+            Critic->>Critic: Evaluate 5 Metrics (SASC, SRF, REH, DSF, RPS)
+            alt Audit Fails (Score < 0.70)
+                Critic-->>ToolMaker: Structured Diagnostic Critique & Fixes
+                ToolMaker->>Sandbox: Retry Synthesis with Critique (Up to 3 Retries)
+            else Audit Passes (Score >= 0.70)
+                Critic-->>Tools: Verified High-Confidence Aggregate Evidence
+            end
         end
         DB-->>Tools: Tool Results & Structured Evidence
         Tools->>CRAG: Raw Retrieved Evidence Items
-        CRAG->>CRAG: Grade Keyword Relevance & Density
-        alt Low Retrieval Confidence / 0 Evidence on Quantitative Queries
-            CRAG->>ToolMaker: Layer 2 Fallback: Synthesize Ad-Hoc Tool via ToolMaker
-            ToolMaker->>DB: Execute in Read-Only AST Sandbox
-            DB-->>ToolMaker: Return Structured Aggregate Telemetry
-            ToolMaker-->>CRAG: Injected High-Confidence Evidence (1.0)
-        else Low Retrieval Confidence on Factual Queries
-            CRAG->>Tools: Trigger Broadened Query Fallback
-            Tools->>DB: Re-execute Hybrid Search
-            DB-->>CRAG: Secondary Fallback Snippets
+        CRAG->>CRAG: Fast-Floor Check (<5ms for >=100 words editorial text)
+        alt Falls Below Fast Floor
+            CRAG->>CRAG: Reflexive LLM-as-Judge Evaluation (Emits EvaluationVerdict)
+            alt recommended_action: replan_static_tools
+                CRAG->>Planner: Adaptive Re-Plan with Feedback & Anti-Repetition Guard
+                Planner->>Tools: Execute Reformed Tool Sequence
+                Tools->>DB: Fetch Targeted Missing Evidence
+                DB-->>CRAG: Injected Recovery Evidence
+            else recommended_action: synthesize_dynamic_tool
+                CRAG->>ToolMaker: Synthesize Bespoke Python/SQL Analysis Tool
+                ToolMaker->>Sandbox: Execute in Read-Only AST Sandbox
+                Sandbox-->>Critic: 5-Metric Scorecard Audit
+                Critic-->>CRAG: Injected High-Confidence Evidence (1.0)
+            end
         end
-        CRAG->>Synth: Filtered High-Confidence Evidence
-        Synth->>Synth: Formulate 4-Tier Grounded Broadsheet Response
+        CRAG->>Synth: Verified High-Confidence Evidence + AnswerBlueprint
+        Synth->>Synth: Compile Structure from Blueprint, Budget Full-Text & Strip Robotic Tables
         Synth->>SSE: Stream Response Tokens, Visual Cards & Reasoning Trace
         SSE-->>User: Real-Time Markdown Stream + Provenance Citations + Photo Thumbnails
-        Synth->>DB: Persist Query Audit Log in `query_logs`
+        Synth->>DB: Persist Query Audit Log in `query_logs` (including plan_json.answer_blueprint)
         Synth->>Cache: Cache Result (TTL: 1 Hour)
     end
 ```
@@ -209,8 +225,8 @@ sequenceDiagram
 | Query Archetype | Trigger Conditions & User Intent | Primary Tool | Secondary / Supplementary Tool | Target Output Format |
 |---|---|---|---|---|
 | **`factual_lookup`** | Specific fact, figure, event, statement, or quote from an article, chart, or page. | `hybrid_search` (Dense BGE-M3 + Sparse MySQL RRF) | `inspect_visual_asset` (when chart/table/photo mentioned), `entity_search` | Direct verified answer with exact page and article citation. |
-| **`article_catalog`** | Fast manifest listing of articles, front-page leads, or section indices (<200ms). | `sql_analytics` (`issue_summary` / `list_articles`) | None | Tabular manifest by newspaper, date, page, headline, and category. |
-| **`quantitative_trend`** | Aggregate metrics, distribution of topics, page counts, or volume analytics. | `sql_analytics` (`aggregate_metrics` / `count_articles`); transparent Layer 1 handoff to `dynamic_analysis` for unsupported analytics | `dynamic_analysis` (Subprocess AST Sandbox) / `hybrid_search` | Statistical summary breakdown with data tables. |
+| **`article_catalog`** | Fast manifest listing of articles, front-page leads, or section indices (<200ms). | `sql_analytics` (`issue_summary` / `list_articles` / `count_advertisements`) | None | Tabular manifest by newspaper, date, page, headline, and category. |
+| **`quantitative_trend`** | Aggregate metrics, distribution of topics, page counts, or volume analytics. | `sql_analytics` (`aggregate_metrics` / `count_articles` / `get_photo_counts_by_section`); transparent Layer 1 handoff to `dynamic_analysis` | `dynamic_analysis` (Subprocess AST Sandbox) / `hybrid_search` | Statistical summary breakdown with data tables. |
 | **`thematic_timeline`** | Chronological progression, evolution, history, or milestone development over time. | `timeline_builder` | `hybrid_search` | Date-ordered milestone trajectory with narrative trajectory canvas links. |
 | **`cross_newspaper_comparison`** | Comparative coverage, framing differences, contrasting editorial perspectives, or differential exclusions (*"In X but not in Y"*). | `sql_analytics` (`coverage_difference`) for exclusions; `coverage_analyzer` for multi-broadsheet audits | `hybrid_search` (scoped to target publication and date) | Verified exclusive article manifest with page folios, or side-by-side editorial matrix. |
 | **`entity_deep_dive`** | Comprehensive profile of a person, company, agency, or geopolitical entity. | `entity_search` | `timeline_builder` + `hybrid_search` | Entity salience stats, co-occurring entities, and key storylines. |
@@ -218,35 +234,41 @@ sequenceDiagram
 
 ---
 
-## 5. Corrective RAG (CRAG) & Grounding Lifecycle
+## 5. Corrective RAG (CRAG) & Reflexive Grounding Lifecycle
 
 ```
 [ Retrieved Evidence Items from Multi-Tool Execution ]
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 1. Evidence Grade & Relevance Scoring                       │
-│ • Extract non-stopword query tokens & stem roots            │
-│ • Evaluate headline exact match bonus (+0.40)               │
-│ • Compute token hit ratio across snippet body               │
-│ • Evaluate relational confidence and prominence scores      │
+│ 1. Fast-Floor Evaluation Check (<5ms)                       │
+│ • Check: Evidence >= 1 high-confidence broadsheet hit AND   │
+│   clean body text >= 100 words                              │
 └──────────────────────────────┬──────────────────────────────┘
                                │
             ┌──────────────────┴──────────────────┐
-            ▼ (Avg Score >= 0.20)                 ▼ (Avg Score < 0.20)
-┌─────────────────────────────────────┐  ┌─────────────────────────────────────┐
-│ High-Confidence Evidence State      │  │ Low-Confidence Retrieval Fallback   │
-│ • Retain top scored evidence items  │  │ • Trigger fallback hybrid search    │
-│ • Pass directly to Synthesizer      │  │ • Re-rank combined evidence pool    │
-└──────────────────┬──────────────────┘  └──────────────────┬──────────────────┘
-                   │                                        │
-                   └───────────────────┬────────────────────┘
-                                       │
+            ▼ (Passes Fast Floor)                 ▼ (Below Fast Floor)
+┌─────────────────────────────────────┐ ┌─────────────────────────────────────┐
+│ High-Confidence Immediate Pass      │ │ Reflexive LLM-as-Judge Evaluation   │
+│ • Skip LLM evaluation latency       │ │ • Prompt evaluator with evidence    │
+│ • is_sufficient = True, score = 1.0 │ │ • Emit typed EvaluationVerdict      │
+└──────────────────┬──────────────────┘ └──────────────────┬──────────────────┘
+                   │                                       │
+                   │           ┌───────────────────────────┴───────────────────────────┐
+                   │           ▼ (replan_static_tools)                                 ▼ (synthesize_dynamic_tool)
+                   │  ┌─────────────────────────────────┐                     ┌─────────────────────────────────┐
+                   │  │ Closed-Loop Adaptive Re-Plan    │                     │ Dynamic ToolMaker Recovery      │
+                   │  │ • replan_with_feedback_async    │                     │ • Generate bespoke Python/SQL   │
+                   │  │ • Widen dates / expand top_k    │                     │ • ToolCritic 5-dimension audit  │
+                   │  │ • Anti-repetition guard         │                     │ • AST Subprocess Sandbox        │
+                   │  └────────────────┬────────────────┘                     └────────────────┬────────────────┘
+                   │                   │                                                       │
+                   └───────────────────┼───────────────────────────────────────────────────────┘
                                        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. Empty Evidence Hard-Stop Check                           │
 │ • If evidence is empty or only non-matching errors:         │
-│   → Short-circuit to strict anti-hallucination message:     │
+│   → Short-circuit to strict anti-hallucination notice:      │
 │     "The archived broadsheets in this database contain      │
 │      no verifiable record of [Query]."                      │
 │   → DO NOT invent or hallucinate unsupported facts          │
@@ -254,11 +276,14 @@ sequenceDiagram
                                │ (Evidence Present)
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 3. 4-Tier Grounded Broad-sheet Synthesis                    │
-│ • Format Executive Summary                                  │
-│ • Compile Bulleted Verified Facts with Inline Citations     │
-│ • Extract Broadsheet Perspectives (Front vs Inside Pages)   │
-│ • Provide Explore Further Recommended Queries               │
+│ 3. Blueprint-Driven Grounded Broadsheet Synthesis           │
+│ • Compile prompt structure dynamically from AnswerBlueprint │
+│ • Preserve full parent text (up to 7,500 chars) for single  │
+│   article questions, filtering visual annotation noise      │
+│ • Strip mechanical robotic catalog tables from summaries    │
+│ • Enforce strict broadsheet citation format:                │
+│   [{Newspaper}, {YYYY-MM-DD}, Page {N}, "{Headline}"]       │
+│ • Enforce Quantitative Metric Absence Hard-Stop             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -342,9 +367,9 @@ sequenceDiagram
 
 ---
 
-## 8. Dynamic Tool Synthesis & Subprocess AST Sandbox Execution Flow
+## 8. Dynamic Tool Synthesis, Closed-Loop ToolCritic & Subprocess AST Sandbox Flow
 
-When broadsheet analytical queries require bespoke aggregations or relational calculations that do not exist in predefined static tools, NewsLens-AI dynamically synthesizes and executes custom Python functions within a secure, sandboxed subprocess.
+When broadsheet analytical queries require bespoke aggregations, variances, or relational calculations that do not exist in predefined static tools, NewsLens-AI dynamically synthesizes, audits, and executes custom Python functions within a secure, sandboxed subprocess with automated self-refinement.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -358,10 +383,11 @@ When broadsheet analytical queries require bespoke aggregations or relational ca
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │ 2. LLM Tool Maker Synthesis (`tool_maker.py`)                         │
-│    • Loads comprehensive 17-table MySQL schema prompt                  │
+│    • Loads comprehensive broadsheet MySQL schema prompt                │
 │    • Formulates prompt with user question & analytical goal            │
-│    • Generates Python script with typed contract:                      │
-│      `def execute(connection, **kwargs) -> Dict[str, Any]`             │
+│    • Auto-Import Pre-Injection: Detects unimported `re`, `math`,       │
+│      `statistics`, `pd`, `np`, `text` calls and injects headers        │
+│    • Generates Python script: `async def analyze(db, query, context)`  │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
@@ -381,18 +407,35 @@ When broadsheet analytical queries require bespoke aggregations or relational ca
 ┌────────────────────────────────────────────────────────────────────────┐
 │ 4. Subprocess Sandbox Execution (`sandbox_runner.py`)                  │
 │    • Spawns isolated worker via `subprocess.Popen([sys.executable])`   │
+│    • Pre-populated `exec_globals` (re, math, statistics, pd, np, text) │
 │    • Passes code, arguments, and credentials via JSON stdin            │
 │    • Enforces 15-second timeout and 512MB RAM resource limit           │
 │    • Establishes read-only DB connection with autocommit disabled      │
-│    • Executes `execute(connection)` inside try/finally                 │
+│    • Executes `analyze(db, query, context)` inside try/finally         │
 │    • Unconditional `connection.rollback()` guarantees zero mutations   │
 │    • Returns structured JSON payload to stdout                         │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ 5. Evidence Injection & Agent Reasoning Continuation                   │
-│    • Encapsulates result into `ToolExecutionRecord` with `tool_input`  │
+│ 5. Diagnostic ToolCritic Audit (`tool_critic.py`)                      │
+│    • Executes 5-Metric Scorecard:                                      │
+│      1. SASC: Syntactic & AST Security Compliance (1.0 or 0.0)         │
+│      2. SRF:  SQL Schema Fidelity (remaps hallucinated columns,        │
+│               requires DISTINCT on multi-table joins, allows aliases)  │
+│      3. REH:  Runtime Subprocess Health (0 exit code, no exceptions)   │
+│      4. DSF:  Data-to-Summary Faithfulness (legitimate absence vs      │
+│               narrative hallucination, accepts aggregate tables)       │
+│      5. RPS:  Intent Alignment & Filter Plausibility (ISO date norm)   │
+│    • If Audit Fails (Score < 0.70):                                    │
+│      Re-prompts ToolMaker with structured diagnostic critique over     │
+│      token-budgeted 4-message trace (Up to 3 attempts)                 │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 6. Evidence Injection & Agent Reasoning Continuation                   │
+│    • Encapsulates verified result into `ToolExecutionRecord`           │
 │    • Injects high-confidence evidence ($1.0$) into `AgentState`        │
 │    • Emits SSE stage `generating_analysis_tool`                        │
 │    • Hands over to Synthesizer for 4-tier journalistic brief           │

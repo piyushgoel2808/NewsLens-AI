@@ -159,6 +159,22 @@ def parse_inline_citation(text: str) -> dict[str, Any]:
         if m.group(4):
             res["headline"] = m.group(4).strip()
         return res
+
+    # Flexible pattern: article "Headline" [in Newspaper] [dated YYYY-MM-DD]
+    hl_m = re.search(r"(?:article|story|headline|titled|report)?\s*[\"“]([^\"”]{8,150})[\"”]", text, re.I)
+    if hl_m:
+        cand_hl = hl_m.group(1).strip()
+        if not any(pat.fullmatch(cand_hl) for pat, _ in _KNOWN_BRANDS_PATTERNS):
+            res_flex: dict[str, Any] = {"headline": cand_hl}
+            from app.agent.extractor import extract_parameters_from_query
+            q_ext = extract_parameters_from_query(text)
+            if q_ext.get("newspaper_name"):
+                res_flex["newspaper_name"] = q_ext["newspaper_name"]
+                res_flex["target_newspapers"] = [q_ext["newspaper_name"]]
+            if q_ext.get("issue_date"):
+                res_flex["issue_date"] = q_ext["issue_date"]
+            return res_flex
+
     return {}
 
 
@@ -188,6 +204,7 @@ def extract_active_issue_from_history(
     current_params = extract_parameters_from_query(current_query) if current_query else {}
     explicit_query_date = current_params.get("issue_date") or current_citation.get("issue_date")
     explicit_query_np = current_params.get("newspaper_name") or current_citation.get("newspaper_name")
+    explicit_query_hl = current_params.get("headline") or current_citation.get("headline")
 
     has_date_conflict = bool(explicit_query_date and attached_issue_date and explicit_query_date != attached_issue_date)
     has_np_conflict = bool(
@@ -197,7 +214,37 @@ def extract_active_issue_from_history(
         and attached_newspaper_name.lower() not in explicit_query_np.lower()
     )
 
-    if not has_date_conflict and not has_np_conflict:
+    has_headline_conflict = False
+    if attached_headline and current_query:
+        if explicit_query_hl and explicit_query_hl.lower() != attached_headline.lower():
+            has_headline_conflict = True
+        else:
+            def _sig_tokens(s: str) -> set[str]:
+                stop = {
+                    "the", "a", "an", "and", "or", "in", "on", "at", "for", "to", "of", "with", "by", "from",
+                    "is", "are", "was", "were", "this", "that", "these", "those", "about", "article", "story",
+                    "news", "report", "photo", "image", "picture", "visual", "who", "what", "where", "when",
+                    "why", "how", "person", "people",
+                }
+                return {w for w in re.findall(r"[a-z0-9]+", s.lower()) if len(w) > 2 and w not in stop}
+            att_tokens = _sig_tokens(attached_headline)
+            q_tokens = _sig_tokens(current_query)
+            is_pronoun_ref = bool(
+                re.search(
+                    r"\b(?:this|that|the|it|ir)\s+(?:article|story|news|report|headline|piece|photo|image|picture|graphic|figure|visual|table|chart|infographic)\b"
+                    r"|\b(?:tell me more|explain this|explain it|what is this|who is this|who is the person|who is in this)\b"
+                    r"|\b(?:find|read|get|tell|show|explain|summ[ae]ri[sz]e)\s+(?:about|on|for|of)?\s*(?:this|the|that|it|ir)?\s*(?:article|story|news|report|headline|piece)?\b"
+                    r"|\bin\s+\d+\s+words?\b",
+                    current_query,
+                    re.I,
+                )
+            )
+            if (attached_photo_id or attached_article_id) and re.search(r"\b(?:photo|image|picture|visual|this article|this photo|it\b|that\b|the article)\b", current_query, re.I):
+                is_pronoun_ref = True
+            if not is_pronoun_ref and att_tokens and q_tokens and not (att_tokens & q_tokens):
+                has_headline_conflict = True
+
+    if not has_date_conflict and not has_np_conflict and not has_headline_conflict:
         if attached_photo_id:
             with contextlib.suppress(ValueError, TypeError):
                 res["photo_id"] = int(attached_photo_id)
@@ -215,6 +262,8 @@ def extract_active_issue_from_history(
             res["issue_date"] = explicit_query_date
         if explicit_query_np:
             res["newspaper_name"] = explicit_query_np
+        if explicit_query_hl:
+            res["headline"] = explicit_query_hl
 
     if not chat_history:
         return res
@@ -223,6 +272,7 @@ def extract_active_issue_from_history(
         (attached_photo_id or attached_article_id or attached_headline)
         and not has_date_conflict
         and not has_np_conflict
+        and not has_headline_conflict
     )
 
     q_lower = (current_query or "").lower()
@@ -244,6 +294,8 @@ def extract_active_issue_from_history(
             res["target_newspapers"] = params["target_newspapers"]
         if params.get("is_differential") and not res.get("is_differential"):
             res["is_differential"] = params["is_differential"]
+        if params.get("is_shared") and not res.get("is_shared"):
+            res["is_shared"] = params["is_shared"]
         if params.get("issue_id") and not res.get("issue_id"):
             res["issue_id"] = params["issue_id"]
         if params.get("issue_date") and not res.get("issue_date"):
@@ -252,7 +304,7 @@ def extract_active_issue_from_history(
         # 0. Inspect structured citations and attached assets on the turn
         # If current_query provided its own explicit headline/citation or an asset is explicitly attached on current turn,
         # do NOT inherit foreign article/photo IDs or headlines from prior turns
-        if not current_citation.get("headline") and not has_explicit_asset:
+        if not current_citation.get("headline") and not explicit_query_hl and not has_explicit_asset:
             turn_citations = turn.get("citations") or []
             for cit in turn_citations:
                 if isinstance(cit, dict):
@@ -292,7 +344,7 @@ def extract_active_issue_from_history(
                 res["issue_date"] = hist_cite["issue_date"]
             if not res.get("page_number") and hist_cite.get("page_number"):
                 res["page_number"] = hist_cite["page_number"]
-            if not res.get("headline") and hist_cite.get("headline") and not current_citation.get("headline") and not has_explicit_asset:
+            if not res.get("headline") and hist_cite.get("headline") and not current_citation.get("headline") and not explicit_query_hl and not has_explicit_asset:
                 res["headline"] = hist_cite["headline"]
 
         # 2. Inspect executive summary headers: e.g. "The Goan newspaper issue 94 (2026-08-02)"
@@ -328,7 +380,7 @@ def extract_active_issue_from_history(
             break
 
     # Guardrail 1: If current query is cross-newspaper comparison, do NOT constrain to a single newspaper
-    if is_cross_newspaper:
+    if is_cross_newspaper and not res.get("comparison_newspaper"):
         res.pop("newspaper_name", None)
         res.pop("issue_id", None)
         res.pop("article_id", None)
@@ -387,6 +439,17 @@ def format_chat_history_for_prompt(chat_history: list[dict[str, Any]], max_turns
         # Keep up to 1000 chars per assistant turn to preserve citations and source names
         if role.lower() == "assistant" and len(content) > 1000:
             content = content[:1000] + "..."
+        citations = turn.get("citations") or []
+        if citations and role.lower() == "assistant":
+            cit_lines = []
+            for c_idx, cit in enumerate(citations, 1):
+                if isinstance(cit, dict) and cit.get("headline"):
+                    cit_np = cit.get("newspaper_name", "")
+                    cit_dt = cit.get("issue_date", "")
+                    cit_pg = cit.get("page_number", "")
+                    cit_lines.append(f"  [Article {c_idx}]: \"{cit['headline']}\" ({cit_np}, {cit_dt}, Page {cit_pg})")
+            if cit_lines:
+                content += "\nCited Articles:\n" + "\n".join(cit_lines)
         if content:
             lines.append(f"{role}: {content}")
     return "\n".join(lines)
@@ -413,7 +476,11 @@ CONDENSER_SYSTEM_PROMPT = (
     "   If the query introduces a NEW or DIFFERENT topic, entity, location, or subject not discussed in CONVERSATION HISTORY "
     "(e.g., 'education policy in Maharashtra', 'ST quota protest in Goa', 'cricket match results'), treat it as a completely independent query:\n"
     "   - STRICTLY DO NOT inject or force previous conversation entities, newspaper brands, dates, or people into the query.\n"
-    "   - Keep it as a clean, unconstrained standalone search query.\n\n"
+    "   - Keep it as a clean, unconstrained standalone search query.\n"
+    "4. CROSS-NEWSPAPER & SHARED COVERAGE FOLLOW-UPS:\n"
+    "   If CONVERSATION HISTORY involved comparing two newspapers or finding similar/shared/exclusive articles between them, and the user asks a follow-up "
+    "(e.g., 'list all those articles that are similar', 'show the common stories', 'what about the exclusives?'):\n"
+    "   - Preserve both newspaper names, the date, and the comparison/shared intent in the rewritten query (e.g., 'list all similar articles between The Goan and The Morning Standard dated 2026-08-01').\n\n"
     "OUTPUT FORMAT: Output ONLY the plain rewritten query text. Do NOT include quotes, explanations, prefixes, or bullet points."
 )
 
@@ -484,8 +551,44 @@ async def condense_conversational_query(
         iss_date = explicit_q_date or active_issue_date or active_ctx.get("issue_date")
         comp_np = active_ctx.get("comparison_newspaper")
         is_diff = active_ctx.get("is_differential")
+        is_shared = active_ctx.get("is_shared")
         active_hl = active_ctx.get("headline")
         active_pg = active_ctx.get("page_number")
+
+    # 0. Deterministic Ordinal Article Coreference Resolution:
+    # E.g. "tell me about this article 1", "summarize the 2nd article", "explain the first article"
+    ord_m = re.search(
+        r"\b(?:this\s+|the\s+)?article\s*(\d{1,2})\b|\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+article\b|\b(first|second|third|fourth|fifth)\s+article\b",
+        query,
+        re.I,
+    )
+    if ord_m and chat_history:
+        target_idx: int | None = None
+        if ord_m.group(1):
+            target_idx = int(ord_m.group(1))
+        elif ord_m.group(2):
+            target_idx = int(ord_m.group(2))
+        elif ord_m.group(3):
+            _word_to_num = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
+            target_idx = _word_to_num.get(ord_m.group(3).lower())
+
+        if target_idx and target_idx >= 1:
+            for turn in reversed(chat_history):
+                if turn.get("role") == "assistant" and turn.get("citations"):
+                    cits = [c for c in turn["citations"] if isinstance(c, dict) and c.get("headline")]
+                    if len(cits) >= target_idx:
+                        target_cit = cits[target_idx - 1]
+                        c_hl = target_cit.get("headline", "").strip()
+                        c_np = target_cit.get("newspaper_name", np_name or "").strip()
+                        c_dt = target_cit.get("issue_date", iss_date or "").strip()
+                        dt_part = f" dated {c_dt}" if c_dt else ""
+                        np_part = f" in {c_np}" if c_np else ""
+                        q_resolved = f'Tell me about the article "{c_hl}"{np_part}{dt_part}'
+                        logger.info(
+                            "Conversational query resolved via deterministic ordinal article citation heuristic",
+                            extra={"original_query": query, "resolved_query": q_resolved},
+                        )
+                        return q_resolved
 
     # Resolve LLM provider (prefer lightweight/fast model like groq_llama or query_planner)
     resolved_provider: Any
@@ -627,7 +730,11 @@ async def condense_conversational_query(
 
     if comp_np and np_name:
         dt_suffix = f" dated {iss_date}" if iss_date else ""
-        q_resolved = f"{query} comparing {np_name} and {comp_np}{dt_suffix}"
+        is_shared_mode = is_shared or any(w in query.lower() for w in ["similar", "shared", "common", "same article", "same stories", "both"])
+        if is_shared_mode:
+            q_resolved = f"{query} between {np_name} and {comp_np}{dt_suffix}"
+        else:
+            q_resolved = f"{query} comparing {np_name} and {comp_np}{dt_suffix}"
         logger.info(
             "Conversational query resolved via deterministic comparison context heuristic",
             extra={"original_query": query, "resolved_query": q_resolved},
@@ -759,6 +866,48 @@ async def resolve_attached_asset_context(
     return res
 
 
+async def resolve_authoritative_article_id(
+    headline: str,
+    newspaper_name: str | None = None,
+    issue_date: str | None = None,
+) -> int | None:
+    """Fast DB lookup to find exact article_id for a known or quoted headline."""
+    if not headline or len(headline.strip()) < 8:
+        return None
+    try:
+        from app.models.base import get_session_factory
+        from app.models.article import Article
+        from app.models.newspaper import Issue, Newspaper
+        from sqlalchemy import select
+
+        factory = get_session_factory()
+        async with factory() as session:
+            stmt = select(Article.id).join(Issue, Article.issue_id == Issue.id)
+            if newspaper_name:
+                stmt = stmt.join(Newspaper, Issue.newspaper_id == Newspaper.id).where(
+                    Newspaper.name.ilike(f"%{newspaper_name}%")
+                )
+            if issue_date:
+                stmt = stmt.where(Issue.issue_date == issue_date)
+
+            clean_hl = headline.strip().strip('"“”\'')
+            exact_stmt = stmt.where(Article.headline.ilike(clean_hl))
+            res = (await session.execute(exact_stmt)).scalars().first()
+            if res:
+                return int(res)
+
+            if len(clean_hl) >= 12:
+                prefix = clean_hl[:40]
+                prefix_stmt = stmt.where(Article.headline.ilike(f"%{prefix}%"))
+                res = (await session.execute(prefix_stmt)).scalars().first()
+                if res:
+                    return int(res)
+    except Exception as ex:
+        logger.warning("Failed to resolve authoritative article ID by headline", extra={"headline": headline, "error": str(ex)})
+
+    return None
+
+
 __all__ = [
     "AMBIGUOUS_PRONOUNS_PATTERN",
     "CLEAN_SESSION_CLARIFICATION_MESSAGE",
@@ -773,5 +922,6 @@ __all__ = [
     "needs_condensation",
     "parse_inline_citation",
     "resolve_attached_asset_context",
+    "resolve_authoritative_article_id",
 ]
 

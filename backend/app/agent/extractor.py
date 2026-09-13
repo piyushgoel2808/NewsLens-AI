@@ -6,6 +6,7 @@ issue IDs, page numbers, categories, differential indicators) and cleans convers
 
 from __future__ import annotations
 
+import calendar
 import contextlib
 import re
 from typing import Any
@@ -99,6 +100,35 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
             if len(ordered_brands) >= 2:
                 params["comparison_newspaper"] = ordered_brands[1]
 
+    # Shared / Similar wire coverage detection across publications
+    q_lower_all = query.lower()
+    _SHARED_TRIGGERS = (
+        "similar",
+        "shared",
+        "common",
+        "same article",
+        "same articles",
+        "same story",
+        "same stories",
+        "both newspaper",
+        "both newspapers",
+        "both paper",
+        "both papers",
+        "in both",
+        "covered by both",
+        "both carried",
+        "syndicated",
+        "wire stories",
+        "wire story",
+        "wire report",
+        "wire reports",
+    )
+    if any(trig in q_lower_all for trig in _SHARED_TRIGGERS):
+        params["is_shared"] = True
+        if params.get("target_newspapers") and len(params["target_newspapers"]) >= 2:
+            params["source_newspaper"] = params["target_newspapers"][0]
+            params["comparison_newspaper"] = params["target_newspapers"][1]
+
     # 2. Issue ID Extraction
     iss_match = re.search(r"\bissue\s*(?:id\s*[:=]?\s*|\#\s*|no\.?\s*|number\s*)?(\d+)\b", query, re.I)
     if iss_match:
@@ -143,6 +173,21 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
             sorted_dates = sorted(found_dates)
             params["date_from"] = sorted_dates[0]
             params["date_to"] = sorted_dates[-1]
+    else:
+        # Named month + year without explicit day (e.g. "August 2026", "during August 2026")
+        for my_m in re.finditer(r"\b([a-zA-Z]+)\s+(\d{4})\b", query):
+            m_name = my_m.group(1).lower()
+            if m_name in _MONTH_MAP:
+                month_val = _MONTH_MAP[m_name]
+                year_val = int(my_m.group(2))
+                _, last_day = calendar.monthrange(year_val, month_val)
+                d_from = f"{year_val:04d}-{month_val:02d}-01"
+                d_to = f"{year_val:04d}-{month_val:02d}-{last_day:02d}"
+                params["date_from"] = d_from
+                params["date_to"] = d_to
+                params["target_dates"] = [d_from, d_to]
+                params["issue_date"] = None
+                break
 
     # 4. Section / Category Extraction (mask matched brands to avoid false bleed like 'The Economic Times' matching 'Economy')
     query_for_sections = query
@@ -153,6 +198,13 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
         if pat.search(query_for_sections):
             params["category_filter"] = cat_name
             break
+
+    # 5. Explicit Headline Extraction from quotes or titles (e.g. article "Headline" or quoted string >= 8 chars)
+    hl_match = re.search(r"(?:article|story|headline|titled|report)?\s*[\"“]([^\"”]{8,150})[\"”]", query, re.I)
+    if hl_match:
+        cand_hl = hl_match.group(1).strip()
+        if not any(pat.fullmatch(cand_hl) for pat, _ in _KNOWN_BRANDS_PATTERNS):
+            params["headline"] = cand_hl
 
     return params
 

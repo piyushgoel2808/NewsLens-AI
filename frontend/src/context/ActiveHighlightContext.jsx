@@ -151,7 +151,11 @@ export function ActiveHighlightProvider({ children }) {
     const pageNum = Number(pageNumber) || 1;
     if (issueId) setSelectedIssueId(Number(issueId));
     setSelectedPageNumber(pageNum);
-    if (articleId) setSelectedArticleId(Number(articleId));
+    if (articleId) {
+      const artIdNum = Number(articleId);
+      setSelectedArticleId(artIdNum);
+      setActiveAttachedAsset((prev) => (prev && prev.articleId && Number(prev.articleId) !== artIdNum ? null : prev));
+    }
     const safeBboxes = Array.isArray(bboxes)
       ? bboxes
       : bboxes && typeof bboxes === 'object'
@@ -179,6 +183,7 @@ export function ActiveHighlightProvider({ children }) {
     setSelectedPageNumber(pageNum);
     setSelectedArticleId(null);
     setHighlightedBboxes([]);
+    setActiveAttachedAsset(null);
     setActiveTab('reader');
   }, []);
 

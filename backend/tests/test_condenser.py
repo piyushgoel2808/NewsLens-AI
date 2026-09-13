@@ -536,5 +536,44 @@ def test_normal_text_query_legitimate_followup_preserves_context():
     assert needs_condensation("Did any other newspaper cover this event?", dirty_history) is True
 
 
+@pytest.mark.asyncio
+async def test_condenser_shared_coverage_followup():
+    """Verify follow-up queries like 'list all those article that are similar' retain shared context."""
+    shared_history = [
+        {
+            "role": "user",
+            "content": "give me the similar articles from newspaper of the Goan and the morning standard both dated 1/8/2026",
+        },
+        {
+            "role": "assistant",
+            "content": "Here is the shared coverage between The Goan and The Morning Standard on 2026-08-01.",
+            "citations": [
+                {"newspaper_name": "The Goan", "issue_date": "2026-08-01", "page_number": 5},
+                {"newspaper_name": "The Morning Standard", "issue_date": "2026-08-01", "page_number": 7},
+            ],
+        },
+    ]
+
+    followup_query = "list all those article that are similar"
+    assert needs_condensation(followup_query, shared_history) is True
+
+    resolved = await condense_conversational_query(
+        query=followup_query,
+        chat_history=shared_history,
+        provider=None,  # triggers deterministic heuristic fallback
+    )
+
+    assert "The Goan" in resolved
+    assert "The Morning Standard" in resolved
+    assert "2026-08-01" in resolved
+
+    from app.agent.extractor import extract_parameters_from_query
+    params = extract_parameters_from_query(resolved)
+    assert params.get("is_shared") is True
+    assert params.get("newspaper_name") == "The Goan"
+    assert params.get("comparison_newspaper") == "The Morning Standard"
+    assert params.get("issue_date") == "2026-08-01"
+
+
 
 

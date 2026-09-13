@@ -56,6 +56,16 @@ class TestQueryPlanner:
         tool_names = [t.tool_name for t in plan.tool_calls]
         assert "sql_analytics" in tool_names
 
+    def test_plan_advertisement_count(self) -> None:
+        planner = QueryPlanner()
+        plan = planner.plan_query("how many advertisement are there in Hindustan times 2026-09-11")
+        assert plan.archetype == "quantitative_trend"
+        assert len(plan.tool_calls) == 1
+        assert plan.tool_calls[0].tool_name == "sql_analytics"
+        assert plan.tool_calls[0].arguments.get("analysis_type") == "count_advertisements"
+        assert plan.tool_calls[0].arguments.get("newspaper_name") == "Hindustan Times"
+        assert plan.tool_calls[0].arguments.get("issue_date") == "2026-09-11"
+
     def test_classify_cross_newspaper_comparison(self) -> None:
         planner = QueryPlanner()
         queries = [
@@ -218,6 +228,72 @@ class TestAgentWorkflowToolExecution:
         assert "42" in res["evidence_items"][0]["snippet"]
         assert len(res["tool_executions"]) == 1
         assert res["tool_executions"][0]["results_count"] == 42
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_analytics_shared_coverage(self) -> None:
+        from app.agent.graph import AgentWorkflow
+
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+        workflow._sql_analytics.get_newspaper_shared_coverage = AsyncMock(
+            return_value={
+                "newspaper_a": "The Goan",
+                "newspaper_b": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "total_newspaper_a_articles": 174,
+                "total_newspaper_b_articles": 144,
+                "shared_count": 1,
+                "shared_stories": [
+                    {
+                        "article_id_a": 12,
+                        "article_id_b": 98,
+                        "newspaper_a": "The Goan",
+                        "newspaper_b": "The Morning Standard",
+                        "headline_a": "SC stays stray animal compensation order",
+                        "headline_b": "Apex court puts hold on stray animal compensation",
+                        "page_a": 5,
+                        "page_b": 7,
+                        "section_a": "National",
+                        "section_b": "Nation",
+                        "match_tier": "token_jaccard",
+                        "shared_keywords": "animal, compensation, order, stray",
+                    }
+                ],
+            }
+        )
+
+        state = {
+            "query": "give me the similar articles from newspaper of the Goan and the morning standard both dated 1/8/2026",
+            "plan": [
+                {
+                    "tool_name": "sql_analytics",
+                    "arguments": {
+                        "analysis_type": "shared_coverage",
+                        "newspaper_name": "The Goan",
+                        "comparison_newspaper": "The Morning Standard",
+                        "issue_date": "2026-08-01",
+                    },
+                    "purpose": "Find shared wire stories",
+                }
+            ],
+            "archetype": "cross_newspaper_comparison",
+        }
+
+        res = await workflow._execute_tools_node(state)  # type: ignore[arg-type]
+        # Should produce 1 macro chunk (article_id: 0) + 2 individual article chunks (article_id: 12, 98)
+        assert len(res["evidence_items"]) == 3
+
+        macro_item = res["evidence_items"][0]
+        assert macro_item["article_id"] == 0
+        assert macro_item["source_tool"] == "sql_analytics"
+        assert "VERIFIED SHARED SYNDICATED WIRE COVERAGE" in macro_item["snippet"]
+
+        art_items = res["evidence_items"][1:]
+        art_ids = {a["article_id"] for a in art_items}
+        assert art_ids == {12, 98}
+        for a in art_items:
+            assert a["source_tool"] == "sql_analytics_shared"
+            assert a["prominence_score"] == 0.95
 
     @pytest.mark.asyncio
     async def test_execute_coverage_analysis_matrix(self) -> None:
@@ -413,6 +489,26 @@ class TestAgentWorkflowToolExecution:
         assert hybrid_tool is not None
         assert hybrid_tool.arguments.get("newspaper_name") == "The Goan"
         assert hybrid_tool.arguments.get("date_from") == "2026-08-01"
+
+    def test_plan_shared_coverage_two_newspapers(self) -> None:
+        planner = QueryPlanner()
+        query = "give me the similar articles from newspaper of the Goan and the morning standard both dated 1/8/2026"
+        plan = planner.plan_query(query)
+
+        assert plan.archetype == "cross_newspaper_comparison"
+
+        # Verify shared_coverage tool was planned
+        shared_tool = next((t for t in plan.tool_calls if t.tool_name == "sql_analytics" and t.arguments.get("analysis_type") == "shared_coverage"), None)
+        assert shared_tool is not None, "Expected sql_analytics(shared_coverage) in planned tools!"
+        assert shared_tool.arguments.get("newspaper_name") == "The Goan"
+        assert shared_tool.arguments.get("comparison_newspaper") == "The Morning Standard"
+        assert shared_tool.arguments.get("issue_date") == "2026-08-01"
+
+        # Verify corroborating hybrid_search was planned
+        hybrid_tool = next((t for t in plan.tool_calls if t.tool_name == "hybrid_search"), None)
+        assert hybrid_tool is not None
+        assert hybrid_tool.arguments.get("date_from") == "2026-08-01"
+        assert hybrid_tool.arguments.get("date_to") == "2026-08-01"
 
     def test_extract_parameters_differential_single_brand_does_not_index_error(self) -> None:
         """Verify queries with exclusion phrases like 'not in' and only 1 newspaper don't raise IndexError."""
@@ -672,6 +768,44 @@ class TestAgentWorkflowToolExecution:
         res_fact = planner.plan_query("What did Modi say about drugs?")
         assert res_fact.archetype == "factual_lookup"
         assert not any(t.tool_name == "dynamic_analysis" for t in res_fact.tool_calls)
+
+    def test_count_newspaper_issues_heuristic_routing(self) -> None:
+        """Verify queries asking for count of issues route to quantitative_trend and count_issues."""
+        planner = QueryPlanner()
+        res = planner.plan_query("no of newspaper in the Goan issues ?")
+        assert res.archetype == "quantitative_trend"
+        assert len(res.tool_calls) >= 1
+        call = res.tool_calls[0]
+        assert call.tool_name == "sql_analytics"
+        assert call.arguments.get("analysis_type") == "count_issues"
+        assert call.arguments.get("newspaper_name") == "The Goan"
+
+    def test_month_year_date_range_extraction_and_planning(self) -> None:
+        """Verify queries with Month + Year (e.g. August 2026) plan month-wide date range without locking to day 1."""
+        from app.agent.extractor import extract_parameters_from_query
+
+        query = "What is the variance and standard deviation of article word counts across different categories in The Goan during August 2026?"
+        extracted = extract_parameters_from_query(query)
+
+        assert extracted.get("date_from") == "2026-08-01"
+        assert extracted.get("date_to") == "2026-08-31"
+        assert extracted.get("issue_date") is None
+
+        # Plan with active_issue_date from history
+        planner = QueryPlanner()
+        plan_res = planner.plan_query(query, active_issue_date="2026-08-01")
+        assert plan_res.archetype == "analytical_computation"
+
+        # Verify dynamic_analysis and hybrid_search or sql_analytics calls use full month range
+        for call in plan_res.tool_calls:
+            if call.tool_name == "hybrid_search":
+                assert call.arguments.get("date_from") == "2026-08-01"
+                assert call.arguments.get("date_to") == "2026-08-31"
+            elif call.tool_name == "sql_analytics":
+                assert call.arguments.get("date_from") == "2026-08-01"
+                assert call.arguments.get("date_to") == "2026-08-31"
+                # issue_date must NOT be locked onto 2026-08-01
+                assert call.arguments.get("issue_date") != "2026-08-01"
 
 
 

@@ -30,6 +30,34 @@ QueryArchetype = Literal[
     "analytical_computation",
 ]
 
+SectionFormat = Literal[
+    "narrative",
+    "bullet_list",
+    "markdown_table",
+    "metric_card",
+    "timeline",
+]
+
+
+class SectionSpec(BaseModel):
+    """Specification of an individual section designed for the answer."""
+
+    title: str = Field(..., description="Markdown H3 header (e.g. '### ⚡ Executive Summary')")
+    format_type: SectionFormat = Field(default="narrative", description="Visual format type for this section")
+    content_focus: str = Field(default="", description="Core subject matter, angle, or data to emphasize in this section")
+    target_length: str = Field(default="", description="Target length guidance (e.g. '1-2 concise paragraphs', '3-5 bullets')")
+
+
+class AnswerBlueprint(BaseModel):
+    """Planner-designed blueprint specifying the tailored structure and constraints of the answer."""
+
+    user_intent: str = Field(default="", description="High-level interpretation of the user query intent")
+    overall_tone: str = Field(default="authoritative_journalistic", description="Editorial tone for the brief")
+    target_word_count: int | None = Field(default=None, description="Explicit target or max word count if requested by the user")
+    sections: list[SectionSpec] = Field(default_factory=list, description="Ordered list of section specifications")
+    table_columns: list[str] | None = Field(default=None, description="Explicit column headers if a markdown table is specified")
+    prohibited_elements: list[str] = Field(default_factory=list, description="Explicitly prohibited content or formats")
+
 
 @dataclass
 class PlannedToolCall:
@@ -47,6 +75,7 @@ class PlanResult:
     archetype: str
     reasoning: str
     tool_calls: list[PlannedToolCall]
+    answer_blueprint: AnswerBlueprint | None = None
 
 
 class ToolCallSpec(BaseModel):
@@ -58,11 +87,12 @@ class ToolCallSpec(BaseModel):
 
 
 class AgentPlan(BaseModel):
-    """Structured plan returned by the LLM containing direct tool calls."""
+    """Structured plan returned by the LLM containing direct tool calls and dynamic answer blueprint."""
 
     thought_process: str = Field(default="", description="Chain-of-thought analysis of user intent")
     archetype: QueryArchetype = Field(default="factual_lookup", description="Archetype of the query")
     tool_calls: list[ToolCallSpec] = Field(default_factory=list, description="Ordered list of 1-3 tool calls to execute")
+    answer_blueprint: AnswerBlueprint | None = Field(default=None, description="Dynamic specification for the answer format and structure")
 
     # Legacy fields for backward compatibility with existing test fixtures and mocks
     primary_tool: str | None = None
@@ -96,11 +126,14 @@ class ExtractedToolArguments(BaseModel):
 
 __all__ = [
     "AgentPlan",
+    "AnswerBlueprint",
     "ExtractedToolArguments",
     "PlanResult",
     "PlannedToolCall",
     "QueryArchetype",
     "QueryPlan",
+    "SectionFormat",
+    "SectionSpec",
     "ToolCallSpec",
     "ToolName",
 ]

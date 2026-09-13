@@ -58,6 +58,10 @@ class AgentState(TypedDict):
     attached_photo_id: int | None
     attached_asset: dict[str, Any] | None
     error: str | None
+    evaluation_verdict: dict[str, Any] | None
+    recovery_attempts: int
+    gap_diagnosis: str | None
+    answer_blueprint: dict[str, Any] | None
 
 
 __all__ = [

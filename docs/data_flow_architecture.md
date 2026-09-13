@@ -60,6 +60,9 @@ flowchart TD
         CRAG -->|Sufficient Grounding| Synthesizer["AnswerSynthesizer<br/>(4-Tier Grounded Brief)"]
         CRAG -->|Zero Evidence / Analytical Query| ToolMaker["LLM Tool Maker<br/>(Ad-Hoc Tool Synthesis)"]
         ToolMaker --> Tool_Dynamic
+        Tool_Dynamic --> ToolCritic["ToolCritic (5-Metric Audit)<br/>(SASC, SRF, REH, DSF, RPS)"]
+        ToolCritic -->|Pass (>= 0.70)| CRAG
+        ToolCritic -->|Defect Detected| ToolMaker
         CRAG -->|Zero Evidence / Ambiguous| FallbackRouter["Fallback Web/Entity Search<br/>or Anti-Hallucination Notice"]
         FallbackRouter --> Synthesizer
 
@@ -373,12 +376,12 @@ sequenceDiagram
     end
 
     Dispatcher-->>Graph: Aggregated Raw Evidence Items
-    Graph->>CRAG: Evaluate Evidence Relevance against Query Stems
-    Note over CRAG: Prunes relevance = 0 chunks<br/>Protects structured manifests and vector hits<br/>Detects ambiguity / triggers fallbacks
-    CRAG-->>Graph: Verified Grounded Evidence
+    Graph->>CRAG: Evaluate Evidence Relevance & Sufficiency
+    Note over CRAG: Fast-Floor Check (<5ms for >=100 words editorial text)<br/>Reflexive LLM-as-Judge emits typed EvaluationVerdict<br/>Branches to adaptive re-plan or dynamic code on failure (1-cycle cap)
+    CRAG-->>Graph: Verified Grounded Evidence + EvaluationVerdict
     
-    Graph->>Synth: synthesize_stream(query, evidence, archetype)
-    Synth->>LLM: Stream Structured Anti-Hallucination Prompt
+    Graph->>Synth: synthesize_stream(query, evidence, archetype, answer_blueprint)
+    Synth->>LLM: Stream Structured Anti-Hallucination Prompt (Compiled from Blueprint)
     LLM-->>Synth: Stream: <think>...</think> + Structured Sections
     Synth-->>API: SSE Events (stage, thought, token, citations, done)
     API-->>User: Live Streaming UI Brief with Visual Cards & Thumbnails
@@ -388,11 +391,12 @@ sequenceDiagram
 
 1. **Conversational Query Condensation** ([`backend/app/agent/condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py)):
    - **Inline Citation Extraction**: Parses complex broadsheet citations such as `[4] Hindustan Times, 2026-08-03, Page 4, Headline: "The growing bipolarity in the world..."`.
-   - **Attached Asset Propagation & Date Isolation**: Carries forward `attached_article_id` or `attached_photo_id` selected in the broadsheet viewer, but strictly evicts attached assets if their publication date conflicts with explicit query dates.
-   - **4-Tier Anti-Leakage Shield**: Prevents bleed-over of past query constraints, dates, or attached assets when switching dates, publications, or topics.
+   - **Attached Asset Propagation & Date Isolation**: Carries forward `attached_article_id` or `attached_photo_id` selected in the broadsheet viewer, but strictly evicts attached assets if their publication date or headline conflicts with explicit query intention.
+   - **Headline Conflict Invalidation**: Automatically clears stale article IDs when the user transitions to a different article headline or topic.
    - **Differential Exclusion Retention**: Preserves comparative context (*"list all those 11 articles"* $\to$ *"list all articles in The Goan but not in The Morning Standard on 2026-08-01"*).
-2. **Query Planner & 7 Archetypes** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)):
+2. **Cognitive Query Planner & Dynamic Answer Blueprint** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py), [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)):
    - Grounded with live archive metadata (`get_archive_metadata()`), preventing the model from inventing dates or newspapers.
+   - Formulates both tool invocations and an **`AnswerBlueprint`** with ordered `SectionSpec` directives (narrative, bullet lists, metric cards, markdown tables, timelines), target word counts, and prohibited elements.
    - Classifies query into 1 of 7 Archetypes:
      - `factual_lookup`: Specific figures, quotes, events, or companion charts.
      - `article_catalog`: Front-page lead manifests and section listings.
@@ -405,28 +409,31 @@ sequenceDiagram
    - `InspectVisualAsset`: Executes 5-Tier Strategy Cascade (A: photo_id; B: headline; C: article_id; D: multi-criteria DB; E: scoped caption/VLM).
      - Enforces query-date priority invariant (`effective_date = explicit_query_date or asset_date`).
      - Streams on-demand raw crop bytes from MinIO for lazy VLM table transcription.
-   - `DynamicAnalysis` & `ToolMaker` ([`backend/app/agent/tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_maker.py), [`backend/app/agent/sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox.py)):
+   - `DynamicAnalysis`, `ToolMaker` & `ToolCritic` ([`backend/app/agent/tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_maker.py), [`backend/app/agent/tool_critic.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_critic.py), [`backend/app/agent/sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox.py)):
      - Synthesizes bespoke Python/SQL functions for novel analytical queries.
-     - Runs in an isolated subprocess with strict AST safety scanning (blocks forbidden modules/builtins), 15s timeout, 512MB RAM cap, and read-only DB transactions.
-     - **Layer 1 Fallback**: Automatically intercepts unsupported parameters in `sql_analytics` and hands off to `dynamic_analysis`.
-   - `SQLAnalytics`: Whole-issue catalogs and deterministic coverage differences (`get_newspaper_coverage_difference`) computing exact article exclusions between publications on the same date via headline token overlap.
+     - **Auto-Import Pre-Injection**: Injects missing standard imports (`re`, `math`, `statistics`, `json`, `pd`, `np`, `text`).
+     - Runs in an isolated subprocess with strict AST safety scanning, 15s timeout, 512MB RAM cap, and read-only DB transactions with pre-imported `exec_globals`.
+     - **5-Metric Closed-Loop Self-Refinement**: Audited by `ToolCritic` across SASC, SRF, REH, DSF, and RPS. Re-prompts LLM with structured diagnostic critique over token-budgeted history (up to 3 retries).
+     - **Layer 1 Fallback**: Intercepts unsupported parameters in `sql_analytics` and hands off to `dynamic_analysis`.
+   - `SQLAnalytics`: Whole-issue catalogs, native photo count analytics by section (`get_photo_counts_by_section`), advertisement counts, date range filtering (`date_from`/`date_to`), and deterministic coverage differences (`get_newspaper_coverage_difference`).
    - `CoverageAnalyzer`: Multi-newspaper 3-tier negative coverage matrix audits.
    - `EntityFilter`: Relational entity lookups and co-occurrence graphs.
    - `TimelineBuilder`: Narrative trajectories and chronological storyline graphs.
    - `WebSearchEngine`: NewsData.io accredited news grounding.
-4. **Corrective RAG (CRAG) Relevance Gate** ([`backend/app/agent/graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py), [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)):
-   - Evaluates retrieved evidence items against query token stems.
-   - Automatically drops ungrounded chunks (score = 0) so they cannot pollute synthesis.
-   - **Layer 2 Dynamic Toolmaker Fallback**: When standard retrieval returns zero or low-relevance evidence ($< 0.4$) on quantitative queries, dynamically invokes `ToolMaker` to synthesize and execute an ad-hoc analysis tool, injecting recovered evidence with confidence $1.0$.
-5. **Answer Synthesizer & Visual Citation Cards** ([`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)):
-   - Formats response into structured broadsheet sections:
-     - `### ⚡ Executive Summary`
-     - `### 📌 Key Verified Facts & Highlights` (with inline citations `[Newspaper, YYYY-MM-DD, Page P, "Headline"]`)
-     - `### 📰 Broadsheet Perspectives & Focus Areas`
-     - `### 🔍 Explore Further`
-   - Emits visual citation metadata with thumbnail endpoints (`/api/photos/{id}/image`).
+4. **Reflexive CRAG Evaluator & Closed-Loop Re-Planning** ([`backend/app/agent/graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py), [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)):
+   - **Fast-Floor Bypass (<5ms)**: Immediate approval if evidence has $\ge 1$ high-confidence broadsheet hit and $\ge 100$ words of clean editorial body text.
+   - **Reflexive LLM-as-Judge**: Emits structured `EvaluationVerdict` (`quality_score`, `gap_diagnosis`, `recommended_action`, `corrective_hints`).
+   - **Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`)**: Re-plans targeted tools, relaxes date bounds, expands `top_k`, and enforces an anti-repetition guard preventing duplicate tool calls.
+   - **Dynamic Recovery Nodes**: Routes to `execute_adaptive_replan` or `execute_dynamic_code` with a strict 1-cycle ceiling (`recovery_attempts < 1`).
+5. **Blueprint-Driven Answer Synthesizer & Visual Citation Cards** ([`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)):
+   - **Dynamic Prompt Compilation**: Translates `AnswerBlueprint` into structured prompt sections via `compile_structure_from_blueprint()`, honoring user formatting constraints (word counts, bullet points, table exclusions).
+   - **Full-Text Single-Article Budgeting**: Allocates up to 7,500 characters of `parent_article_text` for focused inquiries, eliminating snippet truncation.
+   - **Robotic Catalog Table Elimination**: Deterministically strips mechanical tables (`| # | Headline | Section | Page | Words |`) from single-article narrative answers.
+   - **Photo Annotation Noise Reduction**: Suppresses bulky visual bounding box dumps during purely textual and editorial queries.
+   - **Quantitative Metric Absence Hard-Stop**: Truthfully reports absence when numerical metrics cannot be computed, preventing mathematical hallucinations.
+   - **Strict Citations**: Guarantees broadsheet citations `[Newspaper, YYYY-MM-DD, Page N, "Headline"]` and emits visual citation metadata with thumbnail endpoints (`/api/photos/{id}/image`).
 6. **Server-Sent Events (SSE) Protocol** ([`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py)):
-   - `event: stage`: Live progress notifications (`condensing_query`, `planning_tools`, `executing_tools`, `inspecting_visual_asset`, `generating_analysis_tool`, `synthesizing_answer`).
+   - `event: stage`: Live progress notifications (`condensing_query`, `planning_tools`, `executing_tools`, `evaluating_evidence`, `re_planning`, `synthesizing_answer`).
    - `event: thought`: Model internal chain-of-thought tokens.
    - `event: token`: Streaming answer tokens.
    - `event: citations`: Fully resolved textual and visual citation cards.
@@ -491,5 +498,7 @@ graph LR
 | **Low-Confidence OCR** | Poor print quality, bleed-through, or broken text on old broadsheets | Consensus multi-page folio voting across Pages 1–15; RapidOCR ONNX with Unicode superscript normalization | Minimum confidence threshold filter; human verification flag in DB |
 | **Zero Retrieval Hits** | Query mentions unindexed historical date or outside broadsheet scope | Evidence Relevance Gate detects 0 grounded chunks; triggers fallback web search via NewsData.io | Enforces strict Anti-Hallucination notice; explicitly states zero archival evidence found |
 | **Unforeseen Analytics / Unsupported Parameters** | Query asks for custom metrics (page counts, size distribution) exceeding static tools | Layer 1 intercepts unsupported parameter and hands off to `dynamic_analysis`; Layer 2 CRAG invokes `ToolMaker` | Synthesizes ad-hoc tool; executes safely in subprocess AST Sandbox with 15s timeout, 512MB RAM cap, and read-only rollback |
+| **Hallucinated Columns / Cartesian Joins in Dynamic Tools** | Generated tool queries non-existent columns (`published_at`) or joins without `DISTINCT` | `ToolCritic` SRF metric detects schema violations; re-prompts LLM with structured diagnostic critique | Bounded 3-retry loop with token-budgeted trace; enforces relational schema fidelity before evidence injection |
+| **Statistical Metric Absence / Failed Analytics** | Query asks for variance, std dev, or complex ratios but tool fails or returns empty | Synthesizer detects absence of computed numbers in verified tool evidence | `QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP` strictly forbids hallucinating numbers, truthfully reporting computation unavailability |
 | **Cross-Date Asset / Stale Context Leakage** | User switches dates across multi-turn session with active attached asset | Query condenser and graph routers detect date conflict and prune attached asset | Executor strictly enforces `effective_date = explicit_query_date`, preventing queries against mismatched issues |
 | **Network Outage / Cloud Down** | All external APIs (OpenRouter, Gemini, OpenAI) unreachable | Model Settings Studio switches to **Local Sovereign Preset** | 100% offline air-gapped execution via Ollama (Llama 3.1, DeepSeek R1, Qwen 3 VL), Docling, and local BGE-M3 |

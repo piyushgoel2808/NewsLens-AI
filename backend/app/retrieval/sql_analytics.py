@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
-from app.models.article import Article, ArticlePage
+from app.models.article import Article, ArticlePage, Photo
 from app.models.entity import ArticleEntity, ArticleTopic, Entity
 from app.models.newspaper import Issue, Newspaper
 
@@ -54,6 +54,40 @@ _COMMON_HEADLINE_VOCAB = {
     "court", "order", "plea", "bail", "jail", "probe", "fire", "blast", "road", "water",
     "hospital", "health", "cancer", "heart", "care", "cure", "drug", "drugs", "study", "recap",
 }
+
+_NEWS_STOP_WORDS: frozenset[str] = frozenset({
+    "about", "above", "after", "again", "against", "all", "also", "and", "any", "are", "back", "been",
+    "before", "being", "below", "between", "both", "came", "come", "could", "did", "does", "down",
+    "during", "each", "even", "first", "from", "further", "had", "has", "have", "here", "into", "just",
+    "like", "made", "make", "many", "more", "most", "much", "must", "new", "now", "only", "other",
+    "our", "out", "over", "said", "same", "says", "should", "some", "still", "such", "than", "that",
+    "the", "their", "them", "then", "there", "these", "they", "this", "those", "through", "time", "under",
+    "very", "was", "way", "well", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "will", "with", "would", "special", "feature", "today", "edition", "daily", "brief", "short", "news",
+    "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
+    "in short >>", "in short", "news in brief", "panaji", "margao", "vasco", "mapusa", "delhi", "mumbai",
+})
+
+_UBIQUITOUS_ENTITIES: frozenset[str] = frozenset({
+    "india", "delhi", "goa", "mumbai", "new delhi", "panaji", "state", "centre", "government",
+    "police", "court", "high court", "supreme court", "bjp", "congress", "general", "news",
+})
+
+
+def extract_substantive_tokens(text: str | None) -> set[str]:
+    """Extract lowercase substantive alphanumeric tokens excluding stopwords."""
+    if not text:
+        return set()
+    words = re.findall(r"[a-zA-Z0-9]+", text.lower())
+    return {w for w in words if len(w) >= 3 and w not in _NEWS_STOP_WORDS}
+
+
+def extract_numeric_anchors(text: str | None) -> set[str]:
+    """Extract numeric, percentage, and monetary quantity anchors from text."""
+    if not text:
+        return set()
+    nums = re.findall(r"\b(?:\d+[\.,]?\d*(?:%|k|cr|crore|lakh|bn|m)?)\b", text.lower())
+    return {n for n in nums if len(n) >= 2 or (n.isdigit() and int(n) >= 10)}
 
 
 def sanitize_headline(
@@ -592,11 +626,20 @@ class SQLAnalyticsEngine:
         self,
         newspaper_name: str | None = None,
         issue_date: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
         section: str | None = None,
         article_type: str | None = None,
+        limit: int = 30,
     ) -> dict[str, Any]:
-        """Return exact article count matching filters."""
+        """Return exact article count and matching article records matching filters."""
         from app.models.newspaper import Newspaper
+        from app.models.article import ArticlePage, ArticleCategory
+        from sqlalchemy import or_
+
+        norm_date = normalize_date_to_iso(issue_date) if issue_date else None
+        norm_from = normalize_date_to_iso(date_from) if date_from else None
+        norm_to = normalize_date_to_iso(date_to) if date_to else None
 
         async with self._session_factory() as db:
             stmt = select(func.count(Article.id)).join(Issue, Article.issue_id == Issue.id)
@@ -604,12 +647,201 @@ class SQLAnalyticsEngine:
                 stmt = stmt.join(Newspaper, Issue.newspaper_id == Newspaper.id).where(
                     Newspaper.name.ilike(f"%{newspaper_name}%")
                 )
-            if issue_date:
-                stmt = stmt.where(Issue.issue_date == issue_date)
+            if norm_date:
+                stmt = stmt.where(Issue.issue_date == norm_date)
+            else:
+                if norm_from:
+                    stmt = stmt.where(Issue.issue_date >= norm_from)
+                if norm_to:
+                    stmt = stmt.where(Issue.issue_date <= norm_to)
             if section:
-                stmt = stmt.where(Article.section.ilike(f"%{section}%"))
+                stmt = stmt.outerjoin(ArticleCategory, Article.category_id == ArticleCategory.id).where(
+                    or_(Article.section.ilike(f"%{section}%"), ArticleCategory.name.ilike(f"%{section}%"))
+                )
             if article_type:
                 stmt = stmt.where(Article.article_type == article_type)
+
+            res = await db.execute(stmt)
+            count = res.scalar() or 0
+
+            # Detailed matching articles query for verification and citation pills
+            stmt_arts = (
+                select(
+                    Article.id,
+                    Article.headline,
+                    Article.section,
+                    Article.article_type,
+                    Article.word_count,
+                    Issue.issue_date,
+                    Newspaper.name.label("newspaper_name"),
+                    func.coalesce(func.min(ArticlePage.page_number), 1).label("page_number"),
+                )
+                .join(Issue, Article.issue_id == Issue.id)
+                .join(Newspaper, Issue.newspaper_id == Newspaper.id)
+                .outerjoin(ArticlePage, Article.id == ArticlePage.article_id)
+            )
+            if newspaper_name:
+                stmt_arts = stmt_arts.where(Newspaper.name.ilike(f"%{newspaper_name}%"))
+            if norm_date:
+                stmt_arts = stmt_arts.where(Issue.issue_date == norm_date)
+            else:
+                if norm_from:
+                    stmt_arts = stmt_arts.where(Issue.issue_date >= norm_from)
+                if norm_to:
+                    stmt_arts = stmt_arts.where(Issue.issue_date <= norm_to)
+            if section:
+                stmt_arts = stmt_arts.outerjoin(ArticleCategory, Article.category_id == ArticleCategory.id).where(
+                    or_(Article.section.ilike(f"%{section}%"), ArticleCategory.name.ilike(f"%{section}%"))
+                )
+            if article_type:
+                stmt_arts = stmt_arts.where(Article.article_type == article_type)
+
+            stmt_arts = stmt_arts.group_by(
+                Article.id,
+                Article.headline,
+                Article.section,
+                Article.article_type,
+                Article.word_count,
+                Issue.issue_date,
+                Newspaper.name,
+            ).order_by(Issue.issue_date.desc(), func.min(ArticlePage.page_number).asc()).limit(limit)
+
+            res_arts = await db.execute(stmt_arts)
+            rows = res_arts.all()
+
+            articles = [
+                {
+                    "article_id": r.id,
+                    "headline": r.headline or "Untitled Article",
+                    "section": r.section or "General",
+                    "article_type": r.article_type,
+                    "word_count": r.word_count,
+                    "issue_date": str(r.issue_date),
+                    "newspaper_name": r.newspaper_name,
+                    "page_number": r.page_number,
+                }
+                for r in rows
+            ]
+
+            return {
+                "count": count,
+                "articles": articles,
+                "filters": {
+                    "newspaper_name": newspaper_name,
+                    "issue_date": norm_date,
+                    "date_from": norm_from,
+                    "date_to": norm_to,
+                    "section": section,
+                    "article_type": article_type,
+                },
+            }
+
+    async def count_advertisements(
+        self,
+        newspaper_name: str | None = None,
+        issue_date: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        issue_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Return exact advertisement count and article records matching filters."""
+        from app.models.newspaper import Newspaper
+        from app.models.article import ArticlePage
+
+        norm_date = normalize_date_to_iso(issue_date) if issue_date else None
+        norm_from = normalize_date_to_iso(date_from) if date_from else None
+        norm_to = normalize_date_to_iso(date_to) if date_to else None
+
+        async with self._session_factory() as db:
+            stmt = (
+                select(
+                    Article.id,
+                    Article.headline,
+                    Article.section,
+                    Article.article_type,
+                    Article.word_count,
+                    Issue.issue_date,
+                    Newspaper.name.label("newspaper_name"),
+                    func.coalesce(func.min(ArticlePage.page_number), 1).label("page_number"),
+                )
+                .join(Issue, Article.issue_id == Issue.id)
+                .join(Newspaper, Issue.newspaper_id == Newspaper.id)
+                .outerjoin(ArticlePage, Article.id == ArticlePage.article_id)
+                .where(Article.article_type == "advertisement")
+            )
+            if issue_id:
+                stmt = stmt.where(Issue.id == issue_id)
+            if newspaper_name:
+                stmt = stmt.where(Newspaper.name.ilike(f"%{newspaper_name}%"))
+            if norm_date:
+                stmt = stmt.where(Issue.issue_date == norm_date)
+            else:
+                if norm_from:
+                    stmt = stmt.where(Issue.issue_date >= norm_from)
+                if norm_to:
+                    stmt = stmt.where(Issue.issue_date <= norm_to)
+
+            stmt = stmt.group_by(
+                Article.id,
+                Article.headline,
+                Article.section,
+                Article.article_type,
+                Article.word_count,
+                Issue.issue_date,
+                Newspaper.name,
+            ).order_by(Issue.issue_date.desc(), func.min(ArticlePage.page_number).asc())
+
+            res = await db.execute(stmt)
+            rows = res.all()
+
+            advertisements = [
+                {
+                    "article_id": r.id,
+                    "headline": r.headline or "[Advertisement]",
+                    "section": r.section or "Advertisements & Notices",
+                    "article_type": r.article_type,
+                    "word_count": r.word_count,
+                    "issue_date": str(r.issue_date),
+                    "newspaper_name": r.newspaper_name,
+                    "page_number": r.page_number,
+                }
+                for r in rows
+            ]
+
+            return {
+                "count": len(advertisements),
+                "advertisements": advertisements,
+                "filters": {
+                    "newspaper_name": newspaper_name,
+                    "issue_date": norm_date,
+                    "date_from": norm_from,
+                    "date_to": norm_to,
+                    "issue_id": issue_id,
+                },
+            }
+
+    async def count_issues(
+        self,
+        newspaper_name: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> dict[str, Any]:
+        """Return count of issues matching newspaper and/or date filters."""
+        from app.models.newspaper import Newspaper
+
+        norm_from = normalize_date_to_iso(date_from) if date_from else None
+        norm_to = normalize_date_to_iso(date_to) if date_to else None
+
+        async with self._session_factory() as db:
+            stmt = select(func.count(Issue.id))
+            if newspaper_name:
+                stmt = stmt.join(Newspaper, Issue.newspaper_id == Newspaper.id).where(
+                    Newspaper.name.ilike(f"%{newspaper_name}%")
+                )
+            if norm_from:
+                stmt = stmt.where(Issue.issue_date >= norm_from)
+            if norm_to:
+                stmt = stmt.where(Issue.issue_date <= norm_to)
 
             res = await db.execute(stmt)
             count = res.scalar() or 0
@@ -617,9 +849,73 @@ class SQLAnalyticsEngine:
                 "count": count,
                 "filters": {
                     "newspaper_name": newspaper_name,
-                    "issue_date": issue_date,
+                    "date_from": norm_from,
+                    "date_to": norm_to,
+                },
+            }
+
+    async def get_photo_counts_by_section(
+        self,
+        newspaper_name: str | None = None,
+        issue_date: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        issue_id: int | None = None,
+        section: str | None = None,
+    ) -> dict[str, Any]:
+        """Return photo count aggregated by section."""
+        norm_date = normalize_date_to_iso(issue_date) if issue_date else None
+        norm_from = normalize_date_to_iso(date_from) if date_from else None
+        norm_to = normalize_date_to_iso(date_to) if date_to else None
+
+        async with self._session_factory() as db:
+            stmt = (
+                select(
+                    func.coalesce(Article.section, "Unassigned").label("section"),
+                    func.count(Photo.id).label("photo_count"),
+                )
+                .select_from(Photo)
+                .join(Article, Photo.article_id == Article.id)
+                .join(Issue, Article.issue_id == Issue.id)
+            )
+            if issue_id:
+                stmt = stmt.where(Issue.id == issue_id)
+            if newspaper_name:
+                stmt = stmt.join(Newspaper, Issue.newspaper_id == Newspaper.id).where(
+                    Newspaper.name.ilike(f"%{newspaper_name}%")
+                )
+            if norm_date:
+                stmt = stmt.where(Issue.issue_date == norm_date)
+            else:
+                if norm_from:
+                    stmt = stmt.where(Issue.issue_date >= norm_from)
+                if norm_to:
+                    stmt = stmt.where(Issue.issue_date <= norm_to)
+            if section:
+                stmt = stmt.where(Article.section.ilike(f"%{section}%"))
+
+            stmt = stmt.group_by(func.coalesce(Article.section, "Unassigned")).order_by(
+                desc("photo_count")
+            )
+
+            res = await db.execute(stmt)
+            rows = res.all()
+
+            section_counts = [{"section": r[0], "count": int(r[1])} for r in rows]
+            total_photos = sum(sc["count"] for sc in section_counts)
+            by_section = {sc["section"]: sc["count"] for sc in section_counts}
+
+            return {
+                "total_photos": total_photos,
+                "section_counts": section_counts,
+                "by_section": by_section,
+                "filters": {
+                    "newspaper_name": newspaper_name,
+                    "issue_date": norm_date or issue_date,
+                    "date_from": norm_from or date_from,
+                    "date_to": norm_to or date_to,
+                    "issue_id": issue_id,
                     "section": section,
-                    "article_type": article_type,
                 },
             }
 
@@ -643,6 +939,198 @@ class SQLAnalyticsEngine:
             category_filter=category_filter,
             query=query,
         )
+
+    async def _match_shared_articles(
+        self,
+        clean_source: list[dict[str, Any]],
+        clean_comp: list[dict[str, Any]],
+        min_overlap: float = 0.40,
+    ) -> list[dict[str, Any]]:
+        """Core 2-Tier Hybrid Matcher with 1-to-1 Bipartite Deduplication."""
+        all_art_ids = [a["id"] for a in clean_source if a.get("id")] + [a["id"] for a in clean_comp if a.get("id")]
+        entities_by_art: dict[int, set[str]] = {}
+        if all_art_ids and self._session_factory:
+            try:
+                async with self._session_factory() as db:
+                    stmt = (
+                        select(ArticleEntity.article_id, Entity.name)
+                        .join(Entity, Entity.id == ArticleEntity.entity_id)
+                        .where(ArticleEntity.article_id.in_(all_art_ids))
+                    )
+                    res = await db.execute(stmt)
+                    rows = res.all() if hasattr(res, "all") else []
+                    for aid, ename in rows:
+                        clean_e = str(ename).lower().strip()
+                        if clean_e not in _UBIQUITOUS_ENTITIES and len(clean_e) >= 3:
+                            entities_by_art.setdefault(aid, set()).add(clean_e)
+            except Exception as e:
+                logger.debug("Could not fetch article entities for shared coverage matching", extra={"error": str(e)})
+
+        candidates: list[tuple[float, dict[str, Any], dict[str, Any], str, str]] = []
+        for sa in clean_source:
+            stoks = extract_substantive_tokens(sa.get("headline", ""))
+            snums = extract_numeric_anchors(sa.get("headline", ""))
+            sentities = entities_by_art.get(sa.get("id"), set())
+            for ca in clean_comp:
+                ctoks = extract_substantive_tokens(ca.get("headline", ""))
+                cnums = extract_numeric_anchors(ca.get("headline", ""))
+                centities = entities_by_art.get(ca.get("id"), set())
+
+                common_toks = stoks & ctoks
+                common_nums = snums & cnums
+                score = 0.0
+                mtype = None
+                shared_kw = sorted(common_toks | common_nums)
+                if not shared_kw and sentities and centities:
+                    shared_kw = sorted(sentities & centities)
+                topic_hint = ", ".join(shared_kw) if shared_kw else (sa.get("section") or "General")
+
+                # Tier 1: Substantive token Jaccard & numerical anchors
+                if len(common_toks) >= 2 and min(len(stoks), len(ctoks)) > 0:
+                    jaccard = len(common_toks) / min(len(stoks), len(ctoks))
+                    if jaccard >= min_overlap:
+                        score = jaccard
+                        mtype = "token_jaccard"
+                    elif jaccard >= 0.25 and bool(common_nums):
+                        score = min(0.95, jaccard + 0.35)
+                        mtype = "numerical_anchor"
+
+                # Tier 2: Entity & Named-Entity Intersection (for rewritten wires)
+                if score < 0.50 and sentities and centities:
+                    common_ents = sentities & centities
+                    if len(common_ents) >= 2 and (bool(common_toks) or bool(common_nums)):
+                        ent_score = min(0.90, 0.55 + len(common_ents) * 0.10)
+                        if ent_score > score:
+                            score = ent_score
+                            mtype = f"entity_intersection ({len(common_ents)} entities)"
+                            topic_hint = ", ".join(sorted(common_ents | common_toks))
+
+                if score >= min_overlap:
+                    candidates.append((score, sa, ca, mtype or "similarity_match", topic_hint))
+
+        # Bipartite 1-to-1 Maximum Weight Matching (Greedy Deduplication)
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        used_s: set[int] = set()
+        used_c: set[int] = set()
+        shared_articles: list[dict[str, Any]] = []
+
+        for score, sa, ca, mtype, topic_hint in candidates:
+            s_id = sa.get("id")
+            c_id = ca.get("id")
+            if s_id in used_s or c_id in used_c:
+                continue
+            if s_id:
+                used_s.add(s_id)
+            if c_id:
+                used_c.add(c_id)
+
+            shared_articles.append({
+                "source_headline": sa.get("headline"),
+                "headline_a": sa.get("headline"),
+                "source_page": sa.get("page_number", 1),
+                "page_a": sa.get("page_number", 1),
+                "source_section": sa.get("section", "General"),
+                "section_a": sa.get("section", "General"),
+                "source_category": sa.get("category", "General"),
+                "source_article_id": s_id,
+                "article_id_a": s_id,
+                "source_snippet": sa.get("summary") or sa.get("snippet", ""),
+                "comparison_headline": ca.get("headline"),
+                "headline_b": ca.get("headline"),
+                "matched_headline": ca.get("headline"),  # backward compat alias
+                "comparison_page": ca.get("page_number", 1),
+                "page_b": ca.get("page_number", 1),
+                "comparison_section": ca.get("section", "General"),
+                "section_b": ca.get("section", "General"),
+                "comparison_category": ca.get("category", "General"),
+                "comparison_article_id": c_id,
+                "article_id_b": c_id,
+                "comparison_snippet": ca.get("summary") or ca.get("snippet", ""),
+                "confidence": round(score, 2),
+                "overlap_score": round(score, 2),  # backward compat alias
+                "match_type": mtype,
+                "match_tier": mtype,
+                "shared_keywords": topic_hint,
+                "topic": topic_hint,
+            })
+
+        return shared_articles
+
+    async def get_newspaper_shared_coverage(
+        self,
+        source_newspaper: str | None = None,
+        comparison_newspaper: str | None = None,
+        issue_date: str | None = None,
+        category_filter: str | None = None,
+        query: str | None = None,
+        min_overlap: float = 0.40,
+        newspaper_a: str | None = None,
+        newspaper_b: str | None = None,
+    ) -> dict[str, Any]:
+        """Compute verified shared syndicated and similar wire coverage between two newspapers on a given date."""
+        src_np = source_newspaper or newspaper_a or ""
+        cmp_np = comparison_newspaper or newspaper_b or ""
+
+        source_summary = await self.list_issue_articles(
+            newspaper_name=src_np,
+            issue_date=issue_date,
+            category_filter=category_filter,
+            query=query,
+        )
+        if not isinstance(source_summary, dict) or "error" in source_summary:
+            err = source_summary.get("error", "Source issue not found") if isinstance(source_summary, dict) else "Source error"
+            return {"error": f"Source publication '{src_np}': {err}"}
+
+        comp_summary = await self.list_issue_articles(
+            newspaper_name=cmp_np,
+            issue_date=issue_date,
+            category_filter=category_filter,
+            query=query,
+        )
+        if not isinstance(comp_summary, dict) or "error" in comp_summary:
+            err = comp_summary.get("error", "Comparison issue not found") if isinstance(comp_summary, dict) else "Comparison error"
+            return {"error": f"Comparison publication '{cmp_np}': {err}"}
+
+        source_articles = source_summary.get("articles", [])
+        comp_articles = comp_summary.get("articles", [])
+
+        noise_hls = {
+            "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
+            "in short >>", "in short", "news in brief", "panaji", "margao", "vasco", "mapusa", "delhi", "mumbai",
+            "when: ", "where: ", "studio xo", "sit vacant", "[advertisement]", "results", "epaper.morningstandard.in",
+        }
+        clean_source = [
+            a for a in source_articles
+            if len((a.get("headline") or "").strip()) >= 10
+            and (a.get("headline") or "").strip().lower() not in noise_hls
+        ]
+        clean_comp = [
+            a for a in comp_articles
+            if len((a.get("headline") or "").strip()) >= 10
+            and (a.get("headline") or "").strip().lower() not in noise_hls
+        ]
+
+        shared_articles = await self._match_shared_articles(clean_source, clean_comp, min_overlap=min_overlap)
+        for story in shared_articles:
+            story["newspaper_a"] = source_summary.get("newspaper", src_np)
+            story["newspaper_b"] = comp_summary.get("newspaper", cmp_np)
+            story["source_newspaper"] = source_summary.get("newspaper", src_np)
+            story["comparison_newspaper"] = comp_summary.get("newspaper", cmp_np)
+
+        return {
+            "source_newspaper": source_summary.get("newspaper", src_np),
+            "comparison_newspaper": comp_summary.get("newspaper", cmp_np),
+            "newspaper_a": source_summary.get("newspaper", src_np),
+            "newspaper_b": comp_summary.get("newspaper", cmp_np),
+            "issue_date": str(source_summary.get("issue_date", issue_date)),
+            "total_source_articles": len(source_articles),
+            "total_comparison_articles": len(comp_articles),
+            "total_newspaper_a_articles": len(source_articles),
+            "total_newspaper_b_articles": len(comp_articles),
+            "shared_count": len(shared_articles),
+            "shared_articles": shared_articles,
+            "shared_stories": shared_articles,
+        }
 
     async def get_newspaper_coverage_difference(
         self,
@@ -670,57 +1158,43 @@ class SQLAnalyticsEngine:
         source_articles = source_summary.get("articles", [])
         comp_articles = comp_summary.get("articles", [])
 
-        # Build token sets for comparison headlines
-        comp_word_sets: list[set[str]] = []
-        for ca in comp_articles:
-            chl = (ca.get("headline") or "").strip().lower()
-            c_words = set(w.strip("?:!.,\"'()[]{}<>-") for w in chl.split() if len(w) > 3)
-            comp_word_sets.append(c_words)
-
-        exclusive_articles: list[dict[str, Any]] = []
-        shared_articles: list[dict[str, Any]] = []
-
-        # Noise tokens to filter out
         noise_hls = {
             "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
             "in short >>", "in short", "news in brief", "panaji", "margao", "vasco", "mapusa",
         }
+        clean_source = [
+            a for a in source_articles
+            if len((a.get("headline") or "").strip()) >= 10
+            and (a.get("headline") or "").strip().lower() not in noise_hls
+        ]
+        clean_comp = [
+            a for a in comp_articles
+            if len((a.get("headline") or "").strip()) >= 10
+            and (a.get("headline") or "").strip().lower() not in noise_hls
+        ]
 
+        shared_articles = await self._match_shared_articles(clean_source, clean_comp, min_overlap=0.40)
+        shared_source_ids = {a.get("source_article_id") for a in shared_articles if a.get("source_article_id")}
+        shared_source_hls = {str(a.get("source_headline", "")).strip().lower() for a in shared_articles}
+
+        exclusive_articles: list[dict[str, Any]] = []
         for sa in source_articles:
-            hl = (sa.get("headline") or "").strip()
-            if len(hl) < 10 or hl.lower() in noise_hls:
+            s_id = sa.get("id")
+            s_hl = str(sa.get("headline", "")).strip()
+            if s_id in shared_source_ids or s_hl.lower() in shared_source_hls:
+                continue
+            if len(s_hl) < 10 or s_hl.lower() in noise_hls:
                 continue
 
-            hl_words = set(w.strip("?:!.,\"'()[]{}<>-") for w in hl.lower().split() if len(w) > 3)
-            if not hl_words:
-                continue
-
-            max_overlap = 0.0
-            matched_comp_hl = None
-            for idx, c_words in enumerate(comp_word_sets):
-                if not c_words:
-                    continue
-                overlap = len(hl_words & c_words) / max(1, min(len(hl_words), len(c_words)))
-                if overlap > max_overlap:
-                    max_overlap = overlap
-                    matched_comp_hl = comp_articles[idx].get("headline")
-
-            if max_overlap >= 0.50:
-                shared_articles.append({
-                    "source_headline": hl,
-                    "matched_headline": matched_comp_hl,
-                    "overlap_score": round(max_overlap, 2),
-                })
-            else:
-                exclusive_articles.append({
-                    "id": sa.get("id"),
-                    "headline": hl,
-                    "page_number": sa.get("page_number", 1),
-                    "printed_page": sa.get("printed_page", "1"),
-                    "section": sa.get("section", "General"),
-                    "category": sa.get("category", "General"),
-                    "snippet": sa.get("summary") or sa.get("snippet", ""),
-                })
+            exclusive_articles.append({
+                "id": s_id,
+                "headline": s_hl,
+                "page_number": sa.get("page_number", 1),
+                "printed_page": sa.get("printed_page", "1"),
+                "section": sa.get("section", "General"),
+                "category": sa.get("category", "General"),
+                "snippet": sa.get("summary") or sa.get("snippet", ""),
+            })
 
         return {
             "source_newspaper": source_summary.get("newspaper", source_newspaper),
@@ -731,7 +1205,7 @@ class SQLAnalyticsEngine:
             "exclusive_count": len(exclusive_articles),
             "shared_count": len(shared_articles),
             "exclusive_articles": exclusive_articles,
-            "shared_articles": shared_articles[:10],
+            "shared_articles": shared_articles,
         }
 
     async def get_issues_by_date(self, issue_date: str) -> list[Issue]:

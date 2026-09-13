@@ -215,16 +215,12 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    ┌──────────────────────────────────────────────────────────────┐
    │           Cognitive Query Planner & Intent Router            │
    │  • Grounded with live archive metadata (dates, papers, cats) │
-   │  • Classifies into 1 of 7 Broadsheet Query Archetypes:       │
-   │    - factual_lookup (specific quotes, events, people)        │
-   │    - cross_newspaper_comparison (framing, differential coverage)│
-   │    - thematic_timeline (thematic chronological progression)  │
-   │    - entity_deep_dive (knowledge graph & salience lookups)   │
-   │    - negative_coverage_audit (unreported news verification)  │
-   │    - macro_summary (broad edition overview & distribution)   │
-   │    - article_catalog (instant manifests, listings, sub-200ms)│
+   │  • Classifies into 1 of 7 Broadsheet Query Archetypes        │
+   │  • Dynamic Answer Blueprint Generation:                      │
+   │    - Formulates SectionSpec (narrative, table, metric_card)  │
+   │    - Target word counts, table columns, prohibited elements  │
    │  • Dispatches optimal tool execution sequence:               │
-   │    - sql_analytics (issue manifest, stats, section lists)    │
+   │    - sql_analytics (issue manifest, photo counts, ads, stats)│
    │    - hybrid_search (dense Qdrant + sparse MySQL RRF)         │
    │    - inspect_visual_asset (multimodal charts, tables, photos)│
    │    - entity_search (knowledge graph & salience lookups)      │
@@ -238,44 +234,37 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    ┌─────────────────────────────────────────────────────────────┐
    │      Concurrent Tool Dispatch & Adaptive Execution Engine   │
    │  • Executes planned tools in parallel via asyncio.gather    │
-   │  • Layer 1 Fallback: Intercepts unsupported parameter types │
-   │    and transparently routes to dynamic_analysis             │
+   │  • Native fast-paths: photo section counts, ad audits (~10ms)│
+   │  • Dual evidence generation for interactive citation pills  │
    │  • Deep Visual Inspection Cascade (Strategies A through E)  │
-   │  • On-demand VLM extraction from MinIO on placeholder crops │
-   │  • Defensive publication & date validation in executor      │
    │  • Cross-Date Invariant: Query date strictly overrides asset│
    │  • Real-time adaptive fallback on 0-hit category filters    │
    │  • Resilient multi-tier issue ID fallback in sql_analytics  │
-   │  • Scoped coverage analyzer targeting active date editions  │
-   │  • Conditional coverage analysis (skips 25s audit unless gap keywords exist)│
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │          Corrective RAG (CRAG) Retrieval Evaluator          │
-   │  • Grades keyword relevance & density of retrieved evidence │
-   │  • Layer 2 Fallback: If evidence is 0 or low-confidence and │
-   │    the query requires data computation, invokes ToolMaker   │
-   │    to synthesize and execute an ad-hoc analysis tool        │
-   │  • Triggers broadened fallback query if confidence is low   │
-   │  • Enforces anti-hallucination hard stops on empty evidence │
-   │  • Automatic 1.0 score protection for structural manifests  │
+   │      Reflexive CRAG Evaluator & LLM-as-Judge Engine         │
+   │  • Fast-Floor Check (<5ms): immediate approval for >=100    │
+   │    words of clean broadsheet editorial evidence             │
+   │  • Reflexive LLM Judge: generates EvaluationVerdict         │
+   │    (quality_score, gap_diagnosis, recommended_action)       │
+   │  • Conditional LangGraph Routing with 1-Cycle Ceiling:      │
+   │    ├─► Sufficient ───────────────► Synthesize Answer        │
+   │    ├─► Replan Needed ────────────► execute_adaptive_replan  │
+   │    └─► Dynamic Tool Needed ──────► execute_dynamic_code     │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │      Domain-Adaptive Broadsheet Grounded Synthesizer        │
-   │  • Intent-aware structure adapts dynamically to archetype:  │
-   │    - Domain Comparison: Adaptive headers (Medical/Finance)  │
-   │    - Edition Comparison: Page 1 Leads vs Section Breakdown  │
-   │    - Article Catalog: Tabular manifest (Newspaper, Page...) │
-   │    - Factual Lookup: 4-Tier structured executive synthesis  │
-   │  • Preserves cross-newspaper archetype in deterministic fallback│
-   │  • Granular domain token stem mapping (e.g. Health & Med)   │
-   │  • Broadsheet OCR font ligature repair (e  orts -> efforts)│
-   │  • Headline sanitization cleans author boxes (Dr./Bylines)  │
-   │  • Generates strict 1-shot citations: [Paper, Date, Page]   │
-   │  • Modular static renderers in deterministic fallback       │
+   │     Dynamic Blueprint-Driven Broadsheet Synthesizer         │
+   │  • Dynamic Prompt Compilation from AnswerBlueprint           │
+   │  • Single-Article Full-Text Budgeting (up to 7,500 chars)   │
+   │  • Deterministic Robotic Catalog Table Stripping            │
+   │  • Photo Visual Scene Annotation Noise Sanitization         │
+   │  • Quantitative Metric Absence Hard-Stop                    │
+   │  • Broadsheet Ligature Repair & Author Box Cleansing        │
+   │  • Strict 1-Shot Citations: [Paper, YYYY-MM-DD, Page, Title]│
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
@@ -283,73 +272,109 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │            SSE Streaming Delivery & Audit Logging           │
    │  • Streams response tokens, reasoning trace & tool metrics  │
    │  • Logs execution latency, cost, and query audit in MySQL   │
+   │  • Stores plan and AnswerBlueprint in QueryLog.plan_json    │
    └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### F. Dynamic Tool Generation & AST Sandbox Execution Engine (`tool_maker.py`, `sandbox.py`, `sandbox_runner.py`)
+### F. Dynamic Tool Generation, Closed-Loop ToolCritic, and AST Sandbox Engine (`tool_maker.py`, `tool_critic.py`, `sandbox.py`, `sandbox_runner.py`)
 
-When broadsheet analytical queries cannot be satisfied by static tools (e.g. "How many pages are in the Aug 1 edition?", "Compare average article length across editions", "Find pages with more than 3 photos"), NewsLens-AI dynamically synthesizes and safely executes ad-hoc tools via the **LLM-as-Tool-Maker** pattern.
+When broadsheet analytical queries cannot be satisfied by static tools (e.g. "What is the variance of word counts across categories?", "How many pages are in the Aug 1 edition?", "Compare average article length across editions"), NewsLens-AI dynamically synthesizes, audits, and executes ad-hoc tools via the **Closed-Loop LLM-as-Tool-Maker** pattern with automated self-refinement.
 
 ```
-┌────────────────────────────┐
-│ User Query / Fallback Event │
-└─────────────┬──────────────┘
-              │
-              ▼
-┌──────────────────────────────────────────────────────────┐
-│      LLM Tool Maker (tool_maker.py)                      │
-│ • Schema Prompt with 17 MySQL tables & columns           │
-│ • Few-shot analytical code generation patterns           │
-│ • Synthesizes self-contained Python function:            │
-│   `def execute(connection, **kwargs) -> Dict[str, Any]` │
-└─────────────┬────────────────────────────────────────────┘
-              │ Generated Code
-              ▼
-┌──────────────────────────────────────────────────────────┐
-│      AST Safety Scanner (sandbox.py: ASTSafetyScanner)   │
-│ • Parses code into Python Abstract Syntax Tree (ast.parse)│
-│ • Whitelist: math, datetime, re, json, collections,      │
-│   itertools, typing, sqlalchemy, decimal                 │
-│ • Blacklist Modules: os, sys, subprocess, socket,        │
-│   shutil, urllib, requests, pathlib, pickle, ctypes      │
-│ • Blacklist Builtins: eval, exec, compile, open, input,   │
-│   __import__, globals, locals, getattr, setattr          │
-│ • Blacklist Dunders: __subclasses__, __bases__, __code__ │
-│ • Validates mandatory `execute(connection)` signature     │
-└─────────────┬────────────────────────────────────────────┘
-              │ Validated Safe AST
-              ▼
-┌──────────────────────────────────────────────────────────┐
-│      Subprocess Sandbox Runner (sandbox_runner.py)       │
-│ • Runs in isolated subprocess (sys.executable)           │
-│ • Resource Caps: 15s execution timeout, 512MB RAM cap    │
-│ • Non-blocking JSON-based IPC over stdin/stdout          │
-│ • Read-Only DB Transaction:                              │
-│   - Autocommit disabled                                  │
-│   - Explicit `connection.rollback()` in `finally` block  │
-│   - Zero database mutations permitted                    │
-└─────────────┬────────────────────────────────────────────┘
-              │ Execution Telemetry & Result
-              ▼
-┌──────────────────────────────────────────────────────────┐
-│      Agent Evidence Pool & Reasoning Trace               │
-│ • Injects ToolExecutionRecord into AgentState            │
-│ • Emits SSE stage `generating_analysis_tool`             │
-│ • CRAG evaluator validates synthesized evidence metrics  │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                 User Query / Fallback Event                 │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 ToolMaker (tool_maker.py)                   │
+│ • Schema Prompt with MySQL broadsheet tables & relationships │
+│ • Auto-Import Pre-Injection (ensure_standard_imports):       │
+│   Pre-injects re, math, statistics, json, datetime, pd, np   │
+│ • Synthesizes async function: `async def analyze(db, ...)`  │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ Generated Python Code
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│           AST Safety Scanner (sandbox.py)                   │
+│ • Validates AST against whitelist (math, re, json, datetime) │
+│ • Blocks dangerous calls: os, sys, subprocess, eval, exec   │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ Safe Code
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│          Subprocess Sandbox Runner (sandbox_runner.py)      │
+│ • Runs in isolated subprocess with RLIMIT_AS (512MB RAM cap) │
+│ • 15s execution timeout; read-only DB transaction rollback   │
+│ • Pre-imported exec_globals (re, math, pd, np, text)         │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ Raw Execution Output / Error
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│           Diagnostic ToolCritic (tool_critic.py)            │
+│ • 5-Dimension Automated Quality Audit:                      │
+│   1. SASC: Syntactic & AST Security Compliance (1.0/0.0)    │
+│   2. SRF:  SQL Relational & Schema Fidelity (0.0-1.0)       │
+│   3. REH:  Runtime Execution Health (1.0/0.0)               │
+│   4. DSF:  Data-to-Summary Faithfulness (0.0-1.0)           │
+│   5. RPS:  Intent Alignment & Filter Plausibility (0.0-1.0) │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+         ┌─────────────────────┴─────────────────────┐
+         ▼                                           ▼
+[Audit Passes: Score >= 0.70]            [Audit Fails: Issues Detected]
+         │                                           │
+         ▼                                           ▼
+┌─────────────────────────────────┐      ┌─────────────────────────────┐
+│ Inject into Agent Evidence Pool │      │ Closed-Loop Self-Refinement │
+│ • Injects ToolExecutionRecord   │      │ • Re-prompts LLM with       │
+│ • High-Confidence Evidence(1.0) │      │   structured critique fixes │
+│ • Emits SSE telemetry           │      │ • Up to 3 retry attempts    │
+└─────────────────────────────────┘      └──────────────┬──────────────┘
+                                                        │ Retry Loop
+                                                        └───────► ToolMaker
 ```
+
+#### The 5-Metric Evaluation Scorecard
+
+1. **Metric 1: Syntactic & AST Security Compliance (SASC)**
+   - Score: `1.0` or `0.0` (Hard gate).
+   - Audits code against `ASTSafetyScanner` to ensure zero invocation of forbidden built-ins (`eval`, `exec`, `open`), banned dunders (`__subclasses__`), or blacklisted modules (`os`, `sys`, `subprocess`, `socket`).
+
+2. **Metric 2: SQL Relational & Schema Fidelity (SRF)**
+   - Score: `0.0` to `1.0` (Threshold: $\ge 0.70$).
+   - AST-based SQL extraction parses SQL queries without assuming rigid `text("""...""")` formatting.
+   - Detects hallucinated columns (e.g. `articles.published_at` -> remapped to `issues.issue_date`).
+   - Prevents multi-table Cartesian multipliers (requires `DISTINCT` when joining `articles` with `pages`).
+   - Validates category joins (`article_categories c ON a.category_id = c.id`) and permits valid `AS category` aliases.
+
+3. **Metric 3: Runtime Execution Health (REH)**
+   - Score: `1.0` or `0.0` (Hard gate).
+   - Validates that the subprocess exited with returncode 0, without timeouts or unhandled exceptions.
+
+4. **Metric 4: Internal Data-to-Summary Faithfulness (DSF)**
+   - Score: `0.0` to `1.0` (Threshold: $\ge 0.70$).
+   - **Legitimate Absence vs. Narrative Hallucination**: If a query returns 0 rows (`data: []`) and the summary truthfully acknowledges that no records were found, DSF awards a perfect `1.0`. If `data: []` but the summary fabricates positive numbers or extensive narratives, it is heavily penalized (`0.1`–`0.4`).
+   - **Aggregate Computation Support**: For statistical queries (variances, distributions, photo counts), `data` is `[]` while results are stored in `metadata` and markdown tables in `summary`. DSF recognizes these structures, preventing false-positive hallucination rejections.
+   - **Numerical Consistency Checks**: Audits cited numbers in the summary against exact metadata metrics (e.g., page counts, photo counts).
+
+5. **Metric 5: Intent Alignment & Filter Plausibility (RPS)**
+   - Score: `0.0` to `1.0` (Threshold: $\ge 0.70$).
+   - Audits whether input dates (e.g., `2/8/2026`) were normalized to ISO-8601 (`2026-08-02`) before querying MySQL `DATE` fields.
+   - Audits publication naming aliases (e.g., `goan` matching `The Goan`).
+   - Grants immunity to legitimate out-of-range date queries.
 
 #### Two-Layer Reactive Dynamic Fallback Architecture
 
 1. **Layer 1: Unsupported Parameter Handoff (`executor.py`)**:
-   - If the Planner dispatches `sql_analytics` with an unsupported `analysis_type` (such as `"page_count"`, `"edition_distribution"`, or custom multi-table aggregations not built into static methods), the executor automatically intercepts the call.
-   - It delegates execution to `dynamic_analysis`, synthesizing a custom Python/SQL query tool on-the-fly and returning the analytical results without crashing or returning empty data.
+   - If the Planner dispatches `sql_analytics` with an unsupported `analysis_type` (such as `"word_count_variance"`, `"author_frequency"`, or custom multi-table aggregations not built into static methods), the executor automatically intercepts the call.
+   - It delegates execution to `dynamic_analysis`, synthesizing a custom Python/SQL query tool on-the-fly with closed-loop `ToolCritic` auditing.
 
 2. **Layer 2: CRAG Zero-Evidence Dynamic Fallback (`evaluator.py`)**:
    - When primary retrieval tools (e.g. `hybrid_search`) return zero hits or insufficient evidence (score $< 0.4$) on analytical queries, the Corrective RAG (CRAG) Evaluator intercepts the failure.
-   - It invokes `ToolMaker` asynchronously to generate and execute a targeted ad-hoc analysis tool.
+   - It invokes `ToolMaker` asynchronously to generate, audit, and execute a targeted ad-hoc analysis tool.
    - The recovered telemetry is injected into `AgentState["tool_executions"]` as high-confidence evidence ($1.0$), ensuring the Synthesizer has verified database facts to ground the final response.
 
 ---
@@ -382,6 +407,90 @@ NewsLens-AI implements a **4-Tier Cross-Date Anti-Leakage Shield**:
        effective_date = asset_date or default_date
    ```
    - Prevents stale asset metadata from poisoning database queries.
+
+---
+
+### H. Reflexive LLM-as-Judge Evidence Evaluation & Closed-Loop Agentic Re-Planning (`evaluator.py`, `planner.py`, `graph.py`)
+
+When broadsheet queries encounter ambiguous, incomplete, or borderline retrieval evidence, NewsLens-AI employs a **Reflexive Closed-Loop CRAG Architecture**:
+
+```
+ ┌─────────────────────────────────────────────────────────────┐
+ │                Retrieved Evidence Pool                      │
+ └──────────────────────────────┬──────────────────────────────┘
+                                │
+                                ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │           Hybrid Fast-Floor Evaluation Bypass               │
+ │ • Evidence has >= 1 high-confidence broadsheet hit AND      │
+ │   >= 100 words of clean editorial body text                 │
+ │ • Sub-5ms instant pass (is_sufficient=True, score=1.0)      │
+ └──────────────┬──────────────────────────────┬───────────────┘
+                │ (Passes Fast-Floor)          │ (Below Fast-Floor)
+                ▼                              ▼
+ ┌─────────────────────────────┐ ┌─────────────────────────────┐
+ │      Proceed to Answer      │ │   Reflexive LLM-as-Judge    │
+ │         Synthesizer         │ │ • Evaluates evidence depth  │
+ └─────────────────────────────┘ │ • Emits EvaluationVerdict:  │
+                                 │   - is_sufficient (bool)    │
+                                 │   - quality_score (0.0-1.0) │
+                                 │   - gap_diagnosis (str)     │
+                                 │   - recommended_action      │
+                                 │   - corrective_hints (list) │
+                                 └──────────────┬──────────────┘
+                                                │
+          ┌─────────────────────────────────────┴─────────────────────────────────────┐
+          ▼                                     ▼                                     ▼
+ [action: proceed]                 [action: replan_static_tools]          [action: synthesize_dynamic_tool]
+          │                                     │                                     │
+          ▼                                     ▼                                     ▼
+┌──────────────────┐                ┌───────────────────────────┐         ┌───────────────────────────┐
+│ synthesize_answer│                │  execute_adaptive_replan  │         │   execute_dynamic_code    │
+└──────────────────┘                │ • replan_with_feedback    │         │ • ToolMaker generation    │
+                                    │ • Anti-repetition guard   │         │ • ToolCritic 5-D audit    │
+                                    │ • Widens dates / top_k    │         │ • AST Subprocess Sandbox  │
+                                    └─────────────┬─────────────┘         └─────────────┬─────────────┘
+                                                  │                                     │
+                                                  └──────────────────┬──────────────────┘
+                                                                     ▼
+                                                      ┌─────────────────────────────┐
+                                                      │  Synthesize Final Answer    │
+                                                      │  (1-Cycle Recovery Ceiling) │
+                                                      └─────────────────────────────┘
+```
+
+1. **Hybrid Fast-Floor Bypass (`evaluator.py`)**:
+   - Evaluates retrieved articles against hard minimum bounds (<5ms execution). If primary retrieval satisfies broadsheet editorial requirements ($\ge 1$ article with $\ge 100$ words of clean body text), bypasses LLM evaluation, saving latency and token overhead.
+2. **Reflexive LLM-as-Judge (`evaluate_evidence_async`)**:
+   - For complex, borderline, or zero-evidence cases, prompts an LLM judge with `EVALUATOR_SYSTEM_PROMPT` to analyze semantic relevance, entity completeness, and factual coverage.
+   - Outputs a typed `EvaluationVerdict` diagnosing precise evidentiary gaps (e.g. *"Missing specific casualty figures from Southern edition"*).
+3. **Closed-Loop Adaptive Re-Planner with Anti-Repetition Guard (`planner.py`)**:
+   - `replan_with_feedback_async()` analyzes the gap diagnosis and previous tool execution records.
+   - Dynamically widens date bounds, expands `top_k`, or rephrases query keywords while strictly prohibiting repeating tool calls that already failed.
+4. **LangGraph Recovery Branches & 1-Cycle Ceiling (`graph.py`)**:
+   - Implements conditional branching from `evaluate_and_fallback` to `execute_adaptive_replan` or `execute_dynamic_code`.
+   - Bounded by a strict 1-cycle ceiling (`recovery_attempts < 1`), guaranteeing predictable response times.
+
+---
+
+### I. Dynamic Answer Blueprint Architecture (`models.py`, `planner.py`, `synthesizer.py`)
+
+Prior implementations relied on a rigid 300-line static `if/elif/else` prompt cascade. Any user preference (e.g. *"summarize in 150 words"*, *"bullet points only"*, *"no tables"*) was vulnerable to being overridden by hardcoded archetype templates.
+
+The **Dynamic Answer Blueprint Architecture** separates presentation planning from text generation:
+
+1. **Pydantic Blueprint Schemas (`models.py`)**:
+   - `SectionSpec`: Defines title, format type (`narrative`, `bullet_list`, `markdown_table`, `metric_card`, `timeline`), content guidelines, and optionality.
+   - `AnswerBlueprint`: Encapsulates archetype, executive framing instructions, ordered `sections`, target word count, explicit table column schemas, prohibited elements (e.g. "no speculative prose", "no markdown tables"), and tone/style directives.
+2. **Cognitive Blueprint Generation in Planner (`planner.py`)**:
+   - During query planning, the planner evaluates both retrieval needs and presentation requirements, generating a tailored `AnswerBlueprint` in `PlanResult`.
+   - Features constraint-aware heuristic defaults for all 7 archetypes with automatic adaptations for length limits, comparative tables, and chronological timelines.
+3. **Dynamic Prompt Compilation (`synthesizer.py`)**:
+   - `compile_structure_from_blueprint()` dynamically compiles the `AnswerBlueprint` into structured prompt instructions.
+   - Enforces non-negotiable broadsheet citation formats `[Newspaper, YYYY-MM-DD, Page N, "Headline"]` and factual invariants while granting the LLM flexibility in presentation layout.
+4. **Single-Article Budgeting & Robotic Table Elimination**:
+   - Preserves up to 7,500 characters of full parent article text for single-article deep dives.
+   - `clean_robotic_catalog_tables()` deterministically detects and purges mechanical metadata tables (`| # | Headline | Section | Page | Words |`) from single-article narrative answers.
 
 ---
 
@@ -457,6 +566,11 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 11: Multimodal Visual Intelligence & Conversational Guardrails** | Complex broadsheet charts and infographics were ignored during agent QA; conversational multi-turn context leaked outdated article/issue metadata; dual-page citation noise degraded credibility; hardcoded provider configs caused lock-in. | Introduced `inspect_visual_asset` tool with 5-tier Strategy Cascade A–E and on-demand MinIO VLM extraction; added Broadsheet Reader `"Ask Agent About This Infographic / Photo"` deep-link integration; engineered `parse_inline_citation` with strict cross-turn parameter eviction guardrails; eliminated dual-page citation formatting; added dynamic `ModelSettingsStudio.jsx`. |
 | **Phase 12: Dynamic Tool Synthesis & AST Sandbox** | Unforeseen user analytics queries (page counts, edition size distributions, ad-hoc aggregations) failed on static tool definitions; CRAG had no recovery path for zero-evidence computational queries; running arbitrary LLM code posed security and data mutation risks. | Engineered LLM-as-Tool-Maker pattern (`tool_maker.py`) generating ad-hoc Python/SQL tools; built subprocess AST Sandbox (`sandbox.py`) with strict module/builtin whitelisting, 15s timeout, 512MB RAM cap, and read-only rollback transactions; integrated Two-Layer Dynamic Fallback (Layer 1 in `executor.py` for unsupported parameters; Layer 2 in `evaluator.py` for zero-evidence CRAG recovery). |
 | **Phase 13: Cross-Date Context Isolation & Anti-Leakage Shield** | In multi-turn sessions with attached assets, asking a question about a different date (e.g. Aug 1 vs Aug 5) caused the agent to leak the attached asset date or overwrite user queries, querying the wrong newspaper edition. | Implemented 4-Tier Cross-Date Anti-Leakage Shield: conflict-aware date eviction in `condenser.py`, asset eviction gate in `query.py` and `graph.py`, tool argument reconciliation in `tool_factory.py`, and strict date non-overwriting invariant in `executor.py`. |
+| **Phase 14: Closed-Loop Dynamic Tool Critic & Self-Refinement** | Syntactically valid generated dynamic tools hallucinated MySQL column names (`published_at`), introduced Cartesian multipliers in multi-table joins, or fabricated positive summaries when 0 rows were returned. | Engineered 5-dimension `ToolCritic` (`tool_critic.py`) evaluating SASC, SRF, REH, DSF, and RPS; AST SQL query parsing; legitimate absence distinction; closed-loop retry refinement with token-budgeted critiques; and auto-import pre-injection (`ensure_standard_imports`). |
+| **Phase 15: Temporal Range Parsing & Native Relational Photo Analytics** | Month-wide queries (`"August 2026"`) locked to single dates; photo queries by section triggered 100s dynamic tool timeouts due to DSF aggregate table false-positives. | Added regex Month + Year extraction (`extractor.py`) mapping to `date_from`/`date_to`; added native `get_photo_counts_by_section` in `sql_analytics.py` and fast-path dispatch in `executor.py` (~10ms); updated ToolCritic to recognize markdown tables and metadata metrics in aggregate computations; enforced `QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP` in `synthesizer.py`. |
+| **Phase 16: Reflexive CRAG Evaluator & Closed-Loop Adaptive Re-Planning** | Static token overlap discarded valid dynamic tool evidence; retrieval dead-ends had no recovery path without repeating failing queries. | Built hybrid Fast-Floor (<5ms) + Reflexive LLM-as-Judge (`evaluate_evidence_async`) emitting structured `EvaluationVerdict`; added adaptive re-planner with anti-repetition guard; wired LangGraph conditional branches (`execute_adaptive_replan`, `execute_dynamic_code`) with strict 1-cycle ceiling. |
+| **Phase 17: Context Full-Text Budgeting & Robotic Table Elimination** | Truncated chunks starved single-article synthesis; visual annotations added prompt noise; single-article narrative answers rendered robotic metadata tables. | Allocated up to 7,500 chars of `parent_article_text` for single-article queries; purged visual noise; added `clean_robotic_catalog_tables()` deterministic cleaner; added headline conflict detection in `condenser.py`. |
+| **Phase 18: Dynamic Answer Blueprint Architecture** | Rigid 300-line static `if/elif/else` prompt cascade ignored explicit user formatting constraints (e.g. word counts, bullet points, table exclusions). | Designed Pydantic `SectionSpec` and `AnswerBlueprint`; dynamically synthesized blueprints in `planner.py`; compiled prompts via `compile_structure_from_blueprint()` in `synthesizer.py`, decoupling layout from generation while guaranteeing broadsheet citations. |
 
 ---
 

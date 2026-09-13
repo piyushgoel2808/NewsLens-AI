@@ -203,6 +203,13 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * Automatically resolves queries even when user types an incorrect issue ID (e.g. querying `issue 84` when the database stores `Issue #88`) by falling back to `(newspaper_name, issue_date)`.
 * **Cross-Sectional Filtering**: Filter articles by physical page number, printed folio, newspaper section, or canonical category.
 * **Statistical Aggregations**: Compute article frequency trends, mention distributions, and front-page prominence ratios.
+* **Native Visual Asset & Photo Distribution Analytics (`get_photo_counts_by_section`)**:
+  * Computes exact photo distributions across editorial sections (e.g. *Main*, *Sports*, *Business*, *City*) and physical pages for any issue.
+  * Executes an optimized multi-table relational join (`photos` $\to$ `articles` $\to$ `sections` and `issues` $\to$ `newspapers`), grouping by `sections.name` and counting distinct `photos.id`.
+  * Dispatched natively via `executor.py` for analytical intents (`photo_count_per_section`, `count_photos`, `photo_counts`, `photos_by_section`), delivering sub-15ms deterministic query performance without risking LLM dynamic toolmaker hallucinations or timeout loops.
+* **Month-Wide & Multi-Day Temporal Range Archive Analytics (`date_from` / `date_to`)**:
+  * In `extractor.py` and `sql_analytics.py`, calendar expressions like *"August 2026"* or *"between August 1 and August 15"* are automatically parsed into ISO date range bounds (`date_from="2026-08-01"`, `date_to="2026-08-31"`).
+  * Enables broad archive-scale analytics across article volumes, section metrics, and word count distributions spanning entire months, quarters, or custom date spans without restricting queries to single-day boundaries.
 * **Deterministic Cross-Newspaper Differential Coverage (`get_newspaper_coverage_difference`)**:
   * Computes the exact set of articles present in publication $A$ but completely absent from publication $B$ on any shared publication date.
   * Employs headline tokenization, stop-word reduction, and Jaccard overlap scoring against the comparison newspaper's manifest.
@@ -281,17 +288,22 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * Employs the **LLM-as-Tool-Maker** pattern to synthesize bespoke Python/SQL analysis functions when user inquiries exceed the scope of predefined static tools (e.g. newspaper page count distributions, cross-section statistics, custom multi-table aggregations).
   * Prompts the LLM with the complete 17-table MySQL schema, column definitions, and example analytical queries to generate self-contained, typed functions matching the signature:
     ```python
-    def execute(connection, **kwargs) -> Dict[str, Any]: ...
+    async def analyze(db: AsyncSession, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Dynamically synthesized analytical computation."""
+        ...
+        return {"summary": str, "data": Any}
     ```
+  * **Automated Import Injection (`ensure_standard_imports`)**: Pre-inspects generated code and automatically injects standard mathematical, statistical, and relational imports (`datetime`, `date`, `timedelta`, `math`, `statistics`, `json`, `re`, `sqlalchemy`, `text`, `select`, `func`, `and_`, `or_`) if omitted by the LLM, eliminating import syntax errors before compilation.
 * **Subprocess AST Sandbox Execution Engine (`sandbox.py`, `sandbox_runner.py`)**:
   * **Abstract Syntax Tree (AST) Safety Scanner**:
     * Pre-execution static analysis verifying AST node safety via `ASTSafetyScanner`.
-    * **Whitelisted Safe Modules**: `math`, `datetime`, `re`, `json`, `collections`, `itertools`, `typing`, `sqlalchemy`, `decimal`.
+    * **Whitelisted Safe Modules**: `math`, `datetime`, `re`, `json`, `collections`, `itertools`, `typing`, `sqlalchemy`, `decimal`, `statistics`.
     * **Blacklisted Forbidden Modules**: `os`, `sys`, `subprocess`, `socket`, `shutil`, `urllib`, `requests`, `pathlib`, `pickle`, `ctypes`, etc.
     * **Blacklisted Dangerous Builtins**: `open`, `eval`, `exec`, `compile`, `__import__`, `globals`, `locals`, `getattr`, `setattr`.
     * **Dunder Attribute Protection**: Prohibits access to `__subclasses__`, `__bases__`, `__globals__`, `__code__`, etc.
   * **Subprocess Process Isolation**:
     * Spawns an isolated subprocess (`sys.executable`) via non-blocking JSON IPC over stdin/stdout.
+    * Pre-populates execution namespace (`exec_globals`) with safe analytical libraries and SQLAlchemy constructs.
     * Enforces a hard **15-second execution timeout** and **512MB memory limit**.
   * **Read-Only Database Transactions**:
     * Executes all dynamic tool queries under an uncommitted, read-only transaction.
@@ -322,4 +334,81 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   4. **Executor Date Non-Overwriting Invariant (`executor.py`)**:
      * Enforces an immutable priority rule during tool execution: explicit user query dates strictly override attached asset metadata (`effective_date = explicit_query_date or asset_date or default_date`), guaranteeing that queries never target the wrong newspaper issue.
 
+---
 
+## 14. Closed-Loop Dynamic Tool Critic & Self-Refinement Engine (`tool_critic.py`)
+
+* **Autonomous Code & Evidence Quality Assurance**:
+  * Evaluates dynamically generated analytical tools through an automated 5-metric evaluation scorecard before code is executed or results are accepted.
+* **5-Metric Evaluation Scorecard**:
+  1. **SASC (Syntactic & AST Security Compliance)**: Static AST-level safety inspection verifying that generated code contains zero forbidden operations, blacklisted builtins, or unauthorized module imports.
+  2. **SRF (SQL Relational & Schema Fidelity)**:
+     * Robust AST extraction of SQL query literals across multiline docstrings, single/double quotes, and variable assignments.
+     * Validates referenced tables and column names against the 17-table `ARCHIVE_SCHEMA`.
+     * Applies automatic column remappings for common LLM hallucinations (`published_at` $\to$ `issues.issue_date`, `article_id` $\to$ `articles.id`).
+     * Prevents metric inflation from Cartesian products through required `SELECT DISTINCT` safeguards and validates category join paths.
+  3. **REH (Runtime Execution Health)**: Subprocess execution telemetry audit verifying exit status `0`, successful output serialization, non-empty result payloads, and absence of Python exception tracebacks.
+  4. **DSF (Data-to-Summary Faithfulness)**: Validates mathematical and statistical consistency between the generated textual `summary` and the calculated keys in `data`, strictly penalizing hallucinated figures not derived from computed records.
+  5. **RPS (Intent Alignment & Filter Plausibility)**:
+     * Cross-checks temporal dates, publication names, and category filters against the user's explicit query intention.
+     * **Distinguishing Legitimate Absence from Formatting Defects**: Accurately differentiates between an empty result caused by a valid query where the archive genuinely has zero matches (e.g. zero crime articles in a regional issue) versus an empty result caused by malformed SQL or incorrect filter logic, preventing wasteful retry loops.
+* **Token-Budgeted Iterative Self-Refinement**:
+  * If a dynamic tool fails critique (overall score $< 0.70$ or critical defects detected), `ToolMaker` initiates an automated self-repair loop (up to `max_retries=2`).
+  * Passes structured diagnostic critique back to the LLM without unbounded trace stacking, retaining only the initial query, failed code, and targeted error diagnosis to maintain a tight token budget.
+
+---
+
+## 15. Strict Quantitative & Statistical Metric Absence Hard-Stop
+
+* **Zero-Hallucination Numerical Protection**:
+  * Intercepts user inquiries demanding mathematical or statistical computation (e.g. variance, standard deviation, average word counts, section distributions, ratio analysis) when the underlying archive data is absent or empty.
+* **Synthesizer Deterministic Guardrail (`synthesizer.py`)**:
+  * Injects `QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP` instructions into the synthesizer prompt.
+  * If the query requires mathematical analysis and neither `sql_analytics` nor `dynamic_analysis` yielded valid computed metrics, the synthesizer halts immediately and outputs a verified absence notice:
+    *"I could not compute the requested [metric] because no relevant numerical evidence or article data was found in the archive for the specified parameters."*
+  * Completely prevents the LLM from fabricating plausible-sounding numbers, estimating standard deviations, or parroting user query phrases into misleading statistical tables.
+
+---
+
+## 16. Dynamic Answer Blueprint Architecture (`models.py`, `planner.py`, `synthesizer.py`)
+
+* **Presentation Planning Decoupled from Generation**:
+  * Eliminates the rigid 300-line static `if/elif/else` prompt cascade in favor of an intent-aware layout plan generated during cognitive query planning.
+* **Structured Blueprint Schema (`SectionSpec` & `AnswerBlueprint`)**:
+  * `SectionSpec`: Defines `title`, `format_type` (`narrative`, `bullet_list`, `markdown_table`, `metric_card`, `timeline`), `content_guideline`, and `is_optional`.
+  * `AnswerBlueprint`: Encapsulates overall `archetype`, `executive_framing`, ordered `sections`, `target_word_count`, explicit `table_columns`, `prohibited_elements` (e.g. *"no markdown tables"*, *"no speculative prose"*), and `tone_and_style`.
+* **Dynamic Prompt Compilation (`compile_structure_from_blueprint`)**:
+  * Compiles the Pydantic blueprint into structured LLM prompt instructions at synthesis time.
+  * Honors explicit user formatting instructions (e.g. *"summarize in 150 words"*, *"give me bullet points only"*, *"tabular comparison without prose"*) while strictly enforcing non-negotiable factual broadsheet citations `[Newspaper, YYYY-MM-DD, Page N, "Headline"]`.
+* **Single-Article Budgeting & Robotic Table Cleaner**:
+  * When a single article is targeted, preserves up to 7,500 characters of `parent_article_text` in prompt context rather than fragmented chunks.
+  * `clean_robotic_catalog_tables(ans)` deterministically scans and strips mechanical metadata tables (`| # | Headline | Section | Page | Words |`) from single-article narrative answers.
+
+---
+
+## 17. Reflexive CRAG Evaluator & Closed-Loop Agentic Re-Planning (`evaluator.py`, `planner.py`, `graph.py`)
+
+* **Hybrid Fast-Floor Evaluation Bypass**:
+  * Sub-5ms instant pass: If retrieved evidence contains $\ge 1$ high-confidence broadsheet article with $\ge 100$ words of clean editorial body text, evaluation bypasses LLM judgment, preventing latency spikes on obvious retrieval successes.
+* **Reflexive LLM-as-Judge Evidence Grading**:
+  * For borderline, ambiguous, or zero-hit retrieval cases, invokes an LLM judge with `EVALUATOR_SYSTEM_PROMPT`.
+  * Returns a structured `EvaluationVerdict` (`is_sufficient`, `quality_score`, `gap_diagnosis`, `recommended_action`, `corrective_hints`).
+* **Closed-Loop Adaptive Re-Planner with Anti-Repetition Guard**:
+  * `replan_with_feedback_async()` analyzes the diagnosed gaps, widening date scopes, expanding `top_k`, or rephrasing query terms.
+  * Strictly blocks the agent from re-executing identical tool calls that failed in the first iteration.
+* **LangGraph Conditional Recovery Routing**:
+  * Branches conditionally from `evaluate_and_fallback` to `execute_adaptive_replan` or `execute_dynamic_code`.
+  * Bounded by a strict 1-cycle ceiling (`recovery_attempts < 1`), ensuring the workflow always converges without runaway execution times.
+
+---
+
+## 18. Fast-Path SQL Relational Analytics & Dual Evidence Grounding (`sql_analytics.py`, `executor.py`)
+
+* **Native Fast-Path Handlers (~10ms)**:
+  * Implemented high-performance SQL handlers for `count_advertisements`, `count_photos`, `count_issues`, and `count_articles`.
+  * Executes optimized multi-table relational queries directly against MySQL without LLM dynamic code generation overhead.
+* **Dual Evidence Grounding for Interactive UI Citations**:
+  * Generates both a macro overview record (`article_id: 0`, `is_macro: True`) for aggregate statistics and individual article records (`article_id > 0`, `source_tool: "sql_analytics_advertisement"`).
+  * Enables the frontend `ActiveHighlightContext` and `AgentAssistant` to render interactive, clickable citation badges that jump directly to the broadsheet canvas for each ad or article.
+* **Headline Conflict Invalidation & Authoritative Article Binding**:
+  * In `condenser.py` and `graph.py`, automatically invalidates stale attached asset IDs when the user transitions to a new topic or headline, preventing cross-article hallucination.

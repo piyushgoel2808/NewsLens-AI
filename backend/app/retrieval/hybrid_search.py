@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.article import Article
-from app.models.newspaper import Issue
+from app.models.newspaper import Issue, Newspaper
 from app.providers.base import EmbeddingProvider
 from app.providers.registry import get_registry
 from app.retrieval.reranker import CrossEncoderReranker
@@ -33,6 +33,7 @@ class SearchFilter:
     """Filters for hybrid retrieval."""
 
     newspaper_id: int | None = None
+    newspaper_name: str | None = None
     date_from: str | None = None  # YYYY-MM-DD
     date_to: str | None = None  # YYYY-MM-DD
     article_type: str | None = None
@@ -74,6 +75,7 @@ class HybridSearchResult:
     has_visual_data: bool = False
     visual_type: str | None = None
     photos: list[dict[str, Any]] = field(default_factory=list)
+    word_count: int = 0
 
 
 
@@ -121,9 +123,23 @@ class HybridSearchEngine:
             return []
 
         search_filters_dict: dict[str, Any] = {}
+        resolved_np_name: str | None = None
         if filters:
-            if filters.newspaper_id:
+            resolved_np_name = filters.newspaper_name
+            if not resolved_np_name and filters.newspaper_id:
+                try:
+                    async with self._session_factory() as s_res:
+                        np_row = (await s_res.execute(select(Newspaper.name).where(Newspaper.id == filters.newspaper_id))).scalar_one_or_none()
+                        if np_row:
+                            resolved_np_name = np_row
+                except Exception:
+                    pass
+
+            if resolved_np_name:
+                search_filters_dict["newspaper_name"] = resolved_np_name
+            elif filters.newspaper_id:
                 search_filters_dict["newspaper_id"] = filters.newspaper_id
+
             if filters.page_number:
                 search_filters_dict["page_numbers"] = filters.page_number
             if filters.printed_page:
@@ -155,8 +171,17 @@ class HybridSearchEngine:
         # 2. Run FULLTEXT Search (Sparse)
         ft_filters: dict[str, Any] = {}
         if filters:
-            if filters.newspaper_id:
-                ft_filters["newspaper_id"] = filters.newspaper_id
+            eff_np_id = filters.newspaper_id
+            if not eff_np_id and resolved_np_name:
+                try:
+                    async with self._session_factory() as s_res:
+                        id_row = (await s_res.execute(select(Newspaper.id).where(Newspaper.name.ilike(f"%{resolved_np_name}%")))).scalar_one_or_none()
+                        if id_row:
+                            eff_np_id = id_row
+                except Exception:
+                    pass
+            if eff_np_id:
+                ft_filters["newspaper_id"] = eff_np_id
             if filters.date_from:
                 ft_filters["date_from"] = filters.date_from
             if filters.date_to:
@@ -318,9 +343,9 @@ class HybridSearchEngine:
             exact_match_snippet = ""
             if score_info["chunks"]:
                 chunk_texts = [
-                    c.get("chunk_text") or c.get("raw_text") or ""
+                    c.get("chunk_text") or c.get("raw_text") or c.get("text") or ""
                     for c in score_info["chunks"]
-                    if (c.get("chunk_text") or c.get("raw_text"))
+                    if (c.get("chunk_text") or c.get("raw_text") or c.get("text"))
                 ]
                 exact_match_snippet = "\n\n".join(chunk_texts[:2]) if chunk_texts else ""
 
@@ -329,12 +354,17 @@ class HybridSearchEngine:
             if exact_match_snippet:
                 snippet = (
                     f"[Exact Chunk Match]:\n{exact_match_snippet}\n\n"
-                    f"[Article Parent Context]:\n{parent_full_text[:1200]}"
+                    f"[Article Parent Context]:\n{parent_full_text[:1800]}"
                     if len(parent_full_text) > len(exact_match_snippet)
                     else exact_match_snippet
                 )
             else:
-                snippet = article.summary or (article.full_text[:600] if article.full_text else "")
+                if article.full_text and len(article.full_text.strip()) > 0:
+                    snippet = article.full_text[:1800]
+                elif article.summary:
+                    snippet = article.summary
+                else:
+                    snippet = ""
 
             bboxes_list: list[dict[str, Any]] = []
             if article.article_pages:
@@ -402,6 +432,7 @@ class HybridSearchEngine:
                     has_visual_data=has_vis,
                     visual_type=v_type,
                     photos=article_photos,
+                    word_count=article.word_count or 0,
                 )
             )
 

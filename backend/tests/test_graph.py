@@ -222,6 +222,40 @@ class TestAgentWorkflow:
             "plan": [{"tool_name": "hybrid_search", "arguments": {}}],
         })) == "execute_tools"
 
+    def test_conditional_edge_reflexive_evaluation_routing(self) -> None:
+        """Verify _route_after_evaluation correctly branches between replanning, dynamic tools, and synthesis."""
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+
+        # 1. Sufficient verdict routes straight to synthesis
+        state_suff = cast(AgentState, {
+            "recovery_attempts": 0,
+            "evaluation_verdict": {"is_sufficient": True, "recommended_action": "proceed_to_synthesis"},
+        })
+        assert workflow._route_after_evaluation(state_suff) == "synthesize_answer"
+
+        # 2. Insufficient verdict with replan_static_tools routes to execute_adaptive_replan
+        state_replan = cast(AgentState, {
+            "recovery_attempts": 0,
+            "evaluation_verdict": {"is_sufficient": False, "recommended_action": "replan_static_tools"},
+        })
+        assert workflow._route_after_evaluation(state_replan) == "execute_adaptive_replan"
+
+        # 3. Insufficient verdict with synthesize_dynamic_tool routes to execute_dynamic_code (or replan if tool_maker disabled)
+        state_dyn = cast(AgentState, {
+            "recovery_attempts": 0,
+            "evaluation_verdict": {"is_sufficient": False, "recommended_action": "synthesize_dynamic_tool"},
+        })
+        expected = "execute_dynamic_code" if workflow._tool_maker else "execute_adaptive_replan"
+        assert workflow._route_after_evaluation(state_dyn) == expected
+
+        # 4. Strictly capped ceiling: recovery_attempts >= 1 always routes to synthesis (no infinite loop)
+        state_exhausted = cast(AgentState, {
+            "recovery_attempts": 1,
+            "evaluation_verdict": {"is_sufficient": False, "recommended_action": "replan_static_tools"},
+        })
+        assert workflow._route_after_evaluation(state_exhausted) == "synthesize_answer"
+
     def test_date_normalization_multi_issue(self) -> None:
         """Verify normalize_date_to_iso handles slash dates and returns clean ISO format."""
         from app.retrieval.sql_analytics import normalize_date_to_iso

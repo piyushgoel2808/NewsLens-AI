@@ -605,6 +605,132 @@ class TestAnswerSynthesizer:
         assert "Direct Tax Compliance" not in prompt_cat
         assert "Over 4.5 lakh taxpayers" not in prompt_cat
 
+    def test_dynamic_prompt_scalar_or_count_sizing(self) -> None:
+        """Verify queries asking for counts or metadata select DIRECT SCALAR & QUANTITATIVE FINDING structure."""
+        synth = AnswerSynthesizer()
+        # Query asking for count of issues
+        prompt_scalar = synth._build_synthesizer_system_prompt(
+            archetype="article_catalog",
+            query="no of newspaper in the Goan issues ?",
+            evidence_items=[
+                {
+                    "article_id": 0,
+                    "headline": "Analytical Computation: no of newspaper in the Goan issues ?",
+                    "newspaper_name": "Archive Analytics",
+                    "snippet": "The Goan issues contain 8 issues and 1349 articles.",
+                    "source_tool": "dynamic_analysis",
+                    "is_statistical_metric": True,
+                }
+            ],
+        )
+        assert "DIRECT SCALAR & QUANTITATIVE FINDING" in prompt_scalar
+        assert "Direct Finding" in prompt_scalar
+        assert "Key Computed Metrics" in prompt_scalar
+        assert "Comprehensive Archive Articles Catalog" not in prompt_scalar
+
+    def test_deterministic_summary_scalar_statistical_metadata(self) -> None:
+        """Verify deterministic summary produces direct quantitative finding without fake articles or explore prompts."""
+        synth = AnswerSynthesizer()
+        evidence = [
+            {
+                "article_id": 0,
+                "headline": "Analytical Computation: no of newspaper in the Goan issues ?",
+                "newspaper_name": "Archive Analytics",
+                "snippet": "The Goan issues contain 8 issues and 1349 articles.",
+                "source_tool": "dynamic_analysis",
+                "is_statistical_metric": True,
+                "metadata": {"total_issues": 8, "total_articles": 1349},
+            }
+        ]
+        text = synth._generate_deterministic_summary(
+            query="no of newspaper in the Goan issues ?",
+            evidence_items=evidence,
+            archetype="article_catalog",
+        )
+        assert "### ⚡ Direct Finding" in text
+        assert "The Goan issues contain 8 issues and 1349 articles." in text
+        assert "### 📊 Key Computed Metrics" in text
+        assert "- **Total Issues**: 8" in text
+        assert "Explore Further" not in text
+        assert "Statistical Engine" not in text
+
+    def test_synthesizer_system_prompt_mandates_metric_absence_hard_stop(self) -> None:
+        """Verify synthesizer prompt explicitly mandates refusal to invent missing statistical metrics."""
+        from app.agent.synthesizer import AnswerSynthesizer, COMMON_ANALYTICAL_GUIDELINES
+
+        assert "QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP" in COMMON_ANALYTICAL_GUIDELINES
+        assert "could not be computed or is unavailable" in COMMON_ANALYTICAL_GUIDELINES
+        assert "STRICTLY AND ABSOLUTELY FORBIDDEN from estimating, guessing, fabricating" in COMMON_ANALYTICAL_GUIDELINES
+
+        synth = AnswerSynthesizer()
+        prompt = synth._build_synthesizer_system_prompt(
+            archetype="analytical_computation",
+            query="What is the variance and standard deviation of word counts?",
+        )
+        assert "QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP" in prompt
+
+    def test_synthesizer_shared_coverage_layout_and_guardrail(self) -> None:
+        """Verify synthesizer prompt builds 3-part layout and anti-hallucination guardrail for shared wire coverage."""
+        synth = AnswerSynthesizer()
+        prompt = synth._build_synthesizer_system_prompt(
+            archetype="cross_newspaper_comparison",
+            query="give me the similar articles from newspaper of the Goan and the morning standard both dated 1/8/2026",
+        )
+
+        assert "Executive Summary: Shared Syndicated Coverage" in prompt
+        assert "Verified Shared Coverage Matrix" in prompt
+        assert "Regional Framing & Placement Divergence" in prompt
+        assert "STRICT SIMILARITY & SHARED STORY INTEGRITY" in prompt
+        assert "ABSOLUTE PROHIBITION ON FALSE EQUIVALENCE" in prompt
+
+    def test_synthesizer_shared_article_citations_extracted(self) -> None:
+        """Verify individual article records from shared coverage yield clickable AgentCitations."""
+        synth = AnswerSynthesizer()
+        evidence = [
+            {
+                "article_id": 0,
+                "headline": "Verified Shared Wire Coverage: The Goan & The Morning Standard",
+                "newspaper_name": "The Goan & The Morning Standard",
+                "issue_date": "2026-08-01",
+                "snippet": "Macro shared overview",
+                "source_tool": "sql_analytics",
+            },
+            {
+                "article_id": 501,
+                "headline": "SC stays stray animal compensation order",
+                "newspaper_name": "The Goan",
+                "issue_date": "2026-08-01",
+                "pages": [5],
+                "snippet": "Supreme Court stayed compensation order.",
+                "source_tool": "sql_analytics_shared",
+            },
+            {
+                "article_id": 702,
+                "headline": "Apex court puts hold on stray animal compensation",
+                "newspaper_name": "The Morning Standard",
+                "issue_date": "2026-08-01",
+                "pages": [7],
+                "snippet": "Apex court puts hold on compensation order.",
+                "source_tool": "sql_analytics_shared",
+            },
+        ]
+
+        text = (
+            "### ⚡ Executive Summary: Shared Syndicated Coverage\n"
+            "Both papers carried coverage of the stray animal order.\n\n"
+            "### 📰 Verified Shared Coverage Matrix\n"
+            "| # | Story | The Goan | The Morning Standard |\n"
+            "| 1 | Stray animal order | SC stays stray animal compensation order (Page 5) | Apex court puts hold on stray animal compensation (Page 7) |\n"
+        )
+
+        citations = synth.extract_citations(text, evidence)
+        assert len(citations) == 2
+        art_ids = {c["article_id"] for c in citations}
+        assert 501 in art_ids
+        assert 702 in art_ids
+        assert 0 not in art_ids  # Macro item (article_id: 0) must be excluded
+
+
 
 
 

@@ -7,18 +7,90 @@ against over-aggressive lexical pruning, and triggers corrective retrieval fallb
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass, field
+import json
 import re
 import time
 from typing import Any
 
+from app.agent.extractor import extract_parameters_from_query
 from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.tool_maker import ToolMaker
 from app.core.logging import get_logger
+from app.providers.base import ChatModelProvider, Message
+from app.providers.registry import get_registry
 from app.retrieval.entity_filter import EntitySearchEngine
 from app.retrieval.sql_analytics import SQLAnalyticsEngine
 from app.retrieval.web_search import WebSearchEngine
 
 logger = get_logger(__name__)
+
+_QUANT_QUERY_PATTERN = re.compile(
+    r"\b(how many|count of|number of|percentage|ratio|average|mean|median|"
+    r"correlation|variance|distribution|frequency|breakdown|photos? in each|"
+    r"photos? per|articles? per|word count|how much)\b",
+    re.IGNORECASE,
+)
+
+_ANALYTICAL_QUERY_PATTERN = re.compile(
+    r"\b(correlation|regression|variance|standard deviation|percentile|median word count|"
+    r"histogram|distribution of word|distribution of|moving average|pearson|spearman|gini)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class EvaluationVerdict:
+    """Multi-dimensional qualitative evaluation of retrieved evidence against query intent."""
+
+    is_sufficient: bool
+    quality_score: float  # 0.0 - 1.0
+    gap_reason: str | None = None
+    detected_gaps: list[str] = field(default_factory=list)
+    recommended_action: str = "proceed_to_synthesis"  # "proceed_to_synthesis" | "replan_static_tools" | "synthesize_dynamic_tool"
+    corrective_hints: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize verdict to a dictionary for state storage."""
+        return {
+            "is_sufficient": self.is_sufficient,
+            "quality_score": self.quality_score,
+            "gap_reason": self.gap_reason,
+            "detected_gaps": self.detected_gaps,
+            "recommended_action": self.recommended_action,
+            "corrective_hints": self.corrective_hints,
+        }
+
+
+def _has_quantitative_payload(evidence: list[dict[str, Any]]) -> bool:
+    """Verify if retrieved evidence contains structured aggregate numbers, tables, or metric dictionaries."""
+    for item in evidence:
+        meta = item.get("metadata")
+        if meta and isinstance(meta, dict):
+            if any(isinstance(v, (int, float, dict, list)) and bool(v) for v in meta.values()):
+                return True
+        snip = item.get("snippet") or item.get("summary") or ""
+        # Check for Markdown table
+        if re.search(r"\|.*\|.*\|\s*\n\|[\s\-:]+\|", snip):
+            return True
+        # Check for aggregate tool record with non-zero article_id or summary counts
+        if (
+            (item.get("source_tool", "").startswith("sql_analytics") or item.get("source_tool") == "dynamic_analysis")
+            and item.get("article_id") == 0
+        ):
+            if re.search(
+                r"\b(?:total|count|breakdown|photos?|articles?|advertisements?|ads?|issues?)(?:\s+[a-zA-Z]+)*:\s*\d+\b",
+                snip,
+                re.I,
+            ):
+                return True
+            if re.search(
+                r"\b\d+\s+(?:articles?|photos?|advertisements?|ads?|issues?)\s+found\b",
+                snip,
+                re.I,
+            ):
+                return True
+    return False
 
 # Stop-words to exclude from core query terms during lexical grading
 _STOP_WORDS: frozenset[str] = frozenset({
@@ -77,9 +149,11 @@ def is_structural_or_relevant_evidence(item: dict[str, Any], archetype: str) -> 
     Protects relational manifests, matrices, and high-confidence dense vector search hits
     (prominence_score >= 0.65) from naive lexical stem pruning.
     """
+    src = item.get("source_tool", "")
     return (
         archetype in ("cross_newspaper_comparison", "quantitative_trend", "article_catalog", "analytical_computation")
-        or item.get("source_tool") in ("sql_analytics", "coverage_analysis", "dynamic_analysis")
+        or src.startswith("sql_analytics")
+        or src in ("coverage_analysis", "dynamic_analysis")
         or item.get("article_id") == 0
         or float(item.get("prominence_score", 0.0)) >= 0.65
     )
@@ -100,12 +174,315 @@ class EvidenceEvaluator:
         self._tool_maker = tool_maker
         self._sql_analytics = sql_analytics
 
+    def filter_evidence(
+        self,
+        evidence: list[dict[str, Any]],
+        query: str,
+        archetype: str,
+    ) -> list[dict[str, Any]]:
+        """Retain evidence items that have positive relevance to query tokens OR are protected structural/semantic hits."""
+        raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower())
+        query_tokens = [w for w in raw_query_words if w not in _STOP_WORDS]
+
+        filtered = [
+            item for item in evidence
+            if is_structural_or_relevant_evidence(item, archetype) or _score_relevance(item, query_tokens) > 0.0
+        ]
+        filtered.sort(
+            key=lambda it: (1.0 if is_structural_or_relevant_evidence(it, archetype) else _score_relevance(it, query_tokens)),
+            reverse=True,
+        )
+        return filtered
+
+    def audit_evidence_sufficiency(
+        self,
+        evidence: list[dict[str, Any]],
+        state: AgentState,
+    ) -> EvaluationVerdict:
+        """Audit retrieval quality across completeness, comparative balance, and quantitative sufficiency."""
+        query = state.get("query", "")
+        archetype = state.get("archetype", "factual_lookup")
+        detected_gaps: list[str] = []
+        is_analytical = bool(_ANALYTICAL_QUERY_PATTERN.search(query))
+
+        # 0. Empty or stub evidence
+        if not evidence or not any(len((item.get("snippet") or item.get("summary") or "").strip()) >= 20 for item in evidence):
+            return EvaluationVerdict(
+                is_sufficient=False,
+                quality_score=0.0,
+                gap_reason="Static retrieval returned 0 grounded evidence records from the archive.",
+                detected_gaps=["empty_retrieval"],
+                recommended_action="synthesize_dynamic_tool" if is_analytical else "replan_static_tools",
+            )
+
+        # 1. Comparative / Cross-Newspaper Balance Audit
+        params = extract_parameters_from_query(query)
+        np_source = params.get("newspaper_name") or state.get("active_newspaper_name")
+        np_comp = params.get("comparison_newspaper")
+        target_nps = [np.strip() for np in [np_source, np_comp] if np and np.strip()]
+
+        is_cross_np = (
+            archetype == "cross_newspaper_comparison"
+            or params.get("is_differential")
+            or params.get("is_shared")
+            or len(target_nps) >= 2
+        )
+
+        if is_cross_np and len(target_nps) >= 2:
+            present_nps: set[str] = set()
+            for item in evidence:
+                item_np = (item.get("newspaper_name") or "").lower()
+                for req in target_nps:
+                    if req.lower() in item_np or item_np in req.lower():
+                        present_nps.add(req)
+
+            missing_nps = [req for req in target_nps if req not in present_nps]
+            if missing_nps:
+                detected_gaps.append(f"missing_newspaper_coverage:{','.join(missing_nps)}")
+                gap_msg = (
+                    f"Comparative query requested coverage across {', '.join(target_nps)}, "
+                    f"but retrieved evidence is completely missing articles from: {', '.join(missing_nps)}."
+                )
+                return EvaluationVerdict(
+                    is_sufficient=False,
+                    quality_score=0.35,
+                    gap_reason=gap_msg,
+                    detected_gaps=detected_gaps,
+                    recommended_action="replan_static_tools",
+                    corrective_hints={"missing_newspapers": missing_nps},
+                )
+
+        # 2. Quantitative / Aggregate Metric Audit
+        is_quant_query = bool(_QUANT_QUERY_PATTERN.search(query))
+        if is_quant_query:
+            has_quant = _has_quantitative_payload(evidence)
+            if not has_quant:
+                detected_gaps.append("missing_quantitative_payload")
+                gap_msg = (
+                    "Query requested quantitative aggregates, counts, or statistical distributions, "
+                    "but retrieved evidence contains only unaggregated text snippets without numerical metrics or tables."
+                )
+                return EvaluationVerdict(
+                    is_sufficient=False,
+                    quality_score=0.40,
+                    gap_reason=gap_msg,
+                    detected_gaps=detected_gaps,
+                    recommended_action="synthesize_dynamic_tool" if is_analytical else "replan_static_tools",
+                    corrective_hints={"missing_quantitative": True},
+                )
+
+        # 3. Semantic Relevance Floor Audit
+        raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower())
+        query_tokens = [w for w in raw_query_words if w not in _STOP_WORDS]
+        scores = [
+            (1.0 if is_structural_or_relevant_evidence(it, archetype) else _score_relevance(it, query_tokens))
+            for it in evidence
+        ]
+        avg_score = sum(scores) / max(1, len(scores))
+        max_score = max(scores) if scores else 0.0
+
+        if max_score < 0.20 and avg_score < 0.15:
+            detected_gaps.append("low_semantic_relevance")
+            gap_msg = f"Retrieved evidence has weak semantic relevance (max: {max_score:.2f}, avg: {avg_score:.2f}) to query terms: {query_tokens[:5]}."
+            return EvaluationVerdict(
+                is_sufficient=False,
+                quality_score=round(avg_score, 2),
+                gap_reason=gap_msg,
+                detected_gaps=detected_gaps,
+                recommended_action="synthesize_dynamic_tool" if is_analytical else "replan_static_tools",
+            )
+
+        return EvaluationVerdict(
+            is_sufficient=True,
+            quality_score=round(max(0.70, avg_score), 2),
+            gap_reason=None,
+            detected_gaps=[],
+            recommended_action="proceed_to_synthesis",
+            corrective_hints={},
+        )
+
+    async def evaluate_evidence_async(
+        self,
+        evidence: list[dict[str, Any]],
+        state: AgentState,
+        model_override: str | None = None,
+    ) -> EvaluationVerdict:
+        """Reflexive hybrid evaluation: fast-floor check followed by LLM-as-Judge for borderline/empty evidence."""
+        archetype = state.get("archetype", "factual_lookup")
+        if archetype in ("clarification_needed", "conversational_meta_query"):
+            return EvaluationVerdict(
+                is_sufficient=True,
+                quality_score=1.0,
+                gap_reason=None,
+                detected_gaps=[],
+                recommended_action="proceed_to_synthesis",
+            )
+
+        # 1. Fast-Floor Heuristic Evaluation (0ms overhead)
+        heuristic_verdict = self.audit_evidence_sufficiency(evidence, state)
+
+        # High-confidence pass: if heuristic audit passes with high quality, proceed immediately
+        if heuristic_verdict.is_sufficient and heuristic_verdict.quality_score >= 0.70:
+            return heuristic_verdict
+
+        # Attached asset grounding pass
+        att_art = state.get("attached_article_id")
+        if att_art and any(it.get("article_id") == att_art for it in evidence):
+            return EvaluationVerdict(
+                is_sufficient=True,
+                quality_score=0.95,
+                gap_reason=None,
+                detected_gaps=[],
+                recommended_action="proceed_to_synthesis",
+            )
+        att_pho = state.get("attached_photo_id")
+        if att_pho and any(it.get("photo_id") == att_pho for it in evidence):
+            return EvaluationVerdict(
+                is_sufficient=True,
+                quality_score=0.95,
+                gap_reason=None,
+                detected_gaps=[],
+                recommended_action="proceed_to_synthesis",
+            )
+
+        # 2. Reflexive LLM-as-Judge (Borderline / Deficient Evidence)
+        judge_verdict = await self._evaluate_with_llm_judge(evidence, state, model_override)
+        if judge_verdict is not None:
+            return judge_verdict
+
+        # 3. Fallback to heuristic verdict if LLM judge is unavailable
+        return heuristic_verdict
+
+    async def _evaluate_with_llm_judge(
+        self,
+        evidence: list[dict[str, Any]],
+        state: AgentState,
+        model_override: str | None = None,
+    ) -> EvaluationVerdict | None:
+        """Use lightweight LLM to diagnose retrieval sufficiency and route recovery action."""
+        query = state.get("query", "")
+        archetype = state.get("archetype", "factual_lookup")
+        tool_execs = state.get("tool_executions", [])
+
+        # Format attempted tools summary
+        exec_lines = []
+        for t in tool_execs:
+            t_name = t.get("tool_name", "")
+            t_in = t.get("tool_input", {})
+            t_cnt = t.get("results_count", 0)
+            exec_lines.append(f"- {t_name}({t_in}): returned {t_cnt} records")
+        tools_summary = "\n".join(exec_lines) if exec_lines else "None"
+
+        # Format compact evidence snippets (top 5 items, max 250 chars)
+        snip_lines = []
+        for idx, it in enumerate(evidence[:5], 1):
+            hl = it.get("headline") or "Untitled"
+            np = it.get("newspaper_name") or "Unknown"
+            dt = it.get("issue_date") or ""
+            snip = (it.get("snippet") or it.get("summary") or "")[:250].strip()
+            snip_lines.append(f"{idx}. [{np} - {dt}] \"{hl}\": {snip}")
+        evidence_summary = "\n".join(snip_lines) if snip_lines else "No grounded evidence retrieved."
+
+        prompt = (
+            f"You are the expert Retrieval Judge for NewsLens-AI, an intelligence platform over broadsheet newspapers.\n"
+            f"Assess whether the retrieved evidence is SUFFICIENT to formulate an accurate and complete answer.\n\n"
+            f"User Query: \"{query}\"\n"
+            f"Query Archetype: {archetype}\n"
+            f"Attempted Tools:\n{tools_summary}\n\n"
+            f"Retrieved Evidence:\n{evidence_summary}\n\n"
+            f"Available Tool Types:\n"
+            f"- `hybrid_search`: Dense vector + keyword text retrieval for articles.\n"
+            f"- `sql_analytics`: Relational manifests, article counts, ad counts, photo counts, issue counts, coverage diffs.\n"
+            f"- `timeline_builder`: Chronological story evolution.\n"
+            f"- `entity_search`: Entity network profiles.\n"
+            f"- `dynamic_analysis`: Custom Python script execution (STRICTLY for multi-table statistical math like Pearson correlation, variance, or percentiles. NEVER for text summarization or explanation).\n\n"
+            f"Evaluation Criteria:\n"
+            f"1. Is the retrieved evidence sufficient to answer the user's specific question?\n"
+            f"2. If NOT sufficient, diagnose the exact gap (e.g. wrong date, overly narrow search terms, missing comparison publication, or missing quantitative counts).\n"
+            f"3. Select the best recovery action:\n"
+            f"   - 'proceed_to_synthesis': Evidence is adequate or best-effort answer can be generated.\n"
+            f"   - 'replan_static_tools': Missing articles, wrong dates/sections, or missing counts/manifests that standard archive tools can retrieve.\n"
+            f"   - 'synthesize_dynamic_tool': Query requires complex statistical computation (correlation, regression, variance) across tables.\n\n"
+            f"Respond ONLY with a valid JSON object matching this schema:\n"
+            f"{{\n"
+            f'  "is_sufficient": boolean,\n'
+            f'  "quality_score": float (0.0 to 1.0),\n'
+            f'  "gap_diagnosis": string or null,\n'
+            f'  "recommended_action": "proceed_to_synthesis" | "replan_static_tools" | "synthesize_dynamic_tool",\n'
+            f'  "corrective_hints": {{"suggested_tool": string or null, "suggested_query": string or null, "missing_newspaper": string or null}}\n'
+            f"}}"
+        )
+
+        candidates: list[ChatModelProvider] = []
+        try:
+            reg = get_registry()
+            if model_override:
+                with contextlib.suppress(Exception):
+                    candidates.append(reg.get_chat_provider(model_override))
+            with contextlib.suppress(Exception):
+                p = reg.get_provider("evaluator")
+                if p is not None and hasattr(p, "complete") and p not in candidates:
+                    candidates.append(p)
+            with contextlib.suppress(Exception):
+                p = reg.get_provider("query_planner")
+                if p is not None and hasattr(p, "complete") and p not in candidates:
+                    candidates.append(p)
+            for k in ["gemini_flash", "openrouter_gemma4_26b", "groq_compound", "openai_gpt4o_mini"]:
+                with contextlib.suppress(Exception):
+                    p = reg.get_chat_provider(k)
+                    if p is not None and hasattr(p, "complete") and p not in candidates:
+                        candidates.append(p)
+        except Exception as e:
+            logger.warning("Could not resolve candidate models for LLM Judge", extra={"error": str(e)})
+
+        for prov in candidates:
+            try:
+                resp = await prov.complete(
+                    messages=[
+                        Message(role="system", content="You are a strict retrieval quality judge. Respond ONLY in valid JSON."),
+                        Message(role="user", content=prompt),
+                    ],
+                    max_tokens=350,
+                    temperature=0.0,
+                )
+                raw_text = (resp.text or "").strip()
+                json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group(0))
+                    is_suff = bool(data.get("is_sufficient", False))
+                    q_score = float(data.get("quality_score", 0.0 if not is_suff else 0.8))
+                    action = str(data.get("recommended_action", "proceed_to_synthesis" if is_suff else "replan_static_tools"))
+                    if action not in ("proceed_to_synthesis", "replan_static_tools", "synthesize_dynamic_tool"):
+                        action = "proceed_to_synthesis" if is_suff else "replan_static_tools"
+
+                    # Safeguard: Never allow synthesize_dynamic_tool unless analytical intent is genuinely present
+                    if action == "synthesize_dynamic_tool" and not _ANALYTICAL_QUERY_PATTERN.search(query):
+                        action = "replan_static_tools"
+
+                    gap_diag = data.get("gap_diagnosis")
+                    hints = data.get("corrective_hints", {})
+                    gaps = ["llm_diagnosed_gap"] if (not is_suff and gap_diag) else []
+
+                    return EvaluationVerdict(
+                        is_sufficient=is_suff,
+                        quality_score=round(max(0.0, min(1.0, q_score)), 2),
+                        gap_reason=gap_diag,
+                        detected_gaps=gaps,
+                        recommended_action=action,
+                        corrective_hints=hints if isinstance(hints, dict) else {},
+                    )
+            except Exception as e:
+                logger.debug("LLM Judge invocation failed on candidate provider", extra={"error": str(e)})
+                continue
+
+        return None
+
     async def evaluate_and_fallback(
         self,
         evidence: list[dict[str, Any]],
         state: AgentState,
     ) -> tuple[list[dict[str, Any]], list[ToolExecutionRecord]]:
-        """Filter evidence, verify groundedness, and execute corrective retrieval if needed."""
+        """Filter evidence, audit sufficiency, and execute corrective dynamic tool fallback if needed."""
         archetype = state.get("archetype", "factual_lookup")
         tool_records: list[ToolExecutionRecord] = []
 
@@ -113,30 +490,22 @@ class EvidenceEvaluator:
         if archetype in ("clarification_needed", "conversational_meta_query"):
             return evidence, tool_records
 
-        raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", state.get("query", "").lower())
-        query_tokens = [w for w in raw_query_words if w not in _STOP_WORDS]
+        filtered_evidence = self.filter_evidence(evidence, state.get("query", ""), archetype)
+        verdict = self.audit_evidence_sufficiency(filtered_evidence, state)
 
-        # Retain evidence items that have positive relevance to query tokens OR are protected structural/semantic hits
-        filtered_evidence = [
-            item for item in evidence
-            if is_structural_or_relevant_evidence(item, archetype) or _score_relevance(item, query_tokens) > 0.0
-        ]
-        filtered_evidence.sort(
-            key=lambda it: (1.0 if is_structural_or_relevant_evidence(it, archetype) else _score_relevance(it, query_tokens)),
-            reverse=True,
-        )
-
-        has_grounded_content = bool(
-            filtered_evidence and any(len((item.get("snippet") or "").strip()) >= 20 for item in filtered_evidence)
-        )
-
-        if not has_grounded_content:
-            logger.info("CRAG triggered: 0 high-confidence articles retrieved, attempting corrective fallback")
+        if not verdict.is_sufficient:
+            logger.info(
+                "CRAG triggered: Retrieval evaluation below sufficiency threshold",
+                extra={
+                    "quality_score": verdict.quality_score,
+                    "gap_reason": verdict.gap_reason,
+                    "gaps": verdict.detected_gaps,
+                },
+            )
             fallback_items: list[dict[str, Any]] = list(filtered_evidence)
 
             # 1. Fallback: Dynamic Tool Synthesis (Database-aware custom Python code)
-            # When static tools produced 0 valid evidence items, synthesize an on-demand SQL/Python tool to directly query the archive.
-            if self._tool_maker and not fallback_items:
+            if self._tool_maker:
                 t_dyn = time.monotonic()
                 context: dict[str, Any] = {
                     "available_newspapers": [],
@@ -154,18 +523,25 @@ class EvidenceEvaluator:
                     query=state.get("query", ""),
                     context=context,
                     model_override=state.get("model_override"),
+                    attempted_tools=state.get("tool_executions", []),
+                    gap_diagnosis=verdict.gap_reason,
                 )
                 if dyn_res.success and dyn_res.evidence_items:
-                    fallback_items.extend(dyn_res.evidence_items)
+                    # Prepend dynamic synthesis items to prioritize complete computed findings
+                    fallback_items = dyn_res.evidence_items + fallback_items
                     dur_ms = round((time.monotonic() - t_dyn) * 1000)
                     tool_records.append(
                         ToolExecutionRecord(
                             tool_name="crag_dynamic_tool_fallback",
-                            tool_input={"query": state.get("query", "")},
+                            tool_input={
+                                "query": state.get("query", ""),
+                                "gap_diagnosis": verdict.gap_reason,
+                            },
                             results_count=len(dyn_res.evidence_items),
                             execution_time_ms=dur_ms,
                         )
                     )
+                    return fallback_items, tool_records
 
             # 2. Fallback: Entity Search if dynamic tool did not produce items and an entity candidate is detected
             if not fallback_items:
@@ -203,7 +579,7 @@ class EvidenceEvaluator:
                             )
                         )
 
-            # 2. Fallback: Live Web Search if web search is enabled and archive yielded no items
+            # 3. Fallback: Live Web Search if web search is enabled and archive yielded no items
             if not fallback_items and state.get("enable_web_search", False):
                 t_web = time.monotonic()
                 web_res = await self._web_search.search(
@@ -242,6 +618,8 @@ class EvidenceEvaluator:
 
 
 __all__ = [
+    "EvaluationVerdict",
     "EvidenceEvaluator",
+    "_has_quantitative_payload",
     "is_structural_or_relevant_evidence",
 ]

@@ -719,7 +719,35 @@ PlanResult(
                 "top_k": 10
             }
         )
-    ]
+    ],
+    answer_blueprint=AnswerBlueprint(
+        archetype="cross_newspaper_comparison",
+        executive_framing="Contrast exclusive coverage in The Goan with omissions in The Morning Standard.",
+        sections=[
+            SectionSpec(
+                title="⚡ Comparative Executive Overview",
+                format_type="narrative",
+                content_guideline="Summarize the core themes and article counts exclusive to The Goan.",
+                is_optional=False
+            ),
+            SectionSpec(
+                title="📰 Verified Exclusive Articles Manifest",
+                format_type="markdown_table",
+                content_guideline="Tabulate exclusive stories with page numbers and section tags.",
+                is_optional=False
+            ),
+            SectionSpec(
+                title="📌 Thematic Breakdown of Uncovered Stories",
+                format_type="bullet_list",
+                content_guideline="Group exclusive reports by domain (Civic, Sports, Business).",
+                is_optional=True
+            )
+        ],
+        target_word_count=400,
+        table_columns=["#", "Headline", "Section", "Page", "Significance"],
+        prohibited_elements=["speculative reporting", "unverified counts"],
+        tone_and_style="Authoritative investigative broadsheet tone"
+    )
 )
 ```
 
@@ -1319,47 +1347,62 @@ User asks: *"What is the total page count and edition name for each newspaper pu
 
 #### 3. Synthesized Python Code (`tool_maker.py`)
 ```python
-def execute(connection, **kwargs):
-    cursor = connection.cursor()
-    query = """
+import pandas as pd
+from sqlalchemy import text
+
+async def analyze(db, query, context):
+    stmt = text("""
         SELECT n.name AS newspaper_name, i.edition, i.total_pages, i.issue_date
         FROM issues i
         JOIN newspapers n ON i.newspaper_id = n.id
-        WHERE i.issue_date = '2026-08-01'
-        ORDER BY i.total_pages DESC;
-    """
-    cursor.execute(query)
-    rows = cursor.fetchall()
-    results = []
-    for r in rows:
-        results.append({
-            "newspaper": r[0] if isinstance(r, (list, tuple)) else r.get("newspaper_name"),
-            "edition": r[1] if isinstance(r, (list, tuple)) else r.get("edition"),
-            "total_pages": r[2] if isinstance(r, (list, tuple)) else r.get("total_pages"),
-            "issue_date": str(r[3] if isinstance(r, (list, tuple)) else r.get("issue_date"))
-        })
+        WHERE i.issue_date = :dt
+        ORDER BY i.total_pages DESC
+    """)
+    res = await db.execute(stmt, {"dt": "2026-08-01"})
+    rows = res.fetchall()
+
+    summary_lines = [
+        f"- {r[0]}: {r[1]}, {r[2]} pages"
+        for r in rows
+    ]
+    summary = "Newspaper Edition Analytics for 2026-08-01:\n" + "\n".join(summary_lines)
+
     return {
-        "status": "success",
-        "date": "2026-08-01",
-        "newspaper_count": len(results),
-        "editions": results
+        "summary": summary,
+        "data": [],
+        "metadata": {
+            "newspaper_count": len(rows),
+            "date": "2026-08-01",
+        }
     }
 ```
 
-#### 4. AST Safety Scanner Inspection (`sandbox.py`)
-Before the code is executed, `ASTSafetyScanner` parses the syntax tree:
-- **Module Check**: Validates that no forbidden modules (`os`, `sys`, `subprocess`, `socket`, `shutil`, `urllib`) are imported.
-- **Builtin Check**: Verifies that banned primitives (`open`, `eval`, `exec`, `compile`, `__import__`) are absent.
-- **Dunder Check**: Confirms no escape to `__subclasses__` or `__globals__`.
-- **Function Contract**: Confirms `execute(connection)` signature is present.
+#### 4. Auto-Import Pre-Injection & AST Safety Scanner (`sandbox.py`)
+1. **Auto-Import Pre-Injection (`ensure_standard_imports`)**: Scans code for references to `re.`, `math.`, `statistics.`, `json.`, `pd.`, `np.`, or `text(` and auto-prepends missing imports before parsing.
+2. **AST Pre-Execution Safety Inspection (`ASTSafetyScanner`)**:
+   - **Module Check**: Validates that no forbidden modules (`os`, `sys`, `subprocess`, `socket`, `shutil`, `urllib`) are imported.
+   - **Builtin Check**: Verifies that banned primitives (`open`, `eval`, `exec`, `compile`, `__import__`) are absent.
+   - **Dunder Check**: Confirms no escape to `__subclasses__` or `__globals__`.
+   - **Function Contract**: Confirms `async def analyze(db, query, context)` signature is present.
 
 #### 5. Subprocess Sandbox Execution (`sandbox_runner.py`)
 - Spawns an isolated subprocess worker via `sys.executable`.
 - Enforces an OS-level memory limit (512MB) and a 15-second execution timeout.
+- Pre-populates `exec_globals` with safe pre-imported libraries (`re`, `math`, `statistics`, `json`, `datetime`, `pd`, `np`, `text`).
 - Connects to MySQL with `autocommit=False`.
-- Runs `execute(connection)` and unconditionally calls `connection.rollback()` in a `finally` block, guaranteeing zero mutations to MySQL.
+- Runs `analyze(db, query, context)` and unconditionally calls `connection.rollback()` in a `finally` block, guaranteeing zero mutations to MySQL.
 
-#### 6. Structured Payload Returned to Agent State
+#### 6. Diagnostic ToolCritic Quality Audit (`tool_critic.py`)
+The raw execution output is audited across 5 quantitative dimensions:
+1. **SASC (1.0)**: Zero AST security violations.
+2. **SRF (1.0)**: Relational schema fidelity (verified valid tables, no hallucinated columns, `DISTINCT` across joins).
+3. **REH (1.0)**: Zero subprocess runtime errors or timeouts.
+4. **DSF (1.0)**: Faithfulness check (truthfully accounts for results, accepts markdown tables and metadata metrics for aggregate computations).
+5. **RPS (1.0)**: Intent alignment and normalized ISO-8601 date filters.
+
+*Closed-Loop Self-Refinement*: If any metric drops below $0.70$, `ToolCritic` produces structured diagnostic issues and fixes. `ToolMaker` re-prompts the LLM with a bounded 4-message trace (System prompt, User query, Assistant prior code, User diagnostic critique) for up to 3 attempts.
+
+#### 7. Structured Payload Returned to Agent State
 ```json
 {
   "tool_name": "dynamic_analysis",
@@ -1374,14 +1417,11 @@ Before the code is executed, `ASTSafetyScanner` parses the syntax tree:
       "newspaper_name": "The Goan",
       "issue_date": "2026-08-01",
       "headline": "Database Edition Metrics: 2026-08-01",
-      "content": "Newspaper Edition Analytics for 2026-08-01:\n- The Goan: Main Edition, 14 pages\n- The Morning Standard: City Final, 16 pages",
-      "confidence": 1.0,
+      "snippet": "Newspaper Edition Analytics for 2026-08-01:\n- The Goan: Main Edition, 14 pages\n- The Morning Standard: City Final, 16 pages",
+      "prominence_score": 1.0,
       "metadata": {
         "newspaper_count": 2,
-        "editions": [
-          {"newspaper": "The Goan", "edition": "Main Edition", "total_pages": 14},
-          {"newspaper": "The Morning Standard", "edition": "City Final", "total_pages": 16}
-        ]
+        "date": "2026-08-01"
       }
     }
   ]
@@ -1390,40 +1430,51 @@ Before the code is executed, `ASTSafetyScanner` parses the syntax tree:
 
 ---
 
-## 6. Phase 5: Corrective RAG (CRAG) Relevance Gate & Fallbacks
+## 6. Phase 5: Reflexive CRAG Evaluator & Closed-Loop Adaptive Re-Planning
 
-[`backend/app/agent/graph.py:_evaluate_evidence_node()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py#L770-L860) evaluates evidence quality before the synthesizer is prompted:
+[`backend/app/agent/evaluator.py:EvidenceEvaluator`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py) evaluates evidence quality and completeness before the synthesizer is prompted:
 
-### 5.1 Stemmed Query Matching & Relevance Scoring
-- Query tokens are stemmed: e.g. `"traffic"` $\to$ `'traff'`, `"challans"` $\to$ `'challan'`.
-- Headline matches receive $+2.0$, snippet/body matches receive $+1.0$.
-- Any document with score $0.0$ is pruned from the generation prompt.
+### 5.1 Hybrid Fast-Floor Evaluation (<5ms)
+- Evaluates retrieved articles against strict minimum thresholds: if primary retrieval contains $\ge 1$ high-confidence broadsheet article with $\ge 100$ words of clean editorial body text, it immediately passes with `is_sufficient=True`, `quality_score=1.0`, bypassing LLM evaluation and eliminating latency overhead.
+- For relational manifests (`source_tool == 'sql_analytics'` or `archetype == 'cross_newspaper_comparison'`), the item is granted an unconditional relevance score of **`1.0`**, ensuring full manifests are preserved.
 
-### 5.2 Macro Manifest Protection
-For relational manifests (`source_tool == 'sql_analytics'` or `archetype == 'cross_newspaper_comparison'`), the item is granted an unconditional relevance score of **`1.0`**, ensuring full manifests (such as the 142 exclusive articles) are never accidentally stripped.
+### 5.2 Reflexive LLM-as-Judge (`evaluate_evidence_async`)
+- When evidence falls below the fast floor, an LLM judge evaluates evidence sufficiency against the query using `EVALUATOR_SYSTEM_PROMPT`.
+- Emits a typed Pydantic `EvaluationVerdict`:
+  ```python
+  EvaluationVerdict(
+      is_sufficient=False,
+      quality_score=0.45,
+      gap_reason="Evidence contains regional reports on BRICS, but lacks the specific security and beautification details requested.",
+      recommended_action="replan_static_tools",
+      corrective_hints=["Expand search query to include 'beautification' and 'security arrangements' in Hindustan Times"]
+  )
+  ```
 
-### 5.3 Corrective Fallback Activation
-If grounded evidence count is 0:
-1. Triggers `entity_search(top_k=5)` for capitalized named entities.
-2. If still empty and `enable_web_search == True`, triggers `web_search(num_results=4)`.
+### 5.3 Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`)
+- If `recommended_action == "replan_static_tools"`, the state machine routes to `execute_adaptive_replan`.
+- `QueryPlanner.replan_with_feedback_async()` analyzes the previous plan, tool records, and gap diagnosis.
+- Relaxes narrow date bounds, broadens keywords, or increases `top_k`.
+- **Anti-Repetition Guard**: Enforces strict rejection of tool calls identical to those that failed in the initial iteration.
 
-### 5.4 Layer 2 Dynamic Toolmaker Fallback
-When initial retrieval tools yield zero evidence items (or an average relevance score $< 0.4$) on quantitative, statistical, or cross-sectional queries, the Corrective RAG evaluator invokes **Layer 2 Dynamic Toolmaker Fallback**:
-1. Invokes `ToolMaker` asynchronously to generate an ad-hoc Python function tailored to the user's data goal.
-2. Scans the code through `ASTSafetyScanner` and executes it inside `SandboxedExecutor`.
-3. Injects the recovered analytical findings into `AgentState` with an unconditional confidence score of **`1.0`**, preventing an empty anti-hallucination stop when the data exists in MySQL.
+### 5.4 Dynamic ToolMaker Fallback & 1-Cycle Ceiling
+- If `recommended_action == "synthesize_dynamic_tool"` on quantitative/analytical queries, the state machine routes to `execute_dynamic_code`.
+- Synthesizes an ad-hoc Python/SQL tool via `ToolMaker`, audited by `ToolCritic` across 5 dimensions, and runs in the AST Subprocess Sandbox.
+- **1-Cycle Recovery Ceiling**: Both recovery nodes enforce `recovery_attempts < 1`, guaranteeing bounded execution time before moving to synthesis.
 
 ---
 
-## 7. Phase 6: Answer Synthesis, Prompt Budgeting & SSE Streaming
+## 7. Phase 6: Dynamic Blueprint-Driven Synthesis, Prompt Budgeting & SSE Streaming
 
-### 6.1 Evidence Context Budgeting & Publication Scoping
+### 6.1 Evidence Context Budgeting & Full-Text Preservation
 
-1. **Top 12 Item Cap**: Slices `evidence_items[:12]` to guarantee the synthesizer prompt stays within $\le 3,500$ tokens.
-2. **Selective Length Allocations**:
+1. **Top 12 Item Cap**: Slices `evidence_items[:12]` to guarantee the synthesizer prompt stays within token limits.
+2. **Single-Article Full-Text Budgeting**: When a query targets a specific single article, preserves up to **7,500 characters** of `parent_article_text`, prioritizing complete editorial depth over snippet fragmentation.
+3. **Visual Annotation Noise Sanitization**: Filters out bulky bounding box coordinate dumps and raw scene labels from prompt context unless the user explicitly requested visual analysis.
+4. **Selective Length Allocations**:
    - Manifests, Exclusion Lists, and Coverage Matrices: **up to 4,000 characters**.
    - Standard Article Excerpts: **up to 1,200 characters**.
-3. **Publication Scoping Guardrail**:
+5. **Publication Scoping Guardrail**:
    ```text
    === CRITICAL CONVERSATION HISTORY GUARD ===
    VERIFIED AVAILABLE PUBLICATIONS FOR THIS QUERY:
@@ -1436,7 +1487,14 @@ When initial retrieval tools yield zero evidence items (or an average relevance 
 
 ---
 
-### 6.2 The Complete Synthesizer Prompt Structure
+### 6.2 Dynamic Prompt Compilation from AnswerBlueprint
+
+Instead of rigid static templates, the synthesizer calls `compile_structure_from_blueprint(answer_blueprint)`:
+- Dynamically generates prompt instructions matching the planner's `SectionSpec` (narrative, bullet lists, markdown tables, metric cards, timelines).
+- Respects explicit user format constraints (e.g. word counts, table exclusions) while guaranteeing non-negotiable broadsheet citations:
+  `[{Newspaper}, {YYYY-MM-DD}, Page {P}, "{Headline}"]`.
+- **Deterministic Robotic Catalog Table Stripping**: `clean_robotic_catalog_tables(ans)` deterministically purges mechanical metadata tables (`| # | Headline | Section | Page | Words |`) from single-article narrative answers.
+- **Quantitative Metric Absence Hard-Stop**: Truthfully reports absence when numerical metrics cannot be computed.
 
 ```text
 [SYSTEM PROMPT: SYNTHESIZER_SYSTEM_PROMPT]
@@ -1446,6 +1504,9 @@ When initial retrieval tools yield zero evidence items (or an average relevance 
   ### 📰 Broadsheet Perspectives & Focus Areas
   ### 🔍 Explore Further
 - Strict Citation Rule: [{Newspaper}, {YYYY-MM-DD}, Page {P}, "{Headline}"]
+- QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP:
+  * If the user query asks for mathematical, numerical, or statistical calculations (variance, standard deviation, correlation, averages, ratios, or section breakdowns) and they are NOT present in verified evidence, explicitly state that the computation could not be performed or is unavailable.
+  * Strictly forbidden from estimating, guessing, or fabricating numerical statistics from pre-training memory.
 - Anti-Hallucination Hard Stop if 0 Evidence.
 
 [USER PROMPT]

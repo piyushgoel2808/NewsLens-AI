@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.sandbox import ASTSafetyScanner, SandboxedExecutor, ScanResult
+from app.agent.tool_critic import EvaluationScorecard, ToolCritic
 from app.core.logging import get_logger
 from app.providers.base import Message
 from app.providers.registry import get_registry
@@ -34,15 +35,15 @@ The database contains the following tables and columns:
    - subheadline (TEXT)
    - byline_author (VARCHAR)
    - section (VARCHAR)
-   - article_type (VARCHAR: 'news', 'editorial', 'opinion', 'analysis', 'sports')
+   - article_type (VARCHAR: 'news', 'editorial', 'opinion', 'analysis', 'sports', 'advertisement', 'sidebar', 'letter', 'obituary', 'review')
    - prominence_score (FLOAT 0.0-1.0)
    - word_count (INT)
    - summary (TEXT)
    - full_text (LONGTEXT)
    - category_id (INT FK -> article_categories.id)
 4. `article_categories`: id (INT PK), name (VARCHAR, e.g. 'Politics', 'Business', 'Sports', 'Health', 'Crime')
-5. `pages`: id (INT PK), issue_id (INT FK -> issues.id), page_number (INT)
-6. `photos`: id (INT PK), article_id (INT FK), page_id (INT FK), caption (TEXT), visual_type (VARCHAR)
+5. `pages`: id (INT PK), issue_id (INT FK -> issues.id), page_number (INT), is_advertisement_page (BOOLEAN)
+6. `photos`: id (INT PK), article_id (INT FK), page_id (INT FK), caption (TEXT), visual_type (VARCHAR: 'photo', 'graphic', 'chart', 'map')
 7. `entities`: id (INT PK), name (VARCHAR), type (VARCHAR: 'person', 'org', 'location')
 8. `article_entities`: article_id (INT FK), entity_id (INT FK), mention_count (INT), salience_score (FLOAT)
 
@@ -71,6 +72,13 @@ async def analyze(db, query: str, context: dict) -> dict:
 4. **Security Restrictions**: NO file I/O (`open`), NO subprocess, NO network calls, NO `os`, NO `sys`, NO `eval`, NO `exec`.
 5. **Robustness**: Always handle the case where `db` is None or returns 0 rows. Check for division by zero before calculating ratios or correlations.
 6. **Return Format**: Return ONLY the Python code inside ```python ``` code fences. No conversational banter or explanations outside the code block.
+7. **Date Normalization**: The archive stores dates in ISO `'YYYY-MM-DD'` format. If the user query has dates like `2/8/2026` or `02-08-2026`, convert them to `'YYYY-MM-DD'` (e.g. `'2026-08-02'`) before filtering.
+8. **Newspaper Matching**: Use case-insensitive matching or `LIKE '%Name%'` (e.g. `LOWER(n.name) LIKE '%goan%'` or `n.name IN ('The Goan', 'Hindustan Times')`) to prevent prefix mismatches.
+9. **Cartesian Product Prevention**: When joining `articles` with `pages` or `photos`, ALWAYS use `COUNT(DISTINCT a.id)` to avoid inflated duplicate counts.
+10. **Strict Grounding & Truthful Absence**: Your `summary` MUST strictly report the actual counts and data found. If the query yields 0 rows, clearly state that no matching records were found in the archive—NEVER invent positive numbers or narrative facts.
+11. **Category Relational Schema**: The `articles` table has NO `category` column! It only contains `category_id (INT FK -> article_categories.id)`. To query or group by category, ALWAYS join: `JOIN article_categories c ON a.category_id = c.id` and select `c.name AS category_name`. NEVER write `articles.category` or `a.category`.
+12. **Advertisements Schema**: Advertisements and commercial notices are stored as records in the `articles` table with `article_type = 'advertisement'` or in section `'Advertisements & Notices'`. Do NOT query `photos` for advertisements (`photos.visual_type` is `'photo'`, not `'ad'`). Full-page advertisement wraps are also flagged on `pages.is_advertisement_page = 1`.
+13. **Variable Naming & SQLAlchemy text() Safety**: NEVER name a variable `text = ...`! Assigning to a variable named `text` shadows `from sqlalchemy import text` and causes a fatal Python `UnboundLocalError`. Always use `snippet`, `content`, `article_text`, or `row_text` for string content.
 
 ### FEW-SHOT EXAMPLES
 
@@ -309,6 +317,8 @@ class ToolMakerResult:
     evidence_items: list[dict[str, Any]] = field(default_factory=list)
     code: str = ""
     raw_output: dict[str, Any] | None = None
+    scorecard: EvaluationScorecard | None = None
+    critique_history: list[str] = field(default_factory=list)
     error: str | None = None
     retries_used: int = 0
     execution_time_ms: int = 0
@@ -330,17 +340,20 @@ def normalize_dynamic_output(
 
     # 1. Primary Structural Evidence Item (Summary)
     if summary_text:
+        target_np = str(metadata.get("newspaper_name") or "Archive Analytics")
         evidence_items.append({
             "article_id": 0,
             "issue_id": 0,
-            "headline": f"Dynamic Analytical Computation: {query[:60]}",
-            "newspaper_name": "Statistical Engine",
-            "issue_date": "",
-            "page_number": 1,
-            "pages": [1],
+            "headline": f"Analytical Computation: {query[:60]}",
+            "newspaper_name": target_np,
+            "issue_date": str(metadata.get("issue_date") or ""),
+            "page_number": 0,
+            "pages": [],
             "snippet": summary_text,
             "prominence_score": 0.95,
             "source_tool": "dynamic_analysis",
+            "is_statistical_metric": True,
+            "is_article": False,
             "metadata": metadata,
         })
 
@@ -374,23 +387,69 @@ def normalize_dynamic_output(
     return evidence_items
 
 
+def ensure_standard_imports(code: str) -> str:
+    """Prepend essential standard library and data imports if referenced in code but omitted."""
+    if not code:
+        return code
+
+    needed: list[str] = []
+    # Regular expressions
+    if re.search(r"\bre\.", code) and not re.search(r"^\s*(?:import\s+re\b|from\s+re\b)", code, re.MULTILINE):
+        needed.append("import re")
+    # Math
+    if (re.search(r"\bmath\.", code) or "sqrt(" in code) and not re.search(r"^\s*(?:import\s+math\b|from\s+math\b)", code, re.MULTILINE):
+        needed.append("import math")
+    # Statistics
+    if re.search(r"\bstatistics\.", code) and not re.search(r"^\s*(?:import\s+statistics\b|from\s+statistics\b)", code, re.MULTILINE):
+        needed.append("import statistics")
+    # JSON
+    if re.search(r"\bjson\.", code) and not re.search(r"^\s*(?:import\s+json\b|from\s+json\b)", code, re.MULTILINE):
+        needed.append("import json")
+    # Datetime
+    if (re.search(r"\bdatetime\.", code) or re.search(r"\bdate\.", code)) and not re.search(r"^\s*(?:import\s+datetime\b|from\s+datetime\b)", code, re.MULTILINE):
+        needed.append("from datetime import date, datetime")
+    # Pandas
+    if (re.search(r"\bpd\.", code) or "DataFrame(" in code or "Series(" in code) and not re.search(r"^\s*(?:import\s+pandas\b|from\s+pandas\b)", code, re.MULTILINE):
+        needed.append("import pandas as pd")
+    # Numpy
+    if re.search(r"\bnp\.", code) and not re.search(r"^\s*(?:import\s+numpy\b|from\s+numpy\b)", code, re.MULTILINE):
+        needed.append("import numpy as np")
+    # SQLAlchemy text
+    if re.search(r"\btext\s*\(", code) and not re.search(r"^\s*(?:from\s+sqlalchemy\s+import\s+.*?\btext\b|import\s+sqlalchemy\b)", code, re.MULTILINE):
+        needed.append("from sqlalchemy import text")
+
+    # Guard against UnboundLocalError when local variable 'text' shadows sqlalchemy.text
+    if re.search(r"\btext\s*\(", code) and (re.search(r"\btext\s*=\s*", code) or re.search(r"\bfor\s+text\s+in\b", code)):
+        code = re.sub(r"\btext\s*=\s*", "article_content = ", code)
+        code = re.sub(r"\bfor\s+text\s+in\b", "for article_content in", code)
+        code = re.sub(r"\btext\.strip\(", "article_content.strip(", code)
+        code = re.sub(r"\btext\.lower\(", "article_content.lower(", code)
+        code = re.sub(r"\blen\(text\)", "len(article_content)", code)
+
+    if needed:
+        return "\n".join(needed) + "\n\n" + code
+    return code
+
+
 # ---------------------------------------------------------------------------
 # ToolMaker Engine with Self-Correction Loop
 # ---------------------------------------------------------------------------
 
 
 class ToolMaker:
-    """Orchestrates dynamic Python code generation, AST safety scanning, and sandboxed execution."""
+    """Orchestrates dynamic Python code generation, AST safety scanning, and sandboxed execution with closed-loop refinement."""
 
     def __init__(
         self,
         scanner: ASTSafetyScanner,
         sandbox: SandboxedExecutor,
         provider: Any = None,
+        critic: ToolCritic | None = None,
     ) -> None:
         self._scanner = scanner
         self._sandbox = sandbox
         self._provider = provider
+        self._critic = critic or ToolCritic()
 
     def _extract_code(self, text: str) -> str:
         """Extract clean Python code from LLM response text."""
@@ -427,31 +486,54 @@ class ToolMaker:
         query: str,
         context: dict[str, Any] | None = None,
         model_override: str | None = None,
+        attempted_tools: list[dict[str, Any]] | None = None,
+        gap_diagnosis: str | None = None,
         max_retries: int = 2,
     ) -> ToolMakerResult:
-        """Synthesize Python tool code, verify safety, execute in sandbox, with self-correction."""
+        """Synthesize Python tool code, verify safety, execute in sandbox, with closed-loop self-refinement."""
         t_start = time.monotonic()
         provider = self._resolve_provider(model_override)
         ctx = context or {}
 
         # 1. Initial Prompt Construction
-        user_prompt = (
+        prompt_parts = [
             f"Write an asynchronous Python tool to answer the following broadsheet research query:\n"
             f"Query: \"{query}\"\n\n"
             f"ARCHIVE CONTEXT:\n"
             f"Available Newspapers: {ctx.get('available_newspapers', [])}\n"
             f"Available Dates: {ctx.get('available_dates', [])[:10]}\n"
-            f"Available Categories: {ctx.get('categories', [])}\n\n"
-            f"Write ONLY the `analyze(db, query, context)` function in valid Python."
-        )
-
-        messages = [
-            Message(role="system", content=TOOL_MAKER_SYSTEM_PROMPT),
-            Message(role="user", content=user_prompt),
+            f"Available Categories: {ctx.get('categories', [])}\n"
         ]
+
+        if attempted_tools or gap_diagnosis:
+            prompt_parts.append("\nPRIOR RETRIEVAL AUDIT & REASON FOR FALLBACK:")
+            if attempted_tools:
+                tool_summaries = []
+                for t in attempted_tools[:4]:
+                    t_name = t.get("tool_name") or "tool"
+                    t_input = t.get("tool_input") or {}
+                    t_count = t.get("results_count", 0)
+                    tool_summaries.append(f"- Attempted `{t_name}` with arguments {t_input} (yielded {t_count} raw items)")
+                prompt_parts.append("Prior tools executed:\n" + "\n".join(tool_summaries))
+            if gap_diagnosis:
+                prompt_parts.append(f"Evaluator Audit Diagnosis:\n{gap_diagnosis.strip()}\n")
+            prompt_parts.append(
+                "YOUR TASK: Static retrieval failed to adequately answer the query. "
+                "Write custom Python and SQL queries to specifically overcome this shortfall and directly answer the query."
+            )
+
+        prompt_parts.append("\nWrite ONLY the `analyze(db, query, context)` function in valid Python.")
+        user_prompt = "\n".join(prompt_parts)
+
+        system_msg = Message(role="system", content=TOOL_MAKER_SYSTEM_PROMPT)
+        initial_user_msg = Message(role="user", content=user_prompt)
 
         last_code = ""
         last_error = ""
+        last_scorecard: EvaluationScorecard | None = None
+        critique_history: list[str] = []
+
+        messages = [system_msg, initial_user_msg]
 
         for attempt in range(max_retries + 1):
             try:
@@ -462,6 +544,7 @@ class ToolMaker:
                     max_tokens=2048,
                 )
                 raw_code = self._extract_code(resp.text)
+                raw_code = ensure_standard_imports(raw_code)
                 last_code = raw_code
 
                 # 2. AST Static Security Verification
@@ -472,18 +555,34 @@ class ToolMaker:
                         f"Dynamic tool failed AST security scan on attempt {attempt}: {err_details}"
                     )
                     last_error = f"Security Violation: {err_details}"
+                    scorecard = self._critic.evaluate(
+                        code=raw_code,
+                        raw_output=None,
+                        query=query,
+                        context=ctx,
+                        scan_violations=scan_res.violations,
+                    )
+                    last_scorecard = scorecard
 
-                    # Add self-correction message
-                    messages.append(Message(role="assistant", content=raw_code))
-                    messages.append(Message(
-                        role="user",
-                        content=(
-                            f"Your code was rejected by the AST Safety Scanner with the following violations:\n"
-                            f"{err_details}\n\n"
-                            f"Strictly avoid forbidden imports (os, sys, subprocess, open, requests) and destructive SQL. "
-                            f"Fix the code and rewrite the complete `analyze` function."
-                        ),
-                    ))
+                    critique_lines = [
+                        "Your code was rejected by the AST Safety Scanner:",
+                        scorecard.critique or err_details,
+                    ]
+                    if scorecard.suggested_fixes:
+                        critique_lines.append("\nSUGGESTED REPAIR ACTIONS:")
+                        critique_lines.extend(f"- {fix}" for fix in scorecard.suggested_fixes)
+                    critique_lines.append("\nFix the code and rewrite the complete `analyze` function.")
+
+                    critique_msg = "\n".join(critique_lines)
+                    critique_history.append(critique_msg)
+
+                    # Guardrail 3: Token-budgeted compact retry trace (strictly 4 messages max)
+                    messages = [
+                        system_msg,
+                        initial_user_msg,
+                        Message(role="assistant", content=f"```python\n{raw_code}\n```"),
+                        Message(role="user", content=critique_msg),
+                    ]
                     continue
 
                 # 3. Sandboxed Execution Step
@@ -493,34 +592,91 @@ class ToolMaker:
                     context=ctx,
                 )
 
-                if sandbox_res.success and sandbox_res.output:
-                    dur_ms = round((time.monotonic() - t_start) * 1000)
-                    evidence_items = normalize_dynamic_output(sandbox_res.output, query)
-                    return ToolMakerResult(
-                        success=True,
-                        evidence_items=evidence_items,
-                        code=raw_code,
-                        raw_output=sandbox_res.output,
-                        retries_used=attempt,
-                        execution_time_ms=dur_ms,
+                if not sandbox_res.success or not sandbox_res.output:
+                    last_error = sandbox_res.error or "Sandbox execution failed with unknown error."
+                    logger.warning(
+                        f"Dynamic tool execution failed on attempt {attempt}: {last_error}"
                     )
+                    scorecard = self._critic.evaluate(
+                        code=raw_code,
+                        raw_output=None,
+                        query=query,
+                        context=ctx,
+                        error=last_error,
+                    )
+                    last_scorecard = scorecard
 
-                # Execution failed; formulate self-correction feedback
-                last_error = sandbox_res.error or "Sandbox execution failed with unknown error."
-                logger.warning(
-                    f"Dynamic tool execution failed on attempt {attempt}: {last_error}"
+                    critique_lines = [
+                        "Executing your code in the sandbox raised a runtime error:",
+                        f"```\n{last_error}\n```",
+                    ]
+                    if scorecard.suggested_fixes:
+                        critique_lines.append("\nSUGGESTED REPAIR ACTIONS:")
+                        critique_lines.extend(f"- {fix}" for fix in scorecard.suggested_fixes)
+                    critique_lines.append("\nFix the bug and provide the corrected `analyze` function.")
+
+                    critique_msg = "\n".join(critique_lines)
+                    critique_history.append(critique_msg)
+
+                    # Guardrail 3: Token-budgeted compact retry trace
+                    messages = [
+                        system_msg,
+                        initial_user_msg,
+                        Message(role="assistant", content=f"```python\n{raw_code}\n```"),
+                        Message(role="user", content=critique_msg),
+                    ]
+                    continue
+
+                # 4. Post-Execution Diagnostic Critic Audit
+                scorecard = self._critic.evaluate(
+                    code=raw_code,
+                    raw_output=sandbox_res.output,
+                    query=query,
+                    context=ctx,
                 )
+                last_scorecard = scorecard
 
-                messages.append(Message(role="assistant", content=raw_code))
-                messages.append(Message(
-                    role="user",
-                    content=(
-                        f"Executing your code in the sandbox raised the following runtime error:\n"
-                        f"```\n{last_error}\n```\n\n"
-                        f"Common issues: column name typos, wrong JOIN conditions, missing await, or divide by zero. "
-                        f"Fix the bug and provide the corrected `analyze` function."
-                    ),
-                ))
+                if not scorecard.is_acceptable and attempt < max_retries:
+                    critique_lines = [
+                        "Your code executed but FAILED quality, schema, or anti-hallucination audits:",
+                        scorecard.critique,
+                    ]
+                    if scorecard.suggested_fixes:
+                        critique_lines.append("\nSUGGESTED REPAIR ACTIONS:")
+                        critique_lines.extend(f"- {fix}" for fix in scorecard.suggested_fixes)
+                    critique_lines.append("\nPlease rewrite the complete `analyze` function resolving these issues.")
+
+                    critique_msg = "\n".join(critique_lines)
+                    critique_history.append(critique_msg)
+                    last_error = scorecard.critique
+                    logger.warning(f"Dynamic tool failed quality audit on attempt {attempt}: {scorecard.critique}")
+
+                    # Guardrail 3: Token-budgeted compact retry trace
+                    messages = [
+                        system_msg,
+                        initial_user_msg,
+                        Message(role="assistant", content=f"```python\n{raw_code}\n```"),
+                        Message(role="user", content=critique_msg),
+                    ]
+                    continue
+
+                # Successful execution (or retries exhausted on acceptable output)
+                dur_ms = round((time.monotonic() - t_start) * 1000)
+                evidence_items = normalize_dynamic_output(sandbox_res.output, query)
+                err_msg = None
+                if not scorecard.is_acceptable:
+                    err_msg = scorecard.critique or "Dynamic tool failed diagnostic quality audit."
+                return ToolMakerResult(
+                    success=scorecard.is_acceptable,
+                    evidence_items=evidence_items if scorecard.is_acceptable else [],
+                    code=raw_code,
+                    raw_output=sandbox_res.output,
+                    scorecard=scorecard,
+                    critique_history=critique_history,
+                    error=err_msg,
+                    retries_used=attempt,
+                    execution_time_ms=dur_ms,
+                )
 
             except Exception as e:
                 last_error = str(e)
@@ -530,7 +686,9 @@ class ToolMaker:
         return ToolMakerResult(
             success=False,
             code=last_code,
-            error=last_error or "Failed to synthesize a working tool after maximum retries.",
+            scorecard=last_scorecard,
+            critique_history=critique_history,
+            error=last_error or (last_scorecard.critique if last_scorecard else None) or "Failed to synthesize an acceptable tool after maximum retries.",
             retries_used=max_retries,
             execution_time_ms=dur_ms,
         )
@@ -538,7 +696,10 @@ class ToolMaker:
 
 __all__ = [
     "TOOL_MAKER_SYSTEM_PROMPT",
+    "EvaluationScorecard",
+    "ToolCritic",
     "ToolMaker",
     "ToolMakerResult",
+    "ensure_standard_imports",
     "normalize_dynamic_output",
 ]

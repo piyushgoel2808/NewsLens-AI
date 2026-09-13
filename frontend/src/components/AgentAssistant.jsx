@@ -317,6 +317,17 @@ export default function AgentAssistant() {
     setIsStreaming(true);
 
     try {
+      const isStaleAsset = Boolean(
+        activeAttachedAsset?.articleId &&
+        selectedArticleId &&
+        Number(activeAttachedAsset.articleId) !== Number(selectedArticleId)
+      );
+      const isVisualQuery = /\b(photo|image|picture|graphic|chart|infographic|diagram|table|figure|visual|caption)\b/i.test(queryText);
+      const effectiveArticleId = selectedArticleId || (isStaleAsset ? undefined : activeAttachedAsset?.articleId) || undefined;
+      const effectivePhotoId = isStaleAsset ? undefined : (isVisualQuery ? activeAttachedAsset?.photoId : undefined);
+      const effectiveIssueDate = isStaleAsset ? undefined : activeAttachedAsset?.issueDate;
+      const effectiveNewspaperName = isStaleAsset ? undefined : activeAttachedAsset?.newspaperName;
+
       const response = await fetch('/api/query/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -326,10 +337,10 @@ export default function AgentAssistant() {
           model: selectedModel || undefined,
           model_override: selectedModel || undefined,
           enable_web_search: enableWebSearch,
-          attached_article_id: activeAttachedAsset?.articleId || selectedArticleId || undefined,
-          attached_photo_id: activeAttachedAsset?.photoId || undefined,
-          attached_issue_date: activeAttachedAsset?.issueDate || undefined,
-          attached_newspaper_name: activeAttachedAsset?.newspaperName || undefined,
+          attached_article_id: effectiveArticleId,
+          attached_photo_id: effectivePhotoId || undefined,
+          attached_issue_date: effectiveIssueDate || undefined,
+          attached_newspaper_name: effectiveNewspaperName || undefined,
         }),
       });
 

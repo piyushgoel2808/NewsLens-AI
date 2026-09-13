@@ -43,15 +43,45 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
     """Format retrieved evidence documents into structured prompt context with strict token budgeting."""
     domain_name = detect_domain_from_query(query, evidence_items) if query else None
 
+    q_lower = (query or "").lower()
+    quoted_hl_match = re.search(r"[\"“]([^\"”]{8,150})[\"”]", query or "")
+    target_hl = quoted_hl_match.group(1).strip().lower() if quoted_hl_match else ""
+    is_article_focus = bool(
+        target_hl
+        or re.search(
+            r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|ir)?\s*(?:article|story|piece|it)\b",
+            q_lower,
+        )
+        or re.search(r"\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b", q_lower)
+    ) and not any(w in q_lower for w in ["how many", "count", "list all", "catalog", "compare all"])
+
     if domain_name and evidence_items:
         sorted_evidence = sorted(
             evidence_items,
             key=lambda it: score_evidence_item(it, domain_name),
             reverse=True,
         )
-        budgeted_items = sorted_evidence[:12]
     else:
-        budgeted_items = evidence_items[:12] if evidence_items else []
+        sorted_evidence = list(evidence_items or [])
+
+    # If this query targets a specific article, prioritize the matching article and cap extraneous noise
+    if is_article_focus and sorted_evidence:
+        matching_idx = 0
+        if target_hl:
+            for i, it in enumerate(sorted_evidence):
+                it_hl = (it.get("headline") or "").lower()
+                if target_hl in it_hl or it_hl in target_hl:
+                    matching_idx = i
+                    break
+        target_item = sorted_evidence.pop(matching_idx)
+        budgeted_items = [target_item] + sorted_evidence[:2]
+    else:
+        budgeted_items = sorted_evidence[:12] if sorted_evidence else []
+
+    is_visual_query = any(
+        w in q_lower
+        for w in ["photo", "image", "picture", "infographic", "chart", "graphic", "visual"]
+    )
 
     seen_keys: set[str] = set()
     context_blocks: list[str] = []
@@ -59,7 +89,14 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
     for item in budgeted_items:
         sanitize_evidence_item(item)
         hl = item.get("headline", "Untitled Article")
-        text = item.get("snippet", "")
+
+        # Prefer rich parent article full-text for target article when available
+        parent_txt = item.get("parent_article_text") or ""
+        base_text = item.get("snippet", "")
+        if is_article_focus and parent_txt and len(parent_txt) > len(base_text):
+            text = parent_txt
+        else:
+            text = base_text
 
         dedup_key = f"{hl.lower().strip()}_{text[:80].lower().strip()}"
         if dedup_key in seen_keys:
@@ -67,14 +104,22 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
         seen_keys.add(dedup_key)
 
         is_manifest_or_matrix = (
-            item.get("source_tool") in ("sql_analytics", "coverage_analysis", "inspect_visual_asset")
+            item.get("source_tool") in ("sql_analytics", "coverage_analysis", "inspect_visual_asset", "dynamic_analysis")
             or item.get("is_visual_asset")
             or "RELATIONAL ARCHIVE MANIFEST" in text
             or "COVERAGE RECONCILIATION MATRIX" in text
             or "VERIFIED EXCLUSIVE COVERAGE" in text
+            or "VERIFIED SHARED SYNDICATED WIRE COVERAGE" in text
             or "VISUAL DATA ASSET:" in text
+            or "DYNAMIC ANALYTICAL" in text.upper()
         )
-        max_chars = 4500 if is_manifest_or_matrix else 1200
+        if is_article_focus:
+            max_chars = 7500
+        elif is_manifest_or_matrix:
+            max_chars = 4500
+        else:
+            max_chars = 1800
+
         if len(text) > max_chars:
             text = text[:max_chars].rstrip() + " ... [excerpt truncated for length]"
 
@@ -112,20 +157,45 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
                 f"Visual Asset #{v_pid} ({v_type})\n"
                 f"Content:\n{text}\n"
             )
+        elif bool(
+            item.get("is_statistical_metric")
+            or (item.get("source_tool") in ("dynamic_analysis", "sql_analytics") and item.get("article_id") == 0)
+        ):
+            np_name = item.get("newspaper_name") or "Archive Analytics"
+            dt = item.get("issue_date") or ""
+            dt_str = f"Date / Period: {dt}\n" if dt else ""
+            context_blocks.append(
+                f"--- ARCHIVE STATISTICAL ANALYTICS & METADATA EXCERPT [{idx}] ---\n"
+                f"Source: Archive Statistical Analytics ({np_name})\n"
+                f"{dt_str}"
+                f"Calculated Finding & Scope:\n{text}\n"
+                f"[Quantitative Archive Metric: State these verified figures directly. Do NOT cite as a printed newspaper story.]\n"
+            )
         else:
             np_name = item.get("newspaper_name", "Unknown Publication")
             dt = item.get("issue_date", "Unknown Date")
             pages = item.get("pages", [1])
             page_val = int(pages[0]) if pages and pages[0] else 1
-            evidence_tag = f'[Evidence: {np_name}, {dt}, Page {page_val}, Headline: "{hl}"]'
+            sec_val = item.get("section")
+            wc_val = item.get("word_count")
+            extra_meta = []
+            if sec_val:
+                extra_meta.append(f"Section: {sec_val}")
+            if wc_val:
+                extra_meta.append(f"Word Count: {wc_val} words")
+            meta_suffix = (", " + ", ".join(extra_meta)) if extra_meta else ""
+            evidence_tag = f'[Evidence: {np_name}, {dt}, Page {page_val}{meta_suffix}, Headline: "{hl}"]'
+
+            meta_lines = "".join(f"{m}\n" for m in extra_meta)
 
             photos = item.get("photos") or []
             photos_text = ""
             if photos:
+                included_photos = photos[:1] if (is_article_focus and not is_visual_query) else photos[:3]
                 photo_lines = [
                     f"  * [{p.get('visual_type') or 'Photo'} {p_idx}] Caption: \"{p.get('caption') or 'No printed caption'}\""
-                    + (f" | Visual Scene: {p['vlm_description']}" if p.get("vlm_description") else "")
-                    for p_idx, p in enumerate(photos, 1)
+                    + (f" | Visual Scene: {p['vlm_description']}" if (p.get("vlm_description") and (not is_article_focus or is_visual_query)) else "")
+                    for p_idx, p in enumerate(included_photos, 1)
                 ]
                 photos_text = "\nAttached Photos & Visual Elements:\n" + "\n".join(photo_lines) + "\n"
 
@@ -135,6 +205,7 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
                 f"Publication: {np_name}\n"
                 f"Date: {dt}\n"
                 f"Page: {page_val}\n"
+                f"{meta_lines}"
                 f"Headline: {hl}\n"
                 f"Content:\n{text}\n"
                 f"{photos_text}"
@@ -181,6 +252,27 @@ def build_synthesizer_user_prompt(
         if domain else ""
     )
 
+    is_shared = any(
+        w in query.lower()
+        for w in [
+            "similar", "shared", "common", "same article", "same articles",
+            "same story", "same stories", "both newspaper", "both newspapers",
+            "both paper", "both papers", "in both", "covered by both", "both carried",
+            "syndicated", "wire stories", "wire story",
+        ]
+    ) or any(
+        "VERIFIED SHARED SYNDICATED WIRE COVERAGE" in str(item.get("snippet", ""))
+        or item.get("source_tool") == "sql_analytics_shared"
+        for item in evidence_items
+    )
+    shared_note = (
+        "SHARED WIRE COVERAGE DIRECTIVE:\n"
+        "- The user is specifically requesting identical, similar, or shared syndicated wire stories covered by both newspapers.\n"
+        "- Structure your response around the verified shared wire matches provided in the evidence.\n"
+        "- Strictly adhere to verified wire pairings. NEVER fabricate false equivalence between unrelated local stories.\n\n"
+        if is_shared else ""
+    )
+
     return (
         f"User Research Query: {query}\n"
         f"Query Archetype: {archetype}\n"
@@ -188,6 +280,7 @@ def build_synthesizer_user_prompt(
         f"{dates_note}"
         f"{isolation_rule}"
         f"{domain_note}"
+        f"{shared_note}"
         f"Available Newspaper Evidence:\n"
         f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
         f"Synthesize an insightful, highly-structured executive intelligence response."
