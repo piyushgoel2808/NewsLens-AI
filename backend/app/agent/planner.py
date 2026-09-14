@@ -55,6 +55,16 @@ from app.providers.registry import get_registry
 logger = get_logger(__name__)
 
 
+MATH_AGGREGATE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:avg|average|mean|median)\b",
+    r"\b(?:length|word count|word length|longest|shortest)\s+of\s+articles?\b",
+    r"\b(?:article\s+length|article\s+word\s+count)\b",
+    r"\b(?:correlation|regression|variance|standard deviation|percentile|quantile|histogram|moving average|pearson|spearman|gini)\b",
+    r"\b(?:distribution of\s+(?:words?|lengths?|sizes?)|word count distribution|length distribution)\b",
+    r"\b(?:ratio of\s+.*to|proportion of\s+.*to)\b",
+)
+
+
 def is_dynamic_analysis_permitted(query: str) -> bool:
     """Verify whether dynamic_analysis is appropriate for this query.
 
@@ -190,129 +200,71 @@ PLANNER_SYSTEM_PROMPT = f"{_PROMPT_PREAMBLE}\n{STATIC_BROADSHEET_SCHEMA}\n\n{_PR
 
 
 # ---------------------------------------------------------------------------
-# Dynamic Answer Blueprint Builder
+# Declarative Answer Blueprint Registry & Builder
 # ---------------------------------------------------------------------------
 
-def build_heuristic_answer_blueprint(
-    query: str,
-    archetype: str,
-    parameters: dict[str, Any] | None = None,
-) -> AnswerBlueprint:
-    """Construct a tailored deterministic AnswerBlueprint based on user query and archetype."""
-    q_lower = query.lower().strip()
-    params = parameters or {}
-
-    # 1. Detect explicit word count constraint
-    target_word_count: int | None = None
-    wc_match = re.search(r"\b(?:in|under|around|within|max(?:imum)?)\s+(\d+)\s+words?\b", q_lower)
-    if wc_match:
-        with contextlib.suppress(ValueError):
-            target_word_count = int(wc_match.group(1))
-
-    # 2. Detect explicit format requests
-    table_requested = any(
-        w in q_lower
-        for w in [
-            "in a table", "as a table", "table comparing", "tabular format",
-            "comparison table", "in table format", "markdown table", "table of",
-        ]
-    )
-
-    # 3. Detect single-article focus
-    quoted_hl = re.search(r"[\"“]([^\"”]{8,150})[\"”]", query)
-    is_target_art = bool(
-        quoted_hl
-        or re.search(
-            r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|ir)?\s*(?:article|story|piece|it)\b",
-            q_lower,
-        )
-        or re.search(r"\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b", q_lower)
-    ) and not any(w in q_lower for w in ["how many", "count", "list all", "catalog", "compare all"])
-
-    # 3.5. Detect archive / newspaper availability query
-    is_availability_query = bool(
-        re.search(
-            r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b",
-            q_lower,
-        )
-    )
-
-    # 4. Detect scalar or count queries
-    is_scalar_or_count = bool(
-        re.search(
-            r"\b(how many|no of|number of|count of|total issues|total pages|total articles|count issues|count pages|count advertisements|ad count)\b",
-            q_lower,
-        )
-    )
-
-    # Branch A0: Archive Availability Query
-    if is_availability_query:
-        return AnswerBlueprint(
-            user_intent="archive_availability",
-            overall_tone="concise_atomic",
-            target_word_count=target_word_count or 90,
-            sections=[
-                SectionSpec(
-                    title="### ⚡ Availability Status",
-                    format_type="narrative",
-                    content_focus="Direct, authoritative statement stating whether newspaper issues exist in the archive for the queried date or publication.",
-                    target_length="1 to 2 crisp sentences",
-                ),
-                SectionSpec(
-                    title="### 📋 Archive Scope & Available Coverage",
-                    format_type="bullet_list",
-                    content_focus="Compact list of available newspapers on that date, or if none, the verified archive date range and available publications.",
-                    target_length="Compact bullet points",
-                ),
-            ],
-            prohibited_elements=[
-                "speculative corporate strategy or publication planning advice",
-                "fake future collaboration suggestions",
-                "claiming positive availability when count is zero",
-                "claiming 1 or more newspapers when count is zero",
-                "artificial explore further questions",
-                "conversational filler",
-            ],
-        )
-
-    # Branch A: Scalar / Count Query
-    if is_scalar_or_count or (archetype in ("quantitative_trend", "analytical_computation") and not table_requested and not is_target_art):
-        return AnswerBlueprint(
-            user_intent="scalar_count_metric",
-            overall_tone="concise_atomic",
-            target_word_count=target_word_count or 80,
-            sections=[
-                SectionSpec(
-                    title="### ⚡ Direct Finding",
-                    format_type="narrative",
-                    content_focus="Direct, authoritative answer with the verified number, publication, and date scope.",
-                    target_length="1 to 2 sentences",
-                ),
-                SectionSpec(
-                    title="### 📊 Key Computed Metrics",
-                    format_type="metric_card",
-                    content_focus="Compact metric summary of verified archive counts and active query filters.",
-                    target_length="Compact metric card or bullet list",
-                ),
-            ],
-            prohibited_elements=[
-                "empty or single-row article catalog tables",
-                "fake sector highlights",
-                "artificial explore further questions",
-                "conversational filler",
-            ],
-        )
-
-    # Branch B: Single-Article Deep Dive or Summarization
-    if is_target_art:
-        hl_title = f": {quoted_hl.group(1).strip()}" if quoted_hl else ""
-        len_guide = f"{target_word_count} words maximum" if target_word_count else "1-2 concise paragraphs"
-        sections = [
+DEFAULT_BLUEPRINTS: dict[str, AnswerBlueprint] = {
+    "archive_availability": AnswerBlueprint(
+        user_intent="archive_availability",
+        overall_tone="concise_atomic",
+        target_word_count=90,
+        sections=[
             SectionSpec(
-                title=f"### ⚡ Executive Summary{hl_title}",
+                title="### ⚡ Availability Status",
+                format_type="narrative",
+                content_focus="Direct, authoritative statement stating whether newspaper issues exist in the archive for the queried date or publication.",
+                target_length="1 to 2 crisp sentences",
+            ),
+            SectionSpec(
+                title="### 📋 Archive Scope & Available Coverage",
+                format_type="bullet_list",
+                content_focus="Compact list of available newspapers on that date, or if none, the verified archive date range and available publications.",
+                target_length="Compact bullet points",
+            ),
+        ],
+        prohibited_elements=[
+            "speculative corporate strategy or publication planning advice",
+            "fake future collaboration suggestions",
+            "claiming positive availability when count is zero",
+            "claiming 1 or more newspapers when count is zero",
+            "artificial explore further questions",
+            "conversational filler",
+        ],
+    ),
+    "scalar_count_metric": AnswerBlueprint(
+        user_intent="scalar_count_metric",
+        overall_tone="concise_atomic",
+        target_word_count=80,
+        sections=[
+            SectionSpec(
+                title="### ⚡ Direct Finding",
+                format_type="narrative",
+                content_focus="Direct, authoritative answer with the verified number, publication, and date scope.",
+                target_length="1 to 2 sentences",
+            ),
+            SectionSpec(
+                title="### 📊 Key Computed Metrics",
+                format_type="metric_card",
+                content_focus="Compact metric summary of verified archive counts and active query filters.",
+                target_length="Compact metric card or bullet list",
+            ),
+        ],
+        prohibited_elements=[
+            "empty or single-row article catalog tables",
+            "fake sector highlights",
+            "artificial explore further questions",
+            "conversational filler",
+        ],
+    ),
+    "single_article_summary": AnswerBlueprint(
+        user_intent="single_article_summary",
+        overall_tone="executive_brief",
+        sections=[
+            SectionSpec(
+                title="### ⚡ Executive Summary",
                 format_type="narrative",
                 content_focus="Main news development, operational details, key figures, and significance directly from the article text.",
-                target_length=len_guide,
+                target_length="1-2 concise paragraphs",
             ),
             SectionSpec(
                 title="### 📌 Key Takeaways & Operational Highlights",
@@ -326,25 +278,19 @@ def build_heuristic_answer_blueprint(
                 content_focus="Specific journalistic follow-up angles or broader implications.",
                 target_length="2 concise follow-up prompts",
             ),
-        ]
-        return AnswerBlueprint(
-            user_intent="single_article_summary" if target_word_count else "single_article_deep_dive",
-            overall_tone="executive_brief" if target_word_count else "authoritative_journalistic",
-            target_word_count=target_word_count,
-            sections=sections,
-            prohibited_elements=[
-                "robotic catalog tables",
-                "article breakdown lists",
-                "metadata inventories",
-                "unrelated visual element descriptions",
-                "conversational filler",
-            ],
-        )
-
-    # Branch C: Cross-Newspaper Comparison
-    if archetype == "cross_newspaper_comparison" or table_requested:
-        tbl_cols = ["Publication", "Issue Date", "Top Headline & Page", "Core Findings", "Editorial Angle"]
-        sections = [
+        ],
+        prohibited_elements=[
+            "robotic catalog tables",
+            "article breakdown lists",
+            "metadata inventories",
+            "unrelated visual element descriptions",
+            "conversational filler",
+        ],
+    ),
+    "cross_newspaper_comparison": AnswerBlueprint(
+        user_intent="cross_newspaper_tabular_comparison",
+        overall_tone="analytical_comparison",
+        sections=[
             SectionSpec(
                 title="### ⚡ Executive Summary: Broadsheet Comparison",
                 format_type="narrative",
@@ -375,128 +321,198 @@ def build_heuristic_answer_blueprint(
                 content_focus="Comparative follow-up angles or unresolved developments.",
                 target_length="2 to 3 concise prompts",
             ),
-        ]
-        return AnswerBlueprint(
-            user_intent="cross_newspaper_tabular_comparison",
-            overall_tone="analytical_comparison",
-            target_word_count=target_word_count,
-            sections=sections,
-            table_columns=tbl_cols,
-            prohibited_elements=[
-                "substituting stories from unrelated sections",
-                "false equivalence across unrelated local articles",
-                "conversational filler",
-            ],
-        )
-
-    # Branch D: Article Catalog
-    if archetype == "article_catalog":
-        return AnswerBlueprint(
-            user_intent="comprehensive_article_catalog",
-            overall_tone="authoritative_journalistic",
-            target_word_count=target_word_count,
-            sections=[
-                SectionSpec(
-                    title="### ⚡ Executive Summary: Article Catalog Scope",
-                    format_type="narrative",
-                    content_focus="Scope of catalog: total articles identified, publications, dates, and topical coverage.",
-                    target_length="1 to 2 sentences",
-                ),
-                SectionSpec(
-                    title="### 📋 Comprehensive Articles Catalog",
-                    format_type="markdown_table",
-                    content_focus="Markdown table listing matching articles with verified headlines, pages, sections, and bylines.",
-                    target_length="Full table of manifest articles",
-                ),
-                SectionSpec(
-                    title="### 📌 Key Featured Stories & Highlights",
-                    format_type="bullet_list",
-                    content_focus="Notable stories, key developments, and verified highlights with inline citations.",
-                    target_length="3 to 5 bullets",
-                ),
-                SectionSpec(
-                    title="### 🔍 Explore Further",
-                    format_type="bullet_list",
-                    content_focus="Suggested follow-up deep-dives into specific listed stories.",
-                    target_length="2 to 3 prompts",
-                ),
-            ],
-            table_columns=["#", "Publication", "Issue Date", "Page", "Section", "Headline", "Author / Byline"],
-            prohibited_elements=[
-                "displaying tool names as headlines",
-                "displaying doctors or authors as article headlines",
-                "conversational filler",
-            ],
-        )
-
-    # Branch E: Thematic Timeline
-    if archetype == "thematic_timeline":
-        return AnswerBlueprint(
-            user_intent="chronological_timeline",
-            overall_tone="authoritative_journalistic",
-            target_word_count=target_word_count,
-            sections=[
-                SectionSpec(
-                    title="### ⚡ Executive Summary: Chronological Progression",
-                    format_type="narrative",
-                    content_focus="Overarching arc, beginning, key inflection points, and latest status.",
-                    target_length="1 to 2 paragraphs",
-                ),
-                SectionSpec(
-                    title="### 📅 Milestone Timeline & Event Progression",
-                    format_type="timeline",
-                    content_focus="Dated chronological sequence of milestones with key figures, actions, and citations.",
-                    target_length="Chronological sequence of dated milestones",
-                ),
-                SectionSpec(
-                    title="### 📈 Thematic Trajectory & Broadsheet Evolution",
-                    format_type="narrative",
-                    content_focus="Shifts in broadsheet coverage, sentiment, and editorial stance over time.",
-                    target_length="1 to 2 paragraphs",
-                ),
-                SectionSpec(
-                    title="### 🔍 Explore Further",
-                    format_type="bullet_list",
-                    content_focus="Follow-up timeline angles.",
-                    target_length="2 to 3 prompts",
-                ),
-            ],
-            prohibited_elements=["unverified dates", "conversational filler"],
-        )
-
-    # Default Branch: General Factual Lookup
-    return AnswerBlueprint(
-        user_intent="factual_synthesis",
+        ],
+        table_columns=["Publication", "Issue Date", "Top Headline & Page", "Core Findings", "Editorial Angle"],
+        prohibited_elements=[
+            "substituting stories from unrelated sections",
+            "false equivalence across unrelated local articles",
+            "conversational filler",
+        ],
+    ),
+    "article_catalog": AnswerBlueprint(
+        user_intent="comprehensive_article_catalog",
         overall_tone="authoritative_journalistic",
-        target_word_count=target_word_count,
         sections=[
             SectionSpec(
-                title="### ⚡ Executive Summary",
+                title="### ⚡ Executive Summary: Article Catalog Scope",
                 format_type="narrative",
-                content_focus="Direct synthesis of primary news development and core takeaway.",
-                target_length="1 to 2 crisp sentences",
+                content_focus="Scope of catalog: total articles identified, publications, dates, and topical coverage.",
+                target_length="1 to 2 sentences",
             ),
             SectionSpec(
-                title="### 📌 Key Verified Facts & Highlights",
-                format_type="bullet_list",
-                content_focus="Specific verified numbers, dates, quotes, and findings with strict inline citations.",
-                target_length="3 to 5 bullet points",
+                title="### 📋 Comprehensive Articles Catalog",
+                format_type="markdown_table",
+                content_focus="Markdown table listing matching articles with verified headlines, pages, sections, and bylines.",
+                target_length="Full table of manifest articles",
             ),
             SectionSpec(
-                title="### 📰 Broadsheet Perspectives & Focus Areas",
+                title="### 📌 Key Featured Stories & Highlights",
                 format_type="bullet_list",
-                content_focus="Coverage angles and regional focus across publications.",
-                target_length="1 bullet per publication",
+                content_focus="Notable stories, key developments, and verified highlights with inline citations.",
+                target_length="3 to 5 bullets",
             ),
             SectionSpec(
                 title="### 🔍 Explore Further",
                 format_type="bullet_list",
-                content_focus="Specific follow-up questions.",
+                content_focus="Suggested follow-up deep-dives into specific listed stories.",
                 target_length="2 to 3 prompts",
             ),
         ],
-        prohibited_elements=["robotic catalog tables", "conversational filler"],
-    )
+        table_columns=["#", "Publication", "Issue Date", "Page", "Section", "Headline", "Author / Byline"],
+        prohibited_elements=[
+            "displaying tool names as headlines",
+            "displaying doctors or authors as article headlines",
+            "conversational filler",
+        ],
+    ),
+    "thematic_timeline": AnswerBlueprint(
+        user_intent="chronological_timeline",
+        overall_tone="authoritative_journalistic",
+        sections=[
+            SectionSpec(
+                title="### ⚡ Executive Summary: Chronological Progression",
+                format_type="narrative",
+                content_focus="Overarching arc, beginning, key inflection points, and latest status.",
+                target_length="1 to 2 paragraphs",
+            ),
+            SectionSpec(
+                title="### 📅 Milestone Timeline & Event Progression",
+                format_type="timeline",
+                content_focus="Dated chronological sequence of milestones with key figures, actions, and citations.",
+                target_length="Chronological sequence of dated milestones",
+            ),
+            SectionSpec(
+                title="### 📈 Thematic Trajectory & Broadsheet Evolution",
+                format_type="narrative",
+                content_focus="Shifts in broadsheet coverage, sentiment, and editorial stance over time.",
+                target_length="1 to 2 paragraphs",
+            ),
+            SectionSpec(
+                title="### 🔍 Explore Further",
+                format_type="bullet_list",
+                content_focus="Follow-up timeline angles.",
+                target_length="2 concise prompts",
+            ),
+        ],
+        prohibited_elements=["inventing ungrounded dates", "conversational filler"],
+    ),
+    "entity_deep_dive": AnswerBlueprint(
+        user_intent="entity_profile",
+        overall_tone="authoritative_journalistic",
+        sections=[
+            SectionSpec(
+                title="### ⚡ Executive Profile Summary",
+                format_type="narrative",
+                content_focus="Overarching entity significance, core roles, and primary news footprint.",
+                target_length="1 to 2 concise paragraphs",
+            ),
+            SectionSpec(
+                title="### 📌 Key Corporate Moves, Policies & Activities",
+                format_type="bullet_list",
+                content_focus="Verified actions, public statements, initiatives, and legal/regulatory developments.",
+                target_length="3 to 5 bullets",
+            ),
+            SectionSpec(
+                title="### 📰 Broadsheet Sentiment & Media Scrutiny",
+                format_type="narrative",
+                content_focus="Media portrayal, tone, and editorial scrutiny across broadsheets.",
+                target_length="1 to 2 paragraphs",
+            ),
+            SectionSpec(
+                title="### 🔍 Explore Further",
+                format_type="bullet_list",
+                content_focus="Targeted entity follow-up questions.",
+                target_length="2 prompts",
+            ),
+        ],
+        prohibited_elements=["fictional biography", "conversational filler"],
+    ),
+    "factual_lookup": AnswerBlueprint(
+        user_intent="targeted_factual_lookup",
+        overall_tone="authoritative_journalistic",
+        sections=[
+            SectionSpec(
+                title="### ⚡ Direct Finding & Factual Context",
+                format_type="narrative",
+                content_focus="Direct answer to the user's specific question, citing authoritative reporting.",
+                target_length="1 to 2 concise paragraphs",
+            ),
+            SectionSpec(
+                title="### 📌 Key Verified Details & Quotes",
+                format_type="bullet_list",
+                content_focus="Specific facts, statistics, direct quotes, and operational specifics.",
+                target_length="3 to 4 bullets",
+            ),
+            SectionSpec(
+                title="### 🔍 Related Angles & Coverage Context",
+                format_type="bullet_list",
+                content_focus="Wider reporting context, related angles, and follow-up paths.",
+                target_length="2 concise prompts",
+            ),
+        ],
+        prohibited_elements=["speculative ungrounded claims", "conversational filler"],
+    ),
+}
+
+
+def build_heuristic_answer_blueprint(
+    query: str,
+    archetype: str,
+    parameters: dict[str, Any] | None = None,
+) -> AnswerBlueprint:
+    """Construct a tailored deterministic AnswerBlueprint based on user query and archetype."""
+    q_lower = query.lower().strip()
+    target_word_count: int | None = None
+    wc_match = re.search(r"\b(?:in|under|around|within|max(?:imum)?)\s+(\d+)\s+words?\b", q_lower)
+    if wc_match:
+        with contextlib.suppress(ValueError):
+            target_word_count = int(wc_match.group(1))
+
+    # Single-article focus check
+    quoted_hl = re.search(r"[\"“]([^\"”]{8,150})[\"”]", query)
+    is_target_art = bool(
+        quoted_hl
+        or re.search(
+            r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|ir)?\s*(?:article|story|piece|it)\b",
+            q_lower,
+        )
+        or re.search(r"\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b", q_lower)
+    ) and not any(w in q_lower for w in ["how many", "count", "list all", "catalog", "compare all"])
+    if is_target_art:
+        bp = DEFAULT_BLUEPRINTS["single_article_summary"].model_copy(deep=True)
+        if quoted_hl:
+            bp.sections[0].title = f"### ⚡ Executive Summary: {quoted_hl.group(1).strip()}"
+        if target_word_count:
+            bp.target_word_count = target_word_count
+            bp.sections[0].target_length = f"{target_word_count} words maximum"
+        return bp
+
+    # Archive availability query
+    if bool(re.search(r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b", q_lower)):
+        bp = DEFAULT_BLUEPRINTS["archive_availability"].model_copy(deep=True)
+        bp.target_word_count = target_word_count or 90
+        return bp
+
+    # Scalar / count query
+    is_scalar_or_count = bool(re.search(r"\b(how many|no of|number of|count of|total issues|total pages|total articles|count issues|count pages|count advertisements|ad count)\b", q_lower))
+    if is_scalar_or_count or (archetype in ("quantitative_trend", "analytical_computation") and not any(w in q_lower for w in ["table", "list all", "catalog"])):
+        bp = DEFAULT_BLUEPRINTS["scalar_count_metric"].model_copy(deep=True)
+        bp.target_word_count = target_word_count or 80
+        return bp
+
+    # Cross-newspaper comparison or explicit table requested
+    if archetype == "cross_newspaper_comparison" or any(w in q_lower for w in ["in a table", "as a table", "table comparing", "tabular format", "comparison table", "in table format", "markdown table", "table of"]):
+        bp = DEFAULT_BLUEPRINTS["cross_newspaper_comparison"].model_copy(deep=True)
+        if target_word_count:
+            bp.target_word_count = target_word_count
+        return bp
+
+    # Lookup from declarative registry
+    key = archetype if archetype in DEFAULT_BLUEPRINTS else "factual_lookup"
+    bp = DEFAULT_BLUEPRINTS[key].model_copy(deep=True)
+    if target_word_count is not None:
+        bp.target_word_count = target_word_count
+    return bp
 
 
 # ---------------------------------------------------------------------------
@@ -947,25 +963,7 @@ class QueryPlanner:
             f"}}"
         )
 
-        candidates: list[ChatModelProvider] = []
-        try:
-            reg = get_registry()
-            if model_override:
-                with contextlib.suppress(Exception):
-                    p = reg.get_chat_provider(model_override)
-                    if p is not None and hasattr(p, "complete"):
-                        candidates.append(p)
-            with contextlib.suppress(Exception):
-                p = reg.get_provider("query_planner")
-                if p is not None and hasattr(p, "complete") and p not in candidates:
-                    candidates.append(p)
-            for k in ["gemini_flash", "openrouter_gemma4_26b", "groq_compound", "openai_gpt4o_mini"]:
-                with contextlib.suppress(Exception):
-                    p = reg.get_chat_provider(k)
-                    if p is not None and hasattr(p, "complete") and p not in candidates:
-                        candidates.append(p)
-        except Exception as e:
-            logger.warning("Could not resolve providers for replanner", extra={"error": str(e)})
+        candidates = self._get_provider_candidates(model_override)
 
         is_dyn_allowed = is_dynamic_analysis_permitted(query)
 
@@ -1110,20 +1108,14 @@ class QueryPlanner:
         q_lower = query.lower().strip()
         params = extract_parameters_from_query(query)
 
-        is_archive_wide_np = bool(
+        is_archive_np = is_archive_wide_newspaper_query(query) or bool(
             re.search(r"\b(?:no|number|count|how many|all|total|which|list)\s+(?:of\s+)?newspapers?\b", q_lower)
             or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper"])
         )
         raw_np = params.get("newspaper_name")
-        if raw_np and is_archive_wide_np and raw_np.lower() not in q_lower:
-            newspaper = None
-            issue_id = None
-        elif not is_archive_wide_np or (raw_np and raw_np.lower() in q_lower):
-            newspaper = raw_np
-            issue_id = params.get("issue_id")
-        else:
-            newspaper = None
-            issue_id = None
+        newspaper = raw_np if raw_np and (not is_archive_np or raw_np.lower() in q_lower) else None
+        issue_id = params.get("issue_id") if newspaper else None
+
         has_explicit_range = bool(params.get("date_from") and params.get("date_to"))
         issue_date = params.get("issue_date") or (None if has_explicit_range else active_issue_date)
         date_from = params.get("date_from") or issue_date
@@ -1133,255 +1125,126 @@ class QueryPlanner:
         is_diff = params.get("is_differential", False)
         comp_newspaper = params.get("comparison_newspaper")
 
-        # Page extraction
-        page_filter = None
         p_match = re.search(r"\b(?:page|pg|p\.?)\s*(\d{1,3})\b", q_lower)
-        if p_match:
-            page_filter = p_match.group(1)
-
-        tool_calls: list[PlannedToolCall] = []
+        page_filter = p_match.group(1) if p_match else None
 
         # 0. Visual Asset / Infographic Inspection
-        is_visual_query = any(w in q_lower for w in ["infographic", "data chart", "chart", "diagram", "table", "graph", "visual", "figure", "photograph", "photo", "caption", "picture", "image"])
-        has_visual_trigger = any(w in q_lower for w in ["this", "the infographic", "attached", "chart", "diagram", "table", "above", "shown", "it have", "have any", "has any", "with it", "there any", "what does the photo", "show the photo"])
-        if (attached_photo_id and (is_visual_query or has_visual_trigger)) or (attached_article_id and is_visual_query and has_visual_trigger) or (is_visual_query and has_visual_trigger):
-            archetype = "factual_lookup"
-            tool_calls.append(build_inspect_visual_asset_tool(
-                photo_id=attached_photo_id,
-                article_id=attached_article_id,
-                query=query,
-                newspaper_name=newspaper or "",
-                issue_date=issue_date or "",
-                page_filter=page_filter or "",
-                purpose="Inspect visual crop and transcribe numerical data table",
-            ))
-            tool_calls.append(build_hybrid_search_tool(
-                query=query,
-                newspaper_name=newspaper,
-                date_from=date_from,
-                date_to=date_to,
-                page_filter=page_filter,
-                top_k=4,
-                purpose="Contextual article evidence",
-            ))
+        is_visual = any(w in q_lower for w in ["infographic", "data chart", "chart", "diagram", "table", "graph", "visual", "figure", "photograph", "photo", "caption", "picture", "image"])
+        has_vis_trigger = any(w in q_lower for w in ["this", "the infographic", "attached", "chart", "diagram", "table", "above", "shown", "it have", "have any", "has any", "with it", "there any", "what does the photo", "show the photo"])
+        if (attached_photo_id and (is_visual or has_vis_trigger)) or (attached_article_id and is_visual and has_vis_trigger) or (is_visual and has_vis_trigger):
+            calls = [
+                build_inspect_visual_asset_tool(photo_id=attached_photo_id, article_id=attached_article_id, query=query, newspaper_name=newspaper or "", issue_date=issue_date or "", page_filter=page_filter or "", purpose="Inspect visual crop and transcribe numerical data table"),
+                build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=4, purpose="Contextual article evidence"),
+            ]
             if enable_web_search:
-                tool_calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))
-            return PlanResult(archetype=archetype, reasoning=f"Deterministic visual inspection plan ({archetype})", tool_calls=tool_calls)
+                calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))
+            return PlanResult(archetype="factual_lookup", reasoning="Deterministic visual inspection plan (factual_lookup)", tool_calls=calls)
 
         # 1. Timeline / Chronological Trajectory
         if any(w in q_lower for w in ["timeline", "chronology", "chronological", "evolution", "over time", "history of", "progression"]):
             archetype = "thematic_timeline"
-            tool_calls.append(build_timeline_tool(query=query, limit=25))
-            tool_calls.append(build_hybrid_search_tool(query=query, top_k=8, purpose="Retrieve anchor articles"))
+            calls = [build_timeline_tool(query=query, limit=25), build_hybrid_search_tool(query=query, top_k=8, purpose="Retrieve anchor articles")]
 
         # 2. Entity Deep Dive
         elif any(w in q_lower for w in ["everything about", "all mentions of", "profile the coverage", "profile of"]):
             archetype = "entity_deep_dive"
             clean_ent = re.sub(r"(?i)^(?:everything about|all mentions of|profile the coverage of|profile of)\s*", "", query).strip("?:!.,\"' ") or query
-            tool_calls.append(build_entity_search_tool(entity_name=clean_ent, top_k=10))
-            tool_calls.append(build_hybrid_search_tool(query=query, top_k=8, purpose="Semantic context"))
+            calls = [build_entity_search_tool(entity_name=clean_ent, top_k=10), build_hybrid_search_tool(query=query, top_k=8, purpose="Semantic context")]
 
         # 3. Analytical Computation / Statistical Analysis (Dynamic Tool)
-        elif (
-            any(
-                re.search(pat, q_lower)
-                for pat in [
-                    r"\b(?:avg|average|mean|median)\b",
-                    r"\b(?:length|word count|word length|longest|shortest)\s+of\s+articles?\b",
-                    r"\b(?:article\s+length|article\s+word\s+count)\b",
-                    r"\b(?:correlation|regression|variance|standard deviation|percentile|quantile|histogram|moving average|pearson|spearman|gini)\b",
-                    r"\b(?:distribution of\s+(?:words?|lengths?|sizes?)|word count distribution|length distribution)\b",
-                    r"\b(?:ratio of\s+.*to|proportion of\s+.*to)\b",
-                ]
-            )
-            and is_dynamic_analysis_permitted(query)
-        ):
+        elif any(re.search(pat, q_lower) for pat in MATH_AGGREGATE_PATTERNS) and is_dynamic_analysis_permitted(query):
             archetype = "analytical_computation"
-            tool_calls.append(build_dynamic_analysis_tool(
-                query=query,
-                analysis_description=f"Statistical computation: {query}",
-                purpose="Execute custom analytical computation",
-            ))
-            tool_calls.append(build_hybrid_search_tool(
-                query=query,
-                newspaper_name=newspaper,
-                date_from=date_from,
-                date_to=date_to,
-                top_k=4,
-                purpose="Contextual evidence for analytical results",
-            ))
+            calls = [
+                build_dynamic_analysis_tool(query=query, analysis_description=f"Statistical computation: {query}", purpose="Execute custom analytical computation"),
+                build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, top_k=4, purpose="Contextual evidence for analytical results"),
+            ]
 
-        # 4. Single Newspaper Multi-Issue Comparison (same newspaper brand across multiple dates)
+        # 4. Single Newspaper Multi-Issue Comparison
         elif newspaper and not comp_newspaper and len(target_dates) >= 2:
             archetype = "quantitative_trend"
-            for dt_val in target_dates:
-                tool_calls.append(build_sql_summary_tool(newspaper_name=newspaper, issue_date=dt_val, query=query, purpose=f"Manifest for {newspaper} on {dt_val}"))
-            tool_calls.append(build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, top_k=10, purpose="Multi-issue articles"))
+            calls = [build_sql_summary_tool(newspaper_name=newspaper, issue_date=dt, query=query, purpose=f"Manifest for {newspaper} on {dt}") for dt in target_dates]
+            calls.append(build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, top_k=10, purpose="Multi-issue articles"))
 
-        # 4. Cross-Newspaper Comparison
-        elif (
-            comp_newspaper is not None
-            or is_diff
-            or any(w in q_lower for w in ["across newspapers", "across different papers", "all available", "all the available", "all newspapers", "both newspapers", "different papers", "different newspapers"])
-            or bool(re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff[a-z]*|versus|vs\.?)\b", q_lower))
-        ):
+        # 5. Cross-Newspaper Comparison
+        elif comp_newspaper is not None or is_diff or any(w in q_lower for w in ["across newspapers", "across different papers", "all available", "all the available", "all newspapers", "both newspapers", "different papers", "different newspapers"]) or bool(re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff[a-z]*|versus|vs\.?)\b", q_lower)):
             archetype = "cross_newspaper_comparison"
             target_dt = issue_date or date_from
             is_shared = params.get("is_shared", False) or any(w in q_lower for w in ["similar", "shared", "common", "same article", "same stories", "both"])
             if newspaper and comp_newspaper and is_diff:
-                tool_calls.append(build_sql_difference_tool(newspaper, comp_newspaper, query, target_dt))
-                tool_calls.append(build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=target_dt, date_to=target_dt, top_k=10, purpose=f"Retrieve articles from {newspaper}"))
+                calls = [build_sql_difference_tool(newspaper, comp_newspaper, query, target_dt), build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=target_dt, date_to=target_dt, top_k=10, purpose=f"Retrieve articles from {newspaper}")]
             elif newspaper and comp_newspaper and is_shared:
-                tool_calls.append(build_sql_shared_coverage_tool(newspaper, comp_newspaper, issue_date=target_dt, query=query))
-                tool_calls.append(build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, top_k=10, purpose=f"Shared coverage between {newspaper} and {comp_newspaper}"))
+                calls = [build_sql_shared_coverage_tool(newspaper, comp_newspaper, issue_date=target_dt, query=query), build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, top_k=10, purpose=f"Shared coverage between {newspaper} and {comp_newspaper}")]
             elif newspaper and comp_newspaper:
-                for np_name in [newspaper, comp_newspaper]:
-                    tool_calls.append(build_sql_summary_tool(newspaper_name=np_name, issue_date=target_dt, category_filter=category, query=query, purpose=f"Retrieve manifest for {np_name}"))
-                tool_calls.append(build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, category_filter=category, top_k=12, purpose=f"Comparative articles across {newspaper} and {comp_newspaper}"))
+                calls = [build_sql_summary_tool(newspaper_name=np_name, issue_date=target_dt, category_filter=category, query=query, purpose=f"Retrieve manifest for {np_name}") for np_name in (newspaper, comp_newspaper)]
+                calls.append(build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, category_filter=category, top_k=12, purpose=f"Comparative articles across {newspaper} and {comp_newspaper}"))
             elif not target_dt:
-                tool_calls.append(build_hybrid_search_tool(query=query, category_filter=category, top_k=12, purpose="Comparative articles across broadsheet editions"))
+                calls = [build_hybrid_search_tool(query=query, category_filter=category, top_k=12, purpose="Comparative articles across broadsheet editions")]
                 if any(w in q_lower for w in ["omit", "miss", "exclusive", "gap", "audit", "coverage analysis", "unreported"]):
-                    tool_calls.append(build_coverage_analysis_tool(query=query, purpose="Archive-wide coverage comparison"))
+                    calls.append(build_coverage_analysis_tool(query=query, purpose="Archive-wide coverage comparison"))
             else:
-                tool_calls.append(build_sql_summary_tool(issue_date=target_dt, category_filter=category, query=query, purpose=f"Manifest across all newspapers on {target_dt}"))
-                hs_page = "1" if not newspaper and target_dt and not category else None
-                tool_calls.append(build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, page_filter=hs_page, category_filter=category, top_k=12, purpose="Diverse articles across editions"))
-
+                calls = [
+                    build_sql_summary_tool(issue_date=target_dt, category_filter=category, query=query, purpose=f"Manifest across all newspapers on {target_dt}"),
+                    build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, page_filter="1" if not newspaper and not category else None, category_filter=category, top_k=12, purpose="Diverse articles across editions"),
+                ]
                 if not category or any(w in q_lower for w in ["omit", "miss", "exclusive", "gap", "audit"]):
-                    tool_calls.append(build_coverage_analysis_tool(query=query, target_date=target_dt))
-
+                    calls.append(build_coverage_analysis_tool(query=query, target_date=target_dt))
                 if not category and not newspaper:
-                    tool_calls.append(build_sql_coverage_comparison_tool(target_date=target_dt, query=query))
+                    calls.append(build_sql_coverage_comparison_tool(target_date=target_dt, query=query))
 
-        # 5. Quantitative Trend / Article Catalog / Issue Manifest / Page Listings / Counts / Availability
-        elif (
-            is_archive_wide_newspaper_query(query)
-            or (page_filter and any(w in q_lower for w in ["article", "story", "stories", "no of", "how many", "list"]))
-            or any(w in q_lower for w in [
-                "how many", "count", "number of", "no of", "frequency", "trend", "distribution",
-                "volume", "statistics", "summarize", "overview", "whole", "entire", "all articles",
-                "list", "manifest", "today's paper", "edition", "what articles", "articles on",
-                "is any newspaper available", "are there any newspapers", "available for dated",
-                "newspaper available", "newspapers available", "paper available", "issues available",
-            ])
-            or (category and any(w in q_lower for w in ["news", "articles", "stories", "headlines"]))
-        ):
-            is_availability = bool(
-                re.search(
-                    r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b",
-                    q_lower,
-                )
-            )
-            is_count = (
-                is_availability
-                or any(w in q_lower for w in [
-                    "how many", "total articles", "number of articles", "count of articles",
-                    "no of", "count of", "number of issues", "total issues", "no of newspaper",
-                    "how many issues", "count of pages", "number of pages",
-                ])
-                and not page_filter
-            )
-            is_whole_issue_or_count = (
-                is_availability
-                or bool(page_filter)
-                or is_count
-                or any(w in q_lower for w in [
-                    "today's paper", "edition", "whole", "entire", "overview", "summarize",
-                    "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume",
-                ])
-            )
-            is_catalog_request = (not is_availability) and (any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories"]) or bool(category))
-
-            if is_catalog_request and not is_whole_issue_or_count:
-                archetype = "article_catalog"
-            else:
+        # 6. Quantitative Trend / Article Catalog / Issue Manifest / Counts / Availability
+        elif is_archive_np or (page_filter and any(w in q_lower for w in ["article", "story", "stories", "no of", "how many", "list"])) or any(w in q_lower for w in [
+            "how many", "count", "number of", "no of", "frequency", "trend", "distribution", "volume", "statistics", "summarize", "overview", "whole", "entire", "all articles", "list", "manifest", "today's paper", "edition", "what articles", "articles on", "is any newspaper available", "are there any newspapers", "available for dated", "newspaper available", "newspapers available", "paper available", "issues available",
+        ]) or (category and any(w in q_lower for w in ["news", "articles", "stories", "headlines"])):
+            q_no_np = re.sub(r"\bnewspapers?\b", "", q_lower)
+            has_article_words = bool(re.search(r"\b(articles?|story|stories|news)\b", q_no_np))
+            is_availability = bool(re.search(r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b", q_lower))
+            is_count = is_availability or (any(w in q_lower for w in ["how many", "total articles", "number of articles", "count of articles", "no of", "count of", "number of issues", "total issues", "no of newspaper", "how many issues", "count of pages", "number of pages"]) and not page_filter)
+            is_whole_or_count = is_availability or bool(page_filter) or is_count or any(w in q_lower for w in ["today's paper", "edition", "whole", "entire", "overview", "summarize", "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume"])
+            is_catalog = (not is_availability) and (any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories"]) or bool(category))
+            if is_archive_np and not has_article_words:
                 archetype = "quantitative_trend"
-
-            q_without_np = re.sub(r"\bnewspapers?\b", "", q_lower)
-            has_article_words = bool(re.search(r"\b(articles?|story|stories|news)\b", q_without_np))
-
-            is_ad_query = any(w in q_lower for w in ["advertisement", "advertisements", "ad count", "ads count", "number of ads", "how many ads", "commercials", "notices and ads", "commercial notices"])
-            is_photo_count = is_count and any(w in q_lower for w in ["photo", "photos", "picture", "pictures", "image", "images"])
-
-            is_archive_np = is_archive_wide_newspaper_query(query)
-            if is_archive_np:
-                named_in_q = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
-                if not named_in_q:
-                    newspaper = None
-                if not has_article_words:
-                    analysis_type = "count_issues"
-                    archetype = "quantitative_trend"
-                elif is_ad_query:
-                    analysis_type = "count_advertisements"
-                elif is_photo_count:
-                    analysis_type = "count_photos"
-                elif is_count:
-                    analysis_type = "count_articles"
-                else:
-                    analysis_type = "issue_summary"
-            elif is_ad_query:
-                analysis_type = "count_advertisements"
-            elif is_photo_count:
-                analysis_type = "count_photos"
-            elif is_availability or (is_count and ("issue" in q_lower or "newspaper" in q_lower) and not has_article_words):
-                analysis_type = "count_issues"
-            elif is_count:
-                analysis_type = "count_articles"
             else:
-                analysis_type = "issue_summary"
+                archetype = "article_catalog" if is_catalog and not is_whole_or_count else "quantitative_trend"
 
-            tool_calls.append(build_sql_summary_tool(
-                analysis_type=analysis_type,
-                newspaper_name=newspaper,
-                issue_date=issue_date,
-                date_from=date_from,
-                date_to=date_to,
-                issue_id=issue_id,
-                page_filter=page_filter,
-                category_filter=category,
-                query=query,
-            ))
+            is_ad = any(w in q_lower for w in ["advertisement", "advertisements", "ad count", "ads count", "number of ads", "how many ads", "commercials", "notices and ads", "commercial notices"])
+            is_photo = is_count and any(w in q_lower for w in ["photo", "photos", "picture", "pictures", "image", "images"])
+
+            if is_archive_np and not any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS):
+                newspaper = None
+
+            if is_ad:
+                atype = "count_advertisements"
+            elif is_photo:
+                atype = "count_photos"
+            elif is_availability or (is_archive_np and not has_article_words) or (is_count and ("issue" in q_lower or "newspaper" in q_lower) and not has_article_words):
+                atype = "count_issues"
+            elif is_count:
+                atype = "count_articles"
+            else:
+                atype = "issue_summary"
+
+            calls = [build_sql_summary_tool(analysis_type=atype, newspaper_name=newspaper, issue_date=issue_date, date_from=date_from, date_to=date_to, issue_id=issue_id, page_filter=page_filter, category_filter=category, query=query)]
             if page_filter and any(w in q_lower for w in ["list", "articles on", "stories on", "all articles"]):
-                tool_calls.append(build_hybrid_search_tool(
-                    query=query,
-                    newspaper_name=newspaper,
-                    date_from=date_from,
-                    date_to=date_to,
-                    page_filter=page_filter,
-                    top_k=6,
-                    purpose=f"Articles on Page {page_filter}",
-                ))
+                calls.append(build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=6, purpose=f"Articles on Page {page_filter}"))
 
-        # 6. Factual Lookup (Default)
+        # 7. Factual Lookup (Default)
         else:
             archetype = "factual_lookup"
             is_target_art = bool(
                 re.search(r"[\"“][^\"”]{8,150}[\"”]", query)
-                or re.search(
-                    r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|ir)?\s*(?:article|story|piece|it)\b",
-                    query.lower(),
-                )
-                or re.search(r"\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b", query.lower())
-            ) and not any(w in query.lower() for w in ["how many", "count", "list all", "catalog", "compare all"])
-            eff_top_k = 2 if is_target_art else 6
-            tool_calls.append(build_hybrid_search_tool(
-                query=query,
-                newspaper_name=newspaper,
-                date_from=date_from,
-                date_to=date_to,
-                page_filter=page_filter,
-                top_k=eff_top_k,
-                purpose="Search for factual evidence",
-            ))
+                or re.search(r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|ir)?\s*(?:article|story|piece|it)\b", q_lower)
+                or re.search(r"\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b", q_lower)
+            ) and not any(w in q_lower for w in ["how many", "count", "list all", "catalog", "compare all"])
+            calls = [build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=2 if is_target_art else 6, purpose="Search for factual evidence")]
 
         if enable_web_search:
-            tool_calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))
+            calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))
 
         blueprint = self._build_heuristic_answer_blueprint(query, archetype, params)
         return PlanResult(
             archetype=archetype,
             reasoning=f"Deterministic heuristic plan ({archetype})",
-            tool_calls=tool_calls,
+            tool_calls=calls,
             answer_blueprint=blueprint,
         )
 
@@ -1410,4 +1273,5 @@ __all__ = [
     "resolve_tool_sequence",
     "build_heuristic_answer_blueprint",
     "is_dynamic_analysis_permitted",
+    "MATH_AGGREGATE_PATTERNS",
 ]

@@ -64,6 +64,7 @@ class AgentState(TypedDict):
     answer_blueprint: dict[str, Any] | None
     answer_verification: dict[str, Any] | None
     verification_attempts: int
+    extracted_params: dict[str, Any] | None
 
 
 __all__ = [

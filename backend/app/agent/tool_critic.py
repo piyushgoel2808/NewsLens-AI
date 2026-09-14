@@ -289,6 +289,10 @@ class ToolCritic:
             for v in metadata.values()
         )
         if summary_has_nan or metadata_has_nan:
+            row_count = metadata.get("row_count") if "row_count" in metadata else (metadata.get("total_rows") if "total_rows" in metadata else len(data))
+            if row_count == 0 and acknowledges_absence:
+                # Legitimate empty subset result where average/metric is mathematically undefined on 0 rows
+                return 1.0, [], []
             issues.append("Calculation produced NaN (Not a Number) or null values in summary or metadata metrics.")
             fixes.append(
                 "Verify SQL WHERE clauses and table joins against schema. Check that rows exist before computing statistics "

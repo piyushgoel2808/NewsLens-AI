@@ -259,6 +259,14 @@ class EvidenceEvaluator:
 
         # 0. Empty, stub, or error-only evidence
         is_quant_query = bool(_QUANT_QUERY_PATTERN.search(query)) or is_archive_wide_newspaper_query(query)
+        is_availability = bool(
+            re.search(
+                r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|"
+                r"papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|"
+                r"available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?|available\s+on\b)\b",
+                query.lower(),
+            )
+        )
         valid_evidence = [
             item for item in evidence
             if not str(item.get("snippet") or "").startswith("⚠️")
@@ -268,6 +276,20 @@ class EvidenceEvaluator:
             and "is nan" not in str(item.get("snippet") or "").lower()
         ]
         if not valid_evidence or not any(len((item.get("snippet") or item.get("summary") or "").strip()) >= 20 for item in valid_evidence):
+            # Distinguish legitimate factual archive misses from engine crashes in CRAG
+            if is_availability and any(
+                "not in archive" in str(it.get("snippet", "")).lower()
+                or "no issue found" in str(it.get("snippet", "")).lower()
+                or "0 issues found" in str(it.get("snippet", "")).lower()
+                for it in evidence
+            ):
+                return EvaluationVerdict(
+                    is_sufficient=True,
+                    quality_score=0.85,
+                    gap_reason=None,
+                    detected_gaps=[],
+                    recommended_action="proceed_to_synthesis",
+                )
             gap_type = "tool_execution_error_gap" if evidence else "empty_retrieval"
             return EvaluationVerdict(
                 is_sufficient=False,

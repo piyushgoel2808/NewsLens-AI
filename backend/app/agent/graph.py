@@ -283,12 +283,15 @@ class AgentWorkflow:
             else (plan_res.answer_blueprint if isinstance(plan_res.answer_blueprint, dict) else None)
         )
 
+        extracted_params = extract_parameters_from_query(condensed_query)
+
         return {
             "query": condensed_query,
             "original_query": original_query,
             "archetype": plan_res.archetype,
             "plan": planned_calls,
             "answer_blueprint": blueprint_dict,
+            "extracted_params": extracted_params,
         }
 
     async def _execute_single_tool(

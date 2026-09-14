@@ -48,8 +48,8 @@ def reconcile_and_sanitize_arguments(
     active_issue_date: str | None = None,
     active_newspapers: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Reconcile tool arguments against query ground truth and active context, pruning hallucinations."""
-    sanitized = dict(args)
+    """Reconcile and normalize tool arguments against ground truth without destructive deletion."""
+    sanitized = {k: v for k, v in args.items() if v is not None and v != ""}
     q_lower = query.lower()
 
     if tool_name == "dynamic_analysis":
@@ -79,21 +79,17 @@ def reconcile_and_sanitize_arguments(
             sanitized["page_filter"] = str(extracted["page_number"])
         return sanitized
 
-    # Archive-wide newspaper inquiry check: purge leaked publication filters
+    # Archive-wide newspaper inquiry: clear publication filter if query doesn't name a brand
     is_archive_np = is_archive_wide_newspaper_query(query)
     named_brand_in_query = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
     if is_archive_np and not named_brand_in_query:
-        extracted.pop("newspaper_name", None)
-        extracted.pop("target_newspapers", None)
-        extracted.pop("comparison_newspaper", None)
-        extracted.pop("source_newspaper", None)
         sanitized.pop("newspaper_name", None)
         sanitized.pop("comparison_newspaper", None)
         sanitized.pop("source_newspaper", None)
         if tool_name == "sql_analytics" and sanitized.get("analysis_type") in ("issue_summary", None):
             sanitized["analysis_type"] = "count_issues"
 
-    # 1. Newspaper Brand Ground Truth & Active Context Retention
+    # Newspaper Brand Normalization
     valid_brands: list[str] = (
         extracted.get("target_newspapers")
         or ([extracted["newspaper_name"]] if extracted.get("newspaper_name") else [])
@@ -101,96 +97,43 @@ def reconcile_and_sanitize_arguments(
     if sanitized.get("newspaper_name"):
         sn_lower = str(sanitized["newspaper_name"]).strip().lower()
         if valid_brands:
-            matched_valid = next(
+            matched = next(
                 (b for b in valid_brands if b.lower() == sn_lower or sn_lower in b.lower() or b.lower() in sn_lower),
                 None,
             )
-            if matched_valid:
-                sanitized["newspaper_name"] = matched_valid
-            else:
-                sanitized["newspaper_name"] = valid_brands[0]
+            sanitized["newspaper_name"] = matched or valid_brands[0]
         else:
-            is_active_brand = (
-                bool(active_newspapers)
-                and any(sn_lower == str(an).strip().lower() for an in (active_newspapers or []))
-            )
-            if not is_active_brand:
+            is_active = bool(active_newspapers) and any(sn_lower == str(an).strip().lower() for an in (active_newspapers or []))
+            if not is_active:
                 brand_tokens = [w.lower() for w in str(sanitized["newspaper_name"]).split() if w.lower() not in {"the", "of", "and"}]
                 if not any(tok in q_lower for tok in brand_tokens):
                     sanitized.pop("newspaper_name", None)
 
-    # Reconcile comparison_newspaper if present
-    if sanitized.get("comparison_newspaper"):
-        cn_lower = str(sanitized["comparison_newspaper"]).strip().lower()
-        if valid_brands:
-            matched_comp = next(
-                (b for b in valid_brands if b.lower() == cn_lower or cn_lower in b.lower() or b.lower() in cn_lower),
-                None,
-            )
-            if matched_comp:
-                sanitized["comparison_newspaper"] = matched_comp
-            elif extracted.get("comparison_newspaper"):
-                sanitized["comparison_newspaper"] = extracted["comparison_newspaper"]
+    for np_field in ("comparison_newspaper", "source_newspaper"):
+        if sanitized.get(np_field):
+            field_lower = str(sanitized[np_field]).strip().lower()
+            if valid_brands:
+                matched = next(
+                    (b for b in valid_brands if b.lower() == field_lower or field_lower in b.lower() or b.lower() in field_lower),
+                    None,
+                )
+                if matched:
+                    sanitized[np_field] = matched
+                elif extracted.get(np_field):
+                    sanitized[np_field] = extracted[np_field]
 
-    # Reconcile source_newspaper if present
-    if sanitized.get("source_newspaper"):
-        src_lower = str(sanitized["source_newspaper"]).strip().lower()
-        if valid_brands:
-            matched_src = next(
-                (b for b in valid_brands if b.lower() == src_lower or src_lower in b.lower() or b.lower() in src_lower),
-                None,
-            )
-            if matched_src:
-                sanitized["source_newspaper"] = matched_src
-            elif extracted.get("source_newspaper"):
-                sanitized["source_newspaper"] = extracted["source_newspaper"]
-
+    # Shared / differential coverage newspaper pairing fallback
     if sanitized.get("analysis_type") in ("shared_coverage", "coverage_difference"):
-        if not sanitized.get("comparison_newspaper"):
-            if extracted.get("comparison_newspaper"):
-                sanitized["comparison_newspaper"] = extracted["comparison_newspaper"]
-            elif len(valid_brands) >= 2:
-                sanitized["comparison_newspaper"] = valid_brands[1]
-        if not sanitized.get("newspaper_name"):
-            if extracted.get("source_newspaper"):
-                sanitized["newspaper_name"] = extracted["source_newspaper"]
-            elif extracted.get("newspaper_name"):
-                sanitized["newspaper_name"] = extracted["newspaper_name"]
-            elif valid_brands:
-                sanitized["newspaper_name"] = valid_brands[0]
+        if not sanitized.get("comparison_newspaper") and extracted.get("comparison_newspaper"):
+            sanitized["comparison_newspaper"] = extracted["comparison_newspaper"]
+        elif not sanitized.get("comparison_newspaper") and len(valid_brands) >= 2:
+            sanitized["comparison_newspaper"] = valid_brands[1]
+        if not sanitized.get("newspaper_name") and extracted.get("newspaper_name"):
+            sanitized["newspaper_name"] = extracted["newspaper_name"]
+        elif not sanitized.get("newspaper_name") and valid_brands:
+            sanitized["newspaper_name"] = valid_brands[0]
 
-    # 2. Issue Date & Date Range Ground Truth & Active Context Retention
-    valid_dates: list[str] = (
-        extracted.get("target_dates")
-        or ([extracted["issue_date"]] if extracted.get("issue_date") else [])
-    )
-    if sanitized.get("issue_date"):
-        if extracted.get("date_from") and extracted.get("date_to") and not extracted.get("issue_date"):
-            # Explicit date range present in query - remove single day constraint
-            sanitized.pop("issue_date", None)
-        elif valid_dates:
-            if sanitized["issue_date"] not in valid_dates:
-                sanitized["issue_date"] = valid_dates[0]
-        else:
-            is_active_date = bool(active_issue_date) and str(sanitized["issue_date"]).strip() == str(active_issue_date).strip()
-            if not is_active_date:
-                d_parts = [p for p in str(sanitized["issue_date"]).split("-") if len(p) >= 2]
-                if not any(part in query for part in d_parts):
-                    sanitized.pop("issue_date", None)
-
-    for d_key in ("date_from", "date_to", "target_date"):
-        if sanitized.get(d_key):
-            d_val = str(sanitized[d_key]).strip()
-            if valid_dates:
-                if d_key == "target_date" and d_val not in valid_dates:
-                    sanitized[d_key] = valid_dates[0]
-            else:
-                is_active_date = bool(active_issue_date) and d_val == str(active_issue_date).strip()
-                if not is_active_date:
-                    d_parts = [p for p in d_val.split("-") if len(p) >= 2]
-                    if not any(part in query for part in d_parts):
-                        sanitized.pop(d_key, None)
-
+    # Date normalization & ground truth retention
     if extracted.get("date_from") and ("date_from" not in sanitized or not sanitized.get("date_from")):
         sanitized["date_from"] = extracted["date_from"]
     if extracted.get("date_to") and ("date_to" not in sanitized or not sanitized.get("date_to")):
@@ -201,48 +144,25 @@ def reconcile_and_sanitize_arguments(
         if tool_name == "sql_analytics" and sanitized.get("analysis_type") == "issue_summary" and not sanitized.get("newspaper_name"):
             sanitized["analysis_type"] = "count_issues"
 
-    if active_issue_date and not extracted.get("date_from") and not extracted.get("date_to"):
-        for d_key in ("date_from", "date_to"):
-            if not sanitized.get(d_key) or not str(sanitized[d_key]).strip():
-                sanitized[d_key] = active_issue_date
+    # Category and Page filter normalization
+    if extracted.get("category_filter") and "category_filter" not in sanitized:
+        sanitized["category_filter"] = extracted["category_filter"]
 
-    for empty_k in ["newspaper_name", "comparison_newspaper", "source_newspaper", "page_filter", "category_filter"]:
-        if sanitized.get(empty_k) == "":
-            sanitized.pop(empty_k, None)
-
-    # 3. Category Filter Ground Truth
-    if sanitized.get("category_filter"):
-        cat_val = str(sanitized["category_filter"]).strip().lower()
-        valid_cat = extracted.get("category_filter")
-        if valid_cat:
-            sanitized["category_filter"] = valid_cat
-        else:
-            cat_tokens = [w for w in re.split(r"[^a-zA-Z0-9]+", cat_val) if len(w) >= 4]
-            if not any(tok in q_lower for tok in cat_tokens):
-                sanitized.pop("category_filter", None)
-
-    # 4. Page Filter Ground Truth
     if sanitized.get("page_filter") is not None:
         p_val = str(sanitized["page_filter"]).strip()
         if not re.search(rf"\bpage\s*{re.escape(p_val)}\b|\bp\.?\s*{re.escape(p_val)}\b", query, re.I):
             sanitized.pop("page_filter", None)
 
-    # 5. Issue ID Ground Truth
     if extracted.get("issue_id") is not None and "issue_id" not in sanitized:
         sanitized["issue_id"] = extracted["issue_id"]
 
-    # 6. Generic Filler Query Sanitization & Truncation Guard
+    # Query sanitization
     if "query" in sanitized and sanitized["query"]:
         sanitized["query"] = sanitize_generic_filler_query(
             query=query,
             raw_query_arg=str(sanitized["query"]),
             category_filter=sanitized.get("category_filter") or extracted.get("category_filter"),
         )
-        q_words = [w for w in query.strip("?.,!").split() if len(w) > 2]
-        arg_words = [w for w in str(sanitized["query"]).split() if len(w) > 2]
-        if len(q_words) >= 5 and len(arg_words) <= 1 and not sanitized.get("page_filter"):
-            from app.agent.extractor import build_targeted_web_query
-            sanitized["query"] = build_targeted_web_query(query)
     elif "query" not in sanitized or not sanitized["query"]:
         sanitized["query"] = query
 
@@ -253,91 +173,53 @@ def reconcile_and_sanitize_arguments(
 # Tool Construction Helpers
 # ---------------------------------------------------------------------------
 
-def build_sql_summary_tool(
-    analysis_type: str = "issue_summary",
-    newspaper_name: str | None = None,
-    issue_date: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    issue_id: int | None = None,
-    page_filter: str | None = None,
-    category_filter: str | None = None,
-    query: str | None = None,
-    target_date: str | None = None,
-    purpose: str = "",
-) -> PlannedToolCall:
-    """Build a planned sql_analytics tool invocation with non-null arguments."""
-    raw_args: dict[str, Any] = {
-        "analysis_type": analysis_type,
-        "newspaper_name": newspaper_name,
-        "issue_date": issue_date,
-        "date_from": date_from,
-        "date_to": date_to,
-        "issue_id": issue_id,
-        "page_filter": page_filter,
-        "category_filter": category_filter,
-        "query": query,
-        "target_date": target_date,
-    }
-    args = {k: v for k, v in raw_args.items() if v is not None}
-    default_purpose = f"SQL analytics manifest ({analysis_type})"
-    return PlannedToolCall("sql_analytics", args, purpose or default_purpose)
+def build_sql_tool(analysis_type: str, **kwargs: Any) -> PlannedToolCall:
+    """Unified constructor for planned sql_analytics tool invocations."""
+    purpose = kwargs.pop("purpose", None) or f"SQL analytics ({analysis_type})"
+    raw_args = {"analysis_type": analysis_type, **kwargs}
+    args = {k: v for k, v in raw_args.items() if v is not None and v != ""}
+    return PlannedToolCall("sql_analytics", args, purpose)
 
 
-def build_sql_difference_tool(
-    source_newspaper: str,
-    comparison_newspaper: str,
-    query: str,
-    issue_date: str | None = None,
-    purpose: str = "",
-) -> PlannedToolCall:
-    """Build a planned sql_analytics coverage_difference tool invocation."""
-    args: dict[str, Any] = {
-        "analysis_type": "coverage_difference",
-        "newspaper_name": source_newspaper,
-        "comparison_newspaper": comparison_newspaper,
-        "query": query,
-    }
-    if issue_date:
-        args["issue_date"] = issue_date
-    default_purpose = f"Compute stories in {source_newspaper} absent from {comparison_newspaper}"
-    return PlannedToolCall("sql_analytics", args, purpose or default_purpose)
+def build_sql_summary_tool(**kwargs: Any) -> PlannedToolCall:
+    """Legacy alias delegating to build_sql_tool."""
+    analysis_type = kwargs.pop("analysis_type", "issue_summary")
+    return build_sql_tool(analysis_type=analysis_type, **kwargs)
 
 
-def build_sql_shared_coverage_tool(
-    newspaper_a: str,
-    newspaper_b: str,
-    issue_date: str | None = None,
-    query: str | None = None,
-    purpose: str = "",
-) -> PlannedToolCall:
-    """Build a planned sql_analytics shared_coverage tool invocation."""
-    args: dict[str, Any] = {
-        "analysis_type": "shared_coverage",
-        "newspaper_name": newspaper_a,
-        "comparison_newspaper": newspaper_b,
-    }
-    if issue_date:
-        args["issue_date"] = issue_date
-    if query:
-        args["query"] = query
-    default_purpose = f"Compute verified shared syndicated wire coverage between {newspaper_a} and {newspaper_b}"
-    return PlannedToolCall("sql_analytics", args, purpose or default_purpose)
+def build_sql_difference_tool(source_newspaper: str, comparison_newspaper: str, query: str, issue_date: str | None = None, purpose: str = "") -> PlannedToolCall:
+    """Legacy alias delegating to build_sql_tool."""
+    return build_sql_tool(
+        analysis_type="coverage_difference",
+        newspaper_name=source_newspaper,
+        comparison_newspaper=comparison_newspaper,
+        query=query,
+        issue_date=issue_date,
+        purpose=purpose or f"Compute stories in {source_newspaper} absent from {comparison_newspaper}",
+    )
 
 
-def build_sql_coverage_comparison_tool(
-    target_date: str,
-    query: str,
-    purpose: str = "",
-) -> PlannedToolCall:
-    """Build a planned sql_analytics coverage_comparison tool invocation."""
-    args: dict[str, Any] = {
-        "analysis_type": "coverage_comparison",
-        "target_date": target_date,
-        "query": query,
-    }
-    default_purpose = f"SQL coverage comparison on {target_date}"
-    return PlannedToolCall("sql_analytics", args, purpose or default_purpose)
+def build_sql_shared_coverage_tool(newspaper_a: str, newspaper_b: str, issue_date: str | None = None, query: str | None = None, purpose: str = "") -> PlannedToolCall:
+    """Legacy alias delegating to build_sql_tool."""
+    return build_sql_tool(
+        analysis_type="shared_coverage",
+        newspaper_name=newspaper_a,
+        comparison_newspaper=newspaper_b,
+        issue_date=issue_date,
+        query=query,
+        purpose=purpose or f"Compute verified shared syndicated wire coverage between {newspaper_a} and {newspaper_b}",
+    )
+
+
+def build_sql_coverage_comparison_tool(target_date: str, query: str, purpose: str = "") -> PlannedToolCall:
+    """Legacy alias delegating to build_sql_tool."""
+    return build_sql_tool(
+        analysis_type="coverage_comparison",
+        target_date=target_date,
+        query=query,
+        purpose=purpose or f"SQL coverage comparison on {target_date}",
+    )
+
 
 
 def build_hybrid_search_tool(
@@ -460,6 +342,7 @@ __all__ = [
     "build_sql_difference_tool",
     "build_sql_shared_coverage_tool",
     "build_sql_summary_tool",
+    "build_sql_tool",
     "build_timeline_tool",
     "build_web_search_tool",
     "reconcile_and_sanitize_arguments",
