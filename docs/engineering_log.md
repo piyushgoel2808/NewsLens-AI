@@ -3613,3 +3613,44 @@ When users interacted with broadsheet articles containing companion infographics
 - `backend/tests/test_planner.py`: **35/35 tests passing (100% green)**.
 - `backend/tests/test_synthesizer.py`: **31/31 tests passing (100% green)**.
 - **Full Backend Suite**: **518/518 tests passing (100% green)** in 74s.
+
+---
+
+## Phase 9.60 — LLM Answer Verifier, Self-Critique & Dynamic Fallback Architecture
+
+**Date**: 2026-09-14  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Brittle Heuristic Fact-Checking**:
+   - Hardcoded regexes (`Total Matching Issues:\s*24`, `Newspaper Availability.*:\s*Yes`) and static template replacements did not generalize across conversational formulations and created maintainability overhead.
+2. **Missing Post-Synthesis Verification Node in State Machine**:
+   - In LangGraph, `synthesize_answer` transitioned directly to `log_query -> END`. There was no LLM-as-Critic node to audit the synthesized narrative against retrieved evidence before returning to the user.
+3. **Absence of Dynamic Fallback on Synthesis Failure / Evidence Gaps**:
+   - If an answer was ungrounded because retrieval evidence lacked essential facts (e.g. word count distributions, unindexed correlations), there was no mechanism to trigger ToolMaker dynamic code generation from the synthesis stage.
+
+### Architectural Solutions & Implementations
+1. **`AnswerVerifier` LLM Critic Module (`backend/app/agent/answer_verifier.py`)**:
+   - Created `AnswerVerifier` and `AnswerVerificationResult`:
+     - Audits synthesized drafts along 4 strict dimensions:
+       * **Faithfulness & Groundedness**: Every asserted count, date, and fact must be substantiated by evidence.
+       * **Contradiction Detection**: Explicitly flags positive availability claims when evidence documents absence.
+       * **Freedom from Fluff**: Identifies and rejects unprompted corporate consulting boilerplate.
+       * **Evidence Gap & Dynamic Fallback**: Identifies when missing data caused the draft to guess, recommending `fallback_to_dynamic_tool`.
+     - Dual-mode execution: LLM Judge with structured JSON output, supplemented by a deterministic fast-floor check.
+2. **LangGraph State Machine Integration (`backend/app/agent/graph.py`, `state.py`)**:
+   - Added `verify_answer` node executing after `synthesize_answer`.
+   - Implemented conditional routing `_route_after_verification`:
+     * If `recommended_action == "fallback_to_dynamic_tool"` and `recovery_attempts < 1`: routes to `execute_dynamic_code` (`ToolMaker`).
+     * If ungrounded with valid evidence: updates `synthesized_answer` with LLM-grounded `refined_answer`.
+     * Otherwise: routes to `log_query -> END`.
+   - Enforces a strict 1-cycle ceiling (`recovery_attempts < 1` / `verification_attempts < 1`), ensuring bounded execution.
+3. **Synthesizer De-Hardcoding (`backend/app/agent/synthesizer.py`)**:
+   - Replaced brittle string matching with delegation to `AnswerVerifier`.
+   - Preserved pure structural formatting hygiene (repeating loop deduplication, whitespace trimming).
+
+### Verification Results
+- `backend/tests/test_answer_verifier.py`: **4/4 tests passing (100% green)**.
+- `backend/tests/test_graph.py`: **11/11 tests passing (100% green)**.
+- `backend/tests/test_synthesizer.py`: **31/31 tests passing (100% green)**.
+- **Full Backend Suite**: **524/524 tests passing (100% green)** in 66s.

@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from app.agent.models import AnswerBlueprint, SectionSpec
+from app.agent.answer_verifier import AnswerVerifier
 
 from app.agent.fallback_presenter import (
     EMPTY_EVIDENCE_RESPONSE,
@@ -214,79 +215,20 @@ def verify_and_correct_answer_groundedness(
 ) -> tuple[str, bool, str | None]:
     """Fact-check synthesized answer against evidence ground truth.
 
-    Detects:
-    1. Positive availability claims when evidence establishes 0 matching issues ("Yes", "24 matching issues").
-    2. Numerical count discrepancies between aggregate tool records and narrative assertions.
-    3. Speculative corporate consulting filler ("implications on content strategy", "future collaboration with publications").
-
-    Returns:
-        (corrected_answer, was_corrected, diagnosis_reason)
+    Delegates to AnswerVerifier for semantic groundedness critique and refinement.
     """
     if not answer_text:
         return answer_text, False, None
 
-    # Step 1: Clean out speculative corporate filler across all queries
     cleaned_ans = clean_synthesized_answer(answer_text, query, archetype or "", evidence_items)
 
-    # Step 2: Check for 0-count issue availability contradiction
-    zero_issue_record = None
-    for it in evidence_items:
-        meta = it.get("metadata") or {}
-        src = it.get("source_tool", "")
-        snip = (it.get("snippet") or "") + " " + (it.get("headline") or "")
-        if (
-            src.startswith("sql_analytics")
-            and (
-                meta.get("count") == 0
-                or "Archive Availability Audit: 0 issues" in it.get("headline", "")
-                or "Total Matching Issues: 0" in snip
-                or "0 issues found" in snip
-            )
-        ):
-            zero_issue_record = it
-            break
-
-    if zero_issue_record is not None:
-        has_contradiction = bool(
-            re.search(
-                r"(?i)\b(?:Newspaper Availability[^:\n]*:\s*Yes|"
-                r"at least one newspaper is available|"
-                r"Total Matching Issues:\s*[1-9]\d*|"
-                r"presence of \d+ matching issues|"
-                r"confirms that there are \d+ matching issues)\b",
-                cleaned_ans,
-            )
-            or re.search(r"(?i)\bTotal Matching Issues:\s*24\b", cleaned_ans)
-        )
-
-        if has_contradiction:
-            meta = zero_issue_record.get("metadata") or {}
-            target_d = meta.get("target_date") or zero_issue_record.get("issue_date") or "the requested date"
-            rng = meta.get("archive_range")
-            rng_str = f"{rng['start']} to {rng['end']}" if rng and rng.get("start") else "2026-08-01 to 2026-09-11"
-            all_nps = meta.get("archive_newspapers") or [
-                "Business Standard", "Hindustan Times", "Mint", "THE ECONOMIC TIMES",
-                "The Goan", "The Guardian", "The Hindu", "The Indian Express",
-                "The Morning Standard", "THE NEW YORK TIMES",
-            ]
-            nps_str = ", ".join(all_nps)
-
-            corrected = (
-                f"### ⚡ Availability Status\n"
-                f"No newspaper issues are available in the archive for {target_d}.\n\n"
-                f"### 📋 Archive Scope & Available Coverage\n"
-                f"• **Target Date Queried**: {target_d} (0 matching issues found)\n"
-                f"• **Verified Archive Coverage Range**: {rng_str}\n"
-                f"• **Available Publications in Archive**: {nps_str}\n"
-            )
-            return (
-                corrected,
-                True,
-                f"Intercepted ungrounded availability claim: evidence proves 0 matching issues for {target_d}, but answer asserted positive availability.",
-            )
+    verifier = AnswerVerifier()
+    res = verifier._fast_groundedness_check(cleaned_ans, evidence_items)
+    if res is not None and not res.is_valid and res.refined_answer:
+        return res.refined_answer, True, res.critique
 
     was_modified = cleaned_ans != answer_text
-    return cleaned_ans, was_modified, "Scrubbed speculative corporate filler from answer." if was_modified else None
+    return cleaned_ans, was_modified, "Scrubbed formatting and filler from answer." if was_modified else None
 
 
 # ---------------------------------------------------------------------------

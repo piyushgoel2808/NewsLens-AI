@@ -62,6 +62,8 @@ class AgentState(TypedDict):
     recovery_attempts: int
     gap_diagnosis: str | None
     answer_blueprint: dict[str, Any] | None
+    answer_verification: dict[str, Any] | None
+    verification_attempts: int
 
 
 __all__ = [

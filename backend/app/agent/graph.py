@@ -26,7 +26,8 @@ from app.agent.evaluator import EvidenceEvaluator
 from app.agent.executor import ToolExecutor
 from app.agent.planner import QueryPlanner
 from app.agent.state import AgentState, ToolExecutionRecord
-from app.agent.synthesizer import AnswerSynthesizer, verify_and_correct_answer_groundedness
+from app.agent.answer_verifier import AnswerVerifier
+from app.agent.synthesizer import AnswerSynthesizer
 from app.agent.sandbox import ASTSafetyScanner, SandboxedExecutor
 from app.agent.tool_maker import ToolMaker
 from app.core.config import get_settings
@@ -92,6 +93,7 @@ class AgentWorkflow:
             tool_maker=tool_maker,
             sql_analytics=self._sql_analytics,
         )
+        self._verifier = AnswerVerifier()
 
         # Build Graph
         self._graph = self._build_graph()
@@ -105,6 +107,7 @@ class AgentWorkflow:
         workflow.add_node("execute_adaptive_replan", self._execute_adaptive_replan_node)
         workflow.add_node("execute_dynamic_code", self._execute_dynamic_code_node)
         workflow.add_node("synthesize_answer", self._synthesize_answer_node)
+        workflow.add_node("verify_answer", self._verify_answer_node)
         workflow.add_node("log_query", self._log_query_node)
 
         workflow.add_edge(START, "classify_and_plan")
@@ -133,7 +136,17 @@ class AgentWorkflow:
         )
         workflow.add_edge("execute_adaptive_replan", "synthesize_answer")
         workflow.add_edge("execute_dynamic_code", "synthesize_answer")
-        workflow.add_edge("synthesize_answer", "log_query")
+        workflow.add_edge("synthesize_answer", "verify_answer")
+
+        # Closed-loop routing after LLM answer verification
+        workflow.add_conditional_edges(
+            "verify_answer",
+            self._route_after_verification,
+            {
+                "log_query": "log_query",
+                "execute_dynamic_code": "execute_dynamic_code",
+            },
+        )
         workflow.add_edge("log_query", END)
 
         return workflow.compile()
@@ -156,6 +169,21 @@ class AgentWorkflow:
             return "execute_adaptive_replan"
 
         return "synthesize_answer"
+
+    def _route_after_verification(self, state: AgentState) -> str:
+        """Route conditionally based on LLM answer verification with 1-cycle ceiling."""
+        if state.get("recovery_attempts", 0) >= 1 or state.get("verification_attempts", 0) >= 1:
+            return "log_query"
+
+        verdict = state.get("answer_verification")
+        if not verdict:
+            return "log_query"
+
+        action = verdict.get("recommended_action")
+        if action == "fallback_to_dynamic_tool" and self._tool_maker:
+            return "execute_dynamic_code"
+
+        return "log_query"
 
     @staticmethod
     def _route_after_planning(state: AgentState) -> str:
@@ -485,17 +513,55 @@ class AgentWorkflow:
             answer_blueprint=state.get("answer_blueprint"),
         )
 
-        answer, was_corrected, diag = verify_and_correct_answer_groundedness(
-            answer, query, evidence, archetype=archetype
-        )
-        if was_corrected:
-            logger.warning("Graph synthesizer node intercepted ungrounded answer", extra={"diagnosis": diag})
-
         return {
             "synthesized_answer": answer,
             "citations": citations,
             "cost_usd": cost_usd,
         }
+
+    async def _verify_answer_node(self, state: AgentState) -> dict[str, Any]:
+        """LLM Critic Fact-Checking: Verify synthesized answer against retrieved evidence."""
+        query = state["query"]
+        draft_answer = state.get("synthesized_answer", "")
+        evidence = state.get("evidence_items", [])
+        archetype = state.get("archetype", "factual_lookup")
+        model_override = state.get("model_override")
+        blueprint = state.get("answer_blueprint")
+
+        if archetype in ("clarification_needed", "conversational_meta_query") or not draft_answer:
+            return {
+                "verification_attempts": state.get("verification_attempts", 0) + 1,
+            }
+
+        res = await self._verifier.verify_answer_async(
+            query=query,
+            draft_answer=draft_answer,
+            evidence_items=evidence,
+            archetype=archetype,
+            model_override=model_override,
+            answer_blueprint=blueprint,
+        )
+
+        updates: dict[str, Any] = {
+            "answer_verification": res.to_dict(),
+            "verification_attempts": state.get("verification_attempts", 0) + 1,
+        }
+
+        if not res.is_valid:
+            logger.warning(
+                "AnswerVerifier flagged ungrounded answer",
+                extra={
+                    "critique": res.critique,
+                    "factual_errors": res.factual_errors,
+                    "recommended_action": res.recommended_action,
+                },
+            )
+            if res.refined_answer:
+                updates["synthesized_answer"] = res.refined_answer
+            if res.evidence_gap_detected and res.dynamic_tool_hint:
+                updates["gap_diagnosis"] = res.dynamic_tool_hint
+
+        return updates
 
     async def _log_query_node(self, state: AgentState) -> dict[str, Any]:
         """Persist execution audit and query history in MySQL."""
@@ -682,6 +748,8 @@ class AgentWorkflow:
             "recovery_attempts": 0,
             "gap_diagnosis": None,
             "answer_blueprint": None,
+            "answer_verification": None,
+            "verification_attempts": 0,
         }
 
         try:

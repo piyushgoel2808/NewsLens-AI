@@ -338,3 +338,95 @@ class TestAgentWorkflow:
         assert "Missing newspaper arguments" in items[0]["headline"]
         assert record["tool_name"] == "sql_analytics"
 
+    def test_conditional_edge_answer_verification_routing(self) -> None:
+        """Verify _route_after_verification correctly branches between dynamic tools and query log."""
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+        workflow._tool_maker = MagicMock()  # enable dynamic tool maker
+
+        # 1. Valid answer routes straight to log_query
+        state_valid = cast(AgentState, {
+            "recovery_attempts": 0,
+            "verification_attempts": 1,
+            "answer_verification": {"is_valid": True, "recommended_action": "accept"},
+        })
+        assert workflow._route_after_verification(state_valid) == "log_query"
+
+        # 2. Dynamic fallback requested routes to execute_dynamic_code
+        state_fallback = cast(AgentState, {
+            "recovery_attempts": 0,
+            "verification_attempts": 0,
+            "answer_verification": {
+                "is_valid": False,
+                "recommended_action": "fallback_to_dynamic_tool",
+            },
+        })
+        assert workflow._route_after_verification(state_fallback) == "execute_dynamic_code"
+
+        # 3. Ceiling enforced: recovery_attempts >= 1 always routes to log_query
+        state_capped = cast(AgentState, {
+            "recovery_attempts": 1,
+            "verification_attempts": 0,
+            "answer_verification": {
+                "is_valid": False,
+                "recommended_action": "fallback_to_dynamic_tool",
+            },
+        })
+        assert workflow._route_after_verification(state_capped) == "log_query"
+
+    @pytest.mark.asyncio
+    async def test_verify_answer_node_updates_synthesized_answer_when_refined(self) -> None:
+        """Verify _verify_answer_node replaces draft answer with refined grounded version."""
+        from app.agent.answer_verifier import AnswerVerificationResult
+
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+
+        mock_verifier = MagicMock()
+        mock_verifier.verify_answer_async = AsyncMock(
+            return_value=AnswerVerificationResult(
+                is_valid=False,
+                has_hallucination=True,
+                recommended_action="refine_answer",
+                refined_answer="Refined, grounded broadsheet truth.",
+                critique="Draft contained ungrounded claims.",
+            )
+        )
+        workflow._verifier = mock_verifier
+
+        state: AgentState = {
+            "query": "Is newspaper available on date X?",
+            "original_query": "Is newspaper available on date X?",
+            "chat_history": [],
+            "archetype": "factual_lookup",
+            "plan": [],
+            "tool_executions": [],
+            "evidence_items": [],
+            "synthesized_answer": "Hallucinated draft claiming yes.",
+            "citations": [],
+            "cost_usd": 0.0,
+            "latency_ms": 0,
+            "user_id": None,
+            "model_override": None,
+            "enable_web_search": False,
+            "web_search_results": [],
+            "active_issue_id": None,
+            "active_newspaper_name": None,
+            "active_issue_date": None,
+            "attached_article_id": None,
+            "attached_photo_id": None,
+            "attached_asset": None,
+            "error": None,
+            "evaluation_verdict": None,
+            "recovery_attempts": 0,
+            "gap_diagnosis": None,
+            "answer_blueprint": None,
+            "answer_verification": None,
+            "verification_attempts": 0,
+        }
+
+        res = await workflow._verify_answer_node(state)
+        assert res["synthesized_answer"] == "Refined, grounded broadsheet truth."
+        assert res["verification_attempts"] == 1
+        assert res["answer_verification"]["is_valid"] is False
+
