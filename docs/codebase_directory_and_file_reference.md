@@ -91,6 +91,8 @@ NewsLens-AI/
     ├── end_to_end_data_flow_guide.md# Live production-verified data flow walkthrough with real DB traces
     ├── engineering_log.md           # Chronological technical log of architectural fixes and milestones
     ├── features.md                  # Comprehensive inventory of user-facing intelligence capabilities
+    ├── hallucination_prevention_and_crag.md # Hallucination prevention, CRAG evaluator, and self-correcting fallbacks
+    ├── tools_reference_guide.md     # Reference manual for all 8 tools, argument schemas, and dynamic top_k
     └── codebase_directory_and_file_reference.md # Master codebase directory and file reference
 ```
 
@@ -1247,6 +1249,8 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 - [`docs/architecture.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/architecture.md): Deep-dive into subsystem architecture, component interactions, and scalability.
 - [`docs/data_flow.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/data_flow.md): Sequence diagrams illustrating ingestion and agentic query handling.
 - [`docs/data_flow_architecture.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/data_flow_architecture.md): Visual block diagrams tracing the flow of data across storage tiers.
+- [`docs/tools_reference_guide.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/tools_reference_guide.md): The exhaustive reference guide for all 8 agentic retrieval and analytical tools, schemas, and dynamic `top_k` flowcharts.
+- [`docs/hallucination_prevention_and_crag.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/hallucination_prevention_and_crag.md): Rigorous technical breakdown of multi-layer hallucination prevention, CRAG evidence evaluation, ToolCritic scorecards, and closed-loop self-correcting fallbacks.
 - [`docs/features.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/features.md): Inventory of user-facing intelligence features.
 - [`docs/engineering_log.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/engineering_log.md): Chronological engineering log recording bug fixes and optimizations.
 - [`docs/codebase_directory_and_file_reference.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/codebase_directory_and_file_reference.md): THIS FILE — Master codebase directory, file, framework, and model reference.

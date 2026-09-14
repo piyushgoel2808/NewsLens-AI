@@ -410,6 +410,75 @@ sequenceDiagram
 2. **Cognitive Query Planner & Dynamic Answer Blueprint** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py), [`backend/app/agent/archive_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/archive_context.py), [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py), [`backend/app/agent/extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py)):
    - **Architectural Philosophy**: Rather than hardcoding fixed tool pipelines or relying on unbounded LLM tool loops, NewsLens-AI employs a high-cohesion, single-turn direct planning engine. It reconciles LLM tool sequence planning with single-pass deterministic heuristic fallbacks, multi-provider candidate failovers, and closed-loop adaptive re-planning.
 
+   ```mermaid
+   flowchart TD
+       subgraph INPUT_CONTEXT ["1. User Input & Conversational Context"]
+           RawQuery["Raw User Query String"]
+           ChatHistory["Multi-Turn Chat History (Redis)"]
+           ActiveAssets["Active Attached Asset IDs<br/>(article_id, photo_id)"]
+           RawQuery & ChatHistory & ActiveAssets --> Condenser["Conversational Query Condenser<br/>(backend/app/agent/condenser.py)"]
+           Condenser --> CleanQuery["Condensed Query<br/>+ Sanitized Active Context"]
+       end
+
+       subgraph EXTRACTION ["2. Deterministic Semantic Extraction"]
+           CleanQuery --> ParamExtractor["Semantic Parameter Extractor<br/>(backend/app/agent/extractor.py)"]
+           ParamExtractor --> ExtractedEntities["• Publication Brand Patterns<br/>• ISO Dates & Date Ranges<br/>• Page Numbers & Sections<br/>• Differential / Shared Flags"]
+       end
+
+       subgraph SCHEMA_GROUNDING ["3. Static Schema & Decoupled Archive Bounds"]
+           StaticSchema["STATIC_BROADSHEET_SCHEMA<br/>(Declarative Tables & Columns)"]
+           ArchiveCache[("MySQL Archive Metadata<br/>5-Minute TTL In-Memory Cache")]
+           OfflineFallback["Deterministic Fallback Bounds<br/>(Zero DB Network Latency)"]
+           
+           ArchiveCache -->|Healthy DB| GroundedBounds["Resolved Archive Bounds<br/>(min_date, max_date, publications)"]
+           ArchiveCache -.->|DB Offline / CI| OfflineFallback --> GroundedBounds
+           StaticSchema & GroundedBounds --> PlannerContext["Consolidated Planner System Prompt Context"]
+       end
+
+       subgraph PLANNER_ENGINE ["4. LLM Direct Tool Sequence Planner"]
+           CleanQuery & ExtractedEntities & PlannerContext --> LLM_Planner["QueryPlanner.plan_query_async()<br/>(Gemini 2.5 Flash / Candidate Failover)"]
+           
+           LLM_Planner --> Contracts{"Enforce Strict Operational Contracts"}
+           Contracts -->|sql_analytics| Contract_SQL["Strict 7-Enum Routine Contract<br/>(count_*, issue_summary, diff, shared)"]
+           Contracts -->|dynamic_analysis| Contract_Dyn["Math, Aggregations, Ratios, Joins<br/>(Barred from narrative reading)"]
+           Contracts -->|hybrid_search| Contract_Hybrid["Factual Excerpts & Dynamic Top-K (4-12)"]
+           Contracts -->|inspect_visual| Contract_Visual["Multimodal Visual Crop Analysis"]
+           
+           Contracts --> RawPlan["Raw LLM Plan Candidate<br/>(Archetype, Tool Calls, Arguments)"]
+       end
+
+       subgraph BLUEPRINT_SELECTION ["5. Declarative Answer Blueprint Selection"]
+           RawPlan --> BlueprintSelector{"Select Blueprint by Archetype"}
+           BlueprintSelector --> B_Fact["factual_lookup Blueprint"]
+           BlueprintSelector --> B_Comp["cross_newspaper_comparison Blueprint"]
+           BlueprintSelector --> B_Cat["article_catalog Blueprint"]
+           BlueprintSelector --> B_Time["thematic_timeline Blueprint"]
+           BlueprintSelector --> B_Quant["scalar_count / trend Blueprint"]
+           BlueprintSelector --> B_Dyn["analytical_computation Blueprint"]
+           
+           B_Fact & B_Comp & B_Cat & B_Time & B_Quant & B_Dyn --> CompiledBlueprint["Compiled AnswerBlueprint<br/>(Ordered SectionSpecs, Format Constraints, Word Count)"]
+       end
+
+       subgraph RECONCILIATION ["6. Tool Call Reconciliation & Pruning"]
+           RawPlan & ExtractedEntities --> Reconciler["reconcile_and_sanitize_arguments()<br/>(backend/app/agent/tool_factory.py)"]
+           Reconciler --> Clean1["Sanitize Generic Filler Queries"]
+           Reconciler --> Clean2["Normalize Newspaper Brand Abbreviations"]
+           Reconciler --> Clean3["Harmonize ISO Dates & Precedence"]
+           Reconciler --> Clean4["Resolve Attached Asset vs Query Date Conflict"]
+           
+           Clean1 & Clean2 & Clean3 & Clean4 --> SanitizedPlan["Validated PlannedToolCall Sequence<br/>(1 to 3 Concurrent Calls)"]
+       end
+
+       subgraph DISPATCH ["7. LangGraph Execution Node"]
+           SanitizedPlan & CompiledBlueprint --> ToolExecutorNode["ToolExecutor.execute_tools()<br/>(backend/app/agent/executor.py)"]
+           ToolExecutorNode --> ConcurrentExec["Concurrent Async Execution<br/>(Qdrant, MySQL, MinIO, VLM, Sandbox)"]
+       end
+
+       subgraph REPLAN_LOOP ["8. Closed-Loop Adaptive Re-Planning"]
+           CRAG_Gap["CRAG Evaluator Feedback<br/>(EvaluationVerdict.gap_diagnosis)"] -.->|Trigger Re-Plan| ReplanEngine["replan_with_feedback_async()<br/>• Relax Page / Category Constraints<br/>• Scale top_k = max(8, top_k + 4)<br/>• Anti-Repetition Guard<br/>• 1-Cycle Hard Ceiling"]
+           ReplanEngine -.-> SanitizedPlan
+       end
+
    #### A. Dynamic Brand Pattern Resolution & Typo-Tolerant Parameter Extraction
    - **Dynamic Registry Merging** (`get_brand_patterns()` in `extractor.py`): Combines hardcoded regular expressions for known broadsheets with dynamically introspected publications from MySQL (`get_known_publications()`), cached in memory.
    - **Prefix & Abbreviation Normalization**: Strips conversational prefixes (*"Can you please tell me about..."*) while recognizing brand abbreviations (`TOI`, `HT`, `ET`, `IE`, `BS`, `WSJ`, `NYT`, `FT`) and optional leading articles (*"The Goan"*, *"The Hindu"*).
