@@ -14,8 +14,10 @@ from dataclasses import dataclass, field
 import json
 import re
 import time
-from typing import Any
-
+from app.agent.extractor import (
+    _KNOWN_BRANDS_PATTERNS,
+    is_archive_wide_newspaper_query,
+)
 from app.core.logging import get_logger
 from app.providers.base import ChatModelProvider, Message
 from app.providers.registry import get_registry
@@ -153,6 +155,29 @@ class AnswerVerifier:
         query: str = "",
     ) -> AnswerVerificationResult | None:
         """Fast-floor check catching explicit relational zero-count contradictions deterministically."""
+        # 1. Publication scope mismatch check: query asked about archive-wide newspapers, but draft answer narrowed to a single brand
+        if query:
+            is_archive_np = is_archive_wide_newspaper_query(query)
+            named_brand_in_query = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+            if is_archive_np and not named_brand_in_query:
+                for pat, brand in _KNOWN_BRANDS_PATTERNS:
+                    if (
+                        re.search(rf"\b(?:specifically\s+for|for\s+the\s+publication|only\s+for)\s+{re.escape(brand)}\b", draft_answer, re.I)
+                        or re.search(rf"\bNewspaper Availability for {re.escape(brand)}\b", draft_answer, re.I)
+                        or re.search(rf"\bMatching Issues for {re.escape(brand)}\b", draft_answer, re.I)
+                    ):
+                        return AnswerVerificationResult(
+                            is_valid=False,
+                            has_hallucination=True,
+                            has_contradiction=True,
+                            evidence_gap_detected=True,
+                            quality_score=0.2,
+                            factual_errors=[f"Answer was artificially restricted to '{brand}' for an archive-wide inquiry."],
+                            critique=f"Publication scope mismatch: query requested archive-wide newspaper availability, but draft answer was narrowed to '{brand}'. Fallback to dynamic tool required.",
+                            recommended_action="fallback_to_dynamic_tool",
+                            dynamic_tool_hint=f"Execute dynamic SQL query across all publications for {query}.",
+                        )
+
         zero_issue_record = None
         for it in evidence_items:
             meta = it.get("metadata") or {}
@@ -162,7 +187,9 @@ class AnswerVerifier:
                 meta.get("count") == 0
                 or "0 issues found" in snip
                 or "Total Matching Issues: 0" in snip
+                or "No issue found" in snip
                 or "Archive Availability Audit: 0 issues" in it.get("headline", "")
+                or "Issue Summary Error:" in it.get("headline", "")
             ):
                 zero_issue_record = it
                 break
@@ -170,8 +197,10 @@ class AnswerVerifier:
         if zero_issue_record is not None:
             if query:
                 q_low = query.lower()
+                is_archive_np = is_archive_wide_newspaper_query(query)
                 is_quant = bool(
-                    re.search(
+                    is_archive_np
+                    or re.search(
                         r"\b(how many|no of|number of|count of|total issues|total newspapers|how many newspapers)\b",
                         q_low,
                     )

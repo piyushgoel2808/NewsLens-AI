@@ -7,8 +7,10 @@ ground-truth parameter reconciliation and hallucination pruning.
 from __future__ import annotations
 
 import re
-from typing import Any
-
+from app.agent.extractor import (
+    _KNOWN_BRANDS_PATTERNS,
+    is_archive_wide_newspaper_query,
+)
 from app.agent.models import PlannedToolCall
 
 _GENERIC_FILLER_QUERIES: frozenset[str] = frozenset({
@@ -76,6 +78,20 @@ def reconcile_and_sanitize_arguments(
         if extracted.get("page_number") and "page_filter" not in sanitized:
             sanitized["page_filter"] = str(extracted["page_number"])
         return sanitized
+
+    # Archive-wide newspaper inquiry check: purge leaked publication filters
+    is_archive_np = is_archive_wide_newspaper_query(query)
+    named_brand_in_query = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+    if is_archive_np and not named_brand_in_query:
+        extracted.pop("newspaper_name", None)
+        extracted.pop("target_newspapers", None)
+        extracted.pop("comparison_newspaper", None)
+        extracted.pop("source_newspaper", None)
+        sanitized.pop("newspaper_name", None)
+        sanitized.pop("comparison_newspaper", None)
+        sanitized.pop("source_newspaper", None)
+        if tool_name == "sql_analytics" and sanitized.get("analysis_type") in ("issue_summary", None):
+            sanitized["analysis_type"] = "count_issues"
 
     # 1. Newspaper Brand Ground Truth & Active Context Retention
     valid_brands: list[str] = (
@@ -182,6 +198,8 @@ def reconcile_and_sanitize_arguments(
 
     if sanitized.get("date_from") and sanitized.get("date_to") and not extracted.get("issue_date"):
         sanitized.pop("issue_date", None)
+        if tool_name == "sql_analytics" and sanitized.get("analysis_type") == "issue_summary" and not sanitized.get("newspaper_name"):
+            sanitized["analysis_type"] = "count_issues"
 
     if active_issue_date and not extracted.get("date_from") and not extracted.get("date_to"):
         for d_key in ("date_from", "date_to"):

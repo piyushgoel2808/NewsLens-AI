@@ -17,6 +17,7 @@ from app.agent.extractor import (
     _build_targeted_web_query,
     build_targeted_web_query,
     extract_parameters_from_query,
+    is_archive_wide_newspaper_query,
 )
 from app.agent.models import (
     AgentPlan,
@@ -61,8 +62,9 @@ Analyze the user's query, understand their underlying intent, produce step-by-st
 
 ### 🛠️ AVAILABLE RETRIEVAL TOOLS
 1. `sql_analytics`: Relational system of record.
-   - Arguments: {"analysis_type": "issue_summary" | "count_articles" | "count_advertisements" | "count_photos" | "count_issues" | "coverage_difference" | "shared_coverage", "newspaper_name": str, "comparison_newspaper": str, "issue_date": "YYYY-MM-DD", "category_filter": str, "page_filter": str, "query": str}
+   - Arguments: {"analysis_type": "issue_summary" | "count_articles" | "count_advertisements" | "count_photos" | "count_issues" | "coverage_difference" | "shared_coverage", "newspaper_name": str, "comparison_newspaper": str, "issue_date": "YYYY-MM-DD", "date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "category_filter": str, "page_filter": str, "query": str}
    - Use for: Catalogs, section manifests, whole issue overviews, article counts, advertisement/ad counts, photo counts, issue counts, cross-newspaper article differences, or shared/similar wire coverage between two newspapers.
+   - For listing distinct newspapers, checking availability of newspapers across a month or date range, or counting issues across publications (e.g. 'LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN SEPTEMBER 2026', 'which newspapers are available in August'): use "analysis_type": "count_issues" with date_from/date_to (do NOT set newspaper_name unless a specific publication was requested).
 2. `hybrid_search`: Dense vector + BM25 keyword search for factual answers, quotes, and specific events.
    - Arguments: {"query": str, "newspaper_name": str, "date_from": str, "date_to": str, "page_filter": str, "category_filter": str, "top_k": int}
    - Use for: Point-in-time facts, quotes, event details, or targeted content.
@@ -87,6 +89,9 @@ Analyze the user's query, understand their underlying intent, produce step-by-st
    - CRITICAL RESTRICTION: NEVER schedule dynamic_analysis for text summarization, explanation, or length constraints (e.g. 'summarize in 100 words', 'explain in 2 paragraphs', 'brief overview'). dynamic_analysis is STRICTLY for database SQL queries and statistical calculations across database tables. Summarization length and brevity are handled exclusively by the Answer Synthesizer.
 
 ### 📚 FEW-SHOT EXAMPLES
+Query: "LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN SEPTEMBER 2026"
+Output: {"thought_process": "User is requesting a roster of distinct newspapers available across September 2026. Schedule sql_analytics count_issues across the September date range without publication constraints.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues", "date_from": "2026-09-01", "date_to": "2026-09-30"}, "purpose": "Retrieve distinct newspapers and issue counts in September 2026"}]}
+
 Query: "What happened to Tata Power on page 3?"
 Output: {"thought_process": "Factual question about Tata Power on page 3. Direct hybrid search bounded to page 3.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "hybrid_search", "arguments": {"query": "Tata Power", "page_filter": "3", "top_k": 6}, "purpose": "Search page 3 for Tata Power reporting"}]}
 
@@ -1212,7 +1217,8 @@ class QueryPlanner:
 
         # 5. Quantitative Trend / Article Catalog / Issue Manifest / Page Listings / Counts / Availability
         elif (
-            (page_filter and any(w in q_lower for w in ["article", "story", "stories", "no of", "how many", "list"]))
+            is_archive_wide_newspaper_query(query)
+            or (page_filter and any(w in q_lower for w in ["article", "story", "stories", "no of", "how many", "list"]))
             or any(w in q_lower for w in [
                 "how many", "count", "number of", "no of", "frequency", "trend", "distribution",
                 "volume", "statistics", "summarize", "overview", "whole", "entire", "all articles",
@@ -1259,7 +1265,23 @@ class QueryPlanner:
             is_ad_query = any(w in q_lower for w in ["advertisement", "advertisements", "ad count", "ads count", "number of ads", "how many ads", "commercials", "notices and ads", "commercial notices"])
             is_photo_count = is_count and any(w in q_lower for w in ["photo", "photos", "picture", "pictures", "image", "images"])
 
-            if is_ad_query:
+            is_archive_np = is_archive_wide_newspaper_query(query)
+            if is_archive_np:
+                named_in_q = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+                if not named_in_q:
+                    newspaper = None
+                if not has_article_words:
+                    analysis_type = "count_issues"
+                    archetype = "quantitative_trend"
+                elif is_ad_query:
+                    analysis_type = "count_advertisements"
+                elif is_photo_count:
+                    analysis_type = "count_photos"
+                elif is_count:
+                    analysis_type = "count_articles"
+                else:
+                    analysis_type = "issue_summary"
+            elif is_ad_query:
                 analysis_type = "count_advertisements"
             elif is_photo_count:
                 analysis_type = "count_photos"

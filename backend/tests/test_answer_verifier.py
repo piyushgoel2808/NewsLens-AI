@@ -182,3 +182,34 @@ def test_answer_verifier_fast_floor_zero_issue_contradiction():
     assert res.recommended_action == "refine_answer"
     assert "No newspaper issues are available in the archive for 2026-04-28" in (res.refined_answer or "")
     assert "2026-08-01 to 2026-09-11" in (res.refined_answer or "")
+
+
+def test_answer_verifier_catches_publication_scope_mismatch():
+    """Verify that AnswerVerifier detects when an archive-wide query is narrowed to a single publication."""
+    verifier = AnswerVerifier()
+    query = "LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN  SEPTEMBER  2026 "
+    draft = (
+        "⚡ EXECUTIVE SUMMARY: QUANTITATIVE ANALYSIS OF NEWSPAPER AVAILABILITY FOR BUSINESS STANDARD ON 2026-09-01\n"
+        "The query seeks to analyze the number of distinct newspaper names available in September 2026, specifically for the publication Business Standard.\n"
+        "Total Matching Issues for Business Standard on 2026-09-01: 0\n"
+        "Newspaper Availability for Business Standard on 2026-09-01: No"
+    )
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Issue Summary Error: No issue found for Business Standard on 2026-09-01",
+            "newspaper_name": "Business Standard",
+            "issue_date": "2026-09-01",
+            "pages": [1],
+            "snippet": "⚠️ No issue found for Business Standard on 2026-09-01",
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+        }
+    ]
+
+    res = verifier._fast_groundedness_check(draft_answer=draft, evidence_items=evidence, query=query)
+    assert res is not None
+    assert res.is_valid is False
+    assert res.recommended_action == "fallback_to_dynamic_tool"
+    assert "Publication scope mismatch" in res.critique
+

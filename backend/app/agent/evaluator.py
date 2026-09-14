@@ -11,9 +11,11 @@ from dataclasses import dataclass, field
 import json
 import re
 import time
-from typing import Any
-
-from app.agent.extractor import extract_parameters_from_query
+from app.agent.extractor import (
+    _KNOWN_BRANDS_PATTERNS,
+    extract_parameters_from_query,
+    is_archive_wide_newspaper_query,
+)
 from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.tool_maker import ToolMaker
 from app.core.logging import get_logger
@@ -30,7 +32,9 @@ _QUANT_QUERY_PATTERN = re.compile(
     r"total|total issues|total articles|total photos|total newspapers|"
     r"percentage|ratio|average|mean|median|"
     r"correlation|variance|distribution|frequency|breakdown|photos? in each|"
-    r"photos? per|articles? per|word count|how much)\b",
+    r"photos? per|articles? per|word count|how much|"
+    r"distinct|list distinct|which newspapers|what newspapers|available newspapers|"
+    r"newspaper names|list newspapers)\b",
     re.IGNORECASE,
 )
 
@@ -157,6 +161,11 @@ def is_structural_or_relevant_evidence(
     explicit target date was requested, items from completely unrelated dates or unfiltered
     data without auditing target_date are not falsely given full protection.
     """
+    snip = str(item.get("snippet") or "")
+    hl = str(item.get("headline") or "")
+    if snip.startswith("⚠️") or "Issue Summary Error:" in hl or "error" in hl.lower() or "error" in snip.lower():
+        return False
+
     if target_date:
         norm_target = normalize_date_to_iso(target_date)
         it_date = normalize_date_to_iso(item.get("issue_date"))
@@ -234,14 +243,21 @@ class EvidenceEvaluator:
         detected_gaps: list[str] = []
         is_analytical = bool(_ANALYTICAL_QUERY_PATTERN.search(query))
 
-        # 0. Empty or stub evidence
-        is_quant_query = bool(_QUANT_QUERY_PATTERN.search(query))
-        if not evidence or not any(len((item.get("snippet") or item.get("summary") or "").strip()) >= 20 for item in evidence):
+        # 0. Empty, stub, or error-only evidence
+        is_quant_query = bool(_QUANT_QUERY_PATTERN.search(query)) or is_archive_wide_newspaper_query(query)
+        valid_evidence = [
+            item for item in evidence
+            if not str(item.get("snippet") or "").startswith("⚠️")
+            and "Issue Summary Error:" not in str(item.get("headline") or "")
+            and not ("error" in str(item.get("headline") or "").lower() and item.get("article_id") == 0)
+        ]
+        if not valid_evidence or not any(len((item.get("snippet") or item.get("summary") or "").strip()) >= 20 for item in valid_evidence):
+            gap_type = "tool_execution_error_gap" if evidence else "empty_retrieval"
             return EvaluationVerdict(
                 is_sufficient=False,
                 quality_score=0.0,
-                gap_reason="Static retrieval returned 0 grounded evidence records from the archive.",
-                detected_gaps=["empty_retrieval"],
+                gap_reason="Static retrieval returned 0 grounded evidence records or encountered tool execution errors.",
+                detected_gaps=[gap_type],
                 recommended_action="synthesize_dynamic_tool" if (is_analytical or is_quant_query) else "replan_static_tools",
             )
 
@@ -412,10 +428,11 @@ class EvidenceEvaluator:
                         corrective_hints={"date_from": req_from, "date_to": req_to},
                     )
 
-            # Archive-wide publication scope audit: query asked for total newspapers across archive, but evidence narrowed to single publication
+            # Archive-wide publication scope audit: query asked for total/distinct newspapers across archive, but evidence narrowed to single publication
             q_low = query.lower()
-            is_archive_np_query = bool(re.search(r"\b(?:no|number|count|how many|all|total)\s+(?:of\s+)?newspapers?\b", q_low))
-            if is_archive_np_query:
+            is_archive_np = is_archive_wide_newspaper_query(query)
+            named_in_q = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+            if is_archive_np and not named_in_q:
                 only_single_np = False
                 for it in evidence:
                     m = it.get("metadata") or {}
@@ -427,7 +444,7 @@ class EvidenceEvaluator:
                 if only_single_np:
                     detected_gaps.append("archive_newspaper_scope_mismatch")
                     gap_msg = (
-                        "Query requested archive-wide newspaper count, but retrieved evidence was narrowed to a single publication."
+                        "Query requested archive-wide newspaper availability or count, but retrieved evidence was narrowed to a single publication."
                     )
                     return EvaluationVerdict(
                         is_sufficient=False,

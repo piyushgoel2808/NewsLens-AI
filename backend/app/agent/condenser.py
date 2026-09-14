@@ -6,7 +6,11 @@ import contextlib
 import re
 from typing import Any
 
-from app.agent.extractor import _KNOWN_BRANDS_PATTERNS, extract_parameters_from_query
+from app.agent.extractor import (
+    _KNOWN_BRANDS_PATTERNS,
+    extract_parameters_from_query,
+    is_archive_wide_newspaper_query,
+)
 from app.core.logging import get_logger
 from app.providers.base import Message
 from app.providers.registry import get_registry
@@ -277,7 +281,8 @@ def extract_active_issue_from_history(
 
     q_lower = (current_query or "").lower()
     is_cross_newspaper = bool(
-        re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff(?:erence[s]?|ering)?|versus|vs\.?)\b", q_lower)
+        is_archive_wide_newspaper_query(current_query)
+        or re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff(?:erence[s]?|ering)?|versus|vs\.?)\b", q_lower)
         or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper", "different newspaper"])
         or re.search(r"\b(?:no|number|count|how many|which|list|total)\s+(?:of\s+)?newspapers?\b", q_lower)
     )
@@ -380,13 +385,19 @@ def extract_active_issue_from_history(
         if res.get("newspaper_name") and res.get("issue_date") and res.get("headline"):
             break
 
-    # Guardrail 1: If current query is cross-newspaper comparison, do NOT constrain to a single newspaper
-    if is_cross_newspaper and not res.get("comparison_newspaper"):
-        res.pop("newspaper_name", None)
-        res.pop("issue_id", None)
-        res.pop("article_id", None)
-        res.pop("photo_id", None)
-        res.pop("target_newspapers", None)
+    # Guardrail 1: If current query is cross-newspaper comparison or archive-wide newspaper query, do NOT constrain to a single newspaper
+    if is_cross_newspaper:
+        if not explicit_query_np:
+            res.pop("newspaper_name", None)
+            res.pop("comparison_newspaper", None)
+            res.pop("target_newspapers", None)
+            res.pop("issue_id", None)
+            res.pop("article_id", None)
+            res.pop("photo_id", None)
+        elif not res.get("comparison_newspaper"):
+            res.pop("issue_id", None)
+            res.pop("article_id", None)
+            res.pop("photo_id", None)
 
     # Guardrail 2: If current query explicitly provides its own date, invalidate stale context if from different date
     if current_date and res.get("issue_date") and res["issue_date"] != current_date:

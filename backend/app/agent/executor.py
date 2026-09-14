@@ -12,8 +12,10 @@ import re
 import time
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
+from app.agent.extractor import (
+    _KNOWN_BRANDS_PATTERNS,
+    is_archive_wide_newspaper_query,
+)
 from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.tool_maker import ToolMaker
 from app.core.logging import get_logger
@@ -470,16 +472,32 @@ class ToolExecutor:
 
         elif analysis_type == "issue_summary":
             page_filter = args.get("page_filter")
+            d_from = args.get("date_from")
+            d_to = args.get("date_to")
+            has_date_range = bool(d_from and d_to)
+            is_archive_np = is_archive_wide_newspaper_query(state.get("query", "")) or is_archive_wide_newspaper_query(args.get("query", ""))
+
+            # Redirect date-range or archive-wide requests without a specific newspaper to count_issues
+            if (has_date_range or is_archive_np) and not args.get("newspaper_name"):
+                args["analysis_type"] = "count_issues"
+                return await self._execute_sql_analytics(args, state, active_issue_id, active_newspaper_name, active_issue_date)
+
             is_comparative = (
                 state.get("archetype") == "cross_newspaper_comparison"
                 or any(w in str(state.get("query", "")).lower() for w in ["all available", "all newspaper", "across newspaper", "both newspaper", "different newspaper"])
             )
             date_mismatch = bool(args.get("issue_date") and active_issue_date and args.get("issue_date") != active_issue_date)
             target_all_on_date = bool(args.get("issue_date") and not args.get("newspaper_name"))
-            inherit_history = not is_comparative and not date_mismatch and not target_all_on_date
+            inherit_history = (
+                not is_comparative
+                and not is_archive_np
+                and not has_date_range
+                and not date_mismatch
+                and not target_all_on_date
+            )
 
             np_arg = args.get("newspaper_name") or (active_newspaper_name if inherit_history else None)
-            iss_d_arg = args.get("issue_date") or active_issue_date
+            iss_d_arg = args.get("issue_date") or (active_issue_date if inherit_history else None)
             iss_id_arg = args.get("issue_id") or (active_issue_id if inherit_history else None)
 
             is_multi_issue_date = iss_d_arg and not np_arg and not iss_id_arg
@@ -699,14 +717,18 @@ class ToolExecutor:
                 iss_date = args.get("issue_date") or args.get("date") or active_issue_date
 
             q_low = str(state.get("query", "")).lower()
+            q_arg = str(args.get("query", "")).lower()
             is_archive_wide = bool(
-                re.search(r"\b(?:no|number|count|how many|all|total)\s+(?:of\s+)?newspapers?\b", q_low)
+                is_archive_wide_newspaper_query(q_low)
+                or is_archive_wide_newspaper_query(q_arg)
+                or re.search(r"\b(?:no|number|count|how many|all|total)\s+(?:of\s+)?newspapers?\b", q_low)
                 or any(w in q_low for w in ["all available", "all newspaper", "both newspaper", "across newspaper"])
             )
-            if is_archive_wide or args.get("newspaper_name") == "":
+            named_in_q = any(pat.search(q_low) or pat.search(q_arg) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+            if (is_archive_wide and not named_in_q) or args.get("newspaper_name") == "":
                 np_name = None
             else:
-                np_name = args.get("newspaper_name") or active_newspaper_name
+                np_name = args.get("newspaper_name") or (active_newspaper_name if not is_archive_wide else None)
 
             iss_res = await self._sql_analytics.count_issues(
                 newspaper_name=np_name,

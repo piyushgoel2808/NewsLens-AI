@@ -575,3 +575,101 @@ def test_audit_evidence_sufficiency_date_range_scope_mismatch_routes_to_dynamic_
     assert verdict.recommended_action == "synthesize_dynamic_tool"
     assert any("temporal_range_scope_mismatch" in g for g in verdict.detected_gaps)
 
+
+def test_audit_evidence_sufficiency_error_evidence_routes_to_dynamic_tool(mock_dependencies):
+    """Verify that when static retrieval returns an error/failure snippet, it routes to dynamic tool."""
+    entity_search, web_search, tool_maker, sql_analytics = mock_dependencies
+    evaluator = EvidenceEvaluator(entity_search, web_search, tool_maker, sql_analytics)
+
+    state: AgentState = {
+        "query": "LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN  SEPTEMBER  2026 ",
+        "chat_history": [],
+        "archetype": "article_catalog",
+        "plan": [],
+        "tool_executions": [],
+        "evidence_items": [],
+        "synthesized_answer": "",
+        "citations": [],
+        "cost_usd": 0.0,
+        "latency_ms": 0,
+        "user_id": None,
+        "model_override": None,
+        "enable_web_search": False,
+        "web_search_results": [],
+        "active_issue_id": None,
+        "active_newspaper_name": None,
+        "active_issue_date": None,
+        "attached_article_id": None,
+        "attached_photo_id": None,
+        "attached_asset": None,
+        "error": None,
+    }
+
+    err_evidence = [
+        {
+            "article_id": 0,
+            "headline": "Issue Summary Error: No issue found for Business Standard on 2026-09-01",
+            "newspaper_name": "Business Standard",
+            "issue_date": "2026-09-01",
+            "pages": [1],
+            "snippet": "⚠️ No issue found for Business Standard on 2026-09-01",
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+        }
+    ]
+
+    verdict = evaluator.audit_evidence_sufficiency(err_evidence, state)
+    assert verdict.is_sufficient is False
+    assert verdict.recommended_action == "synthesize_dynamic_tool"
+    assert "tool_execution_error_gap" in verdict.detected_gaps
+
+
+def test_audit_evidence_sufficiency_archive_newspaper_scope_mismatch_routes_to_dynamic(mock_dependencies):
+    """Verify that when an archive-wide distinct newspaper query receives only single-pub evidence, it routes to dynamic tool."""
+    entity_search, web_search, tool_maker, sql_analytics = mock_dependencies
+    evaluator = EvidenceEvaluator(entity_search, web_search, tool_maker, sql_analytics)
+
+    state: AgentState = {
+        "query": "LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN  SEPTEMBER  2026 ",
+        "chat_history": [],
+        "archetype": "quantitative_trend",
+        "plan": [],
+        "tool_executions": [],
+        "evidence_items": [],
+        "synthesized_answer": "",
+        "citations": [],
+        "cost_usd": 0.0,
+        "latency_ms": 0,
+        "user_id": None,
+        "model_override": None,
+        "enable_web_search": False,
+        "web_search_results": [],
+        "active_issue_id": None,
+        "active_newspaper_name": None,
+        "active_issue_date": None,
+        "attached_article_id": None,
+        "attached_photo_id": None,
+        "attached_asset": None,
+        "error": None,
+    }
+
+    mismatch_evidence = [
+        {
+            "article_id": 0,
+            "headline": "Issue & Newspaper Count Analysis: 1 newspapers (2 issues) found for 2026-09-01 to 2026-09-30",
+            "newspaper_name": "Business Standard",
+            "issue_date": "Overview",
+            "pages": [1],
+            "snippet": "=== RELATIONAL ISSUE COUNT AUDIT ===\n• Total Matching Issues: 2\n• Target Date / Range: 2026-09-01 to 2026-09-30\n• Newspaper(s): Business Standard",
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+            "metadata": {"count": 2, "total_issues": 2, "filters": {"newspaper_name": "Business Standard"}},
+        }
+    ]
+
+    verdict = evaluator.audit_evidence_sufficiency(mismatch_evidence, state)
+    assert verdict.is_sufficient is False
+    assert verdict.recommended_action == "synthesize_dynamic_tool"
+    assert "archive_newspaper_scope_mismatch" in verdict.detected_gaps
+
+

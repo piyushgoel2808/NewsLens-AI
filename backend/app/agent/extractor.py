@@ -227,6 +227,22 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
     return params
 
 
+def is_archive_wide_newspaper_query(query: str) -> bool:
+    """Determine whether a query is asking about the roster, availability, or count of newspapers across the archive."""
+    if not query:
+        return False
+    q_low = query.lower()
+    patterns = [
+        r"\b(?:list|show|get|find|display|tell\s+me|see)\b.*?\b(?:newspapers?|publications?|dailies)\b",
+        r"\b(?:which|what)\b.*?\b(?:newspapers?|publications?|dailies)\b",
+        r"\b(?:how\s+many|no\s+of|number\s+of|count\s+of|total)\b.*?\b(?:newspapers?|publications?|dailies|issues?)\b",
+        r"\b(?:distinct|different|all|available)\b.*?\b(?:newspapers?|publications?|dailies)\b",
+        r"\b(?:newspapers?|publications?|dailies)\b.*?\b(?:names?|available|availability|published|covered)\b",
+        r"\b(?:is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers)\b",
+    ]
+    return any(bool(re.search(p, q_low, re.I)) for p in patterns)
+
+
 def build_targeted_web_query(query: str) -> str:
     """Transform conversational prompts into high-precision search queries."""
     if not query:
@@ -253,4 +269,6 @@ __all__ = [
     "_build_targeted_web_query",
     "build_targeted_web_query",
     "extract_parameters_from_query",
+    "is_archive_wide_newspaper_query",
 ]
+

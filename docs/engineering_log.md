@@ -3704,3 +3704,60 @@ When users interacted with broadsheet articles containing companion infographics
 - End-to-end August chat-history verification test: **All 6 assertions passed (7 newspapers, 16 issues)**.
 - **Full Backend Suite**: **527/527 tests passing (100% green)** in 75s.
 
+---
+
+## Phase 9.62 — Universal Archive-Wide Newspaper Query Routing, Issue Summary Redirection & Error Evidence CRAG Audit
+
+**Date**: 2026-09-14  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Context Leakage on Distinct Newspaper Queries**:
+   - Query `"LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN  SEPTEMBER  2026 "` inherited `Business Standard` and `2026-09-01` from conversational history because `is_cross_newspaper` regex required `newspaper` directly adjacent to words like `list`, failing on interleaved tokens like `distinct` and `names`.
+2. **Brittle Static Tool Planning (`issue_summary` vs `count_issues`)**:
+   - Both Heuristic and LLM planners scheduled `sql_analytics` with `analysis_type: "issue_summary"` for `LIST DISTINCT NEWSPAPER NAMES...`.
+   - In `executor.py`, `issue_summary` only supported a single `issue_date` for a specific newspaper and completely lacked date range (`date_from`/`date_to`) support. It attempted to look up `Business Standard` on `2026-09-01` and returned `{"error": "No issue found for Business Standard on 2026-09-01"}`.
+3. **Evaluator Protected Failure Snippets as Structural Evidence**:
+   - `is_structural_or_relevant_evidence` returned `True` for any item with `source_tool.startswith("sql_analytics")` or `article_id == 0`, even when the snippet was an error (`⚠️ No issue found for Business Standard on 2026-09-01`).
+   - The evaluator consequently gave the error evidence a `1.0` relevance score and declared it `is_sufficient = True, quality_score = 1.0, recommended_action = "proceed_to_synthesis"`, completely bypassing dynamic tool fallback!
+4. **Answer Verifier Accepted Publication Scope Mismatch**:
+   - The synthesized response asserted that the query was "specifically for the publication Business Standard" and that 0 issues were available. The verifier accepted this because it matched the single error snippet in retrieval evidence.
+
+### Architectural Solutions & Implementations
+1. **Universal Archive-Wide Newspaper Query Classifier (`backend/app/agent/extractor.py`)**:
+   - Implemented and exported `is_archive_wide_newspaper_query(query: str) -> bool` matching roster, availability, distinct, and count requests across publications (`list/which/what/distinct/how many/available newspapers`).
+2. **Context Leak Elimination (`backend/app/agent/condenser.py`)**:
+   - Integrated `is_archive_wide_newspaper_query` into `is_cross_newspaper`.
+   - Guardrail 1: Unless the user explicitly named a publication in the current query text, unconditionally purges `newspaper_name`, `comparison_newspaper`, `target_newspapers`, `issue_id`, `article_id`, and `photo_id`.
+3. **Planner Roster Scoping & Guidance (`backend/app/agent/planner.py`)**:
+   - `_plan_query_heuristic`: Routes queries matching `is_archive_wide_newspaper_query` (without article words) to `archetype = "quantitative_trend"`, `analysis_type = "count_issues"`, and clears `newspaper = None`.
+   - `PLANNER_SYSTEM_PROMPT`: Added explicit guidance and few-shot example for listing distinct newspapers using `count_issues`.
+4. **Tool Factory Argument Reconciliation (`backend/app/agent/tool_factory.py`)**:
+   - In `reconcile_and_sanitize_arguments`:
+     * Automatically strips leaked publication names when query is archive-wide.
+     * Automatically rewrites `analysis_type: "issue_summary"` -> `"count_issues"` when a date range is present without a newspaper filter, or when the query is an archive-wide newspaper request.
+5. **Executor Redirection & History Scoping (`backend/app/agent/executor.py`)**:
+   - In `issue_summary`: If `date_from` and `date_to` are present without a newspaper, or if `is_archive_wide_newspaper_query` is True, automatically delegates execution to `count_issues`.
+   - In `count_issues`: Scopes `np_name = None` for archive-wide queries unless explicitly named in query text.
+   - Accurately executes relational query returning 3 distinct newspapers (`Hindustan Times`, `Mint`, `The Goan`) across 8 issues in September 2026.
+6. **Error Snippet Exclusion & Scope Audit in Evaluator (`backend/app/agent/evaluator.py`)**:
+   - `is_structural_or_relevant_evidence`: Unconditionally rejects snippets starting with `⚠️` or containing `"Issue Summary Error:"` or `"error"` in headline/snippet.
+   - Step 0: Detects error-only evidence items, flags `tool_execution_error_gap`, and routes to `synthesize_dynamic_tool`.
+   - Step 2: Detects archive-wide publication scope mismatch and routes to `synthesize_dynamic_tool`.
+   - Expanded `_QUANT_QUERY_PATTERN` with `distinct`, `list distinct`, `which newspapers`, `available newspapers`, `newspaper names`, `list newspapers`.
+7. **Publication Scope Mismatch Detection in Verifier (`backend/app/agent/answer_verifier.py`)**:
+   - Enriched `_fast_groundedness_check`: Detects when an archive-wide inquiry was artificially narrowed in the draft answer to a single publication (e.g. "specifically for the publication Business Standard"), flags hallucination and contradiction, and triggers `fallback_to_dynamic_tool`.
+
+### Verification Results
+- `backend/tests/test_evaluator_crag_dynamic.py`: **12/12 tests passing (100% green)** including new tests for error evidence rejection and scope mismatch.
+- `backend/tests/test_answer_verifier.py`: **5/5 tests passing (100% green)** including new test for publication scope mismatch.
+- `scratch/test_september_distinct_e2e.py`: **All 7 assertions passing**:
+  1. Condenser: Leaked `Business Standard` eliminated.
+  2. Planner: Planned `count_issues` for September 2026 without newspaper filter.
+  3. Tool Factory: Sanitized and converted `issue_summary` to `count_issues`.
+  4. Executor: Relational DB returned 3 distinct newspapers (`Hindustan Times`, `Mint`, `The Goan`) across 8 issues.
+  5. Evaluator: Validated real evidence as sufficient (`proceed_to_synthesis`).
+  6. Evaluator: Caught tool error evidence and routed to `synthesize_dynamic_tool`.
+  7. AnswerVerifier: Caught publication scope mismatch draft and routed to `fallback_to_dynamic_tool`.
+
+
