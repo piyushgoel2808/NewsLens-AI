@@ -1,10 +1,10 @@
 # NewsLens-AI: Complete End-to-End Data Flow & System Architecture
 
-This document provides a comprehensive, rigorous technical breakdown of the entire **NewsLens-AI** data pipeline, tracking the transformation of raw broadsheet newspaper PDFs from intake, computer vision, and spatial layout extraction, through multi-tier persistence, into hybrid vector/relational search, and finally through the LangGraph agentic RAG retrieval and synthesis state machine.
+This document serves as the master technical specification for the entire **NewsLens-AI** data pipeline. It unifies all data flows, state transitions, transformation matrices, subsystem boundaries, and execution sequences—tracking broadsheet newspaper PDFs from intake, computer vision, and spatial layout extraction, through multi-tier persistence, into hybrid vector/relational search, and finally through the LangGraph agentic RAG retrieval, dynamic code synthesis, and synthesis state machine.
 
 ---
 
-## 1. High-Level System Architecture & Global Topology
+## 1. High-Level System Architecture & Global Subsystem Topology
 
 ```mermaid
 flowchart TD
@@ -21,7 +21,7 @@ flowchart TD
         Compressor --> SHA["SHA-256 Idempotency Check"]
         SHA --> MinIO_Orig[("MinIO: newslens-originals")]
         SHA --> Masthead["Visual Masthead Verifier<br/>(Top 22% Page 1 RapidOCR)"]
-        Masthead --> Consensus["Multi-Page Folio Consensus<br/>(5x Header-Weighted Voting)"]
+        Masthead --> Consensus["Multi-Page Folio Consensus<br/>(5x Header-Weighted Voting across P1-15)"]
         Consensus --> Rasterizer["PyMuPDF Rasterizer<br/>(300 DPI High-Res Rendering)"]
         Rasterizer --> MinIO_Pages[("MinIO: newslens-pages")]
         Rasterizer --> LayoutParser{"Layout Parser Engine<br/>(Registry Resolved)"}
@@ -38,31 +38,31 @@ flowchart TD
         VisualExtractor --> Chunker
         Chunker --> Embedder["Embedding Provider<br/>(BAAI/bge-m3 1024-dim Dense)"]
         Embedder --> Qdrant[("Qdrant Vector DB<br/>article_chunks Collection")]
-        MySQL -.-> Redis[("Redis 7 Cache<br/>Query Results, Celery Broker")]
+        MySQL -.-> Redis[("Redis 7 Cache<br/>Query Results, Celery Broker, Trajectories")]
     end
 
     subgraph AGENTIC ["4. Agentic RAG & LangGraph State Machine"]
-        UserQuery["User Query + Attached Assets"] --> Condenser["Conversational Query Condenser<br/>(Inline Citations & 3 Guardrails)"]
+        UserQuery["User Query + Attached Assets"] --> Condenser["Conversational Query Condenser<br/>(Inline Citations & Anti-Leakage Guardrails)"]
         Condenser --> Planner["Dynamic Query Planner<br/>(7 Archetypes & Live Archive Metadata)"]
         Planner --> Dispatcher["Concurrent Tool Execution Engine"]
         
         Dispatcher --> Tool_Hybrid["HybridSearchEngine<br/>(Dense Qdrant + MySQL FULLTEXT)"]
-        Dispatcher --> Tool_Visual["InspectVisualAsset<br/>(Multi-Chart Cascade A-E)"]
-        Dispatcher --> Tool_SQL["SQLAnalyticsDispatcher<br/>(Coverage Differences & Manifests)"]
+        Dispatcher --> Tool_Visual["InspectVisualAsset<br/>(5-Tier Cascade A-E & MinIO Streaming)"]
+        Dispatcher --> Tool_SQL["SQLAnalyticsDispatcher<br/>(Strict 7-Enum Routines)"]
         Dispatcher --> Tool_Entity["EntityFilter<br/>(N-Hop Relational Search)"]
         Dispatcher --> Tool_Timeline["TimelineBuilder<br/>(Narrative Trajectories)"]
         Dispatcher --> Tool_Web["WebSearchEngine (4-Tier Grounding)<br/>NewsData.io ➔ Serper ➔ Tavily ➔ DDG"]
         Dispatcher --> Tool_Dynamic["DynamicAnalysis<br/>(Subprocess AST Sandbox)"]
 
         Tool_Hybrid --> RRF["Reciprocal Rank Fusion (RRF)<br/>+ Cross-Encoder Reranker (CPU)"]
-        RRF & Tool_Visual & Tool_SQL & Tool_Entity & Tool_Timeline & Tool_Web & Tool_Dynamic --> CRAG{"Evidence Relevance Gate (CRAG)<br/>(Stemmed Query Pruning)"}
+        RRF & Tool_Visual & Tool_SQL & Tool_Entity & Tool_Timeline & Tool_Web & Tool_Dynamic --> CRAG{"Evidence Relevance Gate (CRAG)<br/>(Fast-Floor <5ms + LLM Judge)"}
         
-        CRAG -->|Sufficient Grounding| Synthesizer["AnswerSynthesizer<br/>(4-Tier Grounded Brief)"]
+        CRAG -->|Sufficient Grounding| Synthesizer["AnswerSynthesizer<br/>(Blueprint-Driven Grounded Brief)"]
         CRAG -->|Zero Evidence / Analytical Query| ToolMaker["LLM Tool Maker<br/>(Ad-Hoc Tool Synthesis)"]
         ToolMaker --> Tool_Dynamic
         Tool_Dynamic --> ToolCritic["ToolCritic (5-Metric Audit)<br/>(SASC, SRF, REH, DSF, RPS)"]
-        ToolCritic -->|"Pass (>= 0.70)"| CRAG
-        ToolCritic -->|Defect Detected| ToolMaker
+        ToolCritic -->|"Pass (Score >= 0.70)"| CRAG
+        ToolCritic -->|Defect / NaN Detected| ToolMaker
         CRAG -->|Zero Evidence / Ambiguous| FallbackRouter["Fallback Web/Entity Search<br/>or Anti-Hallucination Notice"]
         FallbackRouter --> Synthesizer
 
@@ -87,146 +87,105 @@ NewsLens-AI decouples application pipelines from hardcoded AI vendors using a **
 │ Tier 1: Local Sovereign      │ Tier 2: Cloud Dual-Key        │ Tier 3: Direct Cloud Enterprise  │
 │ (100% On-Premise / Offline)  │ (OpenRouter Rotated Pool)     │ (Commercial Enterprise APIs)     │
 ├──────────────────────────────┼───────────────────────────────┼──────────────────────────────────┤
-│ • Ollama Llama 3.1 8B        │ • OpenRouter Gemma 4 26B      │ • Google Gemini 3.7 Flash & Pro  │
+│ • Ollama Llama 3.1 8B        │ • OpenRouter Gemma 4 26B      │ • Google Gemini 2.5 Flash & Pro  │
 │ • Ollama DeepSeek R1 14B     │ • OpenRouter Nemotron 3.5     │ • OpenAI GPT-4o & GPT-4o-mini    │
-│ • Ollama Qwen 3 VL / 2.5 VL  │ • Cooldown Circuit Breaker    │ • NVIDIA NIM Catalog             │
+│ • Ollama Qwen 2.5 VL / 3 VL  │ • Cooldown Circuit Breaker    │ • NVIDIA NIM Catalog             │
 │ • Docling Layout + RapidOCR  │ • Dual-Key 429 Failover       │ • Google Cloud Vision OCR        │
 │ • BAAI/bge-m3 (1024d Dense)  │ • HTTP 429 Cooldown Timer     │ • Text-Embedding-3-Large         │
 └──────────────────────────────┴───────────────────────────────┴──────────────────────────────────┘
 ```
 
 ### Granular Pipeline Task Bindings
-
-The platform binds individual tasks across 3 operational stages:
 1. **Stage 1 — Agentic Reasoning & Synthesis**:
-   - `query_planner`: Autonomous tool sequence planner & sub-query generator (`ollama_llama3`).
-   - `answerer`: Multi-newspaper factual synthesizer & citation linker (`ollama_llama3`).
+   - `query_planner`: Autonomous tool sequence planner & sub-query generator (`gemini-2.5-flash` / `ollama_llama3`).
+   - `answerer`: Multi-newspaper factual synthesizer & citation linker (`gemini-2.5-flash` / `ollama_llama3`).
+   - `answer_verifier`: Reflective fact-checking critic and fluff eliminator.
 2. **Stage 2 — Vision & Broadsheet Ingestion**:
-   - `visual_extraction`: Multimodal chart, table, and scene extractor (`ollama_qwen3vl`).
+   - `visual_extraction`: Multimodal chart, table, and scene extractor (`ollama_qwen3vl` / `gemini-2.5-flash`).
    - `layout_analysis`: 2D spatial layout and column parsing (`docling_parser`).
    - `document_parser`: Broadsheet hierarchy structure extractor (`docling_parser`).
-   - `ocr`: Character transcription engine (`docling_parser`).
+   - `ocr`: Character transcription engine (`rapidocr` / `docling`).
 3. **Stage 3 — Classification & Indexing**:
-   - `embedding`: 1024-dimensional dense vector generator (`local_embed_bge`).
+   - `embedding`: 1024-dimensional dense vector generator (`local_embed_bge` - BAAI/bge-m3).
    - `article_segmentation`: Complex multi-column jump-line stitcher (`ollama_deepseek`).
    - `classification`: 12-domain probabilistic categorization (`ollama_llama3`).
    - `metadata_extraction`: Publication, edition, and date extractor (`ollama_llama3`).
 
-### Auto-Persistence & Runtime Swapping
-- Modifying bindings in the UI sends a `PUT /api/settings/model-bindings` request.
-- The backend writes changes directly to `model_config.yaml` on disk and invokes `registry.invalidate_all()`.
-- Active ingestion jobs, query planners, and synthesizers immediately instantiate the newly bound models without application downtime.
-
 ---
 
-## 3. Stage-by-Stage Document Ingestion Data Flow
+## 3. Document Intake & Broadsheet Ingestion Pipeline Data Flow
+
+The ingestion pipeline processes complex 2D newspaper broadsheet scans through six sequential phases:
 
 ```
-[ Broadsheet PDF / ZIP Archive ]
+[ Broadsheet PDF / Archive Upload ]
                │
                ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Stage 1: Document Intake, Compression & Checksumming                   │
-│ • Validate PDF header and magic bytes                                  │
-│ • Pre-ingestion compression (fitz.deflate / Ghostscript)               │
-│ • Calculate SHA-256 content checksum                                   │
-│ • Stream original PDF to MinIO: `newslens-originals`                   │
-│ • Register `IngestionJob` and `Issue` (status='pending') in MySQL 8    │
+│ Phase 1: Intake, Compression & SHA-256 Idempotency                     │
+│ • Compress raw PDF with Ghostscript / fitz.deflate                     │
+│ • Calculate SHA-256 hash; verify against `issues` table                │
+│ • Upload raw PDF to MinIO bucket `newslens-originals`                  │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Stage 2: Masthead Verification & Publication Consensus                │
-│ • Crop Page 1 top 22% masthead zone via PyMuPDF                        │
-│ • RapidOCR (ONNX Runtime, <0.6s) with superscript normalization        │
-│ • Multi-page header/running-folio voting (Pages 1–15, 5x header weight)│
-│ • Resolve canonical newspaper_id, issue_date (ISO), edition            │
+│ Phase 2: Visual Masthead Verifier & Multi-Page Folio Consensus         │
+│ • Crop top 22% of Page 1; run RapidOCR ONNX (<0.6s)                    │
+│ • Normalize Unicode superscripts (e.g. ²⁷⁰⁸²⁰²⁶ ➔ 27082026)            │
+│ • Evaluate broadsheet brand patterns against dynamic registry          │
+│ • Run multi-page folio consensus (5x header-zone weight over Pages 1-15)│
+│ • Create/update `Issue` record in MySQL (newspaper_id, issue_date)     │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Stage 3: Page Rasterization & Digital Triage                           │
-│ • PyMuPDF renders 300 DPI high-resolution PNGs (Matrix 300/72)         │
-│ • Upload page rasters to MinIO: `newslens-pages`                       │
-│ • Classify pages: Native Digital (rich text) vs Scanned Print (OCR req)│
+│ Phase 3: 300 DPI High-Res Rasterization & Digital Triage               │
+│ • PyMuPDF renders 300 DPI high-resolution PNGs (fitz.Matrix(300/72))   │
+│ • Upload page rasters to MinIO bucket `newslens-pages`                 │
+│ • PDF Page Detector evaluates text density, vector lines, scanned print│
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Stage 4: 5-Pass Spatial Layout Analysis & 2D Article Segmentation      │
+│ Phase 4: 5-Pass Spatial Layout Analysis & 2D Article Segmentation      │
 │ • Pass 0: Drop-cap initial re-attachment & font ligature repair        │
 │ • Pass 1: Vertical paragraph stitching within column tracks            │
 │ • Pass 2: Horizontal multi-column headline slice merging               │
 │ • Pass 3: Statutory ad-envelope boundary wall detection                │
-│ • Pass 4: Cross-page jump-line stitching (linking continued stories)   │
+│ • Pass 4: Cross-page jump-line stitching ("Continued on Page 4")       │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
          ┌─────────────────────────┴─────────────────────────┐
          │                                                   │
          ▼                                                   ▼
 ┌──────────────────────────────────────┐    ┌──────────────────────────────────────┐
-│ Stage 5A: Text Linearization & Tag   │    │ Stage 5B: 3-Stage Visual Extractor   │
-│ • 2D Reading Order Graph             │    │ • Fast Visual Triage Gate            │
-│ • 12-Domain Probabilistic Classifier │    │ • Structured VLM or Photo Scene      │
-│ • Secondary Topic Extraction         │    │ • Local Secondary VLM Failover       │
-│ • Insert Article, ArticlePage in DB  │    │ • Deterministic Spatial OCR Matrix   │
+│ Phase 5A: Text Assembly & Order      │    │ Phase 5B: Visual Asset Harvesting    │
+│ • 2D Reading Order Graph (x, y, col) │    │ • Crop photos, logos, charts, tables │
+│ • Column de-bundling (Shorts/Briefs) │    │ • Spatial containment binding        │
+│ • Kicker extraction & bylines        │    │ • Visual triage (Photo vs Data Chart)│
+│ • Cross-page jump-line stitching     │    │ • Dual VLM + Spatial OCR Matrix      │
 └──────────────────┬───────────────────┘    └──────────────────┬───────────────────┘
                    │                                           │
                    └─────────────────────┬─────────────────────┘
                                          │
                                          ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Stage 6: Contextual Chunking, Dense Embedding & Indexing               │
-│ • Inject broadsheet context header: [Newspaper | Date | Sec | Page]    │
-│ • Dedicated unfragmented visual data chunks (`chunk_type="visual"`)    │
-│ • Generate 1024-dim dense vectors using BAAI/bge-m3                    │
-│ • Upsert vector points to Qdrant collection: `article_chunks`          │
-│ • Populate MySQL FULLTEXT(headline, full_text) & entity relationships │
+│ Phase 6: Probabilistic 12-Domain Classification & Contextual Chunking  │
+│ • Weighted scoring: Headline (3x), Subheadline (2x), Body text (1x)    │
+│ • Domain Context Anchor Dampening for financial/political metaphors    │
+│ • Secondary Topic Extraction; persist in `Topic` & `ArticleTopic`      │
+│ • Insert `Article`, `ArticlePage`, `Photo` in MySQL 8                  │
+│ • Contextual chunking: Prepend [Newspaper|Date|Sec|Headline|Pages]     │
+│ • Embed via BAAI/bge-m3 (1024-dim dense); upsert into Qdrant           │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Stage 1: Document Intake & Pre-Ingestion Compression
-1. **Entrypoints**: `POST /api/ingest/upload` and `POST /api/ingest/upload-archive` (handles single PDFs, multi-PDF batches, and `.zip` archives).
-2. **Pre-Ingestion Compression**:
-   - Executes stream compression via `fitz.deflate` or Ghostscript downsampling high-resolution photographic embeds from print production size ($\sim 50\text{MB}$) down to analytical archival size ($\sim 12\text{MB}$) with zero loss of textual or tabular clarity.
-3. **Idempotency & Checksumming**:
-   - Calculates **SHA-256** hash of the compressed binary stream.
-   - Rejects or bypasses redundant processing unless `force=true`.
-4. **Archive Storage**:
-   - Streams raw binary to MinIO bucket `newslens-originals` under `originals/{job_id}/{filename}`.
-   - Inserts `IngestionJob` row in MySQL (`status='running'`) and dispatches async Celery worker task (`ingest_pdf_task`).
-
-### Stage 2: Masthead Verification & Consensus Metadata Extraction
-1. **Visual Masthead Verifier** ([`backend/app/ingestion/metadata.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/metadata.py)):
-   - PyMuPDF crops the **top 22% of Page 1**.
-   - Runs `RapidOCR` (ONNX Runtime, `<0.6s`).
-   - Normalizes Unicode superscripts (e.g. `²⁷⁰⁸²⁰²⁶` $\to$ `27082026`).
-   - Evaluates broadsheet brand patterns (e.g. *The Economic Times*, *Mint*, *The Hindu*, *Business Standard*, *The Indian Express*, *The Times of India*).
-2. **Multi-Page Consensus Extractor**:
-   - Inspects running headers/folios across Pages 1–15.
-   - Applies a **5x weighting** to header-zone dates over body-text dates.
-   - Aggregates voting distribution and updates `Issue` record (`newspaper_id`, `issue_date`, `edition`).
-
-### Stage 3: Page Rasterization & PyMuPDF Digital Triage
-1. **High-Resolution Rasterization** ([`backend/app/ingestion/rasterizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/rasterizer.py)):
-   - Renders every page to **300 DPI high-resolution PNG** via `PyMuPDF` (`fitz.Matrix(300/72, 300/72)`).
-   - Uploads to MinIO bucket `newslens-pages` at `pages/{newspaper_id}/{issue_date}/{edition}/page_{num}.png`.
-   - Inserts/updates `Page` rows in MySQL (`width_px`, `height_px`, `raster_object_key`, `status='rasterized'`).
-2. **PDF Page Detector** ([`backend/app/ingestion/detector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/detector.py)):
-   - Measures text density, vector lines, and digital character layers.
-   - Flags pages as native digital (rich text) or scanned print (requiring full OCR).
-
-### Stage 4: 5-Pass Spatial Layout Analysis & 2D Article Segmentation
-Handled by `backend/app/ingestion/layout/` and `backend/app/ingestion/parsers/`:
-- **Pass 0: Drop-Cap & Ligature Repair**: Detects oversized first letters, reattaching them to subsequent lead words; repairs ligatures (`fi`, `fl`, `ff`).
-- **Pass 1: Vertical Paragraph Stitching**: Slices columns into distinct geometric vertical tracks, eliminating cross-column reading bleed.
-- **Pass 2: Multi-Column Headline Slice Merging**: Merges headline spans stretching across 2 to 6 columns, binding child text blocks under their parent headline.
-- **Pass 3: Boundary Wall Detection**: Identifies statutory advertisement frames, divider lines, and standalone boxes, isolating editorial news from commercial copy.
-- **Pass 4: Cross-Page Jump Stitching**: Analyzes continuation markers (*"Continued on Page 4"*, *"from Page 1"*), stitching fragmented articles into unified canonical stories.
-
 ---
 
-## 4. Visual Asset Intelligence, VLM Extraction & Failover Data Flow
+## 4. Visual Asset Intelligence, Multimodal VLM & Failover Data Flow
+
+Broadsheets embed crucial quantitative intelligence inside tables, stock charts, and infographics. NewsLens-AI handles visual data through a resilient 3-stage pipeline with active circuit breaking:
 
 ```mermaid
 flowchart TD
@@ -240,9 +199,9 @@ flowchart TD
     PhotoCandidate --> VLM_Photo_Dispatch{"Resolve Vision Provider<br/>(_get_provider)"}
 
     VLM_Dispatch -->|Circuit Breaker Open| SecondaryVLM["Secondary Fallback VLM<br/>(Priority: ollama_qwen3vl)"]
-    VLM_Dispatch -->|Healthy Primary| PrimaryVLM["Primary VLM Provider<br/>(e.g. OpenRouter / Gemma 4)"]
+    VLM_Dispatch -->|Healthy Primary| PrimaryVLM["Primary VLM Provider<br/>(e.g. OpenRouter / Gemma 4 / Gemini)"]
 
-    PrimaryVLM -->|HTTP 429 / RateLimitExhausted| TripBreaker["Trip Circuit Breaker (60s)<br/>Immediate Secondary Failover"]
+    PrimaryVLM -->|HTTP 429 / RateLimitExhausted| TripBreaker["Trip Circuit Breaker (60s Cooldown)<br/>Immediate Secondary Failover"]
     TripBreaker --> SecondaryVLM
 
     PrimaryVLM & SecondaryVLM -->|JSON Markdown Table Returned| Stage3["Stage 3: Numerical Cross-Validation<br/>(VLM Numbers vs OCR Spatial Tokens)"]
@@ -257,28 +216,248 @@ flowchart TD
     VisualChunk --> MySQLIndex[("MySQL 8 `photos` & `tables`<br/>vlm_description, markdown_table")]
 ```
 
-### 3-Stage Visual Pipeline Architecture
-1. **Stage 1: Fast Visual Triage Gate**:
-   - Filters tiny icons, logos, and divider borders via aspect ratio and pixel variance.
-   - Classifies image as `data_chart`, `table`, `infographic`, or `photo`.
-2. **Stage 2: Structured VLM Extraction & Scene Intelligence**:
-   - **Data Visuals**: Extracts structured markdown table, executive summary, and bulleted trend indicators.
-   - **Editorial Photos**: Analyzes photograph to generate a concise, factual 2-sentence scene description identifying visible key subjects and actions.
-3. **Stage 3: Numerical Cross-Validation**:
-   - Extracts numeric tokens from the VLM-generated Markdown table and cross-references them with raw OCR tokens extracted from the exact same bounding box region.
-   - Bumps confidence score based on intersection ratio, preventing numerical hallucinations in financial and macro charts.
-
-### Circuit Breaker & Resilient Failover Cascade
-- If OpenRouter or cloud vision providers exhaust keys and return HTTP 429:
-  1. `trip_circuit_breaker(60.0, reason)` trips the circuit breaker for 60 seconds.
-  2. The system immediately attempts failover to Tier 1 secondary VLM: **`ollama_qwen3vl`** (local hardware-accelerated model running with zero external network dependency).
-  3. If both cloud and local VLMs are unavailable, the **Deterministic 2D Spatial OCR Matrix Reconstruction Engine** projects OCR token bounding box coordinates into tabular rows and columns, guaranteeing zero ingestion failure.
+### On-Demand Agent Trigger vs. Ingestion Extraction
+- **Ingestion Time**: High-priority data charts and tables receive initial transcription.
+- **On-Demand Query Time (`inspect_visual_asset`)**: When an agent query or attached asset (`attached_photo_id`) targets a photo where `vlm_description` is a placeholder, the system streams raw crop bytes from MinIO, executes on-demand VLM transcription, and caches the result back into MySQL.
 
 ---
 
-## 5. 4-Tier Journalistic Web Search Grounding Data Flow
+## 5. Relational Knowledge Graph & Chronological Storyline Trajectories
 
-To provide high-fidelity external grounding and live temporal verification without polluting responses with unaccredited blogs or scraper spam, NewsLens-AI integrates a **4-Tier Web Search Cascade** ([`backend/app/retrieval/web_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/web_search.py)):
+```mermaid
+graph LR
+    subgraph KNOWLEDGE_GRAPH ["Entity Co-Occurrence Knowledge Graph"]
+        E1(("Entity: HAL<br/>(Organization)"))
+        E2(("Entity: Safran<br/>(Organization)"))
+        E3(("Entity: SAFHAL Helicopter Engine<br/>(Product / Defense)"))
+        E4(("Entity: Ministry of Defence<br/>(Government)"))
+        
+        E1 ---|"co-occurs (weight: 12)"| E2
+        E2 ---|developed_product| E3
+        E1 ---|manufactures| E3
+        E1 ---|procurement_contract| E4
+    end
+
+    subgraph ARTICLE_NODES ["Article Evidence References"]
+        A1["Article #42101<br/>'HAL, Safran ink engine pact'<br/>Mint (Page 1)"]
+        A2["Article #42188<br/>'Defence procurement cleared'<br/>The Hindu (Page 5)"]
+    end
+
+    E1 -.->|mentioned in| A1
+    E2 -.->|mentioned in| A1
+    E3 -.->|subject of| A1
+    E4 -.->|mentioned in| A2
+```
+
+### Storyline Trajectory Construction
+1. Articles mentioning an entity or theme are clustered across publication dates.
+2. The `TimelineBuilder` calculates narrative arcs, milestone events, and prominence scores.
+3. Chronological milestone graphs are cached in Redis with a 1-hour TTL and rendered on the client as an interactive visual storyline canvas.
+
+---
+
+## 6. Multi-Tier Storage Layer Architecture & Data Lifecycle Matrix
+
+| Layer | Component | Engine / Driver | Stored Data & Schema | Access Patterns & Indexing |
+|---|---|---|---|---|
+| **System of Record** | Relational Database | **MySQL 8** (`aiomysql` / SQLAlchemy 2) | • `newspapers`, `issues`, `pages`<br/>• `articles`, `article_pages`<br/>• `photos`, `tables`<br/>• `entities`, `article_entities`<br/>• `topics`, `article_topics`<br/>• `query_log`, `ingestion_jobs` | • Foreign keys & relational joins<br/>• `FULLTEXT(headline, full_text)`<br/>• B-tree indexes on `(newspaper_id, issue_date)`<br/>• Sub-5ms metadata queries |
+| **Vector Store** | Dense Vector DB | **Qdrant** (`qdrant-client`) | • Collection: `article_chunks`<br/>• 1024-dim dense vectors (`BAAI/bge-m3`)<br/>• Payload: `article_id`, `issue_id`, `newspaper_name`, `issue_date`, `page_number`, `headline`, `section`, `has_visual_data`, `bboxes` | • Cosine similarity search (HNSW index)<br/>• Payload pre-filtering on `newspaper_name`, `issue_date`, `section`<br/>• Sub-15ms vector retrieval |
+| **Object Store** | S3-Compatible Blob Store | **MinIO** (`minio-py`) | • Bucket `newslens-originals`: Raw source PDFs<br/>• Bucket `newslens-pages`: 300 DPI high-res page rasters<br/>• Cropped visual assets & chart PNGs | • High-throughput binary streaming<br/>• Public thumbnail HTTP endpoints (`/api/photos/{id}/image`)<br/>• Immutable asset storage |
+| **In-Memory Cache** | Key-Value & Queue | **Redis 7** (`redis-py`) | • Celery background worker task queue<br/>• Query response cache (TTL: 1h)<br/>• Condensed query hash cache<br/>• Timeline trajectory cache<br/>• SSE Pub/Sub channels | • In-memory sub-millisecond lookups<br/>• Distributed task locks (`redis-lock`)<br/>• Automatic TTL expiration (1h to 24h) |
+
+---
+
+## 7. Conversational Agent Query Lifecycle & LangGraph Execution Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User Client (React SPA)
+    participant Cache as Redis Cache
+    participant API as FastAPI Router (/api/query/stream)
+    participant Condenser as Conversational Query Condenser
+    participant Graph as LangGraph State Machine
+    participant Planner as Cognitive Query Planner
+    participant Dispatcher as Tool Execution Engine
+    participant DB as MySQL & Qdrant Vector DB
+    participant ToolMaker as LLM Tool Maker
+    participant Sandbox as Subprocess Sandbox
+    participant Critic as ToolCritic (5-Metric Audit)
+    participant CRAG as Corrective RAG (CRAG) Evaluator
+    participant Synth as AnswerSynthesizer
+    participant Verifier as Reflective Answer Verifier
+    participant SSE as SSE Streaming Output
+
+    User->>API: POST /api/query/stream (query, history, attached_asset_ids)
+    API->>Cache: Check Query Cache Key
+    alt Cache Hit
+        Cache-->>User: Stream Cached Response (<5ms)
+    else Cache Miss
+        API->>Condenser: condense_conversational_query()
+        Note over Condenser: Resolves pronouns & citations [Paper, Date, Page]<br/>Applies 3 Anti-Leakage Guardrails<br/>Preserves differential exclusion ("In X but not in Y")
+        Condenser-->>API: Condensed Query + Active Filter State
+        
+        API->>Graph: AgentWorkflow.run(condensed_query)
+        Graph->>Planner: plan_query_async() with Live Schema & Metadata
+        Note over Planner: Enforces Strict Operational Contracts<br/>Resolves 1 of 7 Archetypes<br/>Compiles AnswerBlueprint (SectionSpecs)
+        Planner-->>Graph: Execution Plan (archetype, tool_calls, parameters)
+
+        Graph->>Dispatcher: Execute Planned Tools Concurrently
+        par Concurrent Tool Invocations
+            Dispatcher->>DB: hybrid_search (Qdrant Cosine + MySQL BM25 + RRF + Cross-Encoder)
+            Dispatcher->>DB: inspect_visual_asset (5-Tier Cascade A-E & MinIO Crops)
+            Dispatcher->>DB: sql_analytics (Strict 7-Enum Routines)
+            Dispatcher->>DB: entity_search (Knowledge Graph & Co-occurrences)
+            Dispatcher->>DB: timeline_builder (Chronological Milestone Clustering)
+            Dispatcher->>DB: coverage_analysis (Multi-Broadsheet Negative Audit)
+            Dispatcher->>DB: web_search (4-Tier Grounding: NewsData ➔ Serper ➔ Tavily ➔ DDG)
+            Dispatcher->>ToolMaker: dynamic_analysis (Ad-hoc Python/SQL Synthesis)
+        end
+
+        opt Dynamic Tool Execution & Closed-Loop Critic
+            ToolMaker->>Sandbox: Execute in Subprocess AST Sandbox (512MB RAM, 15s timeout)
+            Sandbox->>DB: Read-Only DB Execution (Autocommit Disabled)
+            DB-->>Sandbox: Raw Query Records & Aggregates
+            Sandbox-->>Critic: Execution Result
+            Critic->>Critic: Evaluate 5 Metrics (SASC, SRF, REH, DSF, RPS)
+            alt Audit Fails (Score < 0.70)
+                Critic-->>ToolMaker: Diagnostic Critique & Fix Hints (Up to 3 Retries)
+                ToolMaker->>Sandbox: Re-execute Refined Script
+            else Audit Passes (Score >= 0.70)
+                Critic-->>Dispatcher: Verified High-Confidence Evidence
+            end
+        end
+
+        Dispatcher-->>Graph: Aggregated Raw Evidence Items
+        Graph->>CRAG: evaluate_evidence()
+        Note over CRAG: Fast-Floor Check (<5ms for >=100 words editorial text)<br/>Reflexive LLM-as-Judge emits typed EvaluationVerdict
+        alt CRAG Action: replan_static_tools
+            CRAG->>Planner: replan_with_feedback_async()<br/>(Relax filters, expand top_k = max(8, k+4))
+            Planner->>Dispatcher: Execute Reformed Tool Sequence
+            Dispatcher-->>Graph: Injected Recovery Evidence
+        else CRAG Action: synthesize_dynamic_tool
+            CRAG->>ToolMaker: Synthesize Custom Analysis Tool
+            ToolMaker->>Sandbox: Execute in AST Sandbox
+            Sandbox-->>Critic: 5-Metric Scorecard Audit
+            Critic-->>Graph: Injected High-Confidence Evidence
+        end
+
+        Graph->>Synth: synthesize_stream(query, evidence, archetype, blueprint)
+        Note over Synth: Compiles prompt from AnswerBlueprint<br/>Allocates full parent text (up to 7,500 chars)<br/>Strips robotic catalog tables for narrative reading<br/>Enforces strict citation format: [Paper, Date, Page, Headline]
+        Synth-->>Verifier: Draft Answer + Evidence Ground Truth
+        
+        Verifier->>Verifier: verify_answer_async()
+        Note over Verifier: Fast Gates (<5ms): scope check, date alignment, absence<br/>Reflexive LLM Audit (Faithfulness, Fluff, Contradiction, Gaps)
+        alt Verifier Verdict: fallback_to_dynamic_tool
+            Verifier->>Graph: Loop back to execute_dynamic_code (1-cycle ceiling)
+            Graph->>ToolMaker: Execute dynamic Python/SQL query for missing data
+            ToolMaker-->>Synth: Injected Verified Dynamic Telemetry
+            Synth->>Synth: Re-Synthesize Final Grounded Brief
+        else Verifier Verdict: accept / refine_answer
+            Verifier-->>Synth: Verified / Refined Response Brief
+        end
+
+        Synth->>SSE: Stream SSE Events (stage, thought, token, citations, done)
+        SSE-->>User: Real-Time Markdown Stream + Provenance Citation Cards + Photo Thumbnails
+        Synth->>DB: Persist Query Audit Log in `query_log`
+        Synth->>Cache: Cache Result in Redis (TTL: 1 Hour)
+    end
+```
+
+---
+
+## 8. Query Planner & Dynamic Answer Blueprint Data Flow
+
+```mermaid
+flowchart TD
+    subgraph INPUT_CONTEXT ["1. User Input & Conversational Context"]
+        RawQuery["Raw User Query String"]
+        ChatHistory["Multi-Turn Chat History (Redis)"]
+        ActiveAssets["Active Attached Asset IDs<br/>(article_id, photo_id)"]
+        RawQuery & ChatHistory & ActiveAssets --> Condenser["Conversational Query Condenser<br/>(backend/app/agent/condenser.py)"]
+        Condenser --> CleanQuery["Condensed Query<br/>+ Sanitized Active Context"]
+    end
+
+    subgraph EXTRACTION ["2. Deterministic Semantic Extraction"]
+        CleanQuery --> ParamExtractor["Semantic Parameter Extractor<br/>(backend/app/agent/extractor.py)"]
+        ParamExtractor --> ExtractedEntities["• Publication Brand Patterns<br/>• ISO Dates & Date Ranges<br/>• Page Numbers & Sections<br/>• Differential / Shared Flags"]
+    end
+
+    subgraph SCHEMA_GROUNDING ["3. Static Schema & Decoupled Archive Bounds"]
+        StaticSchema["STATIC_BROADSHEET_SCHEMA<br/>(Declarative Tables & Columns)"]
+        ArchiveCache[("MySQL Archive Metadata<br/>5-Minute TTL In-Memory Cache")]
+        OfflineFallback["Deterministic Fallback Bounds<br/>(Zero DB Network Latency)"]
+        
+        ArchiveCache -->|Healthy DB| GroundedBounds["Resolved Archive Bounds<br/>(min_date, max_date, publications)"]
+        ArchiveCache -.->|DB Offline / CI| OfflineFallback --> GroundedBounds
+        StaticSchema & GroundedBounds --> PlannerContext["Consolidated Planner System Prompt Context"]
+    end
+
+    subgraph PLANNER_ENGINE ["4. LLM Direct Tool Sequence Planner"]
+        CleanQuery & ExtractedEntities & PlannerContext --> LLM_Planner["QueryPlanner.plan_query_async()<br/>(Gemini 2.5 Flash / Candidate Failover)"]
+        
+        LLM_Planner --> Contracts{"Enforce Strict Operational Contracts"}
+        Contracts -->|sql_analytics| Contract_SQL["Strict 7-Enum Routine Contract<br/>(count_*, issue_summary, diff, shared)"]
+        Contracts -->|dynamic_analysis| Contract_Dyn["Math, Aggregations, Ratios, Joins<br/>(Barred from narrative reading)"]
+        Contracts -->|hybrid_search| Contract_Hybrid["Factual Excerpts & Dynamic Top-K (4-12)"]
+        Contracts -->|inspect_visual| Contract_Visual["Multimodal Visual Crop Analysis"]
+        
+        Contracts --> RawPlan["Raw LLM Plan Candidate<br/>(Archetype, Tool Calls, Arguments)"]
+    end
+
+    subgraph BLUEPRINT_SELECTION ["5. Declarative Answer Blueprint Selection"]
+        RawPlan --> BlueprintSelector{"Select Blueprint by Archetype"}
+        BlueprintSelector --> B_Fact["factual_lookup Blueprint"]
+        BlueprintSelector --> B_Comp["cross_newspaper_comparison Blueprint"]
+        BlueprintSelector --> B_Cat["article_catalog Blueprint"]
+        BlueprintSelector --> B_Time["thematic_timeline Blueprint"]
+        BlueprintSelector --> B_Quant["scalar_count / trend Blueprint"]
+        BlueprintSelector --> B_Dyn["analytical_computation Blueprint"]
+        
+        B_Fact & B_Comp & B_Cat & B_Time & B_Quant & B_Dyn --> CompiledBlueprint["Compiled AnswerBlueprint<br/>(Ordered SectionSpecs, Format Constraints, Word Count)"]
+    end
+
+    subgraph RECONCILIATION ["6. Tool Call Reconciliation & Pruning"]
+        RawPlan & ExtractedEntities --> Reconciler["reconcile_and_sanitize_arguments()<br/>(backend/app/agent/tool_factory.py)"]
+        Reconciler --> Clean1["Sanitize Generic Filler Queries"]
+        Reconciler --> Clean2["Normalize Newspaper Brand Abbreviations"]
+        Reconciler --> Clean3["Harmonize ISO Dates & Precedence"]
+        Reconciler --> Clean4["Resolve Attached Asset vs Query Date Conflict"]
+        
+        Clean1 & Clean2 & Clean3 & Clean4 --> SanitizedPlan["Validated PlannedToolCall Sequence<br/>(1 to 3 Concurrent Calls)"]
+    end
+
+    subgraph DISPATCH ["7. LangGraph Execution Node"]
+        SanitizedPlan & CompiledBlueprint --> ToolExecutorNode["ToolExecutor.execute_tools()<br/>(backend/app/agent/executor.py)"]
+        ToolExecutorNode --> ConcurrentExec["Concurrent Async Execution<br/>(Qdrant, MySQL, MinIO, VLM, Sandbox)"]
+    end
+
+    subgraph REPLAN_LOOP ["8. Closed-Loop Adaptive Re-Planning"]
+        CRAG_Gap["CRAG Evaluator Feedback<br/>(EvaluationVerdict.gap_diagnosis)"] -.->|Trigger Re-Plan| ReplanEngine["replan_with_feedback_async()<br/>• Relax Page / Category Constraints<br/>• Scale top_k = max(8, top_k + 4)<br/>• Anti-Repetition Guard<br/>• 1-Cycle Hard Ceiling"]
+        ReplanEngine -.-> SanitizedPlan
+    end
+```
+
+### The 7 Core Broadsheet Query Archetypes & Routing Matrix
+
+| Archetype | Journalistic Intent | Primary Planned Tools | Typical Parameter Payload | Downstream Output Format |
+|---|---|---|---|---|
+| **`factual_lookup`** | Point-in-time facts, quotes, event details, or visual checks | `hybrid_search` (primary), `inspect_visual_asset` (if visual) | `query`, `newspaper_name`, `date_from`, `date_to`, `page_filter`, `top_k=6` | Direct narrative findings + bulleted operational details + citations |
+| **`article_catalog`** | Whole-issue manifests, section catalogs, front-page listings | `sql_analytics` (`analysis_type="issue_summary"`) | `newspaper_name`, `issue_date`, `category_filter`, `page_filter` | Markdown manifest table (`#`, Headline, Page, Section, Byline) + featured highlights |
+| **`cross_newspaper_comparison`** | Multi-broadsheet coverage diffs, exclusive stories, or shared wire news | `sql_analytics` (`coverage_difference` or `shared_coverage`) + `hybrid_search` | `newspaper_name`, `comparison_newspaper`, `issue_date`, `query`, `top_k=12` | Cross-newspaper comparison matrix table + editorial framing divergence bullets |
+| **`thematic_timeline`** | Chronological evolution of developing storylines across editions | `timeline_builder` (primary), `hybrid_search` (corroborating) | `query`, `limit=25`, `top_k=8` | Chronological dated milestone timeline + trajectory narrative |
+| **`quantitative_trend`** | Volume metrics, publication rosters, issue counts, ad counts | `sql_analytics` (`count_issues`, `count_articles`, `count_advertisements`, `count_photos`) | `analysis_type`, `newspaper_name`, `date_from`, `date_to`, `issue_date` | Direct authoritative findings + compact metric cards |
+| **`entity_deep_dive`** | Multi-hop relational entity networks, corporate profiles, salience | `entity_search` (primary), `hybrid_search` (corroborating) | `entity_name`, `top_k=10` | Executive profile + corporate actions bullets + media scrutiny narrative |
+| **`negative_coverage_audit`** | Verifying silence or absence of coverage across the broadsheet archive | `coverage_analysis` (primary), `sql_analytics` (secondary) | `query`, `target_date`, `newspaper_name` | 3-tier coverage matrix table (Primary, Corroborating, Omission verdict) |
+| **`analytical_computation`** *(Special)* | Ad-hoc statistics, averages, length distributions, ratios, joins | `dynamic_analysis` (synthesized Python/SQL sandbox) | `query`, `analysis_description` | Computed mathematical metrics + verified tabular statistics |
+
+### Strict Operational Contracts
+- **`sql_analytics` Contract**: Bound strictly to 7 immutable routines. Cannot execute arbitrary SQL; cannot compute averages or ratios. Unsupported analytics hand off directly to `dynamic_analysis`.
+- **`dynamic_analysis` Contract**: Bound to mathematical aggregations, averages, and multi-table joins. Barred from narrative reading where word count is an answer length constraint (`is_dynamic_analysis_permitted`).
+
+---
+
+## 9. 4-Tier Journalistic Web Search Grounding Data Flow
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -291,7 +470,6 @@ To provide high-fidelity external grounding and live temporal verification witho
 │ • Queries accredited global and national press agencies                │
 │ • Parameters: `q={query}`, `country=in`, `language=en`, `category`     │
 │ • Delivers structured publisher `source_name`, `pubDate`, and deep url │
-│ • Validates response; handles rate limits & API key exhaustion         │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                      ┌─────────────┴─────────────┐
@@ -325,306 +503,169 @@ To provide high-fidelity external grounding and live temporal verification witho
 
 ---
 
-## 6. Agentic Retrieval & LangGraph Execution Sequence
+## 10. Broadsheet Reader to Agent Visual Attachment Data Flow
+
+When a user reads a newspaper in the interactive **Broadsheet Reader** and encounters a complex visual graphic, chart, or photo, they can route that specific asset directly into the **Agent Assistant** for deep multimodal inquiry.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as User Client (React SPA)
-    participant API as FastAPI Router (/stream)
-    participant Condenser as Conversational Query Condenser
-    participant Graph as LangGraph State Machine
-    participant Planner as Query Planner (7 Archetypes)
-    participant Dispatcher as Tool Execution Engine
-    participant Hybrid as HybridSearchEngine
-    participant Qdrant as Qdrant Vector DB
-    participant MySQL as MySQL 8 (FULLTEXT & Relational)
-    participant Rerank as Cross-Encoder Reranker (CPU)
-    participant CRAG as Evidence Relevance Gate (CRAG)
-    participant Synth as AnswerSynthesizer
-    participant Verifier as AnswerVerifier (Editorial Auditor)
-    participant LLM as Bound LLM Provider
+    actor Reader as User / Broadsheet Reader (React)
+    participant State as Global Reader State
+    participant Assistant as Agent Assistant Component
+    participant API as FastAPI Backend (/api/query/stream)
+    participant Condenser as Conversational Condenser
+    participant Executor as Concurrent Tool Executor
+    participant VLM as VLM Visual Data Extractor (MinIO)
+    participant DB as MySQL Database
 
-    User->>API: POST /api/query/stream (query, history, attached_asset_ids)
-    API->>Condenser: condense_conversational_query()
-    Note over Condenser: Parses inline citations [Newspaper, Date, Page, Headline]<br/>Applies 3 Anti-Leakage Guardrails<br/>Preserves differential exclusion ("In X but not in Y")
-    Condenser-->>API: Condensed Query + Active Context Filter
-    
-    API->>Graph: AgentWorkflow.run(condensed_query)
-    Graph->>Planner: Plan Tools with Live Archive Metadata
-    Planner-->>Graph: Execution Plan (archetype, tool_calls, parameters)
-
-    Graph->>Dispatcher: Execute Planned Tools Concurrently
-    
-    par Hybrid Dense & Sparse Search
-        Dispatcher->>Hybrid: search(query, filters, limit=10)
-        par Dense Vector Search
-            Hybrid->>Qdrant: Cosine search(1024d bge-m3 vector)
-            Qdrant-->>Hybrid: Top-20 Vector Hits
-        and Sparse Keyword Search
-            Hybrid->>MySQL: MATCH(headline, full_text) AGAINST(query)
-            MySQL-->>Hybrid: Top-20 Keyword Hits
-        end
-        Hybrid->>Hybrid: Reciprocal Rank Fusion (RRF)
-        Hybrid->>Rerank: Cross-Encoder Score Candidates (BAAI/bge-reranker-v2-m3)
-        Rerank-->>Hybrid: Reranked Top-K Excerpts
-        Hybrid-->>Dispatcher: Filtered Text Evidence
-    and Visual Asset Inspection
-        Dispatcher->>Dispatcher: InspectVisualAsset (Cascade A ➔ E via VisualInspectionEngine)
-        Dispatcher-->>Dispatcher: Retrieve All Companion Charts (e.g. 4 BRICS Charts)
-    and SQL Analytics / Differences
-        Dispatcher->>Dispatcher: SQLAnalytics (get_newspaper_coverage_difference)
-    and Web Grounding
-        Dispatcher->>Dispatcher: WebSearchEngine (NewsData.io ➔ Serper ➔ Tavily ➔ DDG)
+    Reader->>State: User clicks "Ask Agent About This Infographic / Photo"
+    State->>Assistant: Open Assistant Panel with attachedAsset payload
+    Note over Assistant: Renders attached asset banner<br/>with thumbnail, headline & date
+    Reader->>Assistant: Submits query (e.g. "Explain the GDP projections in this chart")
+    Assistant->>API: POST /api/query/stream<br/>{query, attached_article_id, attached_photo_id}
+    API->>Condenser: Pass query, chat history, and attached IDs
+    Condenser->>Condenser: Bind attached IDs to active turn;<br/>Purge on subsequent unrelated turns
+    Condenser->>Executor: Plan tool execution with Strategy A/C (photo_id/article_id)
+    Executor->>DB: Query Photo record by photo_id or article_id
+    alt vlm_description is Placeholder
+        Executor->>VLM: Stream raw image crop from MinIO bucket_pages
+        VLM->>VLM: Run Multimodal VLM OCR & tabular synthesis
+        VLM->>DB: Persist synthesized vlm_description to article_photos
     end
-
-    Dispatcher-->>Graph: Aggregated Raw Evidence Items
-    Graph->>CRAG: Evaluate Evidence Relevance & Sufficiency
-    Note over CRAG: Fast-Floor Check (<5ms for >=100 words editorial text)<br/>Reflexive LLM-as-Judge emits typed EvaluationVerdict<br/>Branches to adaptive re-plan or dynamic code on failure (1-cycle cap)
-    CRAG-->>Graph: Verified Grounded Evidence + EvaluationVerdict
-    
-    Graph->>Synth: synthesize_stream(query, evidence, archetype, answer_blueprint)
-    Synth->>LLM: Stream Structured Anti-Hallucination Prompt (Compiled from Blueprint)
-    LLM-->>Synth: Stream: <think>...</think> + Structured Sections
-    Synth->>Verifier: verify_answer(draft, evidence, blueprint)
-    Note over Verifier: 4-Dimension Audit (Faithfulness, Absence, Fluff, Scope)<br/>Deterministic Fast Gates (<5ms)<br/>Reflexive LLM Critic emits AnswerVerificationResult
-    alt Verification Action: fallback_to_dynamic_tool
-        Verifier->>Graph: Loop back to execute_dynamic_code (1-cycle ceiling)
-        Graph->>Dispatcher: Execute synthesized Python/SQL code in AST Sandbox
-        Dispatcher-->>Synth: Injected Verified Dynamic Telemetry
-        Synth->>Synth: Re-Synthesize Final Grounded Brief
-    else Accepted or Refined
-        Verifier-->>Synth: Verified / Refined Response Brief
-    end
-    Synth-->>API: SSE Events (stage, thought, token, citations, done)
-    API-->>User: Live Streaming UI Brief with Visual Cards & Thumbnails
+    DB-->>Executor: Complete visual description, caption, and metadata
+    Executor-->>API: Synthesize evidence including visual asset
+    API-->>Assistant: Stream response with is_visual_asset citation & /api/photos/{id}/image
+    Assistant-->>Reader: Render rich response with interactive visual card thumbnail
 ```
 
-### Retrieval & Synthesis Step Details
-
-1. **Conversational Query Condensation** ([`backend/app/agent/condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py)):
-   - **Inline Citation Extraction**: Parses complex broadsheet citations such as `[4] Hindustan Times, 2026-08-03, Page 4, Headline: "The growing bipolarity in the world..."`.
-   - **Attached Asset Propagation & Date Isolation**: Carries forward `attached_article_id` or `attached_photo_id` selected in the broadsheet viewer, but strictly evicts attached assets if their publication date or headline conflicts with explicit query intention.
-   - **Headline Conflict Invalidation**: Automatically clears stale article IDs when the user transitions to a different article headline or topic.
-   - **Differential Exclusion Retention**: Preserves comparative context (*"list all those 11 articles"* $\to$ *"list all articles in The Goan but not in The Morning Standard on 2026-08-01"*).
-2. **Cognitive Query Planner & Dynamic Answer Blueprint** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py), [`backend/app/agent/archive_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/archive_context.py), [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py), [`backend/app/agent/extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py)):
-   - **Architectural Philosophy**: Rather than hardcoding fixed tool pipelines or relying on unbounded LLM tool loops, NewsLens-AI employs a high-cohesion, single-turn direct planning engine. It reconciles LLM tool sequence planning with single-pass deterministic heuristic fallbacks, multi-provider candidate failovers, and closed-loop adaptive re-planning.
-
-   ```mermaid
-   flowchart TD
-       subgraph INPUT_CONTEXT ["1. User Input & Conversational Context"]
-           RawQuery["Raw User Query String"]
-           ChatHistory["Multi-Turn Chat History (Redis)"]
-           ActiveAssets["Active Attached Asset IDs<br/>(article_id, photo_id)"]
-           RawQuery & ChatHistory & ActiveAssets --> Condenser["Conversational Query Condenser<br/>(backend/app/agent/condenser.py)"]
-           Condenser --> CleanQuery["Condensed Query<br/>+ Sanitized Active Context"]
-       end
-
-       subgraph EXTRACTION ["2. Deterministic Semantic Extraction"]
-           CleanQuery --> ParamExtractor["Semantic Parameter Extractor<br/>(backend/app/agent/extractor.py)"]
-           ParamExtractor --> ExtractedEntities["• Publication Brand Patterns<br/>• ISO Dates & Date Ranges<br/>• Page Numbers & Sections<br/>• Differential / Shared Flags"]
-       end
-
-       subgraph SCHEMA_GROUNDING ["3. Static Schema & Decoupled Archive Bounds"]
-           StaticSchema["STATIC_BROADSHEET_SCHEMA<br/>(Declarative Tables & Columns)"]
-           ArchiveCache[("MySQL Archive Metadata<br/>5-Minute TTL In-Memory Cache")]
-           OfflineFallback["Deterministic Fallback Bounds<br/>(Zero DB Network Latency)"]
-           
-           ArchiveCache -->|Healthy DB| GroundedBounds["Resolved Archive Bounds<br/>(min_date, max_date, publications)"]
-           ArchiveCache -.->|DB Offline / CI| OfflineFallback --> GroundedBounds
-           StaticSchema & GroundedBounds --> PlannerContext["Consolidated Planner System Prompt Context"]
-       end
-
-       subgraph PLANNER_ENGINE ["4. LLM Direct Tool Sequence Planner"]
-           CleanQuery & ExtractedEntities & PlannerContext --> LLM_Planner["QueryPlanner.plan_query_async()<br/>(Gemini 2.5 Flash / Candidate Failover)"]
-           
-           LLM_Planner --> Contracts{"Enforce Strict Operational Contracts"}
-           Contracts -->|sql_analytics| Contract_SQL["Strict 7-Enum Routine Contract<br/>(count_*, issue_summary, diff, shared)"]
-           Contracts -->|dynamic_analysis| Contract_Dyn["Math, Aggregations, Ratios, Joins<br/>(Barred from narrative reading)"]
-           Contracts -->|hybrid_search| Contract_Hybrid["Factual Excerpts & Dynamic Top-K (4-12)"]
-           Contracts -->|inspect_visual| Contract_Visual["Multimodal Visual Crop Analysis"]
-           
-           Contracts --> RawPlan["Raw LLM Plan Candidate<br/>(Archetype, Tool Calls, Arguments)"]
-       end
-
-       subgraph BLUEPRINT_SELECTION ["5. Declarative Answer Blueprint Selection"]
-           RawPlan --> BlueprintSelector{"Select Blueprint by Archetype"}
-           BlueprintSelector --> B_Fact["factual_lookup Blueprint"]
-           BlueprintSelector --> B_Comp["cross_newspaper_comparison Blueprint"]
-           BlueprintSelector --> B_Cat["article_catalog Blueprint"]
-           BlueprintSelector --> B_Time["thematic_timeline Blueprint"]
-           BlueprintSelector --> B_Quant["scalar_count / trend Blueprint"]
-           BlueprintSelector --> B_Dyn["analytical_computation Blueprint"]
-           
-           B_Fact & B_Comp & B_Cat & B_Time & B_Quant & B_Dyn --> CompiledBlueprint["Compiled AnswerBlueprint<br/>(Ordered SectionSpecs, Format Constraints, Word Count)"]
-       end
-
-       subgraph RECONCILIATION ["6. Tool Call Reconciliation & Pruning"]
-           RawPlan & ExtractedEntities --> Reconciler["reconcile_and_sanitize_arguments()<br/>(backend/app/agent/tool_factory.py)"]
-           Reconciler --> Clean1["Sanitize Generic Filler Queries"]
-           Reconciler --> Clean2["Normalize Newspaper Brand Abbreviations"]
-           Reconciler --> Clean3["Harmonize ISO Dates & Precedence"]
-           Reconciler --> Clean4["Resolve Attached Asset vs Query Date Conflict"]
-           
-           Clean1 & Clean2 & Clean3 & Clean4 --> SanitizedPlan["Validated PlannedToolCall Sequence<br/>(1 to 3 Concurrent Calls)"]
-       end
-
-       subgraph DISPATCH ["7. LangGraph Execution Node"]
-           SanitizedPlan & CompiledBlueprint --> ToolExecutorNode["ToolExecutor.execute_tools()<br/>(backend/app/agent/executor.py)"]
-           ToolExecutorNode --> ConcurrentExec["Concurrent Async Execution<br/>(Qdrant, MySQL, MinIO, VLM, Sandbox)"]
-       end
-
-       subgraph REPLAN_LOOP ["8. Closed-Loop Adaptive Re-Planning"]
-           CRAG_Gap["CRAG Evaluator Feedback<br/>(EvaluationVerdict.gap_diagnosis)"] -.->|Trigger Re-Plan| ReplanEngine["replan_with_feedback_async()<br/>• Relax Page / Category Constraints<br/>• Scale top_k = max(8, top_k + 4)<br/>• Anti-Repetition Guard<br/>• 1-Cycle Hard Ceiling"]
-           ReplanEngine -.-> SanitizedPlan
-       end
-   ```
-
-   #### A. Dynamic Brand Pattern Resolution & Typo-Tolerant Parameter Extraction
-   - **Dynamic Registry Merging** (`get_brand_patterns()` in `extractor.py`): Combines hardcoded regular expressions for known broadsheets with dynamically introspected publications from MySQL (`get_known_publications()`), cached in memory.
-   - **Prefix & Abbreviation Normalization**: Strips conversational prefixes (*"Can you please tell me about..."*) while recognizing brand abbreviations (`TOI`, `HT`, `ET`, `IE`, `BS`, `WSJ`, `NYT`, `FT`) and optional leading articles (*"The Goan"*, *"The Hindu"*).
-   - **Typo-Tolerant Brand Matching**: Employs phonetic and character-tolerant regexes (e.g. `(?:(?:the|he)\s+)?morning\s+standard` correctly resolves `"he Morning Standard"` to `"The Morning Standard"`).
-   - **Differential & Shared Indicator Recognition**: Detects comparative exclusion triggers (*"but not in"*, *"absent from"*, *"exclusive to"*) setting `is_differential = True`, and syndicated wire triggers (*"shared"*, *"similar"*, *"both newspapers"*) setting `is_shared = True`.
-   - **Parameter Reconciliation** (`reconcile_and_sanitize_arguments()`): Normalizes raw LLM-emitted arguments against regex-extracted parameters and active session filters, enforcing date formats (`YYYY-MM-DD`) and canonical publication names.
-
-   #### B. The 7 Core Broadsheet Query Archetypes & Routing Decision Matrix
-   Every incoming query is mapped into an explicit journalistic query archetype that dictates downstream retrieval strategies, tool sequencing (1 to 3 concurrent calls), and structural answer formatting:
-
-   | Archetype | Journalistic Intent | Primary Planned Tools | Typical Parameter Payload | Downstream Output Format |
-   |---|---|---|---|---|
-   | **`factual_lookup`** | Point-in-time facts, quotes, event details, or visual checks | `hybrid_search` (primary), `inspect_visual_asset` (if visual) | `query`, `newspaper_name`, `date_from`, `date_to`, `page_filter`, `top_k=6` | Direct narrative findings + bulleted operational details + citations |
-   | **`article_catalog`** | Whole-issue manifests, section catalogs, front-page listings | `sql_analytics` (`analysis_type="issue_summary"`) | `newspaper_name`, `issue_date`, `category_filter`, `page_filter` | Markdown manifest table (`#`, Headline, Page, Section, Byline) + featured highlights |
-   | **`cross_newspaper_comparison`** | Multi-broadsheet coverage diffs, exclusive stories, or shared wire news | `sql_analytics` (`coverage_difference` or `shared_coverage`) + `hybrid_search` | `newspaper_name`, `comparison_newspaper`, `issue_date`, `query` | Cross-newspaper comparison matrix table + editorial framing divergence bullets |
-   | **`thematic_timeline`** | Chronological evolution of developing storylines across editions | `timeline_builder` (primary), `hybrid_search` (corroborating) | `query`, `limit=8` | Chronological dated milestone timeline + trajectory narrative |
-   | **`quantitative_trend`** | Volume metrics, publication rosters, issue counts, ad counts | `sql_analytics` (`count_issues`, `count_articles`, `count_advertisements`, `count_photos`) | `analysis_type`, `newspaper_name`, `date_from`, `date_to`, `issue_date` | Direct authoritative findings + compact metric cards |
-   | **`entity_deep_dive`** | Multi-hop relational entity networks, corporate profiles, salience | `entity_search` (primary), `hybrid_search` (corroborating) | `entity_name`, `top_k=8` | Executive profile + corporate actions bullets + media scrutiny narrative |
-   | **`negative_coverage_audit`** | Verifying silence or absence of coverage across the broadsheet archive | `coverage_analysis` (primary), `sql_analytics` (secondary) | `query`, `target_date` | 3-tier coverage matrix table (Primary, Corroborating, Omission verdict) |
-   | **`analytical_computation`** *(Special)* | Ad-hoc statistics, averages, length distributions, ratios, joins | `dynamic_analysis` (synthesized Python/SQL sandbox) | `query`, `analysis_description` | Computed mathematical metrics + verified tabular statistics |
-
-   #### C. Strict Operational Tool Contracts & Negative Constraints
-   To eliminate model confusion and tool parameter hallucinations, the query planner operates under strict contractual boundaries:
-   - **`sql_analytics` Contract & Negative Boundary**:
-     - Dedicated relational system of record strictly constrained to **7 fixed pre-compiled enum routines**: `count_issues`, `count_articles`, `count_advertisements`, `count_photos`, `issue_summary`, `coverage_difference`, `shared_coverage`.
-     - ⚠️ **Negative Constraint**: CANNOT execute arbitrary SQL, CANNOT compute averages, CANNOT calculate word lengths, medians, percentiles, or dynamic groupings. Calling `sql_analytics` for any analytical calculation outside these 7 enums results in fatal schema validation failure.
-   - **`dynamic_analysis` Contract & Guardrail Boundary**:
-     - LLM-synthesized Python and SQL analysis engine executed in an isolated subprocess AST sandbox.
-     - **Positive Scope**: Permitted for calculations, mathematical aggregations, averages (*"average article length in Mint"*), distributions, ratios, author frequencies, or multi-table joins.
-     - ⚠️ **Negative Constraint (`is_dynamic_analysis_permitted(query)`)**: Strictly barred from text summarization, article reading, quotes, or narrative inquiries (e.g. *"summarize the article in 100 words"*). When word count denotes an answer length constraint rather than a database column calculation, the planner strips `dynamic_analysis` and routes exclusively to `hybrid_search`.
-
-   #### D. Dynamic Answer Blueprint Compilation (`AnswerBlueprint` & `SectionSpec`)
-   Simultaneously with tool scheduling, the planner compiles a structured `AnswerBlueprint` ([`models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)) injected directly into the `AnswerSynthesizer`:
-   - **Declarative Blueprint Registry**: Built-in specialized blueprints for `archive_availability`, `scalar_count_metric`, `single_article_summary`, `cross_newspaper_comparison`, `article_catalog`, `thematic_timeline`, `entity_deep_dive`, and `factual_lookup`.
-   - **Typed Section Directives (`SectionSpec`)**: Specifies ordered headers (`title`), presentation format (`format_type`: `narrative`, `bullet_list`, `markdown_table`, `metric_card`, `timeline`), editorial objective (`content_focus`), and length bounds (`target_length`).
-   - **Stylistic Constraints & Anti-Hallucination Directives**: Injects strict `prohibited_elements` (e.g. prohibiting robotic catalog tables for single-article summaries, forbidding speculative future corporate strategy when availability is zero, barring conversational filler), `target_word_count`, and `table_columns`.
-
-   #### E. Softly-Decoupled Live Archive Metadata Grounding & Introspection
-   To anchor planning in physical reality and prevent the model from inventing non-existent publication dates or newspapers:
-   - **Dynamic Metadata Introspection** (`get_archive_metadata()` in `archive_context.py`): Queries MySQL with a 5-minute TTL cache (`_ARCHIVE_CACHE`) to resolve `min_date`, `max_date`, distinct `publications`, and `categories`.
-   - **Soft Decoupling Guarantee**: If MySQL is unreachable, uninitialized, or in offline CI/CD, the planner automatically falls back to `STATIC_BROADSHEET_SCHEMA` and `get_fallback_archive_metadata()`, guaranteeing zero runtime crashes and zero network latency.
-   - **Hallucination Prevention**: Explicit mapping dictionary `KNOWN_COLUMN_HALLUCINATIONS` prevents common SQL schema errors (e.g. maps hallucinated `published_at` $\to$ `issues.issue_date`, `newspaper` $\to$ `newspapers.name`, `category` $\to$ `article_categories.name`).
-   - **Critical Date Restraint**: If a user query contains no dates, the planner strictly forbids inventing historical dates (e.g. "2020-01-01"), leaving date parameters empty to search across the full broadsheet archive.
-
-   #### F. Two-Tier Top-K Decision Framework in Query Planning
-   The planner balances context window budget against coverage density using a two-tier top-k framework:
-   - **Tier 1: High-Density Factoid & Verification Queries (`top_k = 4` to `6`)**: Applied to specific factual lookups, single-article extractions, quotes, and visual asset companion inspections to prevent noisy context dilution.
-   - **Tier 2: Broad Thematic, Synthesis & Comparative Queries (`top_k = 8` to `12`)**: Applied to cross-newspaper comparisons, domain overviews, and policy explorations to ensure diverse broadsheet representation across editorial desks.
-
-   #### G. Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`)
-   When the Corrective RAG (CRAG) Evaluator diagnoses an evidence deficiency or zero grounded hits:
-   - **Gap-Informed Adaptation**: Evaluator emits an `EvaluationVerdict` with `gap_diagnosis` (e.g. *"missing articles from The Hindu"* or *"over-constrained date filter"*).
-   - **Strict Anti-Repetition Guard**: Tracks `tried_calls` across previous turns. If a proposed tool call matches an already-executed call's `tool_name` and parameters, the re-planner modifies the call by stripping over-restrictive `date_from`/`date_to` bounds, relaxing newspaper filters, and increasing `top_k` (`top_k = max(8, top_k + 4)`).
-   - **Hard Single-Cycle Ceiling**: Re-planning is strictly capped at 1 adaptive cycle to guarantee bounded query latency.
-
-3. **Specialized Tool Execution & Modular Retrieval Engines** ([`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)):
-   - `InspectVisualAsset`: Handled by `VisualInspectionEngine` ([`retrieval/visual_inspector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/visual_inspector.py)) executing the 5-Tier Strategy Cascade (A: photo_id; B: headline; C: article_id; D: multi-criteria DB; E: scoped caption/VLM).
-     - Enforces query-date priority invariant (`effective_date = explicit_query_date or asset_date`).
-     - Streams on-demand raw crop bytes from MinIO for lazy VLM table transcription.
-     - Utilizes `asset_resolver.py` for attached asset context reconciliation and `formatters.py` for clean markdown snippets.
-   - `DynamicAnalysis`, `ToolMaker` & `ToolCritic` ([`backend/app/agent/tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_maker.py), [`backend/app/agent/tool_critic.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_critic.py), [`backend/app/agent/sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox.py)):
-     - Synthesizes bespoke Python/SQL functions for novel analytical queries.
-     - **Auto-Import Pre-Injection**: Injects missing standard imports (`re`, `math`, `statistics`, `json`, `pd`, `np`, `text`).
-     - Runs in an isolated subprocess with strict AST safety scanning, 15s timeout, 512MB RAM cap, and read-only DB transactions with pre-imported `exec_globals`.
-     - **5-Metric Closed-Loop Self-Refinement**: Audited by `ToolCritic` across SASC, SRF, REH, DSF, and RPS. Re-prompts LLM with structured diagnostic critique over token-budgeted history (up to 3 retries).
-     - **Layer 1 Fallback**: Intercepts unsupported parameters in `sql_analytics` and hands off to `dynamic_analysis`.
-   - `SQLAnalytics`: Whole-issue catalogs, native photo count analytics by section (`get_photo_counts_by_section`), advertisement counts, date range filtering (`date_from`/`date_to`), and deterministic coverage differences (`get_newspaper_coverage_difference`).
-   - `CoverageAnalyzer`: Multi-newspaper 3-tier negative coverage matrix audits.
-   - `EntityFilter`: Relational entity lookups and co-occurrence graphs.
-   - `TimelineBuilder`: Narrative trajectories and chronological storyline graphs.
-   - `WebSearchEngine`: NewsData.io accredited news grounding.
-4. **Reflexive CRAG Evaluator & Closed-Loop Re-Planning** ([`backend/app/agent/graph.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py), [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)):
-   - **Fast-Floor Bypass (<5ms)**: Immediate approval if evidence has $\ge 1$ high-confidence broadsheet hit and $\ge 100$ words of clean editorial body text.
-   - **Reflexive LLM-as-Judge**: Emits structured `EvaluationVerdict` (`quality_score`, `gap_diagnosis`, `recommended_action`, `corrective_hints`).
-   - **Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`)**: Re-plans targeted tools, relaxes date bounds, expands `top_k`, and enforces an anti-repetition guard preventing duplicate tool calls.
-   - **Dynamic Recovery Nodes**: Routes to `execute_adaptive_replan` or `execute_dynamic_code` with a strict 1-cycle ceiling (`recovery_attempts < 1`).
-5. **Blueprint-Driven Answer Synthesizer & Visual Citation Cards** ([`backend/app/agent/synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py)):
-   - **Dynamic Prompt Compilation**: Translates `AnswerBlueprint` into structured prompt sections via `compile_structure_from_blueprint()`, honoring user formatting constraints (word counts, bullet points, table exclusions).
-   - **Full-Text Single-Article Budgeting**: Allocates up to 7,500 characters of `parent_article_text` for focused inquiries, eliminating snippet truncation.
-   - **Robotic Catalog Table Elimination**: Deterministically strips mechanical tables (`| # | Headline | Section | Page | Words |`) from single-article narrative answers.
-   - **Photo Annotation Noise Reduction**: Suppresses bulky visual bounding box dumps during purely textual and editorial queries.
-   - **Quantitative Metric Absence Hard-Stop**: Truthfully reports absence when numerical metrics cannot be computed, preventing mathematical hallucinations.
-   - **Strict Citations**: Guarantees broadsheet citations `[Newspaper, YYYY-MM-DD, Page N, "Headline"]` and emits visual citation metadata with thumbnail endpoints (`/api/photos/{id}/image`).
-6. **Reflective LLM Answer Verifier & Editorial Fact-Checking Critic** ([`backend/app/agent/answer_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py)):
-   - **Fast Deterministic Gates (<5ms)**: Audits publication scope boundaries, temporal date alignment, and absence faithfulness without LLM overhead.
-   - **Reflexive LLM Audit**: Evaluates 4 dimensions: Faithfulness, Contradiction Detection, Fluff Elimination, and Evidence Gap Detection.
-   - **Closed-Loop Dynamic Tool Rollback**: If an evidentiary gap requires code synthesis, emits `fallback_to_dynamic_tool`, triggering LangGraph to branch back to `execute_dynamic_code` with a 1-cycle cap.
-7. **Server-Sent Events (SSE) Protocol** ([`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py)):
-   - `event: stage`: Live progress notifications (`condensing_query`, `planning_tools`, `executing_tools`, `evaluating_evidence`, `re_planning`, `synthesizing_answer`, `verifying_answer`).
-   - `event: thought`: Model internal chain-of-thought tokens.
-   - `event: token`: Streaming answer tokens.
-   - `event: citations`: Fully resolved textual and visual citation cards.
-   - `event: done`: Execution timing, token counts, and completion status.
+### Lifecycle & Anti-Leakage Guardrails
+1. **Interactive Attachment Banner**: `AgentAssistant.jsx` displays an active blue attachment chip above chat input with headline, thumbnail, date, and dismiss button.
+2. **First-Turn Binding**: `attached_article_id` and `attached_photo_id` bind to tool arguments (`photo_id`, `article_id`).
+3. **Cross-Turn Parameter Purge**: On subsequent turns, if the user asks an unrelated question or switches topics, Guardrails 1, 2, and 3 immediately purge visual parameters, preventing cross-turn context contamination.
+4. **Cross-Date Asset Conflict Eviction**: If the user's query explicitly specifies a publication date that conflicts with the attached asset's date, the attached asset is evicted. In `executor.py`, `effective_date = explicit_query_date or asset_date` guarantees that attached assets can never overwrite explicit query dates.
 
 ---
 
-## 7. Entity Knowledge Graph & Relational Intelligence
+## 11. Dynamic Tool Synthesis, Subprocess AST Sandbox & Closed-Loop ToolCritic Flow
 
-NewsLens-AI extracts, resolves, and indexes named entities across every ingested article to power relational exploration and multi-hop narrative tracking:
+When broadsheet analytical queries require bespoke aggregations, variances, or relational calculations that exceed predefined static tools, NewsLens-AI dynamically synthesizes, audits, and executes custom Python functions in a secure, sandboxed subprocess with automated self-refinement.
 
 ```mermaid
-graph LR
-    subgraph ENTITY_GRAPH ["Entity Co-Occurrence Knowledge Graph"]
-        E1(("Entity: HAL<br/>(Organization)"))
-        E2(("Entity: Safran<br/>(Organization)"))
-        E3(("Entity: SAFHAL Helicopter Engine<br/>(Product / Defense)"))
-        E4(("Entity: Ministry of Defence<br/>(Government)"))
-        
-        E1 ---|"co-occurs (weight: 12)"| E2
-        E2 ---|developed_product| E3
-        E1 ---|manufactures| E3
-        E1 ---|procurement_contract| E4
+sequenceDiagram
+    autonumber
+    participant Graph as LangGraph Engine
+    participant Maker as ToolMaker
+    participant LLM as LLM Code Synthesizer
+    participant Sandbox as Subprocess Sandbox
+    participant Critic as ToolCritic
+
+    Graph->>Maker: generate_and_execute(query, context, gap_diagnosis)
+    Maker->>LLM: Prompt with STATIC_BROADSHEET_SCHEMA & Pre-Normalized Context
+    LLM-->>Maker: Synthesized Python Script (analyze(db, query, context))
+    Maker->>Maker: Auto-Import Pre-Injection (re, math, statistics, pd, np, text)
+    Maker->>Critic: Pre-Execution AST & Schema Audit (SASC, SRF)
+    
+    alt Schema Flaw Detected (e.g. Cartesian join or bad column)
+        Critic-->>Maker: Scorecard: Rejected (SRF < 0.70, suggested_fixes=[...])
+        Maker->>LLM: Re-prompt with Diagnostic Critique & Fixes
+        LLM-->>Maker: Corrected Python Script
     end
 
-    subgraph ARTICLE_NODES ["Article Evidence References"]
-        A1["Article #42101<br/>'HAL, Safran ink engine pact'<br/>Mint (Page 1)"]
-        A2["Article #42188<br/>'Defence procurement cleared'<br/>The Hindu (Page 5)"]
+    Maker->>Sandbox: Execute in Isolated Subprocess (15s, 512MB RAM, Read-Only DB)
+    Sandbox-->>Maker: Execution Result: {data: [...], metadata: {...}, summary: '...'}
+    
+    Maker->>Critic: Post-Execution Audit (REH, DSF, RPS)
+    alt Calculation Error or NaN Detected
+        Critic-->>Maker: Scorecard: Rejected (DSF=0.0, NaN detected)
+        Maker->>LLM: Re-prompt with NaN Diagnostic Critique
+        LLM-->>Maker: Refined Script handling empty rows gracefully
+        Maker->>Sandbox: Re-execute in Subprocess
+        Sandbox-->>Maker: Verified Grounded Result
     end
 
-    E1 -.->|mentioned in| A1
-    E2 -.->|mentioned in| A1
-    E3 -.->|subject of| A1
-    E4 -.->|mentioned in| A2
+    Critic-->>Maker: Scorecard: Accepted (Score >= 0.70)
+    Maker-->>Graph: Grounded Structured Evidence Items (Score: 1.0)
 ```
 
-### Relational Schema & Storage
-- `entities`: Canonical entity registry (`id`, `name`, `entity_type`, `canonical_name`, `salience_score`, `frequency`).
-  - Entity types: `PERSON`, `ORGANIZATION`, `LOCATION`, `PRODUCT`, `EVENT`, `CONCEPT`.
-- `article_entities`: Join table linking articles to entities (`article_id`, `entity_id`, `mention_count`, `salience`, `sentiment`).
-- `entity_relations`: Graph edges capturing co-occurrence strength and contextual relationships across articles.
+### AST Whitelist and Sandbox Isolation Parameters
+- **AST Safety Scanner (`ASTSafetyScanner`)**: Blocks unauthorized modules (`os`, `sys`, `subprocess`, `shutil`, `socket`, `urllib`, `requests`, `pathlib`) and dangerous built-ins (`eval`, `exec`, `open`, `compile`, `__import__`, `globals`, `locals`).
+- **Subprocess Sandbox (`sandbox_runner.py`)**: Spawns isolated worker via `subprocess.Popen([sys.executable])`, enforcing 15-second timeout, 512MB RAM ceiling, autocommit disabled, and unconditional `connection.rollback()`.
+- **ToolCritic 5-Metric Scorecard**:
+  1. **SASC**: Syntactic & AST Security Compliance.
+  2. **SRF**: SQL Schema Fidelity (remaps hallucinated columns, requires `DISTINCT` on multi-table joins).
+  3. **REH**: Runtime Subprocess Health (zero exit code, no exceptions).
+  4. **DSF**: Data-to-Summary Faithfulness (legitimate absence vs. narrative hallucination; accepts aggregate tables).
+  5. **RPS**: Intent Alignment & Filter Plausibility (ISO date validation).
 
 ---
 
-## 8. Storage Layer Architecture & Data Lifecycle Matrix
+## 12. Corrective RAG (CRAG), Answer Verification & Streaming Delivery Flow
 
-| Layer | Component | Engine / Driver | Stored Data & Schema | Access Patterns & Indexing |
-|---|---|---|---|---|
-| **System of Record** | Relational Database | **MySQL 8** (`aiomysql` / SQLAlchemy 2) | • `newspapers`, `issues`, `pages`<br/>• `articles`, `article_pages`<br/>• `photos`, `tables`<br/>• `entities`, `article_entities`<br/>• `topics`, `article_topics`<br/>• `query_log`, `ingestion_jobs` | • Foreign keys & relational joins<br/>• `FULLTEXT(headline, full_text)`<br/>• B-tree indexes on `(newspaper_id, issue_date)`<br/>• Sub-5ms metadata queries |
-| **Vector Store** | Dense Vector DB | **Qdrant** (`qdrant-client`) | • Collection: `article_chunks`<br/>• 1024-dim dense vectors (`BAAI/bge-m3`)<br/>• Payload: `article_id`, `issue_id`, `newspaper_name`, `issue_date`, `page_number`, `headline`, `section`, `has_visual_data`, `bboxes` | • Cosine similarity search (HNSW index)<br/>• Payload pre-filtering on `newspaper_name`, `issue_date`, `section`<br/>• Sub-15ms vector retrieval |
-| **Object Store** | S3-Compatible Blob Store | **MinIO** (`minio-py`) | • Bucket `newslens-originals`: Raw source PDFs<br/>• Bucket `newslens-pages`: 300 DPI high-res page rasters<br/>• Cropped visual assets & chart PNGs | • High-throughput binary streaming<br/>• Public thumbnail HTTP endpoints (`/api/photos/{id}/image`)<br/>• Immutable asset storage |
-| **In-Memory Cache** | Key-Value & Queue | **Redis 7** (`redis-py`) | • Celery background worker task queue<br/>• Query response cache<br/>• Condensed query hash cache<br/>• Timeline trajectory cache<br/>• SSE Pub/Sub channels | • In-memory sub-millisecond lookups<br/>• Distributed task locks (`redis-lock`)<br/>• Automatic TTL expiration (1h to 24h) |
+```
+[ Retrieved Evidence Items from Multi-Tool Execution ]
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Fast-Floor Evaluation Check (<5ms)                       │
+│ • Check: Evidence >= 1 high-confidence broadsheet hit AND   │
+│   clean body text >= 100 words                              │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+            ┌──────────────────┴──────────────────┐
+            ▼ (Passes Fast Floor)                 ▼ (Below Fast Floor)
+┌─────────────────────────────────────┐ ┌─────────────────────────────────────┐
+│ High-Confidence Immediate Pass      │ │ Reflexive LLM-as-Judge Evaluation   │
+│ • Skip LLM evaluation latency       │ │ • Prompt evaluator with evidence    │
+│ • is_sufficient = True, score = 1.0 │ │ • Emit typed EvaluationVerdict      │
+└──────────────────┬──────────────────┘ └──────────────────┬──────────────────┘
+                   │                                       │
+                   │           ┌───────────────────────────┴───────────────────────────┐
+                   │           ▼ (replan_static_tools)                                 ▼ (synthesize_dynamic_tool)
+                   │  ┌─────────────────────────────────┐                     ┌─────────────────────────────────┐
+                   │  │ Closed-Loop Adaptive Re-Plan    │                     │ Dynamic ToolMaker Recovery      │
+                   │  │ • replan_with_feedback_async    │                     │ • Generate bespoke Python/SQL   │
+                   │  │ • Widen dates / expand top_k    │                     │ • ToolCritic 5-dimension audit  │
+                   │  │ • Anti-repetition guard         │                     │ • AST Subprocess Sandbox        │
+                   │  └────────────────┬────────────────┘                     └────────────────┬────────────────┘
+                   │                   │                                                       │
+                   └───────────────────┼───────────────────────────────────────────────────────┘
+                                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. Empty Evidence Hard-Stop Check                           │
+│ • If evidence is empty or only non-matching errors:         │
+│   → Short-circuit to strict anti-hallucination notice:      │
+│     "The archived broadsheets in this database contain      │
+│      no verifiable record of [Query]."                      │
+│   → DO NOT invent or hallucinate unsupported facts          │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ (Evidence Present)
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. Blueprint-Driven Grounded Broadsheet Synthesis           │
+│ • Compile prompt structure dynamically from AnswerBlueprint │
+│ • Preserve full parent text (up to 7,500 chars) for single  │
+│   article questions, filtering visual annotation noise      │
+│ • Strip mechanical robotic catalog tables from summaries    │
+│ • Enforce strict broadsheet citation format:                │
+│   [{Newspaper}, {YYYY-MM-DD}, Page {N}, "{Headline}"]       │
+│ • Enforce Quantitative Metric Absence Hard-Stop             │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Reflective Answer Verification (answer_verifier.py)      │
+│ • Fast Gates (<5ms): scope check, date alignment, absence   │
+│ • Reflexive LLM Audit: 4-dimension groundedness & fluff cut │
+│ • If evidence gap diagnosed: emit fallback_to_dynamic_tool  │
+│   → Loops back to execute_dynamic_code (1-cycle ceiling)    │
+│ • Verified brief passed to SSE streaming engine             │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 9. Failure Modes, Circuit Breakers & Resilience Matrix
+## 13. Failure Modes, Circuit Breakers & Resilience Matrix
 
 | Failure Scenario | Trigger Detection | Immediate Mitigation | Ultimate Safety Net |
 |---|---|---|---|
@@ -637,3 +678,7 @@ graph LR
 | **Statistical Metric Absence / Failed Analytics** | Query asks for variance, std dev, or complex ratios but tool fails or returns empty | Synthesizer detects absence of computed numbers in verified tool evidence | `QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP` strictly forbids hallucinating numbers, truthfully reporting computation unavailability |
 | **Cross-Date Asset / Stale Context Leakage** | User switches dates across multi-turn session with active attached asset | Query condenser and graph routers detect date conflict and prune attached asset | Executor strictly enforces `effective_date = explicit_query_date`, preventing queries against mismatched issues |
 | **Network Outage / Cloud Down** | All external APIs (OpenRouter, Gemini, OpenAI) unreachable | Model Settings Studio switches to **Local Sovereign Preset** | 100% offline air-gapped execution via Ollama (Llama 3.1, DeepSeek R1, Qwen 3 VL), Docling, and local BGE-M3 |
+
+---
+
+*End of NewsLens-AI Complete End-to-End Data Flow & System Architecture Specification.*

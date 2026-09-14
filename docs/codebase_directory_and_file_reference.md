@@ -1246,9 +1246,8 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 #### Files in `docs/`:
 - [`docs/end_to_end_data_flow_guide.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/end_to_end_data_flow_guide.md): The flagship production-verified data flow guide with real database IDs, table rows, Qdrant vectors, Qwen-VL infographic reasoning, and live tool execution traces.
 - [`docs/database_schema.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/database_schema.md): Complete database schema reference, entity diagrams, and index descriptions.
-- [`docs/architecture.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/architecture.md): Deep-dive into subsystem architecture, component interactions, and scalability.
-- [`docs/data_flow.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/data_flow.md): Sequence diagrams illustrating ingestion and agentic query handling.
-- [`docs/data_flow_architecture.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/data_flow_architecture.md): Visual block diagrams tracing the flow of data across storage tiers.
+- [`docs/data_flow_architecture.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/data_flow_architecture.md): Master technical specification unifying end-to-end broadsheet intake, visual VLM failover, query planner flowchart, all 8 tools, AST sandbox execution, CRAG evaluation, and resilience matrices.
+- [`docs/data_flow.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/data_flow.md): Consolidated pointer redirecting to `data_flow_architecture.md`.
 - [`docs/tools_reference_guide.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/tools_reference_guide.md): The exhaustive reference guide for all 8 agentic retrieval and analytical tools, schemas, and dynamic `top_k` flowcharts.
 - [`docs/hallucination_prevention_and_crag.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/hallucination_prevention_and_crag.md): Rigorous technical breakdown of multi-layer hallucination prevention, CRAG evidence evaluation, ToolCritic scorecards, and closed-loop self-correcting fallbacks.
 - [`docs/features.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/features.md): Inventory of user-facing intelligence features.
