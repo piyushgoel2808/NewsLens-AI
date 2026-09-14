@@ -37,6 +37,41 @@ _KNOWN_BRANDS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(?:the\s+)?daily\s+record\b", re.I), "The Daily Record"),
 ]
 
+_DYNAMIC_PATTERNS_CACHE: dict[str, Any] = {"pubs_key": None, "patterns": None}
+
+
+def get_brand_patterns() -> list[tuple[re.Pattern[str], str]]:
+    """Return brand patterns combining predefined regexes and dynamic publications."""
+    try:
+        from app.agent.archive_context import get_known_publications
+
+        pubs = get_known_publications()
+    except Exception:
+        pubs = []
+
+    pubs_key = tuple(sorted(pubs))
+    if _DYNAMIC_PATTERNS_CACHE["pubs_key"] == pubs_key and _DYNAMIC_PATTERNS_CACHE["patterns"] is not None:
+        return _DYNAMIC_PATTERNS_CACHE["patterns"]  # type: ignore[no-any-return]
+
+    patterns = list(_KNOWN_BRANDS_PATTERNS)
+    known_names = {b.lower() for _, b in _KNOWN_BRANDS_PATTERNS}
+
+    for pub in pubs:
+        clean_pub = pub.strip()
+        if clean_pub and clean_pub.lower() not in known_names:
+            if clean_pub.lower().startswith("the "):
+                base = re.escape(clean_pub[4:].strip())
+                pat = re.compile(rf"\b(?:the\s+)?{base}\b", re.I)
+            else:
+                pat = re.compile(rf"\b(?:the\s+)?{re.escape(clean_pub)}\b", re.I)
+            patterns.append((pat, clean_pub))
+            known_names.add(clean_pub.lower())
+
+    _DYNAMIC_PATTERNS_CACHE["pubs_key"] = pubs_key
+    _DYNAMIC_PATTERNS_CACHE["patterns"] = patterns
+    return patterns
+
+
 _SECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(sports?|athletics?|cricket|tennis|football|soccer|olympics?|tournaments?|ipl|bcci|icc|grand\s+slam|badminton|golf)\b", re.I), "Sports"),
     (re.compile(r"\b(entertainment|cinema|movies?|films?|bollywood|hollywood|arts?|music|concerts?|theatre|ott|actors?|actress(?:es)?)\b", re.I), "Entertainment"),
@@ -76,8 +111,9 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
         return params
 
     # 1. Multi-Newspaper Brand Extraction
+    brand_patterns = get_brand_patterns()
     matched_brands: list[tuple[int, str]] = []
-    for pat, brand in _KNOWN_BRANDS_PATTERNS:
+    for pat, brand in brand_patterns:
         for brand_m in pat.finditer(query):
             matched_brands.append((brand_m.start(), brand))
 
@@ -209,7 +245,7 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
 
     # 4. Section / Category Extraction (mask matched brands to avoid false bleed like 'The Economic Times' matching 'Economy')
     query_for_sections = query
-    for pat, _ in _KNOWN_BRANDS_PATTERNS:
+    for pat, _ in brand_patterns:
         query_for_sections = pat.sub(" ", query_for_sections)
 
     for pat, cat_name in _SECTION_PATTERNS:
@@ -221,7 +257,7 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
     hl_match = re.search(r"(?:article|story|headline|titled|report)?\s*[\"“]([^\"”]{8,150})[\"”]", query, re.I)
     if hl_match:
         cand_hl = hl_match.group(1).strip()
-        if not any(pat.fullmatch(cand_hl) for pat, _ in _KNOWN_BRANDS_PATTERNS):
+        if not any(pat.fullmatch(cand_hl) for pat, _ in brand_patterns):
             params["headline"] = cand_hl
 
     return params
@@ -269,6 +305,7 @@ __all__ = [
     "_build_targeted_web_query",
     "build_targeted_web_query",
     "extract_parameters_from_query",
+    "get_brand_patterns",
     "is_archive_wide_newspaper_query",
 ]
 

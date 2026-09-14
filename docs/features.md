@@ -412,3 +412,64 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * Enables the frontend `ActiveHighlightContext` and `AgentAssistant` to render interactive, clickable citation badges that jump directly to the broadsheet canvas for each ad or article.
 * **Headline Conflict Invalidation & Authoritative Article Binding**:
   * In `condenser.py` and `graph.py`, automatically invalidates stale attached asset IDs when the user transitions to a new topic or headline, preventing cross-article hallucination.
+
+---
+
+## 19. Reflective LLM Answer Verifier & Editorial Fact-Checking Critic (`answer_verifier.py`)
+
+* **Post-Synthesis Editorial Quality Assurance**:
+  * Acts as a dedicated peer editor inspecting synthesized broadsheet intelligence briefs before transmission to the user client.
+* **4-Dimension Fact-Checking Audit**:
+  1. **Faithfulness & Truthfulness**: Verifies that every assertion, numerical metric, and date is strictly grounded in retrieved evidence. Flags positive claims when evidence demonstrates absence (e.g. 0 records).
+  2. **Freedom from Hallucination & Corporate Fluff**: Detects and purges speculative consulting boilerplate (e.g. *"explore future collaboration"*, *"investigate implications on content strategy"*) and placeholder dummy citations (`[{Publication}...`).
+  3. **Publication Scope & Date Alignment**: Fast deterministic regex verification ensuring the answer references only the broadsheet publications and dates requested.
+  4. **Evidence Gap Detection & Closed-Loop Dynamic Tool Rollback**:
+     * If the verifier diagnoses an evidentiary gap requiring ad-hoc code calculation, it emits `recommended_action="fallback_to_dynamic_tool"` with `dynamic_tool_hint`.
+     * The LangGraph workflow intercepts this verdict and automatically routes back to `execute_dynamic_code` with a 1-cycle ceiling.
+* **Deterministic Fast-Gates (<5ms)**:
+  * Runs string and scope validation gates before invoking the LLM auditor, ensuring zero latency penalty for clean, compliant responses.
+
+---
+
+## 20. Decoupled Broadsheet Retrieval Engine (`retrieval/`)
+
+* **Architectural Modularization**:
+  * Extracted monolithic logic from `executor.py` into focused, single-responsibility engines:
+* **Broadsheet Visual Asset Inspector (`retrieval/visual_inspector.py`)**:
+  * Houses `VisualInspectionEngine` executing the 5-strategy discovery cascade (A: explicit photo ID; B: quoted headline; C: explicit article ID; D: multi-criteria DB; E: scoped caption/VLM).
+  * On-demand MinIO image crop streaming and Gemini/Qwen VLM transcription for lazy enrichment of placeholder assets.
+* **Database Asset Context Resolver (`retrieval/asset_resolver.py`)**:
+  * Authoritative ground-truth metadata extraction for attached broadsheet assets (`resolve_attached_asset_context`).
+  * Fast database lookup for quoted headlines (`resolve_authoritative_article_id`).
+  * Full conversational working context reconciliation with conflict detection (`resolve_conversation_working_context`).
+* **Presentation Formatters (`retrieval/formatters.py`)**:
+  * Single-source markdown snippet generation for broadsheet manifests (`format_issue_manifest`), 3-tier coverage reconciliation matrices (`format_coverage_matrix_snippet`), and exclusive coverage differences (`format_coverage_difference_snippet`).
+  * In-place OCR typographic ligature repair (`repair_text_ligatures`) across all formatted snippets.
+
+---
+
+## 21. Softly-Decoupled Broadsheet Schema & In-Memory Archive Context (`archive_context.py`)
+
+* **Zero-DB Decoupled Schema Catalog (`STATIC_BROADSHEET_SCHEMA`)**:
+  * Declarative in-memory MySQL broadsheet schema catalog containing all 6 core tables, columns, data types, and foreign key relationships.
+  * Incurring zero database network calls during agent prompt construction.
+* **Resilient Live Archive Context with Safe Static Fallback (`get_archive_and_schema_context`)**:
+  * Asynchronously queries MySQL for live publication rosters and active date bounds, cached with a 5-minute TTL.
+  * Automatically catches database connection timeouts, cold-start delays, or network errors, falling back immediately to canonical static archive bounds (`STATIC_CANONICAL_PUBLICATIONS`, `STATIC_ARCHIVE_DATE_MIN`, `STATIC_ARCHIVE_DATE_MAX`, `STATIC_CANONICAL_CATEGORIES`).
+  * Guarantees that query planning and dynamic tool code generation never fail due to database transient unavailability.
+
+---
+
+## 22. Decoupled Relational SQL Analytics Dispatcher & Multi-Tier Provider Failover
+
+* **Single-Responsibility SQL Dispatcher (`agent/sql_dispatcher.py`)**:
+  * Decouples 11 pre-compiled relational SQL analytics routines from tool lifecycle coordination.
+  * Encapsulates parameter binding, alias normalization (`count_advertisements` $\to$ `count_ads`, `newspaper_availability` $\to$ `count_issues`, `photos_by_section` $\to$ `photo_counts`), and presentation formatting for `issue_summary`, `coverage_difference`, `shared_coverage`, `coverage_comparison`, and section distributions.
+* **Structured Archive Introspection (`agent/archive_context.py`)**:
+  * Introduces the `ArchiveMetadata` dataclass (`min_date`, `max_date`, `publications`, `categories`, `context_str`).
+  * `get_archive_metadata()` queries MySQL with a 5-minute TTL cache and structured typed output, supporting soft decoupling with instantaneous fallback to static canonical defaults.
+* **Dynamic Brand Pattern Resolution (`agent/extractor.py`)**:
+  * `get_brand_patterns()` merges static brand regexes with newly ingested broadsheet titles discovered via `get_known_publications()`, cached dynamically via `_DYNAMIC_PATTERNS_CACHE`.
+* **Multi-Tier Chat Failover Candidates (`providers/registry.py`)**:
+  * `ModelRegistry.get_chat_failover_candidates(prefer_local=False)` evaluates configured models and produces ordered fallback sequences across cloud providers (`nvidia_nemotron`, `openrouter_nemotron`, `openrouter_gemma4_26b`, `gemini_flash`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, etc.) and sovereign local Ollama models.
+

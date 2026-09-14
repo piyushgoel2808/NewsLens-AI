@@ -39,36 +39,12 @@ except ImportError:
 # Safe Built-ins & Import Interceptor
 # ---------------------------------------------------------------------------
 
-BLOCKED_MODULES = frozenset({
-    "os",
-    "sys",
-    "subprocess",
-    "shutil",
-    "socket",
-    "pty",
-    "ctypes",
-    "importlib",
-    "pathlib",
-    "urllib",
-    "requests",
-    "httpx",
-    "aiohttp",
-    "ftplib",
-    "smtplib",
-    "pickle",
-    "marshal",
-    "shelve",
-    "code",
-    "codeop",
-    "posix",
-    "nt",
-    "_thread",
-    "threading",
-    "multiprocessing",
-    "signal",
-    "selectors",
-    "webbrowser",
-})
+try:
+    from app.agent.sandbox import FORBIDDEN_MODULES as BLOCKED_MODULES
+except ImportError:
+    import pathlib
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+    from app.agent.sandbox import FORBIDDEN_MODULES as BLOCKED_MODULES
 
 _orig_import = builtins.__import__
 

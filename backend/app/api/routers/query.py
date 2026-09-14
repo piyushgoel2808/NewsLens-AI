@@ -14,15 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.condenser import (
     CLEAN_SESSION_CLARIFICATION_MESSAGE,
     condense_conversational_query,
-    extract_active_issue_from_history,
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
-    needs_condensation,
-    parse_inline_citation,
-    resolve_attached_asset_context,
-    resolve_authoritative_article_id,
 )
-from app.agent.extractor import extract_parameters_from_query
+from app.retrieval import (
+    resolve_attached_asset_context,
+    resolve_conversation_working_context,
+)
 from app.agent.graph import AgentWorkflow
 from app.agent.planner import QueryPlanner
 from app.agent.synthesizer import parse_thought_and_answer
@@ -195,133 +193,21 @@ async def stream_query(
             tool_data = json.dumps({"evidence_count": 0, "tools": []})
             yield f"event: tool_results\ndata: {tool_data}\n\n"
         else:
-            attached_ctx = await resolve_attached_asset_context(
-                session_factory=workflow._session_factory,
+            working_ctx = await resolve_conversation_working_context(
+                query=query,
+                chat_history=chat_history,
                 attached_photo_id=request.attached_photo_id,
                 attached_article_id=request.attached_article_id,
                 attached_issue_date=request.attached_issue_date,
                 attached_newspaper_name=request.attached_newspaper_name,
+                session_factory=workflow._session_factory,
             )
-            res_date = attached_ctx.get("issue_date")
-            res_np = attached_ctx.get("newspaper_name")
-            res_art_id = attached_ctx.get("article_id")
-            res_iss_id = attached_ctx.get("issue_id")
-            q_params = extract_parameters_from_query(query) if query else {}
-            q_cite = parse_inline_citation(query or "")
-            explicit_q_date = q_params.get("issue_date") or q_cite.get("issue_date")
-            explicit_q_date_from = q_params.get("date_from")
-            explicit_q_date_to = q_params.get("date_to")
-            explicit_q_np = q_params.get("newspaper_name") or q_cite.get("newspaper_name")
-            explicit_q_hl = q_params.get("headline") or q_cite.get("headline")
-
-            has_date_conflict = bool(
-                (explicit_q_date and res_date and explicit_q_date != res_date)
-                or (explicit_q_date_from and explicit_q_date_to and res_date and not (explicit_q_date_from <= res_date <= explicit_q_date_to))
-            )
-            has_np_conflict = bool(
-                explicit_q_np
-                and res_np
-                and explicit_q_np.lower() not in res_np.lower()
-                and res_np.lower() not in explicit_q_np.lower()
-            )
-
-            attached_hl = attached_ctx.get("headline")
-            has_headline_conflict = False
-            if attached_hl and query:
-                if explicit_q_hl and explicit_q_hl.lower() != attached_hl.lower():
-                    has_headline_conflict = True
-                    def _sig_tokens(s: str) -> set[str]:
-                        stop = {
-                            "the", "a", "an", "and", "or", "in", "on", "at", "for", "to", "of", "with", "by", "from",
-                            "is", "are", "was", "were", "this", "that", "these", "those", "about", "article", "story",
-                            "news", "report", "photo", "image", "picture", "visual", "who", "what", "where", "when",
-                            "why", "how", "person", "people",
-                        }
-                        return {w for w in re.findall(r"[a-z0-9]+", s.lower()) if len(w) > 2 and w not in stop}
-                    att_tokens = _sig_tokens(attached_hl)
-                    q_tokens = _sig_tokens(query)
-                    is_pronoun_ref = bool(
-                        re.search(
-                            r"\b(?:this|that|the|it|ir)\s+(?:article|story|news|report|headline|piece|photo|image|picture|graphic|figure|visual|table|chart|infographic)\b"
-                            r"|\b(?:tell me more|explain this|explain it|what is this|who is this|who is the person|who is in this)\b"
-                            r"|\b(?:find|read|get|tell|show|explain|summ[ae]ri[sz]e)\s+(?:about|on|for|of)?\s*(?:this|the|that|it|ir)?\s*(?:article|story|news|report|headline|piece)?\b"
-                            r"|\bin\s+\d+\s+words?\b",
-                            query,
-                            re.I,
-                        )
-                    )
-                    if (request.attached_photo_id or request.attached_article_id or res_art_id) and re.search(r"\b(?:photo|image|picture|visual|this article|this photo|it\b|that\b|the article)\b", query, re.I):
-                        is_pronoun_ref = True
-                    if not is_pronoun_ref and att_tokens and q_tokens and not (att_tokens & q_tokens):
-                        has_headline_conflict = True
-
-            eff_attached_article_id = (res_art_id or request.attached_article_id) if not has_date_conflict and not has_np_conflict and not has_headline_conflict else None
-            eff_attached_photo_id = request.attached_photo_id if not has_date_conflict and not has_np_conflict and not has_headline_conflict else None
-
-            # Authoritative headline DB binding: if query has an explicit or quoted headline,
-            # resolve its true article_id and override attached IDs
-            cand_hl = explicit_q_hl
-            if not cand_hl and query:
-                hl_m = re.search(r"[\"“]([^\"”]{8,150})[\"”]", query, re.I)
-                if hl_m:
-                    cand_hl = hl_m.group(1).strip()
-            if cand_hl:
-                bound_art_id = await resolve_authoritative_article_id(
-                    headline=cand_hl,
-                    newspaper_name=explicit_q_np or res_np,
-                    issue_date=explicit_q_date or res_date,
-                )
-                if bound_art_id:
-                    eff_attached_article_id = bound_art_id
-                    eff_attached_photo_id = None
-                    if not attached_ctx.get("headline") or has_headline_conflict:
-                        attached_ctx["headline"] = cand_hl
-
-            active_ctx = extract_active_issue_from_history(
-                chat_history,
-                current_query=query,
-                attached_photo_id=eff_attached_photo_id,
-                attached_article_id=eff_attached_article_id,
-                attached_issue_date=res_date if not has_date_conflict else None,
-                attached_newspaper_name=res_np if not has_np_conflict else None,
-                attached_headline=attached_ctx.get("headline") if not has_date_conflict and not has_np_conflict and not has_headline_conflict else None,
-            )
-            if not has_date_conflict and not has_np_conflict and not has_headline_conflict:
-                if res_date:
-                    active_ctx["issue_date"] = res_date
-                if res_np:
-                    active_ctx["newspaper_name"] = res_np
-                if res_iss_id:
-                    active_ctx["issue_id"] = res_iss_id
-                if eff_attached_article_id:
-                    active_ctx["article_id"] = eff_attached_article_id
-                if eff_attached_photo_id:
-                    active_ctx["photo_id"] = eff_attached_photo_id
-                if attached_ctx.get("headline"):
-                    active_ctx["headline"] = attached_ctx["headline"]
-            else:
-                if explicit_q_date:
-                    active_ctx["issue_date"] = explicit_q_date
-                if explicit_q_np:
-                    active_ctx["newspaper_name"] = explicit_q_np
-                if eff_attached_article_id:
-                    active_ctx["article_id"] = eff_attached_article_id
-                if cand_hl:
-                    active_ctx["headline"] = cand_hl
-
-            if explicit_q_date_from and explicit_q_date_to and not explicit_q_date:
-                active_ctx["issue_date"] = None
-
-            has_attached_asset = bool(
-                (eff_attached_photo_id or eff_attached_article_id)
-                and not has_date_conflict
-                and not has_np_conflict
-                and not has_headline_conflict
-            )
-            is_followup = bool(
-                (chat_history or has_attached_asset)
-                and needs_condensation(query, chat_history, attached_asset=attached_ctx)
-            )
+            active_ctx = working_ctx.active_ctx
+            attached_ctx = working_ctx.attached_ctx
+            eff_attached_article_id = working_ctx.eff_attached_article_id
+            eff_attached_photo_id = working_ctx.eff_attached_photo_id
+            has_attached_asset = working_ctx.has_attached_asset
+            is_followup = working_ctx.is_followup
 
             if is_followup:
                 yield f"event: stage\ndata: {json.dumps({'stage': 'condensing_query'})}\n\n"
@@ -339,14 +225,18 @@ async def stream_query(
                 yield f"event: query_condensed\ndata: {cond_data}\n\n"
 
             # 2. Planning Stage
-            # Only pass active_issue_date and active_newspapers to planner if an asset is attached,
-            # or if this is an active follow-up query. Do NOT constrain standalone text queries.
-            planner_active_date = active_ctx.get("issue_date") if (has_attached_asset or is_followup) else None
-            planner_active_nps = (
-                [active_ctx.get("newspaper_name")]
-                if ((has_attached_asset or is_followup) and active_ctx.get("newspaper_name"))
-                else None
-            )
+            # When an asset is attached, lock the planner's active date and newspaper to the attached asset Ground Truth
+            if has_attached_asset:
+                planner_active_date = attached_ctx.get("issue_date") or active_ctx.get("issue_date")
+                planner_active_np = attached_ctx.get("newspaper_name") or active_ctx.get("newspaper_name")
+                planner_active_nps = [planner_active_np] if planner_active_np else None
+            else:
+                planner_active_date = active_ctx.get("issue_date") if is_followup else None
+                planner_active_nps = (
+                    [active_ctx.get("newspaper_name")]
+                    if (is_followup and active_ctx.get("newspaper_name"))
+                    else None
+                )
 
             blueprint_dict: dict[str, Any] | None = None
             yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
@@ -403,11 +293,12 @@ async def stream_query(
                     "model_override": effective_model,
                     "enable_web_search": request.enable_web_search,
                     "web_search_results": [],
-                    "active_issue_id": active_ctx.get("issue_id"),
-                    "active_newspaper_name": active_ctx.get("newspaper_name"),
-                    "active_issue_date": active_ctx.get("issue_date"),
+                    "active_issue_id": (attached_ctx.get("issue_id") if has_attached_asset else active_ctx.get("issue_id")),
+                    "active_newspaper_name": (attached_ctx.get("newspaper_name") if has_attached_asset else active_ctx.get("newspaper_name")),
+                    "active_issue_date": (attached_ctx.get("issue_date") if has_attached_asset else active_ctx.get("issue_date")),
                     "attached_article_id": eff_attached_article_id,
                     "attached_photo_id": eff_attached_photo_id,
+                    "is_condensed": bool(is_followup),
                     "error": None,
                 }
             )

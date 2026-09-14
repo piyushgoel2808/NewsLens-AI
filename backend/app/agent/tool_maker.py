@@ -7,8 +7,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
-
+from app.agent.archive_context import STATIC_BROADSHEET_SCHEMA
 from app.agent.sandbox import ASTSafetyScanner, SandboxedExecutor, ScanResult
 from app.agent.tool_critic import EvaluationScorecard, ToolCritic
 from app.core.logging import get_logger
@@ -21,33 +20,11 @@ logger = get_logger(__name__)
 # Tool Maker System Prompt with Archive Schema & Few-Shot Templates
 # ---------------------------------------------------------------------------
 
-TOOL_MAKER_SYSTEM_PROMPT = """You are an expert Python data analyst and software engineer for NewsLens-AI, a broadsheet newspaper intelligence platform.
+_TOOL_MAKER_HEADER = """You are an expert Python data analyst and software engineer for NewsLens-AI, a broadsheet newspaper intelligence platform.
 Your task is to write an asynchronous Python function `analyze(db, query, context)` that executes SQL queries against the newspaper archive and computes custom statistical or analytical findings to directly answer the user's question.
+"""
 
-### DATABASE SCHEMA (MySQL 8.0)
-The database contains the following tables and columns:
-1. `newspapers`: id (INT PK), name (VARCHAR, e.g. 'The Goan', 'Hindustan Times', 'The Navhind Times', 'Herald')
-2. `issues`: id (INT PK), newspaper_id (INT FK -> newspapers.id), issue_date (DATE, 'YYYY-MM-DD'), total_pages (INT)
-3. `articles`:
-   - id (INT PK)
-   - issue_id (INT FK -> issues.id)
-   - headline (TEXT)
-   - subheadline (TEXT)
-   - byline_author (VARCHAR)
-   - section (VARCHAR)
-   - article_type (VARCHAR: 'news', 'editorial', 'opinion', 'analysis', 'sports', 'advertisement', 'sidebar', 'letter', 'obituary', 'review')
-   - prominence_score (FLOAT 0.0-1.0)
-   - word_count (INT)
-   - summary (TEXT)
-   - full_text (LONGTEXT)
-   - category_id (INT FK -> article_categories.id)
-4. `article_categories`: id (INT PK), name (VARCHAR, e.g. 'Politics', 'Business', 'Sports', 'Health', 'Crime')
-5. `pages`: id (INT PK), issue_id (INT FK -> issues.id), page_number (INT), is_advertisement_page (BOOLEAN)
-6. `photos`: id (INT PK), article_id (INT FK), page_id (INT FK), caption (TEXT), visual_type (VARCHAR: 'photo', 'graphic', 'chart', 'map')
-7. `entities`: id (INT PK), name (VARCHAR), type (VARCHAR: 'person', 'org', 'location')
-8. `article_entities`: article_id (INT FK), entity_id (INT FK), mention_count (INT), salience_score (FLOAT)
-
-### CONTRACT & FUNCTION SIGNATURE
+_TOOL_MAKER_BODY = """### CONTRACT & FUNCTION SIGNATURE
 You MUST write a function with this exact signature:
 
 ```python
@@ -72,14 +49,17 @@ async def analyze(db, query: str, context: dict) -> dict:
 4. **Security Restrictions**: NO file I/O (`open`), NO subprocess, NO network calls, NO `os`, NO `sys`, NO `eval`, NO `exec`.
 5. **Robustness**: Always handle the case where `db` is None or returns 0 rows. Check for division by zero before calculating ratios or correlations.
 6. **Return Format**: Return ONLY the Python code inside ```python ``` code fences. No conversational banter or explanations outside the code block.
-7. **Date Normalization**: The archive stores dates in ISO `'YYYY-MM-DD'` format. If the user query has dates like `2/8/2026` or `02-08-2026`, convert them to `'YYYY-MM-DD'` (e.g. `'2026-08-02'`) before filtering.
+7. **Date Normalization & Safety**: The archive stores dates in ISO `'YYYY-MM-DD'` format. Pre-normalized dates in `context` (e.g. `context.get('target_date')` or `context.get('issue_date')`) are ALREADY valid `'YYYY-MM-DD'` strings. Pass them directly as SQL bind parameters: `await db.execute(text("... WHERE i.issue_date = :dt"), {"dt": target_date})`. NEVER call `datetime.strptime()` without checking `if date_str:` first, because `datetime.strptime(None, ...)` raises `TypeError: strptime() argument 1 must be str, not None`.
 8. **Newspaper Matching**: Use case-insensitive matching or `LIKE '%Name%'` (e.g. `LOWER(n.name) LIKE '%goan%'` or `n.name IN ('The Goan', 'Hindustan Times')`) to prevent prefix mismatches.
 9. **Cartesian Product Prevention**: When joining `articles` with `pages` or `photos`, ALWAYS use `COUNT(DISTINCT a.id)` to avoid inflated duplicate counts.
 10. **Strict Grounding & Truthful Absence**: Your `summary` MUST strictly report the actual counts and data found. If the query yields 0 rows, clearly state that no matching records were found in the archive—NEVER invent positive numbers or narrative facts.
 11. **Category Relational Schema**: The `articles` table has NO `category` column! It only contains `category_id (INT FK -> article_categories.id)`. To query or group by category, ALWAYS join: `JOIN article_categories c ON a.category_id = c.id` and select `c.name AS category_name`. NEVER write `articles.category` or `a.category`.
 12. **Advertisements Schema**: Advertisements and commercial notices are stored as records in the `articles` table with `article_type = 'advertisement'` or in section `'Advertisements & Notices'`. Do NOT query `photos` for advertisements (`photos.visual_type` is `'photo'`, not `'ad'`). Full-page advertisement wraps are also flagged on `pages.is_advertisement_page = 1`.
 13. **Variable Naming & SQLAlchemy text() Safety**: NEVER name a variable `text = ...`! Assigning to a variable named `text` shadows `from sqlalchemy import text` and causes a fatal Python `UnboundLocalError`. Always use `snippet`, `content`, `article_text`, or `row_text` for string content.
-14. **Pre-Normalized Context Parameters**: The `context` dictionary may contain pre-normalized keys: `context.get('target_date')` ('YYYY-MM-DD' ISO format), `context.get('newspaper_name')`, `context.get('date_from')`, `context.get('date_to')`, and `context.get('category')`. ALWAYS check and prioritize these values over attempting to regex-parse dates or newspaper names from `query`. Note that `context.get('target_date')` is ALREADY in standard MySQL 'YYYY-MM-DD' format; do NOT parse it with `strptime('%m/%d/%Y')`.
+14. **Pre-Normalized Context Parameters**: The `context` dictionary provides pre-normalized keys: `context.get('target_date')` (or `context.get('issue_date')` / `context.get('date')`), `context.get('newspaper_name')`, `context.get('date_from')`, `context.get('date_to')`, and `context.get('category')`.
+    - ALWAYS prioritize these values over manual regex parsing.
+    - These values are ALREADY valid strings for SQL queries (e.g. `'2026-09-10'`). Do NOT parse them with `datetime.strptime()`.
+    - If a date parameter is not provided in context, it will be `None`. Always check `if target_date:` before filtering on it in SQL.
 15. **Zero-Division & Strict No-NaN Safety**: NEVER return `NaN`, `nan`, or `null` in your summary or metadata! Before calculating `.mean()`, `.std()`, correlations, or averages, verify that rows exist (`if not rows:` or `if df.empty:`). If 0 rows match, explicitly return `{'summary': 'No matching records found in the archive...', 'data': [], 'metadata': {'count': 0}}`. Never output `nan` or `NaN` for any metric.
 16. **Pandas Filtering Safety**: SQL `WHERE` clauses already filter by date and newspaper. NEVER do `df['newspaper_name'] == np_pattern` in pandas if `np_pattern` contains SQL wildcards (`%`) like `'%Goan%'`, as literal equality will evaluate to False and filter out all rows. If doing optional post-filtering in pandas, use `.str.contains(clean_np, case=False, na=False)` without SQL wildcards.
 
@@ -310,6 +290,8 @@ async def analyze(db, query: str, context: dict) -> dict:
     }
 ```
 """
+
+TOOL_MAKER_SYSTEM_PROMPT = f"{_TOOL_MAKER_HEADER}\n{STATIC_BROADSHEET_SCHEMA}\n\n{_TOOL_MAKER_BODY}"
 
 
 # ---------------------------------------------------------------------------

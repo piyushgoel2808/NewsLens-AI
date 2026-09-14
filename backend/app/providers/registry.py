@@ -348,6 +348,44 @@ class ModelRegistry:
             return fallback
         raise ProviderError(f"Could not resolve chat provider for {model_name_or_id!r}")
 
+    def get_chat_failover_candidates(self, prefer_local: bool = False) -> list[str]:
+        """Return an ordered list of configured chat provider IDs suitable for failover.
+
+        Filters to configured providers capable of chat/tool use, ordered by local-first
+        or cloud-first preference.
+        """
+        cloud_priority = [
+            "nvidia_nemotron",
+            "openrouter_nemotron",
+            "openrouter_gemma4_26b",
+            "gemini_flash",
+            "groq_compound",
+            "openai_gpt4o_mini",
+            "groq_qwen",
+            "openai_gpt4o",
+            "gemini_pro",
+        ]
+        local_priority = [
+            "ollama_llama3",
+            "ollama_deepseek",
+            "ollama_nemotron",
+            "ollama_chat",
+            "ollama_vlm",
+        ]
+
+        ordered_keys = (local_priority + cloud_priority) if prefer_local else (cloud_priority + local_priority)
+
+        # Only return provider IDs that are actually configured in model_config
+        candidates: list[str] = [k for k in ordered_keys if k in self._model_config.providers]
+
+        # Append any other configured chat-capable providers not in standard list
+        chat_types = {"ollama", "groq", "gemini", "openrouter", "nvidia", "openai", "anthropic"}
+        for pid, cfg in self._model_config.providers.items():
+            if cfg.provider in chat_types and pid not in candidates:
+                candidates.append(pid)
+
+        return candidates
+
     def invalidate_task(self, task: str) -> None:
         """Reload configuration for the specified task."""
         self._instances.clear()

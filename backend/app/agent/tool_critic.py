@@ -14,58 +14,13 @@ import ast
 import contextlib
 import re
 from dataclasses import dataclass, field
-from typing import Any
-
+from app.agent.archive_context import (
+    ARCHIVE_SCHEMA,
+    KNOWN_COLUMN_HALLUCINATIONS,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Broadsheet Database Schema Map (MySQL 8.0)
-# ---------------------------------------------------------------------------
-
-ARCHIVE_SCHEMA: dict[str, frozenset[str]] = {
-    "newspapers": frozenset({"id", "name"}),
-    "issues": frozenset({"id", "newspaper_id", "issue_date", "total_pages"}),
-    "articles": frozenset({
-        "id",
-        "issue_id",
-        "headline",
-        "subheadline",
-        "byline_author",
-        "section",
-        "article_type",
-        "prominence_score",
-        "word_count",
-        "summary",
-        "full_text",
-        "category_id",
-    }),
-    "article_categories": frozenset({"id", "name"}),
-    "pages": frozenset({"id", "issue_id", "page_number", "is_advertisement_page"}),
-    "photos": frozenset({"id", "article_id", "page_id", "caption", "visual_type"}),
-    "entities": frozenset({"id", "name", "type"}),
-    "article_entities": frozenset({
-        "article_id",
-        "entity_id",
-        "mention_count",
-        "salience_score",
-    }),
-}
-
-# Known common hallucinated column mappings -> legitimate schema replacements
-KNOWN_COLUMN_HALLUCINATIONS: dict[str, str] = {
-    "published_at": "issues.issue_date (join `issues` on `articles.issue_id = issues.id`)",
-    "publish_date": "issues.issue_date (join `issues` on `articles.issue_id = issues.id`)",
-    "publication_date": "issues.issue_date (join `issues` on `articles.issue_id = issues.id`)",
-    "section_name": "articles.section",
-    "category": "article_categories.name (join `article_categories` on `articles.category_id = article_categories.id`)",
-    "edition": "newspapers.name or issues.issue_date",
-    "city": "newspapers.name",
-    "sentiment": "prominence_score or custom calculation",
-    "is_ad": "articles.article_type = 'advertisement' or pages.is_advertisement_page",
-    "ad": "articles.article_type = 'advertisement'",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +377,13 @@ class ToolCritic:
             all_issues.append(f"Subprocess runtime error: {error}")
             if "UnboundLocalError" in error and "text" in error:
                 all_fixes.append("UnboundLocalError on 'text': You assigned to a variable named 'text = ...' which shadows 'from sqlalchemy import text'. Rename your variable to 'snippet', 'content', or 'article_text'.")
+            elif "strptime" in error and ("None" in error or "str" in error):
+                all_fixes.append(
+                    "TypeError in strptime(): strptime() was called with a None value. "
+                    "Dates from `context` (e.g. `context.get('target_date')` or `context.get('issue_date')`) are ALREADY ISO strings ('YYYY-MM-DD'). "
+                    "Pass them directly into SQL parameters without calling datetime.strptime(). "
+                    "If parsing optional dates from text, always guard with `if date_str:`."
+                )
             else:
                 all_fixes.append("Fix uncaught exception, type error, or missing await.")
 

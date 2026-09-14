@@ -560,6 +560,32 @@ async def test_count_issues_zero_hits_returns_archive_range() -> None:
     assert "The Goan" in res["archive_newspapers"]
 
 
+@pytest.mark.asyncio
+async def test_sql_analytics_dispatcher_dispatch() -> None:
+    from app.agent.sql_dispatcher import SQLAnalyticsDispatcher
+
+    mock_sql = MagicMock()
+    mock_sql.count_articles = AsyncMock(
+        return_value={"count": 15, "articles": [], "filters": {"newspaper_name": "Mint"}}
+    )
+
+    dispatcher = SQLAnalyticsDispatcher(sql_analytics=mock_sql)
+    state = {"query": "how many articles in Mint?", "archetype": "quantitative_trend"}
+    args = {"analysis_type": "count_articles", "newspaper_name": "Mint"}
+
+    result = await dispatcher.dispatch(args, state)
+    assert result is not None
+    items, hits, ctx = result
+    assert hits == 15
+    assert len(items) == 1
+    assert items[0]["source_tool"] == "sql_analytics"
+    assert "15" in items[0]["snippet"]
+
+    # Verify unhandled analysis type returns None for dynamic fallback
+    unhandled = await dispatcher.dispatch({"analysis_type": "custom_python_metric"}, state)
+    assert unhandled is None
+
+
 
 
 

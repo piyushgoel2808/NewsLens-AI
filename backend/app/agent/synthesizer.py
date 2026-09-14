@@ -44,28 +44,9 @@ _clean_snippet = clean_snippet
 _detect_domain_from_query = detect_domain_from_query
 _is_domain_match = is_domain_match
 
-# Provider failover sequences
-DEFAULT_CLOUD_FAILOVER: tuple[str, ...] = (
-    "nvidia_nemotron",
-    "openrouter_nemotron",
-    "openrouter_gemma4_26b",
-    "gemini_flash",
-    "groq_compound",
-    "openai_gpt4o_mini",
-    "groq_qwen",
-    "ollama_llama3",
-    "ollama_deepseek",
-)
-
-DEFAULT_LOCAL_FAILOVER: tuple[str, ...] = (
-    "nvidia_nemotron",
-    "ollama_llama3",
-    "ollama_deepseek",
-    "openrouter_nemotron",
-    "openrouter_gemma4_26b",
-    "gemini_flash",
-    "groq_compound",
-)
+# Provider failover sequences (delegated to dynamic ModelRegistry)
+DEFAULT_CLOUD_FAILOVER: tuple[str, ...] = ()
+DEFAULT_LOCAL_FAILOVER: tuple[str, ...] = ()
 
 
 def parse_thought_and_answer(text: str) -> tuple[str, str]:
@@ -452,9 +433,9 @@ class AnswerSynthesizer:
             and getattr(primary, "provider_name", "") in {"openrouter", "gemini", "groq", "openai", "nvidia"}
         ) or (model_override and any(p in model_override for p in ["openrouter", "gemini", "groq", "openai", "nvidia"]))
 
-        failover_keys = DEFAULT_CLOUD_FAILOVER if is_cloud_request else DEFAULT_LOCAL_FAILOVER
         try:
             registry = get_registry()
+            failover_keys = registry.get_chat_failover_candidates(prefer_local=not is_cloud_request)
             for key in failover_keys:
                 try:
                     p = registry.get_chat_provider(key)

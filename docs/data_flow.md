@@ -158,6 +158,7 @@ sequenceDiagram
     participant Critic as ToolCritic (5-Metric Audit)
     participant CRAG as Corrective RAG (CRAG) Evaluator
     participant Synth as 4-Tier Answer Synthesizer
+    participant Verifier as Reflective Answer Verifier
     participant SSE as SSE Streaming Response
 
     User->>Cache: Submit Query + Session ID + Optional attached_article_id / attached_photo_id
@@ -170,8 +171,8 @@ sequenceDiagram
         Planner->>Planner: Classify Archetype, Synthesize Tool Plan & Dynamic AnswerBlueprint
         Planner->>Tools: Dispatch Planned Tool Calls (Asynchronous)
         par Concurrent Tool Invocations
-            Tools->>DB: inspect_visual_asset (Charts/Tables/Photos via Strategies A-E & On-Demand VLM)
-            Tools->>DB: sql_analytics (Fast-Path Manifest / Photo Counts / Ad Audits / Issue Summary)
+            Tools->>DB: inspect_visual_asset (VisualInspectionEngine: Strategies A-E & On-Demand VLM)
+            Tools->>DB: sql_analytics (SQLAnalyticsDispatcher: Manifest / Counts / Coverage Difference)
             Tools->>DB: hybrid_search (Dense Qdrant BGE-M3 + Sparse MySQL RRF)
             Tools->>DB: entity_search (Knowledge Graph & Mentions)
             Tools->>DB: timeline_builder (Chronological Progression)
@@ -211,9 +212,20 @@ sequenceDiagram
         end
         CRAG->>Synth: Verified High-Confidence Evidence + AnswerBlueprint
         Synth->>Synth: Compile Structure from Blueprint, Budget Full-Text & Strip Robotic Tables
+        Synth->>Verifier: Draft Answer + Evidence Ground Truth
+        Verifier->>Verifier: 4-Dimension Audit (Faithfulness, Absence, Fluff, Scope) + Fast Gates (<5ms)
+        alt Verifier Verdict: fallback_to_dynamic_tool
+            Verifier->>ToolMaker: Request Dynamic Analysis Tool for Missing Data
+            ToolMaker->>Sandbox: Execute in AST Sandbox
+            Sandbox-->>Critic: 5-Metric Audit
+            Critic-->>Synth: Injected Verified Dynamic Ground Truth
+            Synth->>Synth: Re-Synthesize Final Grounded Brief
+        else Verifier Verdict: accept / refine_answer
+            Verifier->>Verifier: Apply Refinements or Accept Draft
+        end
         Synth->>SSE: Stream Response Tokens, Visual Cards & Reasoning Trace
         SSE-->>User: Real-Time Markdown Stream + Provenance Citations + Photo Thumbnails
-        Synth->>DB: Persist Query Audit Log in `query_logs` (including plan_json.answer_blueprint)
+        Synth->>DB: Persist Query Audit Log in `query_log` (including plan_json.answer_blueprint)
         Synth->>Cache: Cache Result (TTL: 1 Hour)
     end
 ```
@@ -284,6 +296,16 @@ sequenceDiagram
 │ • Enforce strict broadsheet citation format:                │
 │   [{Newspaper}, {YYYY-MM-DD}, Page {N}, "{Headline}"]       │
 │ • Enforce Quantitative Metric Absence Hard-Stop             │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Reflective Answer Verification (answer_verifier.py)      │
+│ • Fast Gates (<5ms): scope check, date alignment, absence   │
+│ • Reflexive LLM Audit: 4-dimension groundedness & fluff cut │
+│ • If evidence gap diagnosed: emit fallback_to_dynamic_tool  │
+│   → Loops back to execute_dynamic_code (1-cycle ceiling)    │
+│ • Verified brief passed to SSE streaming engine             │
 └─────────────────────────────────────────────────────────────┘
 ```
 

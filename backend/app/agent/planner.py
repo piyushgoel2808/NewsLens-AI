@@ -19,7 +19,10 @@ from app.agent.extractor import (
     extract_parameters_from_query,
     is_archive_wide_newspaper_query,
 )
-from app.agent.archive_context import STATIC_BROADSHEET_SCHEMA
+from app.agent.archive_context import (
+    STATIC_BROADSHEET_SCHEMA,
+    get_known_publications,
+)
 from app.agent.models import (
     AgentPlan,
     AnswerBlueprint,
@@ -74,6 +77,9 @@ def is_dynamic_analysis_permitted(query: str) -> bool:
     count refers to an answer length constraint (e.g. 'summarize the article in 100 words' or 'explain in 2 sentences').
     """
     q_low = query.lower()
+    has_math = any(re.search(pat, q_low) for pat in MATH_AGGREGATE_PATTERNS)
+    if has_math:
+        return True
     is_answer_length_constraint = bool(
         re.search(
             r"\b(?:summarize|summary|overview|explain|tell me about|write an essay|in brief)\b"
@@ -97,7 +103,7 @@ _PROMPT_BODY = """### 🛠️ STRICT OPERATIONAL TOOL CONTRACTS & BOUNDARIES
 1. `sql_analytics`: Relational system of record for FIXED, PRE-COMPILED routines.
    - Arguments: {"analysis_type": "issue_summary" | "count_articles" | "count_advertisements" | "count_photos" | "count_issues" | "coverage_difference" | "shared_coverage", "newspaper_name": str, "comparison_newspaper": str, "issue_date": "YYYY-MM-DD", "date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "category_filter": str, "page_filter": str, "query": str}
    - STRICT ENUM REQUIREMENT: `analysis_type` MUST be one of these 7 exact literals:
-     * `count_issues`: Issue availability, publication rosters, and issue volume (e.g. 'LIST DISTINCT NEWSPAPER NAMES IN SEPTEMBER 2026', 'is any newspaper available on 28/04/2026', 'total issues of The Goan').
+     * `count_issues`: Issue availability, publication rosters, and issue volume (e.g. 'list available newspapers in September 2026', 'is any newspaper available on 2026-04-28', 'total issues of a publication').
      * `count_articles`: Total article count for a newspaper or date range.
      * `count_advertisements`: Advertisement and commercial notices count.
      * `count_photos`: Photo and visual assets count.
@@ -108,7 +114,7 @@ _PROMPT_BODY = """### 🛠️ STRICT OPERATIONAL TOOL CONTRACTS & BOUNDARIES
 
 2. `dynamic_analysis`: LLM-synthesized custom Python & SQL analysis engine.
    - Arguments: {"query": str, "analysis_description": str}
-   - POSITIVE SCOPE: Use for ANY question requiring calculations, mathematical aggregations, averages (e.g. 'WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026', 'average word count of editorials'), distributions (e.g. 'distribution of word counts'), ratios, author statistics, correlations, or multi-table SQL groupings across the broadsheet schema.
+   - POSITIVE SCOPE: Use for ANY question requiring calculations, mathematical aggregations, averages (e.g. 'what is the average length of articles in The Times dated 2026-08-01', 'average word count of editorials'), distributions (e.g. 'distribution of word counts'), ratios, author statistics, correlations, or multi-table SQL groupings across the broadsheet schema.
    - ⚠️ NEGATIVE CONSTRAINT: NEVER schedule `dynamic_analysis` for text summarization, reading articles, quotes, or narrative inquiries (e.g. 'summarize article in 100 words' uses `hybrid_search`, where word count is an answer length constraint, not a database calculation).
 
 3. `hybrid_search`: Dense vector + BM25 keyword search for factual answers, quotes, and specific events.
@@ -136,41 +142,41 @@ _PROMPT_BODY = """### 🛠️ STRICT OPERATIONAL TOOL CONTRACTS & BOUNDARIES
    - Use for: Extracting specific numbers, data tables, infographic graphics, charts, and captions from an attached, cited, or inquired broadsheet visual asset, or checking if an article/page has infographics or graphs.
 
 ### 📚 FEW-SHOT EXAMPLES
-Query: "WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026"
-Output: {"thought_process": "Calculating the average article length or word count requires database aggregation beyond the fixed count tools in sql_analytics. Schedule dynamic_analysis.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026", "analysis_description": "Compute the average article length and word count distribution in The Goan on 2026-08-01"}, "purpose": "Synthesize and execute dynamic Python/SQL tool to calculate average article length"}]}
+Query: "What is the average length of articles in Financial Times on 2026-05-10?"
+Output: {"thought_process": "Calculating the average article length or word count requires database aggregation beyond the fixed count tools in sql_analytics. Schedule dynamic_analysis.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "What is the average length of articles in Financial Times on 2026-05-10?", "analysis_description": "Compute the average article length and word count distribution in Financial Times on 2026-05-10"}, "purpose": "Synthesize and execute dynamic Python/SQL tool to calculate average article length"}]}
 
-Query: "LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN SEPTEMBER 2026"
-Output: {"thought_process": "User is requesting a roster of distinct newspapers available across September 2026. Schedule sql_analytics count_issues across the September date range without publication constraints.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues", "date_from": "2026-09-01", "date_to": "2026-09-30"}, "purpose": "Retrieve distinct newspapers and issue counts in September 2026"}]}
+Query: "List distinct newspaper names available in July 2026"
+Output: {"thought_process": "User is requesting a roster of distinct newspapers available across July 2026. Schedule sql_analytics count_issues across the July date range without publication constraints.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues", "date_from": "2026-07-01", "date_to": "2026-07-31"}, "purpose": "Retrieve distinct newspapers and issue counts in July 2026"}]}
 
-Query: "What happened to Tata Power on page 3?"
-Output: {"thought_process": "Factual question about Tata Power on page 3. Direct hybrid search bounded to page 3.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "hybrid_search", "arguments": {"query": "Tata Power", "page_filter": "3", "top_k": 6}, "purpose": "Search page 3 for Tata Power reporting"}]}
+Query: "What happened regarding the high-speed rail corridor on page 3?"
+Output: {"thought_process": "Factual question about high-speed rail corridor on page 3. Direct hybrid search bounded to page 3.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "hybrid_search", "arguments": {"query": "high-speed rail corridor", "page_filter": "3", "top_k": 6}, "purpose": "Search page 3 for high-speed rail reporting"}]}
 
-Query: "Calculate the Pearson correlation between daily article counts in Hindustan Times and The Goan over August 2026"
-Output: {"thought_process": "Mathematical correlation between daily article volumes across two newspapers. Requires statistical computation beyond sql_analytics.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "Pearson correlation between daily article counts in Hindustan Times and The Goan over August 2026", "analysis_description": "Compute Pearson correlation between daily article counts of Hindustan Times and The Goan in August 2026"}, "purpose": "Synthesize and execute dynamic Python correlation tool"}]}
+Query: "Calculate the Pearson correlation between daily article counts in The Indian Express and The Hindu over June 2026"
+Output: {"thought_process": "Mathematical correlation between daily article volumes across two newspapers. Requires statistical computation beyond sql_analytics.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "Pearson correlation between daily article counts in The Indian Express and The Hindu over June 2026", "analysis_description": "Compute Pearson correlation between daily article counts of The Indian Express and The Hindu in June 2026"}, "purpose": "Synthesize and execute dynamic Python correlation tool"}]}
 
-Query: "What are the exact figures and routes shown in this infographic?" (Attached asset photo_id: 5382)
-Output: {"thought_process": "User is asking about specific figures and content in an attached infographic. Schedule inspect_visual_asset.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "inspect_visual_asset", "arguments": {"photo_id": 5382, "query": "transport routes and figures"}, "purpose": "Transcribe and analyze infographic visual crop"}]}
+Query: "What are the exact figures and data points shown in this infographic?" (Attached asset photo_id: 1042)
+Output: {"thought_process": "User is asking about specific figures and content in an attached infographic. Schedule inspect_visual_asset.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "inspect_visual_asset", "arguments": {"photo_id": 1042, "query": "figures and data points"}, "purpose": "Transcribe and analyze infographic visual crop"}]}
 
-Query: "Does the Brics article on page 4 have any infographics or graphs with it?"
-Output: {"thought_process": "Inquiring about visual assets, charts, or infographics attached to an article on page 4.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "inspect_visual_asset", "arguments": {"query": "Brics multipolarity Global South agenda", "page_filter": "4"}, "purpose": "Inspect visual charts and infographics on page 4"}, {"tool_name": "hybrid_search", "arguments": {"query": "Brics multipolarity Global South agenda", "page_filter": "4", "top_k": 4}, "purpose": "Retrieve article textual context"}]}
+Query: "Does the renewable energy article on page 4 have any infographics or graphs with it?"
+Output: {"thought_process": "Inquiring about visual assets, charts, or infographics attached to an article on page 4.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "inspect_visual_asset", "arguments": {"query": "renewable energy solar wind power", "page_filter": "4"}, "purpose": "Inspect visual charts and infographics on page 4"}, {"tool_name": "hybrid_search", "arguments": {"query": "renewable energy solar wind power", "page_filter": "4", "top_k": 4}, "purpose": "Retrieve article textual context"}]}
 
-Query: "How many issues of The Goan are in the archive?"
-Output: {"thought_process": "Quantitative count of newspaper issues. Schedule sql_analytics to retrieve archive count.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "analysis_type": "count_issues"}, "purpose": "Count total issues of The Goan"}]}
+Query: "How many total issues of The Guardian are in the archive?"
+Output: {"thought_process": "Quantitative count of newspaper issues. Schedule sql_analytics to retrieve archive count.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Guardian", "analysis_type": "count_issues"}, "purpose": "Count total issues of The Guardian"}]}
 
-Query: "Is any newspaper available for dated 28/04/2026?"
-Output: {"thought_process": "Relational archive availability inquiry for 2026-04-28. Schedule sql_analytics count_issues with exact date.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues", "issue_date": "2026-04-28"}, "purpose": "Check archive newspaper availability for 2026-04-28"}], "answer_blueprint": {"user_intent": "archive_availability", "overall_tone": "concise_atomic", "target_word_count": 90, "sections": [{"title": "### ⚡ Availability Status", "format_type": "narrative", "content_focus": "Direct authoritative statement stating whether newspaper issues exist in the archive for the queried date", "target_length": "1 to 2 crisp sentences"}, {"title": "### 📋 Archive Scope & Available Coverage", "format_type": "bullet_list", "content_focus": "Compact list of available newspapers on that date, or if none, the verified archive date range and available publications", "target_length": "Compact bullet points"}], "prohibited_elements": ["speculative corporate strategy or publication planning advice", "fake future collaboration suggestions", "claiming positive availability when count is zero", "conversational filler"]}}
+Query: "Is any newspaper available for dated 2024-04-15?"
+Output: {"thought_process": "Relational archive availability inquiry for 2024-04-15. Schedule sql_analytics count_issues with exact date.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues", "issue_date": "2024-04-15"}, "purpose": "Check archive newspaper availability for 2024-04-15"}], "answer_blueprint": {"user_intent": "archive_availability", "overall_tone": "concise_atomic", "target_word_count": 90, "sections": [{"title": "### ⚡ Availability Status", "format_type": "narrative", "content_focus": "Direct authoritative statement stating whether newspaper issues exist in the archive for the queried date", "target_length": "1 to 2 crisp sentences"}, {"title": "### 📋 Archive Scope & Available Coverage", "format_type": "bullet_list", "content_focus": "Compact list of available newspapers on that date, or if none, the verified archive date range and available publications", "target_length": "Compact bullet points"}], "prohibited_elements": ["speculative corporate strategy or publication planning advice", "fake future collaboration suggestions", "claiming positive availability when count is zero", "conversational filler"]}}
 
-Query: "How many advertisements are there in Hindustan Times 2026-09-11?"
-Output: {"thought_process": "Quantitative count of advertisements in Hindustan Times on 2026-09-11. Schedule sql_analytics count_advertisements.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "Hindustan Times", "issue_date": "2026-09-11", "analysis_type": "count_advertisements"}, "purpose": "Count total advertisements in Hindustan Times on 2026-09-11"}]}
+Query: "How many advertisements are there in The Times of India on 2026-06-15?"
+Output: {"thought_process": "Quantitative count of advertisements in The Times of India on 2026-06-15. Schedule sql_analytics count_advertisements.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Times of India", "issue_date": "2026-06-15", "analysis_type": "count_advertisements"}, "purpose": "Count total advertisements in The Times of India on 2026-06-15"}]}
 
-Query: "List all health news in The Goan on 2026-08-01"
-Output: {"thought_process": "Relational catalog query for health articles in The Goan.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "issue_date": "2026-08-01", "category_filter": "Health", "analysis_type": "issue_summary"}, "purpose": "Retrieve complete manifest of Health articles"}]}
+Query: "List all business and finance news in The Economic Times on 2026-05-20"
+Output: {"thought_process": "Relational catalog query for business articles in The Economic Times.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Economic Times", "issue_date": "2026-05-20", "category_filter": "Business", "analysis_type": "issue_summary"}, "purpose": "Retrieve complete manifest of Business articles"}]}
 
-Query: "Compare all available newspapers dated 1/8/2026 on health related news"
-Output: {"thought_process": "Cross-newspaper domain comparison on health. First fetch SQL manifest for all newspapers on that date, then retrieve comparative excerpts.", "archetype": "cross_newspaper_comparison", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"issue_date": "2026-08-01", "category_filter": "Health", "analysis_type": "issue_summary", "query": "health related news"}, "purpose": "Fetch complete manifest of health articles across all newspapers"}, {"tool_name": "hybrid_search", "arguments": {"query": "health related news", "category_filter": "Health", "date_from": "2026-08-01", "date_to": "2026-08-01", "top_k": 12}, "purpose": "Retrieve comparative excerpts across broadsheet editions"}]}
+Query: "Compare all available newspapers dated 2026-05-20 on healthcare policy"
+Output: {"thought_process": "Cross-newspaper domain comparison on healthcare policy. First fetch SQL manifest for all newspapers on that date, then retrieve comparative excerpts.", "archetype": "cross_newspaper_comparison", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"issue_date": "2026-05-20", "category_filter": "Health", "analysis_type": "issue_summary", "query": "healthcare policy"}, "purpose": "Fetch complete manifest of healthcare articles across all newspapers"}, {"tool_name": "hybrid_search", "arguments": {"query": "healthcare policy hospitals insurance", "category_filter": "Health", "date_from": "2026-05-20", "date_to": "2026-05-20", "top_k": 12}, "purpose": "Retrieve comparative excerpts across broadsheet editions"}]}
 
-Query: "Give me the similar articles from The Goan and The Morning Standard on 1/8/2026"
-Output: {"thought_process": "User wants shared/similar syndicated wire stories between The Goan and The Morning Standard. Schedule shared_coverage analysis.", "archetype": "cross_newspaper_comparison", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "comparison_newspaper": "The Morning Standard", "issue_date": "2026-08-01", "analysis_type": "shared_coverage"}, "purpose": "Identify verified shared syndicated wire coverage between The Goan and The Morning Standard"}, {"tool_name": "hybrid_search", "arguments": {"query": "national world syndicated wire news", "date_from": "2026-08-01", "date_to": "2026-08-01", "top_k": 8}, "purpose": "Retrieve corroborating shared article texts"}]}
+Query: "Give me the similar articles from The Indian Express and The Hindu on 2026-05-20"
+Output: {"thought_process": "User wants shared/similar syndicated wire stories between The Indian Express and The Hindu. Schedule shared_coverage analysis.", "archetype": "cross_newspaper_comparison", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Indian Express", "comparison_newspaper": "The Hindu", "issue_date": "2026-05-20", "analysis_type": "shared_coverage"}, "purpose": "Identify verified shared syndicated wire coverage between The Indian Express and The Hindu"}, {"tool_name": "hybrid_search", "arguments": {"query": "national world syndicated wire news", "date_from": "2026-05-20", "date_to": "2026-05-20", "top_k": 8}, "purpose": "Retrieve corroborating shared article texts"}]}
 
 ### ⚡ REASONING & OUTPUT INSTRUCTIONS
 - Keep internal chain-of-thought concise (<80 words).
@@ -553,19 +559,9 @@ class QueryPlanner:
         except Exception as e:
             logger.warning("Could not resolve primary provider for QueryPlanner", extra={"error": str(e)})
 
-        failover_keys = [
-            "nvidia_nemotron",
-            "openrouter_nemotron",
-            "openrouter_gemma4_26b",
-            "gemini_flash",
-            "groq_compound",
-            "openai_gpt4o_mini",
-            "ollama_llama3",
-            "ollama_deepseek",
-        ]
         try:
             reg = get_registry()
-            for k in failover_keys:
+            for k in reg.get_chat_failover_candidates():
                 with contextlib.suppress(Exception):
                     p = reg.get_chat_provider(k)
                     if p:
@@ -594,13 +590,16 @@ class QueryPlanner:
         for provider in providers:
             try:
                 q_lower = query.lower()
-                is_visual_query = any(
-                    w in q_lower
-                    for w in [
-                        "infographic", "data chart", "chart", "diagram", "table",
-                        "graph", "visual", "figure", "photograph", "photo",
-                        "caption", "picture", "image", "illustration", "map",
-                    ]
+                is_visual_query = bool(
+                    attached_photo_id
+                    or any(
+                        w in q_lower
+                        for w in [
+                            "infographic", "data chart", "chart", "diagram", "table",
+                            "graph", "visual", "figure", "photograph", "photo",
+                            "caption", "picture", "image", "illustration", "map",
+                        ]
+                    )
                 )
                 user_content = f"Analyze and plan the following broadsheet research query:\nQuery: \"{query}\"\n"
                 if archive_context:
@@ -614,7 +613,7 @@ class QueryPlanner:
                     if attached_article_id:
                         ctx_lines.append(f"Referenced Article ID: {attached_article_id}")
                     user_content += f"\nCONVERSATION WORKING CONTEXT:\n" + "\n".join(ctx_lines) + "\n"
-                if (attached_photo_id or attached_article_id) and is_visual_query:
+                if attached_photo_id or (attached_article_id and is_visual_query):
                     user_content += f"\nATTACHED VISUAL ASSET CONTEXT:\nAttached Photo ID: {attached_photo_id or 'None'}\nAttached Article ID: {attached_article_id or 'None'}\n"
                 user_content += "\nSchedule the exact tool calls needed to gather evidence for this query."
 
@@ -751,7 +750,7 @@ class QueryPlanner:
                 )
                 tool_calls.append(PlannedToolCall(tool_name=spec.tool_name, arguments=args, purpose=spec.purpose))
 
-        # 2. Legacy adapter: if mock/LLM provided primary_tool or arguments without tool_calls
+        # 2. Legacy adapter: if mock/legacy caller provided primary_tool or arguments without tool_calls
         elif plan_obj.primary_tool or plan_obj.arguments:
             raw_args: dict[str, Any] = {}
             if isinstance(plan_obj.arguments, dict):
@@ -790,7 +789,7 @@ class QueryPlanner:
                 elif src_np and comp_np and is_diff:
                     tool_calls.append(build_sql_difference_tool(src_np, comp_np, args.get("query", query), target_dt))
                     tool_calls.append(build_hybrid_search_tool(args.get("query", query), newspaper_name=src_np, top_k=10, purpose=f"Articles from {src_np}"))
-                elif plan_obj.primary_tool == "coverage_analysis" and not src_np and not args.get("category_filter") and not target_dt:
+                elif primary_tool_name == "coverage_analysis" and not target_dt:
                     tool_calls.append(build_coverage_analysis_tool(args.get("query", query)))
                 else:
                     tool_calls.append(build_sql_summary_tool(
@@ -813,20 +812,8 @@ class QueryPlanner:
                     if not src_np and target_dt and not args.get("category_filter"):
                         tool_calls.append(build_coverage_analysis_tool(args.get("query", query), target_date=target_dt))
             else:
-                primary = plan_obj.primary_tool or ("sql_analytics" if archetype in ("quantitative_trend", "article_catalog") else "hybrid_search")
-                if primary == "hybrid_search":
-                    is_target_art = bool(
-                        re.search(r"[\"“][^\"”]{8,150}[\"”]", query)
-                        or re.search(
-                            r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|ir)?\s*(?:article|story|piece|it)\b",
-                            query.lower(),
-                        )
-                        or re.search(r"\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b", query.lower())
-                    ) and not any(w in query.lower() for w in ["how many", "count", "list all", "catalog", "compare all"])
-                    if is_target_art and "top_k" in args and int(args.get("top_k") or 6) > 3:
-                        args["top_k"] = 3
-                tool_calls.append(PlannedToolCall(tool_name=primary, arguments=args, purpose=f"Execute {primary}"))
-                if getattr(plan_obj, "include_secondary_hybrid_search", False) and primary != "hybrid_search":
+                tool_calls.append(PlannedToolCall(tool_name=primary_tool_name, arguments=args, purpose=f"Execute {primary_tool_name}"))
+                if getattr(plan_obj, "include_secondary_hybrid_search", False) and primary_tool_name != "hybrid_search":
                     tool_calls.append(build_hybrid_search_tool(getattr(plan_obj, "secondary_search_query", None) or query, top_k=6, purpose="Corroborating search"))
 
         # 3. Fallback if no tool calls produced
@@ -842,17 +829,20 @@ class QueryPlanner:
             tool_calls = heur.tool_calls
 
         q_lower = query.lower()
-        is_visual_query = any(
-            w in q_lower
-            for w in [
-                "infographic", "data chart", "chart", "diagram", "table",
-                "graph", "visual", "figure", "photograph", "photo",
-                "caption", "picture", "image", "illustration", "map",
-            ]
+        is_visual_query = bool(
+            attached_photo_id
+            or any(
+                w in q_lower
+                for w in [
+                    "infographic", "data chart", "chart", "diagram", "table",
+                    "graph", "visual", "figure", "photograph", "photo",
+                    "caption", "picture", "image", "illustration", "map",
+                ]
+            )
         )
 
-        # Guardrail: If inspect_visual_asset was emitted for non-visual text query, strip it
-        if not is_visual_query and not (attached_photo_id and any(w in q_lower for w in ["see", "look", "what is", "shown", "attached"])):
+        # Guardrail: If inspect_visual_asset was emitted for non-visual text query without an attached photo, strip it
+        if not is_visual_query and not attached_photo_id:
             tool_calls = [t for t in tool_calls if t.tool_name != "inspect_visual_asset"]
         # Guardrail: dynamic_analysis is for database calculations, aggregations, averages, and statistics.
         # Only strip it if the query was a narrative reading/summarization request with an answer length constraint.
@@ -869,7 +859,7 @@ class QueryPlanner:
                 purpose=f"Search broadsheet reporting on {query[:50]}",
             ))
 
-        if attached_photo_id and is_visual_query and not any(t.tool_name == "inspect_visual_asset" for t in tool_calls):
+        if attached_photo_id and not any(t.tool_name == "inspect_visual_asset" for t in tool_calls):
             np_target = (active_newspapers[0] if active_newspapers else None) or extracted.get("newspaper_name") or ""
             dt_target = active_issue_date or extracted.get("issue_date") or ""
             tool_calls.insert(0, build_inspect_visual_asset_tool(
@@ -1053,7 +1043,7 @@ class QueryPlanner:
 
             if "missing_newspaper_coverage" in diag or "missing articles from" in diag:
                 # Find which newspaper is missing
-                for np_name in ["The Morning Standard", "The Goan", "Hindustan Times"]:
+                for np_name in get_known_publications():
                     if np_name.lower() in diag:
                         planned_calls.append(build_hybrid_search_tool(
                             query=query,
@@ -1131,7 +1121,7 @@ class QueryPlanner:
         # 0. Visual Asset / Infographic Inspection
         is_visual = any(w in q_lower for w in ["infographic", "data chart", "chart", "diagram", "table", "graph", "visual", "figure", "photograph", "photo", "caption", "picture", "image"])
         has_vis_trigger = any(w in q_lower for w in ["this", "the infographic", "attached", "chart", "diagram", "table", "above", "shown", "it have", "have any", "has any", "with it", "there any", "what does the photo", "show the photo"])
-        if (attached_photo_id and (is_visual or has_vis_trigger)) or (attached_article_id and is_visual and has_vis_trigger) or (is_visual and has_vis_trigger):
+        if attached_photo_id or (attached_article_id and is_visual and has_vis_trigger) or (is_visual and has_vis_trigger):
             calls = [
                 build_inspect_visual_asset_tool(photo_id=attached_photo_id, article_id=attached_article_id, query=query, newspaper_name=newspaper or "", issue_date=issue_date or "", page_filter=page_filter or "", purpose="Inspect visual crop and transcribe numerical data table"),
                 build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=4, purpose="Contextual article evidence"),

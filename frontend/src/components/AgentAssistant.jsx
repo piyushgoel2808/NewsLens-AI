@@ -322,9 +322,8 @@ export default function AgentAssistant() {
         selectedArticleId &&
         Number(activeAttachedAsset.articleId) !== Number(selectedArticleId)
       );
-      const isVisualQuery = /\b(photo|image|picture|graphic|chart|infographic|diagram|table|figure|visual|caption)\b/i.test(queryText);
       const effectiveArticleId = selectedArticleId || (isStaleAsset ? undefined : activeAttachedAsset?.articleId) || undefined;
-      const effectivePhotoId = isStaleAsset ? undefined : (isVisualQuery ? activeAttachedAsset?.photoId : undefined);
+      const effectivePhotoId = isStaleAsset ? undefined : (activeAttachedAsset?.photoId || undefined);
       const effectiveIssueDate = isStaleAsset ? undefined : activeAttachedAsset?.issueDate;
       const effectiveNewspaperName = isStaleAsset ? undefined : activeAttachedAsset?.newspaperName;
 

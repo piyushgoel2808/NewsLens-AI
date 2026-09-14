@@ -66,6 +66,9 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
 3. **The Necessity of Deterministic Fallbacks**:
    - Local vision models (e.g. running on Apple Silicon or consumer GPUs) occasionally return empty responses (`''`) or encounter memory timeouts when parsing high-density financial matrices.
    - **The Deterministic Spatial OCR Matrix Reconstruction Engine** was engineered as a zero-failure fallback: when VLM structured extraction returns empty, the spatial matrix algorithm reconstructs tabular data directly from OCR bounding boxes with confidence $\ge 0.85$.
+4. **Resilient Dynamic Provider Failover (`ModelRegistry.get_chat_failover_candidates`)**:
+   - Computes an ordered, filtered candidate list of active providers capable of chat/tool-calling.
+   - Automatically prioritizes cloud endpoints (`nvidia_nemotron`, `openrouter_nemotron`, `openrouter_gemma4_26b`, `gemini_flash`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, etc.) or sovereign local Ollama instances based on `prefer_local` policy, ensuring uninterrupted agent execution during external rate limits or transient outages.
 
 ---
 
@@ -265,6 +268,17 @@ Statutory and commercial disclosures (*QIP announcements, IPO prospectus summari
    │  • Quantitative Metric Absence Hard-Stop                    │
    │  • Broadsheet Ligature Repair & Author Box Cleansing        │
    │  • Strict 1-Shot Citations: [Paper, YYYY-MM-DD, Page, Title]│
+   └──────────────────────────────┬──────────────────────────────┘
+                                  │
+                                  ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │      Reflective Answer Verifier & Fact-Checking Critic      │
+   │  • 4-Dimension Editorial Audit (Faithfulness, Absence,      │
+   │    Fluff Elimination, Publication Scope & Date Alignment)   │
+   │  • Fast-Gate Check (<5ms) for deterministic invariants      │
+   │  • Conditional LangGraph Routing with 1-Cycle Ceiling:      │
+   │    ├─► Valid / Refined ──────────► Log & Deliver via SSE    │
+   │    └─► Evidence Gap Detected ────► execute_dynamic_code     │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
@@ -494,6 +508,90 @@ The **Dynamic Answer Blueprint Architecture** separates presentation planning fr
 
 ---
 
+### J. Reflective LLM Answer Verifier & Editorial Fact-Checking Critic (`answer_verifier.py`)
+
+Synthesized broadsheet briefs are audited prior to client delivery by an editorial verification critic that acts as a post-generation safeguard:
+
+1. **Two-Tier Verification Architecture**:
+   - **Tier 1 (Deterministic Fast Gates, <5ms)**: Runs fast regex and string checks against retrieved evidence:
+     - `_verify_publication_scope()`: Scans the draft for mentions of un-retrieved or out-of-scope publications.
+     - `_verify_date_alignment()`: Verifies that cited dates match the requested query range and verified evidence.
+     - `_verify_absence_faithfulness()`: If evidence documents 0 records/omissions, checks that the draft does not hallucinate positive counts or availability.
+   - **Tier 2 (Reflexive LLM Auditor)**: For complex analytical and multi-source answers, prompts an LLM with `ANSWER_VERIFIER_SYSTEM_PROMPT` to grade four core dimensions:
+     1. *Faithfulness & Truthfulness*: Ensures every assertion, number, and quote is grounded in evidence.
+     2. *Contradiction Detection*: Flags positive claims when evidence demonstrates absence.
+     3. *Speculative Fluff Elimination*: Strips ungrounded corporate consulting advice and dummy placeholder citations.
+     4. *Evidence Gap Detection*: Diagnoses missing facts and routes to dynamic tools when code execution is required.
+
+2. **Typed Audit Verdict (`AnswerVerificationResult`)**:
+   ```python
+   @dataclass
+   class AnswerVerificationResult:
+       is_valid: bool
+       has_hallucination: bool = False
+       has_contradiction: bool = False
+       evidence_gap_detected: bool = False
+       quality_score: float = 1.0
+       factual_errors: list[str] = field(default_factory=list)
+       critique: str = ""
+       recommended_action: str = "accept"  # "accept" | "refine_answer" | "fallback_to_dynamic_tool"
+       refined_answer: str | None = None
+       dynamic_tool_hint: str | None = None
+       latency_ms: int = 0
+   ```
+
+3. **Closed-Loop Dynamic Tool Rollback Loop (`graph.py`)**:
+   - If the verifier diagnoses an evidentiary gap requiring ad-hoc code (`recommended_action="fallback_to_dynamic_tool"`), the state machine executes conditional edge `_route_after_verification`, looping back to `execute_dynamic_code`.
+   - Bounded by a strict 1-cycle ceiling (`verification_attempts < 1` and `recovery_attempts < 1`), ensuring predictable response latency.
+
+---
+
+### K. Broadsheet Visual Asset Inspection, Companion Resolution & Presentation Formatters (`retrieval/`)
+
+Retrieval logic is cleanly decoupled from state orchestration into specialized engines:
+
+1. **`visual_inspector.py` (`VisualInspectionEngine`)**:
+   - Houses the complete multimodal broadsheet visual asset discovery and transcription engine.
+   - Implements the 5-strategy discovery cascade (A: explicit photo_id + companion charts; B: target headline; C: explicit article_id + companion charts; D: multi-criteria DB search; E: scoped caption/VLM search).
+   - Features on-demand MinIO image crop streaming and Gemini/Qwen VLM transcription when placeholder descriptions are encountered.
+
+2. **`asset_resolver.py`**:
+   - Manages ground truth database metadata for attached workspace assets (`resolve_attached_asset_context`).
+   - Fast lookup for exact article IDs by quoted headline (`resolve_authoritative_article_id`).
+   - Authoritative reconciliation of attached assets, query parameters, and active issue context (`resolve_conversation_working_context`).
+
+3. **`formatters.py`**:
+   - Consolidates all human-readable markdown snippet generation: `format_issue_manifest()`, `format_coverage_matrix_snippet()`, `format_coverage_difference_snippet()`, `format_shared_coverage_snippet()`.
+   - Integrates typographic ligature repair (`repair_text_ligatures()`) across all manifest text.
+
+---
+
+### L. Softly-Decoupled Broadsheet Schema & In-Memory Archive Context (`archive_context.py`)
+
+Prior architectures tightly coupled query planning to live MySQL database connections. If the database was slow or offline, planning stalled.
+
+1. **Declarative In-Memory Schema Catalog (`STATIC_BROADSHEET_SCHEMA`)**:
+   - 100% in-memory representation of MySQL tables (`newspapers`, `issues`, `articles`, `article_categories`, `pages`, `photos`), columns, foreign keys, and relationships. Requires zero network calls.
+2. **Soft Decoupling with Graceful Fallback (`get_archive_metadata`, `get_archive_and_schema_context`)**:
+   - Retrieves live archive bounds and active publications asynchronously, cached with a 5-minute TTL via structured `ArchiveMetadata`.
+   - If database access errors or times out, immediately falls back to `get_fallback_archive_metadata()` (`STATIC_CANONICAL_PUBLICATIONS`, `STATIC_ARCHIVE_DATE_MIN`, `STATIC_ARCHIVE_DATE_MAX`, `STATIC_CANONICAL_CATEGORIES`).
+   - Guarantees that query planning and dynamic tool synthesis never fail due to database transient unavailability.
+
+---
+
+### M. Decoupled Relational SQL Analytics Dispatcher (`sql_dispatcher.py`)
+
+To achieve single-responsibility modularity in the execution pipeline, all 11 pre-compiled relational analytical routines were cleanly extracted from `executor.py` into [`backend/app/agent/sql_dispatcher.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sql_dispatcher.py):
+
+1. **Analytical Routine Dispatch (`SQLAnalyticsDispatcher.dispatch`)**:
+   - Manages: `entity_trends`, `issue_summary`, `count_ads`, `count_issues`, `count_articles`, `photo_counts`, `topic_distribution`, `frontpage_ratio`, `coverage_comparison`, `coverage_difference`, `shared_coverage`.
+2. **Dynamic Alias Normalization**:
+   - Maps synonyms (e.g. `count_advertisements` $\to$ `count_ads`, `newspaper_availability` $\to$ `count_issues`, `photos_by_section` $\to$ `photo_counts`) to canonical database routines with zero tool caller friction.
+3. **Structured Presentation Formatting**:
+   - Integrates `CoverageAnalyzer` and `formatters.py` to produce standardized, ligature-repaired Markdown manifests and coverage matrices injected directly into agent evidence state.
+
+---
+
 ## 5. Database Schema & Data Model (MySQL 8)
 
 The system maintains **16 interconnected relational tables**:
@@ -571,6 +669,10 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 16: Reflexive CRAG Evaluator & Closed-Loop Adaptive Re-Planning** | Static token overlap discarded valid dynamic tool evidence; retrieval dead-ends had no recovery path without repeating failing queries. | Built hybrid Fast-Floor (<5ms) + Reflexive LLM-as-Judge (`evaluate_evidence_async`) emitting structured `EvaluationVerdict`; added adaptive re-planner with anti-repetition guard; wired LangGraph conditional branches (`execute_adaptive_replan`, `execute_dynamic_code`) with strict 1-cycle ceiling. |
 | **Phase 17: Context Full-Text Budgeting & Robotic Table Elimination** | Truncated chunks starved single-article synthesis; visual annotations added prompt noise; single-article narrative answers rendered robotic metadata tables. | Allocated up to 7,500 chars of `parent_article_text` for single-article queries; purged visual noise; added `clean_robotic_catalog_tables()` deterministic cleaner; added headline conflict detection in `condenser.py`. |
 | **Phase 18: Dynamic Answer Blueprint Architecture** | Rigid 300-line static `if/elif/else` prompt cascade ignored explicit user formatting constraints (e.g. word counts, bullet points, table exclusions). | Designed Pydantic `SectionSpec` and `AnswerBlueprint`; dynamically synthesized blueprints in `planner.py`; compiled prompts via `compile_structure_from_blueprint()` in `synthesizer.py`, decoupling layout from generation while guaranteeing broadsheet citations. |
+| **Phase 19: Reflective Answer Verification & Publication Scope Integrity** | Synthesized answers occasionally fabricated corporate boilerplate or cited out-of-scope broadsheets when evidence documented absence. | Built `AnswerVerifier` (`answer_verifier.py`) with 4-dimension audit (faithfulness, absence integrity, fluff removal, scope/date alignment), deterministic fast gates (<5ms), and closed-loop fallback to `execute_dynamic_code`. |
+| **Phase 20: Retrieval Engine Modularization & Clean Separation of Concerns** | Monolithic `executor.py` conflated tool dispatch, visual inspection cascades, database asset reconciliation, and presentation formatting in 3,000+ lines. | Extracted `visual_inspector.py` (`VisualInspectionEngine` with Strategies A-E and MinIO crop enrichment), `asset_resolver.py` (ground truth database asset lookup and conflict analysis), and `formatters.py` (manifest and coverage matrix snippets). |
+| **Phase 21: Softly-Decoupled Broadsheet Schema & In-Memory Archive Context** | Planner depended on live MySQL database connections for archive metadata; database connection delays stalled agent planning. | Engineered `archive_context.py` providing `STATIC_BROADSHEET_SCHEMA`, in-memory TTL caching with fallback defaults (`get_archive_and_schema_context`), eliminating hard database dependencies during planning. |
+| **Phase 22: Decoupled SQL Analytics Dispatcher & Resilient Provider Failover** | Relational SQL execution logic in `executor.py` was tightly coupled to tool management; provider failover lacked dynamic chat candidate filtering. | Extracted `SQLAnalyticsDispatcher` (`sql_dispatcher.py`) encapsulating 11 pre-compiled analytical routines; added `ArchiveMetadata` dataclass and dynamic brand cache in `archive_context.py`/`extractor.py`; implemented `get_chat_failover_candidates` in `ModelRegistry`. |
 
 ---
 

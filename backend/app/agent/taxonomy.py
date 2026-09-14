@@ -26,13 +26,8 @@ DOMAIN_TAXONOMY: dict[str, dict[str, Any]] = {
             "illness", "symptom", "organ", "diet", "nutrition", "wellness", "therapy",
         ],
         "metric_col": "Key Findings & Medical Focus",
-        "negative_hl": [
-            "when: ", "where: ", "studio xo", "cases still pending", "tax collections",
-            "excise duty", "deductions", "cricket", "bjp", "congress",
-        ],
-        "required_override": [
-            "health", "doctor", "hospital", "medicine", "disease", "patient", "heart",
-        ],
+        "negative_hl": [],
+        "required_override": [],
     },
     "Sports": {
         "regex": r"\b(sports?|cricket|football|tennis|olympics?|tournaments?|match(?:es)?|boxing)\b",

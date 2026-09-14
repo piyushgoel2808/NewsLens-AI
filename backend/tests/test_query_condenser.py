@@ -193,6 +193,9 @@ class TestAgentWorkflowCondensation:
         workflow._synthesizer.synthesize = AsyncMock(  # type: ignore[method-assign]
             return_value=("Tata Power is planning nuclear units in Odisha.", [], 0.001)
         )
+        workflow._verifier.verify_answer_async = AsyncMock(  # type: ignore[method-assign]
+            return_value=MagicMock(is_valid=True, to_dict=lambda: {"is_valid": True})
+        )
 
         with patch(
             "app.agent.graph.condense_conversational_query",

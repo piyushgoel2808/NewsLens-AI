@@ -649,7 +649,7 @@ class EvidenceEvaluator:
                 p = reg.get_provider("query_planner")
                 if p is not None and hasattr(p, "complete") and p not in candidates:
                     candidates.append(p)
-            for k in ["gemini_flash", "openrouter_gemma4_26b", "groq_compound", "openai_gpt4o_mini"]:
+            for k in reg.get_chat_failover_candidates():
                 with contextlib.suppress(Exception):
                     p = reg.get_chat_provider(k)
                     if p is not None and hasattr(p, "complete") and p not in candidates:

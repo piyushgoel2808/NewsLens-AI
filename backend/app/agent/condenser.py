@@ -1,4 +1,10 @@
-"""Conversational query condensation and coreference resolution engine."""
+"""Conversational query condensation and coreference resolution engine.
+
+3-Tier Architecture:
+1. Deterministic Bypass / Gatekeeper (clean sessions, in-context meta-queries)
+2. Structured Context Assembly & LLM Few-Shot Rewriter (4 intent rules)
+3. Lightweight Normalizer & Safe Fallback (zero destructive string mutations)
+"""
 
 from __future__ import annotations
 
@@ -14,8 +20,16 @@ from app.agent.extractor import (
 from app.core.logging import get_logger
 from app.providers.base import Message
 from app.providers.registry import get_registry
+from app.retrieval.asset_resolver import (
+    resolve_attached_asset_context,
+    resolve_authoritative_article_id,
+)
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Tier 1: Deterministic Gatekeeper Patterns & Fast Bypasses
+# ---------------------------------------------------------------------------
 
 AMBIGUOUS_PRONOUNS_PATTERN = re.compile(
     r"\b(it|this|that|these|those|they|them|he|him|she|her|its|their|"
@@ -35,11 +49,6 @@ GENERIC_FOLLOWUP_SHORT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-CLEAN_SESSION_CLARIFICATION_MESSAGE = (
-    "Please specify which article, topic, or newspaper issue you would like me to summarize."
-)
-
-
 IN_CONTEXT_META_QUERY_PATTERN = re.compile(
     r"\b(which newspaper|what newspaper|what was the date|which date|what date|who wrote|"
     r"what source|which source|which paper|what paper|who is the author|give me the date|"
@@ -49,13 +58,84 @@ IN_CONTEXT_META_QUERY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_EXISTENTIAL_PREFIX_PATTERN = re.compile(
+    r"^(?:is|are|was|were)\s+there\s+(?:any\s+)?(?:news|articles?|coverage|reports?)\b",
+    re.IGNORECASE,
+)
+
+CLEAN_SESSION_CLARIFICATION_MESSAGE = (
+    "Please specify which article, topic, or newspaper issue you would like me to summarize."
+)
+
 
 def is_in_context_meta_query(query: str, chat_history: list[dict[str, Any]]) -> bool:
     """Detect if the user is asking directly about previous turn's sources, date, or metadata."""
     if not chat_history:
         return False
+    return bool(IN_CONTEXT_META_QUERY_PATTERN.search(query.strip()))
+
+
+def is_ambiguous_standalone_query(
+    query: str,
+    chat_history: list[dict[str, Any]],
+    has_attached_asset: bool = False,
+) -> bool:
+    """Detect ungrounded ambiguous queries on clean sessions (e.g. 'summarize it' on turn 1)."""
+    if has_attached_asset or (chat_history and len(chat_history) > 0):
+        return False
+
     q_clean = query.strip()
-    return bool(IN_CONTEXT_META_QUERY_PATTERN.search(q_clean))
+    words = q_clean.split()
+    if len(words) <= 6:
+        if GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
+            return True
+        if len(words) < 4 and AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean):
+            return True
+        if q_clean.lower().strip("?.! ") in {
+            "summarize", "summarise", "summarize it", "tell me more",
+            "explain it", "what happened", "who is it", "who was involved",
+            "details", "give details",
+        }:
+            return True
+
+    return False
+
+
+def query_matches_attached_asset(query: str, attached_asset: dict[str, Any] | None) -> bool:
+    """Check if user query references or quotes the attached asset headline, caption, or IDs."""
+    if not attached_asset:
+        return False
+    hl = attached_asset.get("headline")
+    cap = attached_asset.get("caption")
+    q_clean = query.strip()
+    q_lower = q_clean.lower()
+    if hl:
+        hl_lower = hl.lower().strip()
+        if hl_lower in q_lower or (len(hl_lower) > 20 and hl_lower[:30] in q_lower):
+            return True
+        stop = {
+            "the", "a", "an", "and", "or", "in", "on", "at", "for", "to", "of", "with", "by", "from",
+            "is", "are", "was", "were", "this", "that", "these", "those", "about", "article", "story",
+            "news", "report", "photo", "image", "picture", "visual", "who", "what", "where", "when",
+            "why", "how", "person", "people", "explain", "summarize", "tell", "details",
+        }
+        hl_tokens = {w for w in re.findall(r"[a-z0-9]+", hl_lower) if len(w) > 2 and w not in stop}
+        q_tokens = {w for w in re.findall(r"[a-z0-9]+", q_lower) if len(w) > 2 and w not in stop}
+        if hl_tokens and q_tokens:
+            overlap = hl_tokens & q_tokens
+            if len(overlap) >= 3 or (len(overlap) / len(hl_tokens) >= 0.3):
+                return True
+    if cap:
+        cap_lower = cap.lower().strip()
+        if len(cap_lower) > 15 and cap_lower[:25] in q_lower:
+            return True
+    p_id = attached_asset.get("photo_id")
+    if p_id and re.search(rf"\b(?:photo|image|picture|chart|figure)?\s*#?{p_id}\b", q_clean, re.I):
+        return True
+    art_id = attached_asset.get("article_id")
+    if art_id and re.search(rf"\b(?:article|story)?\s*#?{art_id}\b", q_clean, re.I):
+        return True
+    return False
 
 
 def needs_condensation(
@@ -73,8 +153,9 @@ def needs_condensation(
     q_clean = query.strip()
     words = q_clean.split()
 
-    # If an attached asset is present, check if the query refers to it or contains pronouns
-    if attached_asset and (attached_asset.get("photo_id") or attached_asset.get("article_id")):
+    if attached_asset and (attached_asset.get("photo_id") or attached_asset.get("article_id") or attached_asset.get("headline")):
+        if query_matches_attached_asset(q_clean, attached_asset):
+            return True
         if AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean):
             return True
         if re.search(r"\b(photo|picture|image|graphic|figure|chart|article|headline|story|person|who is)\b", q_clean, re.I):
@@ -82,61 +163,21 @@ def needs_condensation(
         if len(words) <= 6 and GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
             return True
 
-    # Check conversation follow-ups
     if chat_history:
-        if len(words) <= 6 and GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
-            return True
         if AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean):
             return True
-
-    return False
-
-
-def is_ambiguous_standalone_query(
-    query: str,
-    chat_history: list[dict[str, Any]],
-    has_attached_asset: bool = False,
-) -> bool:
-    """Detect ungrounded ambiguous queries on clean sessions (e.g. 'summarize it' on turn 1)."""
-    if has_attached_asset:
-        return False
-    if chat_history and len(chat_history) > 0:
-        return False
-
-    q_clean = query.strip()
-    words = q_clean.split()
-
-    # Query has <= 6 words and matches follow-up patterns or pronouns without named entities
-    if len(words) <= 6:
-        if GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
+        if len(words) <= 6 and GENERIC_FOLLOWUP_SHORT_PATTERN.search(q_clean):
             return True
-        if len(words) < 4 and AMBIGUOUS_PRONOUNS_PATTERN.search(q_clean):
-            return True
-        if q_clean.lower().strip("?.! ") in {
-            "summarize",
-            "summarise",
-            "summarize it",
-            "tell me more",
-            "explain it",
-            "what happened",
-            "who is it",
-            "who was involved",
-            "details",
-            "give details",
-        }:
+        if _EXISTENTIAL_PREFIX_PATTERN.search(q_clean):
+            return False
+        if re.search(r"\b(did any other newspaper|did other newspapers?|similar|shared|exclusives?)\b", q_clean, re.I):
             return True
 
     return False
 
 
 def parse_inline_citation(text: str) -> dict[str, Any]:
-    """Extract newspaper name, issue date, page number, and headline from inline citations.
-
-    Handles formats like:
-    - [4] Hindustan Times, 2026-09-10, Page 4, Headline: "The growing bipolarity..."
-    - [{Hindustan Times}, 2026-09-10, Page 4, "The growing bipolarity..."]
-    - Hindustan Times, 2026-09-10, Page 4, Headline: "..."
-    """
+    """Extract newspaper name, issue date, page number, and headline from inline citations."""
     if not text:
         return {}
     m = re.search(
@@ -164,13 +205,11 @@ def parse_inline_citation(text: str) -> dict[str, Any]:
             res["headline"] = m.group(4).strip()
         return res
 
-    # Flexible pattern: article "Headline" [in Newspaper] [dated YYYY-MM-DD]
     hl_m = re.search(r"(?:article|story|headline|titled|report)?\s*[\"“]([^\"”]{8,150})[\"”]", text, re.I)
     if hl_m:
         cand_hl = hl_m.group(1).strip()
         if not any(pat.fullmatch(cand_hl) for pat, _ in _KNOWN_BRANDS_PATTERNS):
             res_flex: dict[str, Any] = {"headline": cand_hl}
-            from app.agent.extractor import extract_parameters_from_query
             q_ext = extract_parameters_from_query(text)
             if q_ext.get("newspaper_name"):
                 res_flex["newspaper_name"] = q_ext["newspaper_name"]
@@ -182,6 +221,71 @@ def parse_inline_citation(text: str) -> dict[str, Any]:
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Tier 2: LLM System Prompt & Context Assembly (4 Rewriting Rules)
+# ---------------------------------------------------------------------------
+
+CONDENSER_SYSTEM_PROMPT = (
+    "You are an expert search query reformulator and coreference resolver for a newspaper archive research system.\n"
+    "Given the chat history and latest user query, rewrite the latest query into "
+    "a single, standalone sentence that contains all necessary context (entities, dates, page numbers).\n\n"
+    "DECISION RULES:\n"
+    "1. ATTACHED ASSET REFERENCE / BINDING:\n"
+    "   If a 'CURRENT WORKSPACE ATTACHED ASSET' is provided and the user query refers to it "
+    "(\"this photo\", \"the article\", \"explain this\", \"who is this person\", or quotes/mentions the attached headline):\n"
+    "   - Ground the rewritten query SOLELY in the CURRENT WORKSPACE ATTACHED ASSET (its newspaper, date, headline, photo ID, caption).\n"
+    "   - Keep dates in ISO format (YYYY-MM-DD).\n"
+    "   - DO NOT inherit or contaminate the query with people, entities, dates, or newspapers from prior CONVERSATION HISTORY.\n"
+    "   Example: \"explain this photo\" (Attached: Photo #1042 in Financial Times, 2026-05-10)\n"
+    "   Rewrite: \"Explain photo #1042 in Financial Times dated 2026-05-10\"\n\n"
+    "2. CONVERSATION CONTINUATION:\n"
+    "   If the query continues the discussion from CONVERSATION HISTORY and does NOT refer to an attached asset:\n"
+    "   - Resolve pronouns (\"it\", \"they\", \"he\", \"this newspaper\", \"its\") using the conversation context.\n"
+    "   Example: \"what about on page 4?\" (History discussing: The Indian Express, 2026-06-15)\n"
+    "   Rewrite: \"What articles appeared on page 4 of The Indian Express on 2026-06-15?\"\n\n"
+    "3. INDEPENDENT QUERY / TOPIC SHIFT:\n"
+    "   If the user query introduces an entirely new topic, entity, date, or publication (e.g. \"crime in Panaji\", \"who won the election?\"), "
+    "do NOT inject prior publications, people, or dates. Leave it unconstrained.\n"
+    "   Example: \"show me weather reports\" (History discussing: The Guardian, 2026-04-12)\n"
+    "   Rewrite: \"Show me weather reports\"\n\n"
+    "4. COMPARATIVE CONTINUATION:\n"
+    "   If prior turns involved a cross-newspaper comparison and the user asks a follow-up (e.g. \"list all those articles that are similar\", \"show the common stories\", \"what about the exclusives?\"), "
+    "preserve both newspaper names, the date, and the comparison/shared intent in the rewritten query.\n"
+    "   Example: \"list all those similar stories\" (History comparing: The Indian Express and The Hindu, 2026-05-20)\n"
+    "   Rewrite: \"List all similar and shared articles between The Indian Express and The Hindu dated 2026-05-20\"\n\n"
+    "OUTPUT FORMAT: Output ONLY the plain rewritten query text. Do NOT include quotes, explanations, prefixes, or bullet points."
+)
+
+
+def format_chat_history_for_prompt(chat_history: list[dict[str, Any]], max_turns: int = 5) -> str:
+    """Format recent turns of chat history into clean dialog text with citations preserved."""
+    recent = chat_history[-max_turns * 2 :]
+    lines: list[str] = []
+    for turn in recent:
+        role = str(turn.get("role", "user")).capitalize()
+        content = str(turn.get("content", "")).strip()
+        if role.lower() == "assistant" and len(content) > 1000:
+            content = content[:1000] + "..."
+        citations = turn.get("citations") or []
+        if citations and role.lower() == "assistant":
+            cit_lines = []
+            for c_idx, cit in enumerate(citations, 1):
+                if isinstance(cit, dict) and cit.get("headline"):
+                    cit_np = cit.get("newspaper_name", "")
+                    cit_dt = cit.get("issue_date", "")
+                    cit_pg = cit.get("page_number", "")
+                    cit_lines.append(f'  [Article {c_idx}]: "{cit["headline"]}" ({cit_np}, {cit_dt}, Page {cit_pg})')
+            if cit_lines:
+                content += "\nCited Articles:\n" + "\n".join(cit_lines)
+        if content:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Structured Context Resolver (Backward-compatible adapter for tests)
+# ---------------------------------------------------------------------------
+
 def extract_active_issue_from_history(
     chat_history: list[dict[str, Any]],
     current_query: str | None = None,
@@ -191,15 +295,7 @@ def extract_active_issue_from_history(
     attached_newspaper_name: str | None = None,
     attached_headline: str | None = None,
 ) -> dict[str, Any]:
-    """Scan chat history for previously mentioned newspaper names, issue IDs, and dates.
-
-    Safeguards against context leakage:
-    - If current_query targets a cross-newspaper comparison or 'all newspapers', do not inherit a single newspaper.
-    - If current_query specifies its own date or date range, do not inherit stale issue_id/newspaper/article from a different date.
-    - If current_query specifies its own newspaper brand, do not inherit a different newspaper brand or article.
-    - If current_query specifies an inline citation or explicit headline, that citation is authoritative.
-    - If an attached photo or article is explicitly supplied on the current turn, its issue, newspaper, and headline are authoritative.
-    """
+    """Scan chat history for previously mentioned newspaper names, issue IDs, and dates with conflict isolation."""
     res: dict[str, Any] = {}
     current_citation = parse_inline_citation(current_query or "")
     if current_citation:
@@ -218,37 +314,7 @@ def extract_active_issue_from_history(
         and attached_newspaper_name.lower() not in explicit_query_np.lower()
     )
 
-    has_headline_conflict = False
-    if attached_headline and current_query:
-        if explicit_query_hl and explicit_query_hl.lower() != attached_headline.lower():
-            has_headline_conflict = True
-        else:
-            def _sig_tokens(s: str) -> set[str]:
-                stop = {
-                    "the", "a", "an", "and", "or", "in", "on", "at", "for", "to", "of", "with", "by", "from",
-                    "is", "are", "was", "were", "this", "that", "these", "those", "about", "article", "story",
-                    "news", "report", "photo", "image", "picture", "visual", "who", "what", "where", "when",
-                    "why", "how", "person", "people",
-                }
-                return {w for w in re.findall(r"[a-z0-9]+", s.lower()) if len(w) > 2 and w not in stop}
-            att_tokens = _sig_tokens(attached_headline)
-            q_tokens = _sig_tokens(current_query)
-            is_pronoun_ref = bool(
-                re.search(
-                    r"\b(?:this|that|the|it|ir)\s+(?:article|story|news|report|headline|piece|photo|image|picture|graphic|figure|visual|table|chart|infographic)\b"
-                    r"|\b(?:tell me more|explain this|explain it|what is this|who is this|who is the person|who is in this)\b"
-                    r"|\b(?:find|read|get|tell|show|explain|summ[ae]ri[sz]e)\s+(?:about|on|for|of)?\s*(?:this|the|that|it|ir)?\s*(?:article|story|news|report|headline|piece)?\b"
-                    r"|\bin\s+\d+\s+words?\b",
-                    current_query,
-                    re.I,
-                )
-            )
-            if (attached_photo_id or attached_article_id) and re.search(r"\b(?:photo|image|picture|visual|this article|this photo|it\b|that\b|the article)\b", current_query, re.I):
-                is_pronoun_ref = True
-            if not is_pronoun_ref and att_tokens and q_tokens and not (att_tokens & q_tokens):
-                has_headline_conflict = True
-
-    if not has_date_conflict and not has_np_conflict and not has_headline_conflict:
+    if not has_date_conflict and not has_np_conflict:
         if attached_photo_id:
             with contextlib.suppress(ValueError, TypeError):
                 res["photo_id"] = int(attached_photo_id)
@@ -272,22 +338,12 @@ def extract_active_issue_from_history(
     if not chat_history:
         return res
 
-    has_explicit_asset = bool(
-        (attached_photo_id or attached_article_id or attached_headline)
-        and not has_date_conflict
-        and not has_np_conflict
-        and not has_headline_conflict
-    )
-
     q_lower = (current_query or "").lower()
     is_cross_newspaper = bool(
         is_archive_wide_newspaper_query(current_query)
         or re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff(?:erence[s]?|ering)?|versus|vs\.?)\b", q_lower)
         or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper", "different newspaper"])
-        or re.search(r"\b(?:no|number|count|how many|which|list|total)\s+(?:of\s+)?newspapers?\b", q_lower)
     )
-    current_date = explicit_query_date or (attached_issue_date if not has_date_conflict else None)
-    current_np = explicit_query_np or (attached_newspaper_name if not has_np_conflict else None)
 
     for turn in reversed(chat_history):
         content = str(turn.get("content", ""))
@@ -307,53 +363,6 @@ def extract_active_issue_from_history(
         if params.get("issue_date") and not res.get("issue_date"):
             res["issue_date"] = params["issue_date"]
 
-        # 0. Inspect structured citations and attached assets on the turn
-        # If current_query provided its own explicit headline/citation or an asset is explicitly attached on current turn,
-        # do NOT inherit foreign article/photo IDs or headlines from prior turns
-        if not current_citation.get("headline") and not explicit_query_hl and not has_explicit_asset:
-            turn_citations = turn.get("citations") or []
-            for cit in turn_citations:
-                if isinstance(cit, dict):
-                    if cit.get("article_id") and not res.get("article_id"):
-                        with contextlib.suppress(ValueError):
-                            res["article_id"] = int(cit["article_id"])
-                    if cit.get("headline") and not res.get("headline"):
-                        res["headline"] = str(cit["headline"]).strip()
-                    if cit.get("newspaper_name") and not res.get("newspaper_name"):
-                        res["newspaper_name"] = str(cit["newspaper_name"]).strip()
-                    if cit.get("issue_date") and not res.get("issue_date"):
-                        res["issue_date"] = str(cit["issue_date"]).strip()
-                    if cit.get("photo_id") and not res.get("photo_id"):
-                        with contextlib.suppress(ValueError):
-                            res["photo_id"] = int(cit["photo_id"])
-                    if cit.get("pages") and not res.get("page_number"):
-                        with contextlib.suppress(Exception):
-                            res["page_number"] = int(cit["pages"][0])
-
-            attached_asset = turn.get("attachedAsset") or {}
-            if isinstance(attached_asset, dict):
-                if attached_asset.get("articleId") and not res.get("article_id"):
-                    with contextlib.suppress(ValueError):
-                        res["article_id"] = int(attached_asset["articleId"])
-                if attached_asset.get("photoId") and not res.get("photo_id"):
-                    with contextlib.suppress(ValueError):
-                        res["photo_id"] = int(attached_asset["photoId"])
-                if attached_asset.get("headline") and not res.get("headline"):
-                    res["headline"] = str(attached_asset["headline"]).strip()
-
-        # 1. Inspect inline citations in message text
-        hist_cite = parse_inline_citation(content)
-        if hist_cite:
-            if not res.get("newspaper_name") and hist_cite.get("newspaper_name"):
-                res["newspaper_name"] = hist_cite["newspaper_name"]
-            if not res.get("issue_date") and hist_cite.get("issue_date"):
-                res["issue_date"] = hist_cite["issue_date"]
-            if not res.get("page_number") and hist_cite.get("page_number"):
-                res["page_number"] = hist_cite["page_number"]
-            if not res.get("headline") and hist_cite.get("headline") and not current_citation.get("headline") and not explicit_query_hl and not has_explicit_asset:
-                res["headline"] = hist_cite["headline"]
-
-        # 2. Inspect executive summary headers: e.g. "The Goan newspaper issue 94 (2026-08-02)"
         summary_m = re.search(
             r"([A-Za-z0-9\s\.\'\-]+?)\s+(?:newspaper\s+)?issue\s+(\d+)(?:\s*\((\d{4}-\d{2}-\d{2})\))?",
             content,
@@ -367,141 +376,63 @@ def extract_active_issue_from_history(
                     if pat.search(detected_pub):
                         res["newspaper_name"] = brand
                         break
-                if not res.get("newspaper_name") and len(detected_pub.split()) <= 4:
-                    res["newspaper_name"] = detected_pub
             if summary_m.group(2) and not res.get("issue_id"):
                 with contextlib.suppress(ValueError):
                     res["issue_id"] = int(summary_m.group(2))
             if summary_m.group(3) and not res.get("issue_date"):
                 res["issue_date"] = summary_m.group(3)
 
-        # 3. Inspect all known brand patterns across turn text
         if not res.get("newspaper_name"):
             for pat, brand in _KNOWN_BRANDS_PATTERNS:
                 if pat.search(content):
                     res["newspaper_name"] = brand
                     break
 
-        if res.get("newspaper_name") and res.get("issue_date") and res.get("headline"):
+        if res.get("newspaper_name") and res.get("issue_date"):
             break
 
-    # Guardrail 1: If current query is cross-newspaper comparison or archive-wide newspaper query, do NOT constrain to a single newspaper
-    if is_cross_newspaper:
-        if not explicit_query_np:
-            res.pop("newspaper_name", None)
-            res.pop("comparison_newspaper", None)
-            res.pop("target_newspapers", None)
-            res.pop("issue_id", None)
-            res.pop("article_id", None)
-            res.pop("photo_id", None)
-        elif not res.get("comparison_newspaper"):
-            res.pop("issue_id", None)
-            res.pop("article_id", None)
-            res.pop("photo_id", None)
-
-    # Guardrail 2: If current query explicitly provides its own date, invalidate stale context if from different date
-    if current_date and res.get("issue_date") and res["issue_date"] != current_date:
+    if is_cross_newspaper and not explicit_query_np:
         res.pop("newspaper_name", None)
+        res.pop("comparison_newspaper", None)
+        res.pop("target_newspapers", None)
         res.pop("issue_id", None)
-        res.pop("issue_date", None)
         res.pop("article_id", None)
         res.pop("photo_id", None)
-        res.pop("headline", None)
-        res.pop("target_newspapers", None)
 
-    # Guardrail 3: If current query explicitly specifies its own newspaper, discard history newspaper and foreign articles
-    if current_np and res.get("newspaper_name") and current_np.lower() not in res["newspaper_name"].lower() and res["newspaper_name"].lower() not in current_np.lower():
+    if explicit_query_np and res.get("newspaper_name") and explicit_query_np.lower() not in res["newspaper_name"].lower() and res["newspaper_name"].lower() not in explicit_query_np.lower():
         res.pop("newspaper_name", None)
         res.pop("issue_id", None)
         res.pop("article_id", None)
         res.pop("photo_id", None)
         res.pop("headline", None)
         res.pop("target_newspapers", None)
-        if not current_date:
+        if not explicit_query_date:
             res.pop("issue_date", None)
 
-    # Guardrail 4: If current query specifies a date range, do NOT constrain to single-day issue_date
-    if current_params.get("date_from") and current_params.get("date_to") and not explicit_query_date:
-        res.pop("issue_date", None)
+    if explicit_query_date and res.get("issue_date") and explicit_query_date != res["issue_date"]:
+        if not explicit_query_np:
+            res.pop("newspaper_name", None)
+            res.pop("target_newspapers", None)
+            res.pop("comparison_newspaper", None)
         res.pop("issue_id", None)
-        res["date_from"] = current_params["date_from"]
-        res["date_to"] = current_params["date_to"]
+        res.pop("article_id", None)
+        res.pop("photo_id", None)
+        res.pop("headline", None)
 
-    # Re-apply explicit current query parameters
-    if current_np:
-        res["newspaper_name"] = current_np
-        res["target_newspapers"] = [current_np]
-    if current_date:
-        res["issue_date"] = current_date
-    if not has_date_conflict and not has_np_conflict:
-        if attached_headline:
-            res["headline"] = attached_headline
-        if attached_photo_id:
-            with contextlib.suppress(ValueError, TypeError):
-                res["photo_id"] = int(attached_photo_id)
-        if attached_article_id:
-            with contextlib.suppress(ValueError, TypeError):
-                res["article_id"] = int(attached_article_id)
-    if current_citation.get("page_number"):
-        res["page_number"] = current_citation["page_number"]
+    if explicit_query_np:
+        res["newspaper_name"] = explicit_query_np
+        res["target_newspapers"] = [explicit_query_np]
+    if explicit_query_date:
+        res["issue_date"] = explicit_query_date
 
     return res
 
 
-def format_chat_history_for_prompt(chat_history: list[dict[str, Any]], max_turns: int = 5) -> str:
-    """Format recent turns of chat history into clean dialog text with citations preserved."""
-    recent = chat_history[-max_turns * 2 :]
-    lines: list[str] = []
-    for turn in recent:
-        role = str(turn.get("role", "user")).capitalize()
-        content = str(turn.get("content", "")).strip()
-        # Keep up to 1000 chars per assistant turn to preserve citations and source names
-        if role.lower() == "assistant" and len(content) > 1000:
-            content = content[:1000] + "..."
-        citations = turn.get("citations") or []
-        if citations and role.lower() == "assistant":
-            cit_lines = []
-            for c_idx, cit in enumerate(citations, 1):
-                if isinstance(cit, dict) and cit.get("headline"):
-                    cit_np = cit.get("newspaper_name", "")
-                    cit_dt = cit.get("issue_date", "")
-                    cit_pg = cit.get("page_number", "")
-                    cit_lines.append(f"  [Article {c_idx}]: \"{cit['headline']}\" ({cit_np}, {cit_dt}, Page {cit_pg})")
-            if cit_lines:
-                content += "\nCited Articles:\n" + "\n".join(cit_lines)
-        if content:
-            lines.append(f"{role}: {content}")
-    return "\n".join(lines)
-
+# ---------------------------------------------------------------------------
+# Tier 3: Async LLM Reformulation & Lightweight Normalizer
+# ---------------------------------------------------------------------------
 
 _UNSET = object()
-
-
-CONDENSER_SYSTEM_PROMPT = (
-    "You are an expert search query reformulator and coreference resolver for a newspaper archive research system.\n"
-    "Given the chat history and latest user query, rewrite the latest query into "
-    "a single, standalone sentence that contains all necessary context (entities, dates, page numbers).\n\n"
-    "DECISION RULES:\n"
-    "1. ATTACHED ASSET REFERENCE:\n"
-    "   If a 'CURRENT WORKSPACE ATTACHED ASSET' is provided and the user query refers to it "
-    "(e.g., 'this photo', 'in the photo', 'this picture', 'the image', 'this article', 'this story', 'the person in the photo', 'who is this'):\n"
-    "   - Ground the rewritten query SOLELY in the CURRENT WORKSPACE ATTACHED ASSET (its newspaper, date, headline, photo ID, caption).\n"
-    "   - DO NOT inherit or contaminate the query with people, entities, or dates from prior CONVERSATION HISTORY.\n"
-    "2. CONVERSATION CONTINUATION:\n"
-    "   If the query is a follow-up continuing the discussion from CONVERSATION HISTORY (e.g., 'what else did he say?', 'did other papers cover this?'), "
-    "and does NOT refer to an attached asset:\n"
-    "   - Resolve pronouns ('it', 'they', 'he', 'this newspaper') using the conversation context.\n"
-    "3. TOPIC SWITCH OR INDEPENDENT QUERY:\n"
-    "   If the query introduces a NEW or DIFFERENT topic, entity, location, or subject not discussed in CONVERSATION HISTORY "
-    "(e.g., 'education policy in Maharashtra', 'ST quota protest in Goa', 'cricket match results'), treat it as a completely independent query:\n"
-    "   - STRICTLY DO NOT inject or force previous conversation entities, newspaper brands, dates, or people into the query.\n"
-    "   - Keep it as a clean, unconstrained standalone search query.\n"
-    "4. CROSS-NEWSPAPER & SHARED COVERAGE FOLLOW-UPS:\n"
-    "   If CONVERSATION HISTORY involved comparing two newspapers or finding similar/shared/exclusive articles between them, and the user asks a follow-up "
-    "(e.g., 'list all those articles that are similar', 'show the common stories', 'what about the exclusives?'):\n"
-    "   - Preserve both newspaper names, the date, and the comparison/shared intent in the rewritten query (e.g., 'list all similar articles between The Goan and The Morning Standard dated 2026-08-01').\n\n"
-    "OUTPUT FORMAT: Output ONLY the plain rewritten query text. Do NOT include quotes, explanations, prefixes, or bullet points."
-)
 
 
 async def condense_conversational_query(
@@ -514,16 +445,14 @@ async def condense_conversational_query(
     active_issue_date: str | None = None,
     attached_asset: dict[str, Any] | None = None,
 ) -> str:
-    """Rewrite a conversational follow-up query into a standalone search query with entities.
-
-    The LLM reformulator is provided both conversation history and current workspace attached asset,
-    and decides whether to inherit previous context, bind to the attached asset, or treat as a new topic.
-    """
+    """Rewrite a conversational follow-up query into a standalone search query with entities."""
+    # Tier 1 Bypass: If query is clean and standalone, return immediately
     if not chat_history and not attached_asset:
         return query
     if not needs_condensation(query, chat_history, attached_asset=attached_asset):
         return query
 
+    # Extract structured workspace attributes
     asset_photo_id = attached_asset.get("photo_id") if attached_asset else None
     asset_art_id = attached_asset.get("article_id") if attached_asset else None
     asset_np = attached_asset.get("newspaper_name") if attached_asset else None
@@ -534,6 +463,7 @@ async def condense_conversational_query(
     asset_type = attached_asset.get("visual_type") if attached_asset else None
     asset_page = attached_asset.get("page_number") if attached_asset else None
 
+    # Check conflicts between current query and attached asset
     q_params = extract_parameters_from_query(query) if query else {}
     q_cite = parse_inline_citation(query or "")
     explicit_q_date = q_params.get("issue_date") or q_cite.get("issue_date")
@@ -554,6 +484,7 @@ async def condense_conversational_query(
         active_hl = asset_hl
         active_pg = asset_page
         comp_np = None
+        is_shared = False
         is_diff = False
     else:
         active_ctx = extract_active_issue_from_history(
@@ -574,8 +505,7 @@ async def condense_conversational_query(
         active_hl = active_ctx.get("headline")
         active_pg = active_ctx.get("page_number")
 
-    # 0. Deterministic Ordinal Article Coreference Resolution:
-    # E.g. "tell me about this article 1", "summarize the 2nd article", "explain the first article"
+    # Deterministic Ordinal Article Coreference Resolution (e.g. "tell me about article 1", "first article")
     ord_m = re.search(
         r"\b(?:this\s+|the\s+)?article\s*(\d{1,2})\b|\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+article\b|\b(first|second|third|fourth|fifth)\s+article\b",
         query,
@@ -602,14 +532,9 @@ async def condense_conversational_query(
                         c_dt = target_cit.get("issue_date", iss_date or "").strip()
                         dt_part = f" dated {c_dt}" if c_dt else ""
                         np_part = f" in {c_np}" if c_np else ""
-                        q_resolved = f'Tell me about the article "{c_hl}"{np_part}{dt_part}'
-                        logger.info(
-                            "Conversational query resolved via deterministic ordinal article citation heuristic",
-                            extra={"original_query": query, "resolved_query": q_resolved},
-                        )
-                        return q_resolved
+                        return f'Tell me about the article "{c_hl}"{np_part}{dt_part}'
 
-    # Resolve LLM provider (prefer lightweight/fast model like groq_llama or query_planner)
+    # Resolve LLM provider
     resolved_provider: Any
     if provider is _UNSET:
         try:
@@ -619,16 +544,12 @@ async def condense_conversational_query(
             except Exception:
                 resolved_provider = registry.get_chat_provider(model_override or "query_planner")
         except Exception as reg_err:
-            logger.warning(
-                "Could not obtain provider for query condensation",
-                extra={"error": str(reg_err)},
-            )
+            logger.warning("Could not obtain provider for query condensation", extra={"error": str(reg_err)})
             resolved_provider = None
     else:
         resolved_provider = provider
 
-    formatted_history = format_chat_history_for_prompt(chat_history) if chat_history else ""
-
+    # Assemble Attached Asset Context Block
     attached_asset_block = ""
     if (
         attached_asset
@@ -657,6 +578,13 @@ async def condense_conversational_query(
 
         attached_asset_block = "CURRENT WORKSPACE ATTACHED ASSET:\n" + "\n".join(asset_lines) + "\n\n"
 
+    # Assemble Conversation History Block
+    is_attached_query = bool(attached_asset and (asset_photo_id or asset_art_id or asset_hl))
+    if is_attached_query and chat_history and (has_date_conflict or has_np_conflict):
+        formatted_history = ""
+    else:
+        formatted_history = format_chat_history_for_prompt(chat_history) if chat_history else ""
+
     history_block = f"CONVERSATION HISTORY:\n{formatted_history}\n\n" if formatted_history else ""
 
     prompt = (
@@ -666,13 +594,11 @@ async def condense_conversational_query(
         "Rewritten Standalone Query:"
     )
 
+    # Invoke LLM Reformulator
     if resolved_provider is not None:
         try:
             messages = [
-                Message(
-                    role="system",
-                    content=CONDENSER_SYSTEM_PROMPT,
-                ),
+                Message(role="system", content=CONDENSER_SYSTEM_PROMPT),
                 Message(role="user", content=prompt),
             ]
             resp = await resolved_provider.complete(
@@ -682,7 +608,7 @@ async def condense_conversational_query(
             )
             rewritten = resp.text.strip()
 
-            # Clean up any quotes or prefixes
+            # Lightweight Normalizer: Clean quotes and conversational prefixes
             rewritten = re.sub(
                 r'^(?:Standalone Query:|Rewritten Standalone Query:|Rewritten Query:|Query:|"|\'|`|\*|\-)\s*',
                 "",
@@ -691,7 +617,6 @@ async def condense_conversational_query(
             ).strip()
             rewritten = re.sub(r'("|\'|`)$', "", rewritten).strip()
 
-            # Verify that rewritten query is clean and resolved relative pronouns
             has_unresolved_pronoun = bool(re.search(r"\b(its|it|this\s+paper)\b", rewritten, re.I))
             is_echo = rewritten.lower() == query.lower()
             is_valid = len(rewritten) >= 3 and not (is_echo and (np_name or iss_id)) and not (has_unresolved_pronoun and (np_name or iss_id))
@@ -704,227 +629,47 @@ async def condense_conversational_query(
                 return rewritten
         except Exception as e:
             logger.warning(
-                "Conversational query condensation failed, falling back to heuristic resolution",
+                "Conversational query condensation LLM call failed, falling back to safe normalizer",
                 extra={"error": str(e), "query": query},
             )
 
-    # Deterministic Heuristic Coreference Fallback:
+    # Safe Fallback Normalizer (Zero Destructive String Suffixing)
     if attached_asset and (asset_photo_id or asset_art_id or asset_hl):
         pub_desc = " ".join([p for p in [np_name, f"dated {iss_date}" if iss_date else ""] if p])
-        if asset_photo_id and re.search(r"\b(photo|picture|image|graphic|figure|person|who is)\b", query, re.I):
-            base_q = re.sub(r"\b(this|the)\s+(photo|picture|image|graphic|figure)\b", f"photo #{asset_photo_id}", query, flags=re.I)
-            if asset_hl:
-                q_resolved = f"{base_q} for article '{asset_hl}' in {pub_desc}".strip()
-            else:
-                q_resolved = f"{base_q} in {pub_desc}".strip()
-            logger.info(
-                "Conversational query resolved via attached photo fallback",
-                extra={"original_query": query, "resolved_query": q_resolved},
-            )
-            return q_resolved
-        elif asset_art_id and re.search(r"\b(article|story|news|report)\b", query, re.I):
-            base_q = re.sub(r"\b(this|the)\s+(article|story|news|report)\b", f"article '{asset_hl or asset_art_id}'", query, flags=re.I)
-            q_resolved = f"{base_q} in {pub_desc}".strip()
-            logger.info(
-                "Conversational query resolved via attached article fallback",
-                extra={"original_query": query, "resolved_query": q_resolved},
-            )
-            return q_resolved
-        elif asset_hl:
-            q_resolved = f"{query} regarding '{asset_hl}' in {pub_desc}".strip()
-            logger.info(
-                "Conversational query resolved via attached headline fallback",
-                extra={"original_query": query, "resolved_query": q_resolved},
-            )
-            return q_resolved
+        if asset_photo_id and (
+            re.search(r"\b(photo|picture|image|graphic|figure|chart|table|person|who is)\b", query, re.I)
+            or asset_type in ("data_chart", "infographic", "table")
+        ):
+            v_desc = f"{asset_type.replace('_', ' ') if asset_type else 'visual asset'} #{asset_photo_id}"
+            if active_hl:
+                return f'Explain {v_desc} for article "{active_hl}" in {pub_desc}'.strip()
+            return f"Explain {v_desc} in {pub_desc}".strip()
+        elif asset_art_id or asset_hl:
+            target_hl = active_hl or f"Article #{asset_art_id}"
+            return f'Explain article "{target_hl}" in {pub_desc}'.strip()
 
     if comp_np and np_name and is_diff:
         dt_suffix = f" dated {iss_date}" if iss_date else ""
-        q_resolved = f"{query} in {np_name} but not in {comp_np}{dt_suffix}"
-        logger.info(
-            "Conversational query resolved via deterministic differential context heuristic",
-            extra={"original_query": query, "resolved_query": q_resolved},
-        )
-        return q_resolved
+        return f"{query} in {np_name} but not in {comp_np}{dt_suffix}"
 
     if comp_np and np_name:
         dt_suffix = f" dated {iss_date}" if iss_date else ""
         is_shared_mode = is_shared or any(w in query.lower() for w in ["similar", "shared", "common", "same article", "same stories", "both"])
-        if is_shared_mode:
-            q_resolved = f"{query} between {np_name} and {comp_np}{dt_suffix}"
-        else:
-            q_resolved = f"{query} comparing {np_name} and {comp_np}{dt_suffix}"
-        logger.info(
-            "Conversational query resolved via deterministic comparison context heuristic",
-            extra={"original_query": query, "resolved_query": q_resolved},
-        )
-        return q_resolved
+        rel_verb = "between" if is_shared_mode else "comparing"
+        return f"{query} {rel_verb} {np_name} and {comp_np}{dt_suffix}"
 
-    if np_name or iss_id:
-        q_resolved = query
-        parts = []
-        if np_name:
-            parts.append(np_name)
+    # Pronoun resolution with active broadsheet context
+    if (np_name or iss_id) and re.search(r"\b(?:all\s+)?its\b", query, re.I):
+        pub_parts = [np_name]
         if iss_id:
-            parts.append(f"issue {iss_id}")
+            pub_parts.append(f"issue {iss_id}")
         if iss_date:
-            parts.append(f"dated {iss_date}")
-        pub_desc = " ".join(parts)
+            pub_parts.append(f"dated {iss_date}")
+        pub_desc = " ".join([p for p in pub_parts if p])
+        return re.sub(r"\b(?:all\s+)?its\s+(.+)$", rf"all \1 from {pub_desc}", query, flags=re.I)
 
-        # Replace pronouns: e.g. "list all its sports related news" -> "list all sports related news from The Goan issue 94 dated 2026-08-02"
-        if re.search(r"\b(?:all\s+)?its\b", q_resolved, re.I):
-            q_resolved = re.sub(r"\b(?:all\s+)?its\s+(.+)$", rf"all \1 from {pub_desc}", q_resolved, flags=re.I)
-            if pub_desc not in q_resolved:
-                q_resolved = re.sub(r"\bits\b", f"{pub_desc}'s", q_resolved, flags=re.I)
-
-        q_resolved = re.sub(r"\b(?:this\s+paper's|this\s+newspaper's|the\s+paper's|the\s+newspaper's)\b", f"{pub_desc}'s", q_resolved, flags=re.I)
-        q_resolved = re.sub(r"\b(?:in\s+its|in\s+this\s+paper|in\s+this\s+newspaper|in\s+the\s+paper|in\s+the\s+newspaper|in\s+this\s+issue|in\s+the\s+issue)\b", f"in {pub_desc}", q_resolved, flags=re.I)
-        q_resolved = re.sub(r"\b(?:from\s+its|from\s+this\s+paper|from\s+this\s+newspaper|from\s+the\s+paper|from\s+the\s+newspaper|from\s+this\s+issue|from\s+the\s+issue)\b", f"from {pub_desc}", q_resolved, flags=re.I)
-
-        if pub_desc not in q_resolved:
-            q_resolved = f"{q_resolved} from {pub_desc}"
-
-        logger.info(
-            "Conversational query resolved via deterministic active context heuristic",
-            extra={"original_query": query, "resolved_query": q_resolved},
-        )
-        return q_resolved
-
+    # Safe return without naive concatenation
     return query
-
-
-async def resolve_attached_asset_context(
-    session_factory: Any,
-    attached_photo_id: int | None = None,
-    attached_article_id: int | None = None,
-    attached_issue_date: str | None = None,
-    attached_newspaper_name: str | None = None,
-) -> dict[str, Any]:
-    """Resolve ground truth issue date, newspaper name, article ID, issue ID, headline, and caption for attached assets."""
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-    from app.models.article import Article, Photo
-    from app.models.newspaper import Issue, Newspaper, Page
-
-    res: dict[str, Any] = {
-        "photo_id": int(attached_photo_id) if attached_photo_id else None,
-        "article_id": int(attached_article_id) if attached_article_id else None,
-        "issue_date": attached_issue_date,
-        "newspaper_name": attached_newspaper_name,
-        "issue_id": None,
-        "headline": None,
-        "caption": None,
-        "visual_type": None,
-        "page_number": None,
-    }
-
-    if not session_factory or (not attached_photo_id and not attached_article_id):
-        return res
-
-    try:
-        async with session_factory() as session:
-            if attached_photo_id:
-                stmt = (
-                    select(Photo)
-                    .where(Photo.id == int(attached_photo_id))
-                    .options(
-                        selectinload(Photo.article)
-                        .selectinload(Article.issue)
-                        .selectinload(Issue.newspaper)
-                    )
-                )
-                photo = (await session.execute(stmt)).scalar_one_or_none()
-                if photo:
-                    res["photo_id"] = photo.id
-                    if photo.caption:
-                        res["caption"] = photo.caption
-                    if photo.visual_type:
-                        res["visual_type"] = photo.visual_type
-
-                    if photo.page_id:
-                        pg_stmt = select(Page.page_number).where(Page.id == photo.page_id)
-                        pg_num = (await session.execute(pg_stmt)).scalar_one_or_none()
-                        if pg_num is not None:
-                            res["page_number"] = pg_num
-
-                    if photo.article:
-                        res["article_id"] = photo.article.id
-                        if photo.article.headline:
-                            res["headline"] = photo.article.headline
-                        if photo.article.issue:
-                            res["issue_id"] = photo.article.issue.id
-                            res["issue_date"] = str(photo.article.issue.issue_date)
-                            if photo.article.issue.newspaper:
-                                res["newspaper_name"] = photo.article.issue.newspaper.name
-            elif attached_article_id:
-                stmt = (
-                    select(Article)
-                    .where(Article.id == int(attached_article_id))
-                    .options(
-                        selectinload(Article.issue).selectinload(Issue.newspaper)
-                    )
-                )
-                art = (await session.execute(stmt)).scalar_one_or_none()
-                if art:
-                    res["article_id"] = art.id
-                    if art.headline:
-                        res["headline"] = art.headline
-                    if art.primary_page_id:
-                        pg_stmt = select(Page.page_number).where(Page.id == art.primary_page_id)
-                        pg_num = (await session.execute(pg_stmt)).scalar_one_or_none()
-                        if pg_num is not None:
-                            res["page_number"] = pg_num
-                    if art.issue:
-                        res["issue_id"] = art.issue.id
-                        res["issue_date"] = str(art.issue.issue_date)
-                        if art.issue.newspaper:
-                            res["newspaper_name"] = art.issue.newspaper.name
-    except Exception as ex:
-        logger.warning("Failed to resolve attached asset metadata", extra={"error": str(ex)})
-
-    return res
-
-
-async def resolve_authoritative_article_id(
-    headline: str,
-    newspaper_name: str | None = None,
-    issue_date: str | None = None,
-) -> int | None:
-    """Fast DB lookup to find exact article_id for a known or quoted headline."""
-    if not headline or len(headline.strip()) < 8:
-        return None
-    try:
-        from app.models.base import get_session_factory
-        from app.models.article import Article
-        from app.models.newspaper import Issue, Newspaper
-        from sqlalchemy import select
-
-        factory = get_session_factory()
-        async with factory() as session:
-            stmt = select(Article.id).join(Issue, Article.issue_id == Issue.id)
-            if newspaper_name:
-                stmt = stmt.join(Newspaper, Issue.newspaper_id == Newspaper.id).where(
-                    Newspaper.name.ilike(f"%{newspaper_name}%")
-                )
-            if issue_date:
-                stmt = stmt.where(Issue.issue_date == issue_date)
-
-            clean_hl = headline.strip().strip('"“”\'')
-            exact_stmt = stmt.where(Article.headline.ilike(clean_hl))
-            res = (await session.execute(exact_stmt)).scalars().first()
-            if res:
-                return int(res)
-
-            if len(clean_hl) >= 12:
-                prefix = clean_hl[:40]
-                prefix_stmt = stmt.where(Article.headline.ilike(f"%{prefix}%"))
-                res = (await session.execute(prefix_stmt)).scalars().first()
-                if res:
-                    return int(res)
-    except Exception as ex:
-        logger.warning("Failed to resolve authoritative article ID by headline", extra={"headline": headline, "error": str(ex)})
-
-    return None
 
 
 __all__ = [
@@ -943,4 +688,3 @@ __all__ = [
     "resolve_attached_asset_context",
     "resolve_authoritative_article_id",
 ]
-

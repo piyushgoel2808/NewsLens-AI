@@ -840,6 +840,10 @@ class TestAgentWorkflowToolExecution:
         assert is_dynamic_analysis_permitted("summarize the article about Tata in 100 words") is False
         assert is_dynamic_analysis_permitted("explain the Supreme Court verdict in 2 sentences") is False
 
+        # Issue 2: Calculation queries combined with output length constraints must STILL be permitted
+        assert is_dynamic_analysis_permitted("Explain the average article length in under 100 words") is True
+        assert is_dynamic_analysis_permitted("Summarize the avg word count distribution in less than 50 words") is True
+
     def test_plan_query_heuristic_routes_average_length_to_dynamic_analysis(self) -> None:
         """Verify heuristic planner routes average article length query to dynamic_analysis."""
         planner = QueryPlanner()

@@ -65,6 +65,7 @@ class AgentState(TypedDict):
     answer_verification: dict[str, Any] | None
     verification_attempts: int
     extracted_params: dict[str, Any] | None
+    is_condensed: bool
 
 
 __all__ = [

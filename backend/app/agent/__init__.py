@@ -9,6 +9,7 @@ from app.agent.models import (
     ToolName,
 )
 from app.agent.planner import QueryPlanner
+from app.agent.sql_dispatcher import SQLAnalyticsDispatcher
 from app.agent.state import AgentCitation, AgentState, ToolExecutionRecord
 from app.agent.synthesizer import AnswerSynthesizer
 
@@ -22,6 +23,7 @@ __all__ = [
     "PlannedToolCall",
     "QueryArchetype",
     "QueryPlanner",
+    "SQLAnalyticsDispatcher",
     "ToolExecutionRecord",
     "ToolName",
 ]

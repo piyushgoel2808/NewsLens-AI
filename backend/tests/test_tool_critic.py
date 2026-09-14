@@ -307,3 +307,20 @@ def test_tool_critic_rejects_nan_metric_and_demands_repair():
     assert any("pre-normalized context" in fix for fix in scorecard.suggested_fixes)
 
 
+def test_tool_critic_flags_strptime_none_error():
+    """Verify ToolCritic flags TypeError in strptime() when None is passed and suggests direct SQL parameter binding."""
+    critic = ToolCritic()
+    scorecard = critic.evaluate(
+        code="async def analyze(db, query, context): return {}",
+        raw_output=None,
+        query="variance of word counts in HINDUSTAN TIMES DATED 2026-9-10",
+        context={"target_date": "2026-09-10", "newspaper_name": "Hindustan Times"},
+        error="Runtime Error: TypeError: strptime() argument 1 must be str, not None",
+    )
+    assert scorecard.is_acceptable is False
+    assert scorecard.reh_score == 0.0
+    assert any("strptime" in fix for fix in scorecard.suggested_fixes)
+    assert any("ALREADY ISO strings" in fix for fix in scorecard.suggested_fixes)
+
+
+

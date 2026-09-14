@@ -45,7 +45,7 @@ NewsLens-AI/
 │   ├── uv.lock                      # Deterministic locked dependency graph managed by uv
 │   │
 │   ├── app/                         # Core application package
-│   │   ├── agent/                   # Conversational RAG agent, cognitive planner, state, synthesizer
+│   │   ├── agent/                   # Conversational RAG agent (planner, archive_context, executor, sql_dispatcher, evaluator, answer_verifier, synthesizer)
 │   │   ├── api/                     # FastAPI setup, lifespan management, middleware, and sub-routers
 │   │   │   └── routers/             # Endpoint definitions (articles, query, ingest, models, settings, etc.)
 │   │   ├── core/                    # Global settings, logging, cost tracker, Prometheus metrics, YAML rules
@@ -57,7 +57,7 @@ NewsLens-AI/
 │   │   │   └── storage.py           # Consolidated stream deflation, 3-tier hard deletion & debug exporter
 │   │   ├── models/                  # SQLAlchemy 2.0 async relational schemas and ORM entities
 │   │   ├── providers/               # Abstract model providers (Ollama, Groq, Gemini, OpenAI, GCV)
-│   │   ├── retrieval/               # Multi-tool retrieval engines (hybrid search, SQL analytics, reranking)
+│   │   ├── retrieval/               # Multi-tool retrieval engines (hybrid search, visual inspection, asset resolution, SQL analytics, reranking)
 │   │   └── storage/                 # Persistence clients (MySQL FULLTEXT, Qdrant, MinIO S3, Redis Cache)
 │   │
 │   └── tests/                       # Over 55 pytest test suites (411 unit, integration, and regression tests)
@@ -149,21 +149,19 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 #### Files in `backend/app/agent/`:
 
 ##### [`backend/app/agent/__init__.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/__init__.py)
-* **What It Has**: Package initialization, re-exports for `AgentGraph`, `QueryPlanner`, `QueryCondenser`, `Synthesizer`.
-* **Work It Is Doing**: Exposes clean interface boundaries for the agent module.
+* **What It Has**: Package initialization, re-exports for `AgentGraph`, `QueryPlanner`, `QueryCondenser`, `SQLAnalyticsDispatcher`, `Synthesizer`, `AnswerVerifier`.
+* **Work It Is Doing**: Exposes clean interface boundaries for the agent module and multi-node state machine.
 
 ##### [`backend/app/agent/condenser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/condenser.py)
 * **What It Has**: 
-  - `QueryCondenser` class.
+  - `QueryCondenser` class implementing a 3-Tier conversational query condensation architecture.
   - Helper functions: `parse_inline_citation()`, `is_in_context_meta_query()`, `extract_active_issue_from_history()`, `extract_active_article_context()`, `extract_active_exclusion_context()`.
-  - `CONDENSATION_PROMPT` system template.
+  - Reader asset context integration: `resolve_attached_asset_context()`, `resolve_authoritative_article_id()`.
+  - `CONDENSATION_PROMPT` system template with 4 core intent rules.
 * **Work It Is Doing**:
-  - **Inline Citation Parsing**: Parses quoted citations from previous turns in formats like `[4] Newspaper, YYYY-MM-DD, Page X, Headline: "..."` and `[{Newspaper}, ...]`, extracting headline, newspaper, date, and page number.
-  - **Conversational Meta-Query Short-Circuit**: Checks if a query is purely asking about previous turn metadata (e.g. "What was the date?", "Which paper was this from?") and bypasses heavy retrieval to answer instantly from chat context.
-  - **Reader Attached Asset Binding**: Binds active reader attached assets (`attached_article_id`, `attached_photo_id`) for immediate visual query routing.
-  - **Cross-Date Conflict Invalidation**: In `extract_active_issue_from_history()`, detects explicit date or publication mentions in the new query and automatically purges conflicting historical context, preventing cross-date context contamination.
-  - **Strict Cross-Turn Invalidation Guardrails**: Evaluates Guardrails 1, 2, and 3 to strictly purge `article_id`, `photo_id`, `headline`, `page_number`, and `target_newspapers` when switching dates, publications, or topics.
-  - **Coreference Resolution**: Rewrites ambiguous follow-up questions (e.g. "list all those 11 articles") into complete, standalone search queries ("list all those 11 articles in The Goan but not in The Morning Standard dated 2026-08-01").
+  - **Tier 1: Deterministic Gatekeeper & Fast Bypasses**: Instantly short-circuits clean sessions without history, detects in-context meta-queries ("What was the date?", "Which paper was this from?") to answer directly from chat context, and parses inline citations (`[4] Newspaper, YYYY-MM-DD, Page X, Headline: "..."`).
+  - **Tier 2: Structured Context Assembly & LLM Few-Shot Rewriting**: Integrates active reader attached assets (`attached_article_id`, `attached_photo_id`), resolves coreferences and ambiguous pronouns ("it", "those 11 articles"), and strictly evicts conflicting dates/publications when the user initiates a temporal or brand pivot.
+  - **Tier 3: Lightweight Normalizer & Safe Fallback**: Enforces zero destructive string mutations, falling back safely to the raw query if rewriting is unnecessary.
 * **Important Tools / Frameworks**: Python AsyncIO, Regular Expressions (`re`), Pydantic.
 * **LLM / VLM / Embedding Models**: Invokes the configured `query_planner` LLM (e.g. `gemma4:12b`, `llama3.1:8b`, or `gpt-4o-mini`).
 
@@ -181,8 +179,10 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 ##### [`backend/app/agent/extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py)
 * **What It Has**: 
   - Regex patterns: `_KNOWN_BRANDS_PATTERNS`, `_SECTION_PATTERNS`, Month + Year date patterns (`_MONTH_YEAR_PATTERNS`).
-  - Core functions: `extract_parameters_from_query()`, `build_targeted_web_query()`, `_build_targeted_web_query`.
+  - Core functions: `extract_parameters_from_query()`, `get_brand_patterns()`, `build_targeted_web_query()`, `is_archive_wide_newspaper_query()`.
+  - Dynamic cache: `_DYNAMIC_PATTERNS_CACHE`.
 * **Work It Is Doing**:
+  - **Dynamic Brand Pattern Resolution (`get_brand_patterns`)**: Combines predefined brand patterns with dynamically discovered publications from `get_known_publications()`, compiling and caching regex patterns with zero redundant recompilations.
   - **Named Entity Recognition (NER) & Parameter Extraction**: Deterministically extracts publication brands, publication dates (ISO, DMY, and named months), issue IDs, page filters, and categories from natural language queries.
   - **Month + Year Date Range Parsing**: Automatically identifies month-level queries (e.g., "August 2026") and maps them to canonical ranges (`date_from: 2026-08-01`, `date_to: 2026-08-31`) while setting `issue_date: None` to query across whole editions.
   - **Brand-Masked Categorization**: Masks brand tokens to prevent brand names (e.g. "The Economic Times") from falsely triggering section categories (e.g. "Economy & Policy").
@@ -198,6 +198,22 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - **Hallucination Pruner**: Checks LLM-generated arguments against query ground truth and prunes hallucinated brand names, dates, or page numbers.
   - **Date Reconciliation**: Prevents stale attached asset dates from overriding explicit query dates.
   - **Filler Sanitization**: Detects few-shot prompt contamination and restores substantive user domain queries.
+
+##### [`backend/app/agent/archive_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/archive_context.py)
+* **What It Has**:
+  - `STATIC_BROADSHEET_SCHEMA`: 100% declarative in-memory schema catalog of broadsheet MySQL tables, columns, and relationships (zero DB network calls).
+  - `ARCHIVE_SCHEMA`: Frozen column sets per table for compile-time AST and tool critic validation.
+  - `KNOWN_COLUMN_HALLUCINATIONS`: Map correcting hallucinated columns (e.g. `published_at` $\to$ `issues.issue_date`, `newspaper` $\to$ `newspapers.name`, `category` $\to$ `article_categories.name`).
+  - `ArchiveMetadata` dataclass: Typed container for `min_date`, `max_date`, `publications`, `categories`, and `context_str`.
+  - `get_archive_metadata()`: Asynchronously introspects MySQL with 5-minute TTL cache, returning structured `ArchiveMetadata`.
+  - `get_known_publications()`: Dynamically returns active broadsheet brands, merging database records with static canonical fallbacks.
+  - `get_archive_and_schema_context()`: Asynchronously retrieves live archive bounds, delegating to `get_archive_metadata()`.
+  - `get_fallback_archive_metadata()`: Graceful offline fallback providing canonical static defaults (`STATIC_CANONICAL_PUBLICATIONS`, `STATIC_ARCHIVE_DATE_MIN`, `STATIC_ARCHIVE_DATE_MAX`, `STATIC_CANONICAL_CATEGORIES`).
+* **Work It Is Doing**:
+  - **Softly Decoupled Grounding**: Eliminates fragile database coupling from query planning. If MySQL is unreachable, cold-starting, or under migration, planning proceeds instantaneously with static archive bounds rather than throwing 500 errors.
+  - **Relational Schema Awareness**: Equips `QueryPlanner`, `ToolMaker`, and `ToolCritic` with accurate relational table definitions, foreign keys, and column names.
+* **Important Tools / Frameworks**: Python `dataclass`, SQLAlchemy AsyncSession, In-memory TTL cache.
+* **LLM / VLM / Embedding Models**: None (Declarative Metadata & Invariant Catalog).
 
 ##### [`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)
 * **What It Has**: 
@@ -218,7 +234,7 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
     6. `article_catalog` (fast listing and catalog manifest generation for specific dates/sections)
     7. `factual_lookup` (targeted semantic + keyword search for point-in-time facts, quotes, and visual graphics)
   - **Transparent Legacy Adapter**: Translates older mock objects and test fixtures (`QueryPlan`, `primary_tool`, `ExtractedToolArguments`) to direct tool calls via `tool_factory`.
-  - **Live Archive Grounding**: Dynamically injects `get_archive_metadata()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories.
+  - **Live Archive Grounding**: Dynamically injects `get_archive_and_schema_context()` into the planner prompt, grounding the LLM with live issue dates, active publications, and canonical categories.
   - **High-Throughput Cloud Failover**: Prioritizes `nvidia_nemotron` (<1s hosted inference with streaming reasoning) on cloud failover routes.
 * **Important Tools / Frameworks**: Pydantic v2 schemas, Structured Outputs (`response_schema`), Regular Expressions.
 * **LLM / VLM / Embedding Models**: `nvidia_nemotron` (NVIDIA NIM), `ollama_gemma4_12b` (Ollama), `groq_llama` (Groq), or `gemini_flash` (Gemini).
@@ -232,18 +248,29 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **LLM / VLM / Embedding Models**: None (State Definition).
 
 ##### [`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)
-* **What It Has**: `ToolExecutor` class, `execute_inspect_visual_asset()`, `execute_dynamic_tool()`, presentation formatting helpers (`format_issue_manifest()`, `format_coverage_matrix_snippet()`, `format_coverage_difference_snippet()`).
+* **What It Has**: `ToolExecutor` coordinator class, `execute_plan()`, `execute_dynamic_tool()`, `execute_inspect_visual_asset()`.
 * **Work It Is Doing**:
   - Encapsulates isolated, concurrent tool dispatch for all planned tool calls (`hybrid_search`, `sql_analytics`, `inspect_visual_asset`, `entity_search`, `web_search`, `dynamic_analysis`) via `asyncio.gather(*tasks, return_exceptions=True)`.
-  - **Native Relational Photo Count Dispatch**: Directly dispatches `photo_count_per_section`, `count_photos`, `photo_counts`, and `photos_by_section` to `sql_analytics.get_photo_counts_by_section()`, executing in ~10ms and rendering structured markdown section breakdown tables.
+  - **Decoupled Relational SQL Dispatch**: Delegates pre-compiled relational SQL analytics routines (`issue_summary`, `coverage_difference`, `shared_coverage`, `coverage_comparison`, `count_issues`, `count_articles`, `count_ads`, `photo_count_per_section`, `topic_distribution`, `frontpage_ratio`, `entity_trends`) to `SQLAnalyticsDispatcher` ([`backend/app/agent/sql_dispatcher.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sql_dispatcher.py)), keeping the tool coordinator lean.
   - **Layer 1 Dynamic Fallback**: Intercepts unsupported parameters (e.g. `analysis_type="word_count_variance"` in `sql_analytics`) and automatically delegates to `dynamic_analysis`.
-  - **Cross-Date Anti-Leakage Invariant**: In Strategy A and Strategy C visual asset lookups, verifies that explicit user query dates are strictly preserved over attached asset dates.
-  - **5-Tier Visual Inspection Cascade**: Implements Strategy Cascade (A: photo_id lookup + companion charts; B: headline lookup; C: article_id lookup + companion charts; D: multi-criteria DB search; E: scoped caption/VLM search) with defensive publication and date validation.
-  - **On-Demand MinIO VLM Fallback**: If a targeted asset has a default placeholder description, streams raw crop bytes from MinIO `bucket_pages`, passes them to `VisualDataExtractor.process_image_crop()`, transcribes the Markdown table/metrics, and persists the result to MySQL `article_photos.vlm_description`.
+  - **Modular Retrieval Delegation**:
+    - Delegates visual inspection cascade, crop enrichment, and chart transcription to `VisualInspectionEngine` ([`retrieval/visual_inspector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/visual_inspector.py)).
+    - Delegates broadsheet manifest and matrix rendering to presentation formatters ([`retrieval/formatters.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/formatters.py)).
+    - Uses database asset context resolver ([`retrieval/asset_resolver.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/asset_resolver.py)) for attached asset metadata reconciliation.
   - **Safe Logging Telemetry**: Sanitizes extra logging dictionaries to avoid colliding with Python stdlib `logging.LogRecord` reserved attributes.
-  - **Single-Source Formatters**: Unifies relational SQL manifests and coverage matrix text representations.
-* **Important Tools / Frameworks**: Python AsyncIO, SQLAlchemy Async Engine, Retrieval Engine Tools, MinIO Client, VisualDataExtractor, SandboxedExecutor.
-* **LLM / VLM / Embedding Models**: Bound to `visual_extraction` for on-demand VLM enrichment.
+* **Important Tools / Frameworks**: Python AsyncIO, SQLAlchemy Async Engine, Retrieval Engine Tools, MinIO Client, SQLAnalyticsDispatcher, VisualInspectionEngine, SandboxedExecutor.
+* **LLM / VLM / Embedding Models**: Bound to `visual_extraction` (via `VisualInspectionEngine`) for on-demand VLM enrichment.
+
+##### [`backend/app/agent/sql_dispatcher.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sql_dispatcher.py)
+* **What It Has**:
+  - `SQLAnalyticsDispatcher` class: `dispatch()`, `_exec_sql_entity_trends()`, `_exec_sql_issue_summary()`, `_exec_sql_count_ads()`, `_exec_sql_count_issues()`, `_exec_sql_count_articles()`, `_exec_sql_photo_counts()`, `_exec_sql_topic_distribution()`, `_exec_sql_frontpage_ratio()`, `_exec_sql_coverage_comparison()`, `_exec_sql_coverage_difference()`, `_exec_sql_shared_coverage()`.
+  - Integration with `CoverageAnalyzer` and `formatters` (`format_issue_manifest`, `format_coverage_difference_snippet`, `format_coverage_matrix_snippet`, `format_shared_coverage_snippet`).
+* **Work It Is Doing**:
+  - **Relational Analytics Dispatching**: Encapsulates all 11 pre-compiled relational analytical routines, cleanly separating database reporting from tool orchestration lifecycle.
+  - **Dynamic Parameter & Alias Normalization**: Maps diverse aliases (e.g. `count_ads`, `advertisements`, `newspaper_availability`, `photos_by_section`, `common_stories`) to canonical database routines.
+  - **Presentation Formatting**: Uses standardized formatters to render structured markdown manifests, difference reports, and comparison matrices for evidence state injection.
+* **Important Tools / Frameworks**: Python AsyncIO, SQLAlchemy Async Engine, SQLAnalyticsEngine, CoverageAnalyzer, formatters.
+* **LLM / VLM / Embedding Models**: None (Deterministic Relational Database Execution).
 
 ##### [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py)
 * **What It Has**: `EvidenceEvaluator` class, `evaluate_evidence_async()`, `filter_evidence()`, `_stem()`, `_stem_phrase()`, `is_structural_or_relevant_evidence()`.
@@ -365,6 +392,23 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - **Strict 1-Shot Citation Enforcement**: Mandates bracketed inline citations on every factual assertion.
 * **Important Tools / Frameworks**: Async Generators (`AsyncIterator`), Provider Registry, Cost Tracker.
 * **LLM / VLM / Embedding Models**: Bound to `answerer` task (`nemotron-3.5-lightning`, `gemma4:12b`, `llama3.1:8b`, `deepseek-r1:14b`, or `gpt-4o`).
+
+##### [`backend/app/agent/answer_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py)
+* **What It Has**:
+  - `AnswerVerifier` editorial auditor class and `AnswerVerificationResult` dataclass.
+  - `ANSWER_VERIFIER_SYSTEM_PROMPT`: Rigorous 4-dimension audit instructions for groundedness, absence faithfulness, fluff elimination, and evidence gaps.
+  - `verify_answer()`: Two-tier auditing executing fast deterministic rule-based checks (<5ms) before engaging the reflexive LLM auditor.
+  - `_verify_publication_scope()`: Enforces publication boundary isolation, detecting if an answer covers out-of-scope broadsheets.
+  - `_verify_date_alignment()`: Verifies that cited dates match the requested temporal boundary and retrieved evidence dates.
+* **Work It Is Doing**:
+  - **Reflective Post-Synthesis Auditor**: Acts as a peer editorial fact-checker reviewing synthesized responses before delivery to the user.
+  - **4-Dimension Audit Framework**:
+    1. *Faithfulness & Truthfulness*: Ensures assertions, counts, and dates are grounded in evidence. Flags positive claims when evidence demonstrates absence (e.g. 0 records).
+    2. *Freedom from Hallucination & Corporate Fluff*: Strips speculative consulting boilerplate and fake citations.
+    3. *Publication Scope & Date Alignment*: Detects cross-newspaper and cross-date boundary violations.
+    4. *Evidence Gap Detection & Closed-Loop Routing*: If an evidentiary gap is diagnosed and dynamic code execution is required, emits `recommended_action="fallback_to_dynamic_tool"` with `dynamic_tool_hint`, triggering the LangGraph state machine to loop back to `execute_dynamic_code`.
+* **Important Tools / Frameworks**: Pydantic v2 schemas, Structured JSON outputs, Provider Registry.
+* **LLM / VLM / Embedding Models**: Bound to `query_planner` or `answerer` task (`nemotron-3.5-lightning`, `gemma4:12b`, `gpt-4o`).
 
 ---
 
@@ -872,10 +916,13 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 * **LLM / VLM / Embedding Models**: Interface definition for all models.
 
 ##### [`backend/app/providers/registry.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/registry.py)
-* **What It Has**: `ModelRegistry` class, `get_registry()`, `reset_registry()`.
-* **Work It Is Doing**: Reads `model_config.yaml`, instantiates concrete provider classes, and resolves task bindings (`get_provider("query_planner")`). Supports dynamic runtime updates.
-* **Important Tools / Frameworks**: Singleton pattern, YAML parsing.
-* **LLM / VLM / Embedding Models**: Manages the complete lifecycle of all configured models.
+* **What It Has**: `ModelRegistry` class, `get_registry()`, `reset_registry()`, `get_chat_failover_candidates()`.
+* **Work It Is Doing**:
+  - Reads `model_config.yaml`, instantiates concrete provider classes, and resolves task bindings (`get_provider("query_planner")`).
+  - Supports dynamic runtime updates and task cache invalidation.
+  - **Prioritized Failover Routing (`get_chat_failover_candidates`)**: Computes ordered lists of configured chat-capable provider IDs for resilient fallbacks across cloud (`nvidia_nemotron`, `openrouter_nemotron`, `openrouter_gemma4_26b`, `gemini_flash`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, `openai_gpt4o`, `gemini_pro`) and sovereign local endpoints (`ollama_llama3`, `ollama_deepseek`, `ollama_nemotron`), respecting `prefer_local` flags.
+* **Important Tools / Frameworks**: Singleton pattern, YAML parsing, Dynamic failover lists.
+* **LLM / VLM / Embedding Models**: Manages the complete lifecycle and failover resolution of all configured models.
 
 ##### Concrete Provider Implementations:
 - [`backend/app/providers/ollama_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/ollama_provider.py): Local inference via Ollama HTTP API (`/api/chat`, `/api/generate`, `/api/embeddings`). Supports Qwen-VL, Gemma4-12B, Nemotron, Llama 3.1.
@@ -898,7 +945,7 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 #### Files in `backend/app/retrieval/`:
 
 ##### [`backend/app/retrieval/__init__.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/__init__.py)
-* **What It Has**: Package initialization, re-exports for `HybridSearchEngine`, `SQLAnalyticsEngine`, `CoverageAnalyzer`, `TimelineBuilder`, `EntitySearchEngine`, `CrossEncoderReranker`, and `repair_text_ligatures`.
+* **What It Has**: Package initialization, re-exports for `HybridSearchEngine`, `SQLAnalyticsEngine`, `CoverageAnalyzer`, `TimelineBuilder`, `EntitySearchEngine`, `CrossEncoderReranker`, `repair_text_ligatures`, `VisualInspectionEngine`, `resolve_attached_asset_context`, `resolve_authoritative_article_id`, `resolve_conversation_working_context`, `ConversationWorkingContext`, `format_issue_manifest`, `format_coverage_matrix_snippet`, `format_coverage_difference_snippet`, and `format_shared_coverage_snippet`.
 
 ##### [`backend/app/retrieval/sanitizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/sanitizer.py)
 * **What It Has**: `repair_text_ligatures()`, `_LIGATURE_REPLACEMENTS`, `_REGEX_LIGATURE_REPAIRS`.
@@ -967,6 +1014,49 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 * **Work It Is Doing**: Multi-tier live internet retrieval cascading across Tier 1 NewsData.io (accredited journalistic press & newspapers), Tier 2 Serper (Google Search API), Tier 3 Tavily (AI research search), and Tier 4 DuckDuckGo HTML scraping fallback. Formats live web results into structured citations with publisher names, article URLs, and publication dates.
 * **Important Tools / Frameworks**: `httpx` (async HTTP client), NewsData.io API, Serper API, Tavily API, DuckDuckGo HTML parser.
 * **LLM / VLM / Embedding Models**: None.
+
+##### [`backend/app/retrieval/asset_resolver.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/asset_resolver.py)
+* **What It Has**:
+  - `resolve_attached_asset_context()`: Resolves ground truth database metadata for attached workspace assets (photos, articles, issue dates, headlines, captions).
+  - `resolve_authoritative_article_id()`: Fast DB lookup to find exact `article_id` for a known or quoted headline.
+  - `ConversationWorkingContext` dataclass: Consolidated Ground Truth context and conflict flags for a conversational turn.
+  - `resolve_conversation_working_context()`: Authoritative reconciliation of attached assets, query parameters, headline bindings, and active issue context.
+* **Work It Is Doing**:
+  - **Ground Truth Context Authority**: Decouples asset resolution from agent execution logic.
+  - **Conflict Detection**: Automatically detects cross-date, cross-publication, and headline conflicts between query text and attached assets.
+* **Important Tools / Frameworks**: SQLAlchemy AsyncSession, Regular Expressions (`re`).
+* **LLM / VLM / Embedding Models**: None (Deterministic Database Grounding).
+
+##### [`backend/app/retrieval/visual_inspector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/visual_inspector.py)
+* **What It Has**:
+  - `VisualInspectionEngine` class.
+  - `inspect_visual_asset()`: Deep multimodal visual inspection, on-demand VLM extraction, and table transcription.
+  - `resolve_visual_target_params()`: Resolves target photo/article IDs, dates, newspapers, and headlines from args, state, citations, and history.
+  - `resolve_photos_for_inspection()`: 5-strategy discovery cascade:
+    - *Strategy A*: Explicit Photo ID + companion charts/tables.
+    - *Strategy B*: Target headline resolved from query citation or context.
+    - *Strategy C*: Explicit Article ID + companion charts/tables.
+    - *Strategy D*: Multi-criteria DB search (newspaper, date, page, query tokens).
+    - *Strategy E*: Scoped caption and VLM description search.
+  - `enrich_photo_vlm_descriptions()`: On-demand MinIO image crop fetch and Gemini/Qwen VLM transcription.
+  - `format_visual_asset_item()`: Formats resolved `Photo` into standardized broadsheet evidence item.
+* **Work It Is Doing**:
+  - Houses the complete multimodal visual intelligence and broadsheet visual crop inspection engine.
+  - Enriches default placeholder descriptions lazily by streaming raw image bytes from MinIO and executing VLM extraction.
+* **Important Tools / Frameworks**: SQLAlchemy AsyncSession, MinIO Store, VisualDataExtractor.
+* **LLM / VLM / Embedding Models**: Bound to `visual_extraction` task (`gemini_vision`, `qwen3vl`, or `openai_gpt4o`).
+
+##### [`backend/app/retrieval/formatters.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/formatters.py)
+* **What It Has**:
+  - `format_issue_manifest()`: Renders unified, human-readable broadsheet manifest string from structured issue summaries.
+  - `format_coverage_matrix_snippet()`: Renders unified 3-tier coverage reconciliation matrix string.
+  - `format_coverage_difference_snippet()`: Renders verified exclusive coverage difference manifest string.
+  - `format_shared_coverage_snippet()`: Renders verified shared syndicated wire coverage manifest string.
+* **Work It Is Doing**:
+  - Consolidates all human-readable markdown snippet generation for retrieval evidence.
+  - Integrates `repair_text_ligatures()` to guarantee clean typographic presentation in manifests.
+* **Important Tools / Frameworks**: Python string formatting, Typographic Ligature Repair.
+* **LLM / VLM / Embedding Models**: None (Deterministic Presentation Formatting).
 
 ---
 

@@ -3761,3 +3761,147 @@ When users interacted with broadsheet articles containing companion infographics
   7. AnswerVerifier: Caught publication scope mismatch draft and routed to `fallback_to_dynamic_tool`.
 
 
+
+---
+
+## Phase 9.63 — Intelligent Planner Tool Selection, Dynamic Analytics Context & Closed-Loop NaN Elimination
+
+**Date**: 2026-09-14  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Heuristic Hardcoding in Query Planner**:
+   - The query planner previously relied on over-strict regex triggers that forcibly routed analytical and statistical queries to static tools even when calculations, word-count metrics, or multi-dimensional distributions were requested.
+2. **Dynamic Tool Maker Context Starvation**:
+   - `tool_maker.py` synthesized Python tools without receiving the dynamic analytics context (schema details, table distributions, foreign keys, or temporal bounds) from the evaluator, causing synthesized code to assume non-existent column names or fail with NaN division errors.
+3. **Closed-Loop NaN and Zero-Division in Dynamic Analytics**:
+   - When synthesized Python code executed over empty query sets, aggregations like `total_words / article_count` raised `ZeroDivisionError` or returned `NaN`, which were not gracefully handled by the sandbox critic.
+
+### Architectural Solutions & Implementations
+1. **Intelligent Planner Tool Selection (`backend/app/agent/planner.py`)**:
+   - Permitted `dynamic_analysis` for ANY query requiring calculations, aggregations, averages, lengths, word counts, distributions, metrics, or statistical analysis across broadsheet tables.
+   - Refined `is_dynamic_analysis_permitted()` to only disallow dynamic analysis when word count refers strictly to an answer length constraint (e.g. "summarize in 100 words").
+   - Empowered the planner to autonomously decide between `sql_analytics` (pre-aggregated relational metrics) and `dynamic_analysis` (arbitrary SQL + Python computation in AST sandbox).
+2. **Dynamic Analytics Context Injection (`backend/app/agent/evaluator.py`, `tool_maker.py`)**:
+   - Enhanced `Evaluator` to pass rich schema context, table foreign keys, and query requirements directly into `tool_maker.py`.
+   - Updated `ToolCritic` to evaluate synthesized code against broadsheet schema constraints before sandbox dispatch.
+3. **Closed-Loop NaN & Zero-Division Elimination (`backend/app/agent/tool_critic.py`, `sandbox_runner.py`)**:
+   - Integrated automatic `NaN` / `None` / `inf` guardrails in `tool_maker.py` prompt templates and `sandbox_runner.py` post-processors.
+   - When article count is zero, mathematical computations output structured zero-safe summaries rather than crashing or emitting `NaN`.
+
+---
+
+## Phase 9.64 — Schema-Aware Agentic Query Planner with Decoupled Archive Context
+
+**Date**: 2026-09-14  
+**Status**: Completed ✅
+
+### Problems Addressed & Root Causes
+1. **Planner Prompt Bloat from Inlined Database Schemas**:
+   - The query planner prompt previously inlined massive raw SQL schema dumps and dynamically queried newspaper rosters on every single turn, bloating token consumption and slowing planning latency.
+2. **Context Leakage Across Conversational Turns**:
+   - Dynamic archive queries executed inside the planner leaked unrelated publications from prior turns into the system prompt.
+
+### Architectural Solutions & Implementations
+1. **Decoupled Archive Context Provider (`backend/app/agent/archive_context.py`)**:
+   - Extracted all broadsheet relational schema definitions, table mappings, and known publication metadata into a clean, standalone `archive_context.py` module.
+   - Provided cached, decoupled helper functions: `STATIC_BROADSHEET_SCHEMA` and `get_known_publications()`.
+2. **Schema-Aware Structured Planning (`backend/app/agent/planner.py`)**:
+   - Injected concise, schema-aware tool signatures into `PLANNER_SYSTEM_PROMPT`.
+   - Enabled the planner to reason over broadsheet relational structure (newspapers, issues, pages, articles, chunks, photos, tables) without token bloat.
+3. **Graph State Machine Integration (`backend/app/agent/graph.py`)**:
+   - Updated LangGraph state transitions to pass cleanly resolved `archive_context` to planning and evaluation nodes.
+
+---
+
+## Phase 9.65 — Query Planner & Agent Suite De-Overengineering Across 10 Architectural Pillars
+
+**Date**: 2026-09-14  
+**Status**: Completed ✅
+
+### Architectural Overhaul Across 10 Core Pillars
+1. **Pillar 1: Elimination of Heuristic Planner Monolith**:
+   - Replaced fragile, branching heuristic rule-chains with true agentic direct tool planning backed by clean domain models in `models.py`.
+2. **Pillar 2: Decoupled Tool Factory (`backend/app/agent/tool_factory.py`)**:
+   - Extracted all tool construction and argument sanitization into modular builder functions (`build_sql_summary_tool`, `build_sql_difference_tool`, `build_dynamic_analysis_tool`, etc.).
+3. **Pillar 3: Modular Evidence Evaluator (`backend/app/agent/evaluator.py`)**:
+   - Separated the Reflexive CRAG Evaluator into a dedicated 2-tier engine: Fast-Floor token overlap (<5ms) and Reflexive LLM-as-Judge emitting structured `EvaluationVerdict`.
+4. **Pillar 4: Decoupled Tool Executor (`backend/app/agent/executor.py`)**:
+   - Extracted execution logic from the monolithic graph into a clean, testable executor module handling tool dispatch and evidence formatting.
+5. **Pillar 5: Standalone Parameter Extraction (`backend/app/agent/extractor.py`)**:
+   - Isolated brand regexes, temporal extraction, section normalization, and archive-wide query classifiers.
+6. **Pillar 6: Closed-Loop Dynamic Tool Maker & AST Sandbox (`tool_maker.py`, `tool_critic.py`, `sandbox_runner.py`)**:
+   - Implemented dynamic Python tool synthesis with AST safety verification, ensuring custom data analysis queries execute securely in an isolated sandbox.
+7. **Pillar 7: Reflective Answer Verifier (`backend/app/agent/answer_verifier.py`)**:
+   - Added post-synthesis verification node that audits draft answers against grounded evidence, detecting ungrounded claims, hallucinations, and publication scope mismatches with automatic rollback to dynamic fallback.
+8. **Pillar 8: Centralized Domain Taxonomy (`backend/app/agent/taxonomy.py`)**:
+   - Unified canonical categories, section aliases, and query keywords into a single source of truth.
+9. **Pillar 9: Prompt Context & Fallback Presentation (`prompt_context.py`, `fallback_presenter.py`)**:
+   - Cleanly separated synthesizer prompt construction and zero-evidence graceful fallback formatting.
+10. **Pillar 10: Lean Graph State Machine (`backend/app/agent/graph.py`)**:
+   - Streamlined the LangGraph state machine to pure conditional routing and state transitions with a strict 1-cycle ceiling.
+
+---
+
+## Phase 9.66 — Retrieval Refactoring & Full Documentation Synchronization Across All Guides
+
+**Date**: 2026-09-15  
+**Status**: Completed ✅
+
+### Retrieval Modularization & Documentation Synchronization
+1. **Retrieval Subsystem Modularization (`backend/app/retrieval/`)**:
+   - **`asset_resolver.py`**: Extracted visual and photographic asset resolution logic (photos, tables, infographics, diagrams) from `executor.py` into a dedicated retrieval module.
+   - **`visual_inspector.py`**: Created specialized layout inspection engine providing deep token inspection, bounding box geometry mapping, and DocLayNet visualization.
+   - **`formatters.py`**: Centralized shared evidence snippet formatting and table markdown generation.
+2. **Full Documentation Synchronization Across All 8 Documentation Guides**:
+   - **`docs/codebase_directory_and_file_reference.md`**: Updated to document all 23+ new and modularized agent, retrieval, and ingestion files.
+   - **`docs/architecture.md`**: Updated high-level architecture diagram, LangGraph state machine flow, and subsystem specifications to reflect the 10 architectural pillars, Reflexive CRAG Evaluator, Dynamic Tool Maker, and LLM Answer Verifier.
+   - **`docs/data_flow.md` & `docs/data_flow_architecture.md`**: Updated sequence diagrams and stage-by-stage pipelines to trace the closed-loop agentic workflow and visual asset inspection.
+   - **`docs/features.md`**: Documented new user-facing capabilities including Closed-Loop Dynamic Tool Synthesis, AST Sandboxed Code Execution, Reflective LLM Answer Verification, and Visual Layout Inspection.
+   - **`docs/end_to_end_data_flow_guide.md`**: Updated to v3.1.0 reflecting schema-aware direct planning, dynamic tool synthesis fallback, answer verification, and visual asset resolution.
+   - **`docs/database_schema.md`**: Verified all 17 relational tables, foreign key cascades, and spatial bounding box schemas.
+
+---
+
+## Phase 9.67 — Decoupled SQL Analytics Dispatcher, Dynamic Brand Pattern Resolution & Failover Registry
+
+**Date**: 2026-09-15  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+1. **Executor Bloat from Relational SQL Dispatching**:
+   - `backend/app/agent/executor.py` previously contained extensive pre-compiled SQL analysis branching (`issue_summary`, `coverage_difference`, `shared_coverage`, `count_issues`, `count_ads`, etc.), inflating the tool execution coordinator with database query building and snippet rendering logic.
+2. **Static Brand Matching on Dynamic Broadside Publications**:
+   - `extractor.py` previously evaluated queries against a hardcoded list of newspaper brands (`_KNOWN_BRANDS_PATTERNS`). When new broadsheets were ingested into MySQL, brand extraction failed to recognize them without code modifications.
+3. **Structured Archive Introspection**:
+   - `archive_context.py` emitted untyped context strings, missing structured metadata containers for programmatic downstream consumers.
+4. **Resilient Provider Failover Candidates**:
+   - During cloud rate limits (e.g. HTTP 429), the agent needed an ordered, prioritized list of configured chat-capable models across cloud and sovereign local providers.
+
+### Architectural Solutions & Implementations
+
+1. **Decoupled SQL Analytics Dispatcher (`backend/app/agent/sql_dispatcher.py`)**:
+   - Extracted all 11 pre-compiled relational SQL query dispatching routines and snippet formatting logic into `SQLAnalyticsDispatcher`.
+   - Normalizes alias variations (`count_advertisements` $\to$ `count_ads`, `newspaper_availability` $\to$ `count_issues`, `photos_by_section` $\to$ `photo_counts`).
+   - Integrates with `CoverageAnalyzer` and presentation formatters (`format_issue_manifest`, `format_coverage_difference_snippet`, `format_coverage_matrix_snippet`, `format_shared_coverage_snippet`).
+   - Streamlined `executor.py` to delegate directly to `SQLAnalyticsDispatcher.dispatch()`.
+
+2. **Dynamic Brand Pattern Resolution & Caching (`backend/app/agent/extractor.py`)**:
+   - Implemented `get_brand_patterns()` combining predefined brand regexes with newly discovered broadsheet titles from `get_known_publications()`.
+   - Cached compiled regexes via `_DYNAMIC_PATTERNS_CACHE` to eliminate redundant regex compilations.
+
+3. **Structured `ArchiveMetadata` Container (`backend/app/agent/archive_context.py`)**:
+   - Designed typed `ArchiveMetadata` dataclass (`min_date`, `max_date`, `publications`, `categories`, `context_str`).
+   - Implemented `get_archive_metadata()` returning cached structured metadata introspected asynchronously from MySQL with a 5-minute TTL.
+
+4. **Dynamic Chat Failover Candidate Discovery (`backend/app/providers/registry.py`)**:
+   - Implemented `ModelRegistry.get_chat_failover_candidates(prefer_local=False)`.
+   - Returns prioritized, configured provider IDs for seamless failover across cloud (`nvidia_nemotron`, `openrouter_nemotron`, `openrouter_gemma4_26b`, `gemini_flash`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, etc.) and sovereign local models (`ollama_llama3`, `ollama_deepseek`, `ollama_nemotron`).
+
+5. **Enhanced Frontend Attached Asset Handling (`frontend/src/components/AgentAssistant.jsx`)**:
+   - Unconditionally binds attached visual asset `photoId` when present, ensuring user-attached infographics/photos are consistently prioritized without requiring specific visual query keywords.
+
+### Verification & QA
+- **Unit & Integration Test Suite**: 49/49 passing in `backend/tests/test_planner.py` and `backend/tests/test_query_condenser.py`.
+- **Full Test Suite Compatibility**: Verified across condenser, planner, SQL analytics, tool critic, and visual inspection modules.
+- **Documentation Synchronization**: Updated across all 8 architectural and reference guides in `docs/`.

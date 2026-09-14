@@ -1,7 +1,7 @@
 # NewsLens-AI End-to-End Data Flow & Data Structure Guide
 *(Cross-Verified Against Real Production Database, Storage Cluster, Model Registry & Live Retrieval Engine)*
 
-> **Document Version**: 3.0.0 (Production Verified)  
+> **Document Version**: 3.1.0 (Production Verified)  
 > **Verification Status**: Tested against live MySQL database (`42,250+` articles, `1,200+` pages, `65,000+` chunks), Qdrant cluster (`1,024`-dim BGE-M3 vectors), Model Provider Registry (Local Sovereign, Cloud Dual-Key, Cloud Direct), 3-Stage Visual Pipeline with Local VLM Failover & Deterministic Spatial OCR Matrix, and 4-Tier Journalistic Web Search Grounding.  
 > **Target Audience**: Core Engineers, AI Researchers, and System Architects.
 
@@ -47,12 +47,14 @@
    - [6.2 The Complete Synthesizer Prompt Structure](#62-the-complete-synthesizer-prompt-structure)
    - [6.3 LLM Generation, `<think>` Tag Separation & Inline Citations](#63-llm-generation-think-tag-separation--inline-citations)
    - [6.4 Server-Sent Events (SSE) Wire Protocol](#64-server-sent-events-sse-wire-protocol)
+   - [6.5 Reflective LLM Answer Verification (`answer_verifier.py`)](#65-reflective-llm-answer-verification-answer_verifierpy)
 8. [Phase 7: Anti-Hallucination Guardrails & Context Isolation](#8-phase-7-anti-hallucination-guardrails--context-isolation)
-   - [7.1 Architecture of the 4-Layer Anti-Hallucination Shield](#71-architecture-of-the-4-layer-anti-hallucination-shield)
+   - [7.1 Architecture of the 5-Layer Anti-Hallucination Shield](#71-architecture-of-the-5-layer-anti-hallucination-shield)
    - [7.2 Ingestion-Time Ground Truth Protection](#72-ingestion-time-ground-truth-protection)
    - [7.3 Pre-Processing & Planning Guardrails](#73-pre-processing--planning-guardrails)
    - [7.4 Retrieval & Gating Guardrails](#74-retrieval--gating-guardrails)
    - [7.5 Synthesizer Grounding & Inline Attribution](#75-synthesizer-grounding--inline-attribution)
+   - [7.6 Layer 5: Post-Synthesis Reflective Verification Gate (`answer_verifier.py`)](#76-layer-5-post-synthesis-reflective-verification-gate-answer_verifierpy)
 9. [Phase 8: Comprehensive Top-K Lifecycle Reference](#9-phase-8-comprehensive-top-k-lifecycle-reference)
    - [8.1 Master Parameter Matrix for All Retrieval Tools](#81-master-parameter-matrix-for-all-retrieval-tools)
    - [8.2 Two-Tier Top-K Decision Framework in Query Planner](#82-two-tier-top-k-decision-framework-in-query-planner)
@@ -124,7 +126,20 @@ The diagram below traces how real broadsheet issues (e.g. *The Goan*, Issue #93,
 │                                     ┌───────────────────────────────┐                                  │
 │                                     │ LLM Streaming Synthesis       │                                  │
 │                                     │ Thought + Structured Brief    │                                  │
-│                                     └───────────────────────────────┘                                  │
+│                                     └───────────────┬───────────────┘                                  │
+│                                                     ▼                                                  │
+│                                     ┌───────────────────────────────┐                                  │
+│                                     │ AnswerVerifier (Reflection)   │                                  │
+│                                     │ Grounding, Contradiction,     │                                  │
+│                                     │ Evidence Gap & Fluff Audit    │                                  │
+│                                     └───────┬───────────────┬───────┘                                  │
+│                                             │               │                                          │
+│                                  Valid / OK │               │ Gap Detected (fallback_to_dynamic_tool)    │
+│                                             ▼               ▼                                          │
+│                                    ┌────────────────┐  ┌─────────────────────────┐                     │
+│                                    │ Log Query &    │  │ Closed-Loop Dynamic Tool│                     │
+│                                    │ Stream to User │  │ AST Sandbox Fallback    │                     │
+│                                    └────────────────┘  └─────────────────────────┘                     │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -958,6 +973,8 @@ When a query targets quantitative trends, charts, or diagrams (e.g. *"Show me th
 
 ### Tool 2: `sql_analytics` (Relational Broadsheet Manifests & Coverage Differences)
 
+Relational analytical routines are dispatched via `SQLAnalyticsDispatcher` ([`backend/app/agent/sql_dispatcher.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sql_dispatcher.py)), which coordinates execution against `SQLAnalyticsEngine` ([`backend/app/retrieval/sql_analytics.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/sql_analytics.py)) and presentation formatters ([`backend/app/retrieval/formatters.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/formatters.py)).
+
 #### Operation A: Deterministic Coverage Difference (`coverage_difference`)
 ```python
 diff = await sql_tool.get_newspaper_coverage_difference(
@@ -1215,7 +1232,7 @@ Broader investigative stories frequently group multiple related charts, balance 
 ```
 
 #### 2. The 5-Tier Inspection Strategy Cascade
-NewsLens-AI executes a defensive 5-tier fallback cascade in [`backend/app/agent/executor.py:_execute_inspect_visual_asset()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py#L770-L1060):
+NewsLens-AI delegates visual asset inspection to the modular `VisualInspectionEngine` ([`backend/app/retrieval/visual_inspector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/visual_inspector.py)), with asset targeting and entity binding performed by `AssetResolver` ([`backend/app/retrieval/asset_resolver.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/asset_resolver.py)) and standardized payloads constructed via [`backend/app/retrieval/formatters.py:format_visual_asset()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/formatters.py). `ToolExecutor._execute_inspect_visual_asset()` in [`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py) executes a defensive 5-tier fallback cascade:
 
 1. **Strategy A (Explicit `photo_id` + Companion Lookup)**:
    - Queries `photos` joined with `articles`, `issues`, `newspapers` by primary key `p.id = 8408`.
@@ -1608,6 +1625,51 @@ data: {"status": "completed", "latency_ms": 1180, "cost_usd": 0.0028}
 
 ---
 
+### 6.5 Reflective LLM Answer Verification (`answer_verifier.py`)
+
+Immediately after answer synthesis, the draft text is intercepted by the reflective fact-checker ([`backend/app/agent/answer_verifier.py:AnswerVerifier`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py)). Rather than blindly emitting generated tokens to downstream logs and clients, NewsLens-AI audits the draft against the retrieved evidence ground truth.
+
+#### 1. Deterministic Fast-Floor Groundedness Checks (<5ms)
+Before invoking an LLM judge, `AnswerVerifier._fast_groundedness_check()` evaluates deterministic heuristics:
+1. **Scope Mismatch Auditing**: Detects if an archive-wide inquiry (e.g. *"What newspapers are available on 2026-08-01?"*) was erroneously narrowed by the synthesizer down to a single publication brand. If detected, it immediately flags `evidence_gap_detected=True` and recommends `fallback_to_dynamic_tool`.
+2. **Ungrounded Numerical/NaN Failure**: Catches ungrounded `"nan words"`, `"is nan"`, or `"null %"` calculations produced when data was missing.
+3. **Relational Zero-Count Contradiction**: If evidence contains an explicit zero-issue record (`metadata["count"] == 0`, `"0 issues found"`, or `"Archive Availability Audit: 0 issues"`), but the draft answer makes positive claims (*"Total Matching Issues: 4"*, *"at least one newspaper is available"*), the fast floor intercepts the contradiction and deterministically overrides the answer with an authoritative archive scope notice (`refined_answer`), bypassing LLM judge latency.
+
+#### 2. The 4 Audit Dimensions of the LLM Judge (`ANSWER_VERIFIER_SYSTEM_PROMPT`)
+When fast checks pass, the verifier queries candidate LLMs with a structured critique prompt:
+1. **Faithfulness & Truthfulness**: Are all numbers, dates, publications, and availability assertions strictly grounded in the evidence?
+2. **Freedom from Hallucination & Fluff**: Eliminates speculative corporate boilerplate (e.g., *"investigate implications on content strategy"*, *"explore future collaboration"*) and placeholder citations (`[{Publication Name}...`).
+3. **Evidence Adequacy & Dynamic Fallback**: Identifies whether the draft failed due to an unresolvable evidence gap in static retrieval, setting `evidence_gap_detected=True`, `recommended_action="fallback_to_dynamic_tool"`, and generating a `dynamic_tool_hint`.
+4. **Factual Refinement**: When the evidence contains the necessary facts to resolve minor errors or fluff, generates a clean `refined_answer`.
+
+#### 3. Real `AnswerVerificationResult` Wire Payload
+```json
+{
+  "is_valid": true,
+  "has_hallucination": false,
+  "has_contradiction": false,
+  "evidence_gap_detected": false,
+  "quality_score": 0.96,
+  "factual_errors": [],
+  "critique": "All 142 exclusive articles and front-page headlines match the verified relational difference between The Goan and The Morning Standard for 2026-08-01.",
+  "recommended_action": "accept",
+  "refined_answer": null,
+  "dynamic_tool_hint": null,
+  "latency_ms": 340
+}
+```
+
+#### 4. Closed-Loop State Machine Recovery Routing (`graph.py`)
+In [`backend/app/agent/graph.py:_route_after_verification()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/graph.py#L174-L188):
+- **Accept**: If `is_valid=True` and `recommended_action="accept"`, execution transitions directly to `log_query` and completes.
+- **Refinement Injection**: If `is_valid=False` but `refined_answer` is present, `state["synthesized_answer"]` is replaced with the factual refined text before transitioning to `log_query`.
+- **Closed-Loop Dynamic Tool Rollback**: If `recommended_action="fallback_to_dynamic_tool"` and `recovery_attempts < 1` and `verification_attempts < 1`:
+  - `state["gap_diagnosis"] = res.dynamic_tool_hint`
+  - Routes backward to `execute_dynamic_code` to invoke `ToolMaker` in the AST sandbox for targeted MySQL/Python execution.
+  - Returns to `synthesize_answer` with synthesized database evidence, capped by the strict 1-cycle ceiling.
+
+---
+
 ## 8. Phase 7: Anti-Hallucination Guardrails & Context Isolation
 
 NewsLens-AI does not rely solely on system prompt coaxing to prevent hallucinations; it enforces an **end-to-end multi-layered defense shield** across all stages of ingestion, planning, retrieval, and synthesis.
@@ -1635,15 +1697,21 @@ NewsLens-AI does not rely solely on system prompt coaxing to prevent hallucinati
 │     ├── Strict Publication & Date Scoping Directives► Eliminates Out-of-Scope Conflation               │
 │     ├── 100% Bracketed Inline Citation Mandate ────► Every Claim Bound to Exact SQL Row & Bounding Box │
 │     └── Attached Visual Asset Verification Gate ───► Eliminates Invented Photos/Charts                │
+│                                                                                                        │
+│  5. POST-SYNTHESIS REFLECTIVE AUDIT LAYER                                                              │
+│     ├── 4-Dimensional LLM-Critic Gate (Verifier) ─► Audits Grounding, Fluff & Contradictions          │
+│     ├── Relational Zero-Count Contradiction Guard ─► Intercepts False Positive Claims & Scope Drift    │
+│     └── Closed-Loop Dynamic Tool Rollback ─────────► Triggers AST Subprocess ToolMaker on Missing Data │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.1 Architecture of the 4-Layer Anti-Hallucination Shield
+### 7.1 Architecture of the 5-Layer Anti-Hallucination Shield
 
 1. **Ingestion Gate**: Verifies that every indexed word, number, and date reflects physical broadsheet ink before it enters vector or relational storage.
 2. **Pre-Processing & Planning Gate**: Strips hallucinated dates and categories generated by LLM planners, forcing tools to search ground-truth constraints.
 3. **Retrieval & Reranking Gate**: Uses token-level cross-attention to discard false-positive semantic matches and short-circuits empty queries before generation.
 4. **Synthesis Gate**: Strict prompt boundary barriers and automated regex citation auditing ensure every bullet point maps to a verified database row.
+5. **Post-Synthesis Reflective Verification Gate**: Post-generation fact-checking critic audits generated responses against retrieved evidence ground truth, catching zero-count contradictions and scope narrowing, with closed-loop recovery to dynamic tools.
 
 ---
 
@@ -1757,6 +1825,18 @@ NewsLens-AI does not rely solely on system prompt coaxing to prevent hallucinati
 #### 3. Attached Visual Asset Verification Gate
 * **Code Reference**: [`backend/app/agent/synthesizer.py:COMMON_MEMORY_AND_CONSTRAINTS`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py#L192-L196)
 * When asked if an article has an infographic or photo, the model must inspect the `photos` block. If empty, it must state that **none are attached**, preventing invented graphics.
+
+---
+
+### 7.6 Layer 5: Post-Synthesis Reflective Verification Gate (`answer_verifier.py`)
+
+#### 1. Reflexive Fact-Checking & Self-Correction
+* **Code Reference**: [`backend/app/agent/answer_verifier.py:AnswerVerifier`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py)
+* **Failure Mode Prevented**: In edge queries where evidence is minimal or ambiguous, synthesizers can introduce ungrounded corporate filler (*"explore future collaboration"*, *"investigate implications on publication planning"*), hallucinate positive availability for dates with 0 issues, or invent placeholder citations.
+* **Mechanism**:
+  1. **Deterministic Fast Floor**: Catches scope mismatches (narrowing archive queries to single brands) and relational zero-issue contradictions before LLM invocation. Overrides contradictory drafts with verified archive availability notices.
+  2. **4-Dimensional LLM Critic Audit**: Measures grounding, absence of speculative fluff, factual accuracy of counts/dates, and evidence adequacy.
+  3. **Closed-Loop Dynamic Recovery**: When an evidence gap is verified, routes execution back to `execute_dynamic_code`, generating an AST-sandboxed MySQL tool via `ToolMaker` to fetch missing ground-truth records before final delivery, bounded by a strict 1-cycle ceiling.
 
 ---
 

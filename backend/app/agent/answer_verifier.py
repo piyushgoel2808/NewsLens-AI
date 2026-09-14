@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 import json
 import re
 import time
+from app.agent.archive_context import (
+    STATIC_ARCHIVE_DATE_MAX,
+    STATIC_ARCHIVE_DATE_MIN,
+    STATIC_CANONICAL_PUBLICATIONS,
+)
 from app.agent.extractor import (
     _KNOWN_BRANDS_PATTERNS,
     is_archive_wide_newspaper_query,
@@ -72,7 +77,7 @@ Your mission is to rigorously verify a drafted answer against the retrieved evid
    - Did the draft hallucinate or fail because the retrieved evidence had an unresolvable gap or missing data needed to answer the question?
    - If the evidence genuinely lacks the required data to answer the query, set `evidence_gap_detected: true`, recommend `fallback_to_dynamic_tool`, and provide a `dynamic_tool_hint` for what database query is needed.
 4. **Refinement**:
-   - If the draft has errors or fluff but the evidence contains the necessary facts (e.g. 0 matching issues, archive range 2026-08-01 to 2026-09-11), provide a clean, faithfully grounded `refined_answer` adhering to the facts.
+   - If the draft has errors or fluff but the evidence contains the necessary facts (e.g. 0 matching issues, verified archive coverage range), provide a clean, faithfully grounded `refined_answer` adhering to the facts.
 
 ### OUTPUT FORMAT
 Respond ONLY with a valid JSON object matching this schema:
@@ -112,7 +117,7 @@ class AnswerVerifier:
                     p = reg.get_provider(key)
                     if p is not None and hasattr(p, "complete") and p not in candidates:
                         candidates.append(p)
-            for k in ["gemini_flash", "openrouter_gemma4_26b", "groq_compound", "openai_gpt4o_mini"]:
+            for k in reg.get_chat_failover_candidates():
                 with contextlib.suppress(Exception):
                     p = reg.get_chat_provider(k)
                     if p is not None and hasattr(p, "complete") and p not in candidates:
@@ -250,15 +255,14 @@ class AnswerVerifier:
                     r"Total Matching Issues:\s*[1-9]\d*)\b",
                     draft_answer,
                 )
-                or re.search(r"(?i)\bTotal Matching Issues:\s*24\b", draft_answer)
             )
             if has_positive_claim:
                 meta = zero_issue_record.get("metadata") or {}
                 target_d = meta.get("target_date") or zero_issue_record.get("issue_date") or "the requested date"
                 rng = meta.get("archive_range") or {}
-                rng_str = f"{rng.get('start', '2026-08-01')} to {rng.get('end', '2026-09-11')}"
+                rng_str = f"{rng.get('start', STATIC_ARCHIVE_DATE_MIN)} to {rng.get('end', STATIC_ARCHIVE_DATE_MAX)}"
                 nps = meta.get("archive_newspapers") or []
-                nps_str = ", ".join(nps) if nps else "Business Standard, Hindustan Times, Mint, The Indian Express"
+                nps_str = ", ".join(nps) if nps else ", ".join(STATIC_CANONICAL_PUBLICATIONS)
 
                 refined = (
                     f"### ⚡ Availability Status\n\n"

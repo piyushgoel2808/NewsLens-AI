@@ -40,6 +40,10 @@ def test_needs_condensation_detects_pronouns():
     assert needs_condensation("list all its sports related news", history) is True
     assert needs_condensation("what about its main headline", history) is True
     assert needs_condensation("who won the elections in India?", history) is False
+    # Issue 1: Existential queries with ambiguous pronouns must NOT be skipped by existential check
+    assert needs_condensation("Are there any reports on its front page?", history) is True
+    assert needs_condensation("Is there any article about their chief minister?", history) is True
+    assert needs_condensation("Are there any reports on floods in Assam?", history) is False
 
 
 @pytest.mark.asyncio

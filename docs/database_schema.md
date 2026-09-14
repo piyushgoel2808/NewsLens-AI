@@ -400,7 +400,7 @@ Combines dense vector search in Qdrant with sparse BM25 keyword matching in MySQ
 ```
 
 #### 2. SQL Analytics Engine (`sql_analytics`)
-Executes parameterized aggregation queries across structured relational tables for macro trends, manifests, or distribution metrics:
+Dispatched via `SQLAnalyticsDispatcher` ([`backend/app/agent/sql_dispatcher.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sql_dispatcher.py)) and executed against `SQLAnalyticsEngine` ([`backend/app/retrieval/sql_analytics.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/sql_analytics.py)). Executes parameterized aggregation queries across structured relational tables for macro trends, manifests, or distribution metrics:
 
 **a) Issue Manifest / Page Summary (`analysis_type: "issue_summary"`):**
 ```json
@@ -465,34 +465,85 @@ Assembles a chronological progression of events across multiple print dates and 
 }
 ```
 
----
+#### 5. Cross-Newspaper Coverage Analyzer (`coverage_analysis`)
+Executes 3-tier comparative audit across multiple broadsheet publications on an event or topic:
 
-### 5.4 Corrective RAG (CRAG) Fallback Payloads (`evaluate_and_fallback`)
-When initial retrieval yields zero high-confidence grounded articles or relevance falls below threshold, the CRAG node automatically triggers corrective fallback branches:
-
-**CRAG Entity Fallback Payload:**
 ```json
 {
-  "tool_name": "crag_entity_fallback",
-  "tool_input": {
-    "entity_name": "Nvidia",
-    "top_k": 5
-  },
-  "results_count": 3,
-  "execution_time_ms": 142
+  "query": "Supreme Court electoral bonds verdict",
+  "newspapers": ["The Hindu", "The Indian Express", "The Times of India"],
+  "issue_date": "2026-08-01",
+  "date_from": null,
+  "date_to": null
 }
 ```
 
-**CRAG Live Web Fallback Payload (if enabled):**
+#### 6. Journalistic Web Search Grounding (`web_search`)
+Performs 4-tier live internet search cascading from accredited press (NewsData.io) to search APIs:
+
 ```json
 {
-  "tool_name": "crag_web_fallback",
+  "query": "Nvidia Blackwell GPU shipments Q3 2026",
+  "num_results": 5,
+  "date_restrict": "m1"
+}
+```
+
+#### 7. Broadsheet Visual Asset Inspector (`inspect_visual_asset`)
+Multimodal broadsheet visual crop inspection and VLM chart/table extraction:
+
+```json
+{
+  "photo_id": 412,
+  "article_id": null,
+  "query": "BRICS trade currency breakdown chart",
+  "newspaper_name": "The Goan",
+  "issue_date": "2026-08-01",
+  "page_filter": "4"
+}
+```
+
+#### 8. Ad-Hoc Dynamic Analysis (`dynamic_analysis`)
+Dynamic Python/SQL analytical tool synthesized on-the-fly and executed in an isolated AST sandbox:
+
+```json
+{
+  "query": "Calculate the variance of article word counts across all news sections on August 1, 2026",
+  "issue_date": "2026-08-01",
+  "newspaper_name": "The Goan"
+}
+```
+
+---
+
+### 5.4 Corrective RAG (CRAG) & Reflexive LLM-as-Judge Payloads (`evaluate_and_fallback`)
+When initial retrieval yields ambiguous, incomplete, or borderline evidence, the CRAG node evaluates grounding and emits a structured `EvaluationVerdict`:
+
+**Reflexive LLM-as-Judge Verdict Schema:**
+```json
+{
+  "is_sufficient": false,
+  "quality_score": 0.35,
+  "gap_diagnosis": "Retrieved evidence lacks specific category variance figures requested for The Goan.",
+  "recommended_action": "synthesize_dynamic_tool",
+  "corrective_hints": [
+    "Execute SQL aggregation computing variance of word_count grouped by section",
+    "Scope strictly to issue_date = '2026-08-01' and newspaper = 'The Goan'"
+  ]
+}
+```
+
+**CRAG Adaptive Re-Plan Payload:**
+```json
+{
+  "tool_name": "replan_with_feedback",
   "tool_input": {
-    "query": "Nvidia Blackwell GPU shipments Q3 2026",
-    "num_results": 4
+    "feedback": "Missing casualty statistics from interior district editions",
+    "widened_date_range": ["2026-08-01", "2026-08-03"],
+    "expanded_top_k": 12
   },
-  "results_count": 4,
-  "execution_time_ms": 480
+  "results_count": 8,
+  "execution_time_ms": 230
 }
 ```
 
@@ -615,6 +666,27 @@ data: {"citations": [{"newspaper": "The Daily Chronicle", "date": "2026-08-20", 
 ```text
 event: done
 data: {"latency_ms": 940, "cost_usd": 0.0019, "evidence_count": 4}
+```
+
+---
+
+### 6.3 Answer Verifier Telemetry & Audit Verdict Schema (`AnswerVerificationResult`)
+When the response is audited by the reflective editorial fact-checker ([`backend/app/agent/answer_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py)), it produces this structured JSON payload stored in `AgentState["answer_verification"]`:
+
+```json
+{
+  "is_valid": true,
+  "has_hallucination": false,
+  "has_contradiction": false,
+  "evidence_gap_detected": false,
+  "quality_score": 0.95,
+  "factual_errors": [],
+  "critique": "All reported figures and dates strictly match retrieved broadsheet evidence. Publication scope verified.",
+  "recommended_action": "accept",
+  "refined_answer": null,
+  "dynamic_tool_hint": null,
+  "latency_ms": 95
+}
 ```
 
 ---

@@ -48,7 +48,7 @@ flowchart TD
         
         Dispatcher --> Tool_Hybrid["HybridSearchEngine<br/>(Dense Qdrant + MySQL FULLTEXT)"]
         Dispatcher --> Tool_Visual["InspectVisualAsset<br/>(Multi-Chart Cascade A-E)"]
-        Dispatcher --> Tool_SQL["SQLAnalytics<br/>(Coverage Differences & Manifests)"]
+        Dispatcher --> Tool_SQL["SQLAnalyticsDispatcher<br/>(Coverage Differences & Manifests)"]
         Dispatcher --> Tool_Entity["EntityFilter<br/>(N-Hop Relational Search)"]
         Dispatcher --> Tool_Timeline["TimelineBuilder<br/>(Narrative Trajectories)"]
         Dispatcher --> Tool_Web["WebSearchEngine (4-Tier Grounding)<br/>NewsData.io ➔ Serper ➔ Tavily ➔ DDG"]
@@ -66,7 +66,9 @@ flowchart TD
         CRAG -->|Zero Evidence / Ambiguous| FallbackRouter["Fallback Web/Entity Search<br/>or Anti-Hallucination Notice"]
         FallbackRouter --> Synthesizer
 
-        Synthesizer --> SSE["FastAPI SSE Streaming Router<br/>(Stages, Thoughts, Tokens, Visual Cards)"]
+        Synthesizer --> Verifier["Reflective Answer Verifier<br/>(4-Dimension Audit & Fast Scope Gates)"]
+        Verifier -->|Evidence Gap Detected| ToolMaker
+        Verifier -->|Verified / Refined| SSE["FastAPI SSE Streaming Router<br/>(Stages, Thoughts, Tokens, Visual Cards)"]
     end
 
     CLIENT <-->|HTTP REST & SSE Events| AGENTIC
@@ -340,6 +342,7 @@ sequenceDiagram
     participant Rerank as Cross-Encoder Reranker (CPU)
     participant CRAG as Evidence Relevance Gate (CRAG)
     participant Synth as AnswerSynthesizer
+    participant Verifier as AnswerVerifier (Editorial Auditor)
     participant LLM as Bound LLM Provider
 
     User->>API: POST /api/query/stream (query, history, attached_asset_ids)
@@ -367,7 +370,7 @@ sequenceDiagram
         Rerank-->>Hybrid: Reranked Top-K Excerpts
         Hybrid-->>Dispatcher: Filtered Text Evidence
     and Visual Asset Inspection
-        Dispatcher->>Dispatcher: InspectVisualAsset (Cascade A ➔ E)
+        Dispatcher->>Dispatcher: InspectVisualAsset (Cascade A ➔ E via VisualInspectionEngine)
         Dispatcher-->>Dispatcher: Retrieve All Companion Charts (e.g. 4 BRICS Charts)
     and SQL Analytics / Differences
         Dispatcher->>Dispatcher: SQLAnalytics (get_newspaper_coverage_difference)
@@ -383,6 +386,16 @@ sequenceDiagram
     Graph->>Synth: synthesize_stream(query, evidence, archetype, answer_blueprint)
     Synth->>LLM: Stream Structured Anti-Hallucination Prompt (Compiled from Blueprint)
     LLM-->>Synth: Stream: <think>...</think> + Structured Sections
+    Synth->>Verifier: verify_answer(draft, evidence, blueprint)
+    Note over Verifier: 4-Dimension Audit (Faithfulness, Absence, Fluff, Scope)<br/>Deterministic Fast Gates (<5ms)<br/>Reflexive LLM Critic emits AnswerVerificationResult
+    alt Verification Action: fallback_to_dynamic_tool
+        Verifier->>Graph: Loop back to execute_dynamic_code (1-cycle ceiling)
+        Graph->>Dispatcher: Execute synthesized Python/SQL code in AST Sandbox
+        Dispatcher-->>Synth: Injected Verified Dynamic Telemetry
+        Synth->>Synth: Re-Synthesize Final Grounded Brief
+    else Accepted or Refined
+        Verifier-->>Synth: Verified / Refined Response Brief
+    end
     Synth-->>API: SSE Events (stage, thought, token, citations, done)
     API-->>User: Live Streaming UI Brief with Visual Cards & Thumbnails
 ```
@@ -394,8 +407,8 @@ sequenceDiagram
    - **Attached Asset Propagation & Date Isolation**: Carries forward `attached_article_id` or `attached_photo_id` selected in the broadsheet viewer, but strictly evicts attached assets if their publication date or headline conflicts with explicit query intention.
    - **Headline Conflict Invalidation**: Automatically clears stale article IDs when the user transitions to a different article headline or topic.
    - **Differential Exclusion Retention**: Preserves comparative context (*"list all those 11 articles"* $\to$ *"list all articles in The Goan but not in The Morning Standard on 2026-08-01"*).
-2. **Cognitive Query Planner & Dynamic Answer Blueprint** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py), [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)):
-   - Grounded with live archive metadata (`get_archive_metadata()`), preventing the model from inventing dates or newspapers.
+2. **Cognitive Query Planner & Dynamic Answer Blueprint** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py), [`backend/app/agent/archive_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/archive_context.py), [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)):
+   - Grounded with softly-decoupled live archive metadata (`get_archive_and_schema_context()`) with declarative in-memory schema fallback (`STATIC_BROADSHEET_SCHEMA`), preventing the model from inventing dates or newspapers.
    - Formulates both tool invocations and an **`AnswerBlueprint`** with ordered `SectionSpec` directives (narrative, bullet lists, metric cards, markdown tables, timelines), target word counts, and prohibited elements.
    - Classifies query into 1 of 7 Archetypes:
      - `factual_lookup`: Specific figures, quotes, events, or companion charts.
@@ -405,10 +418,11 @@ sequenceDiagram
      - `quantitative_trend`: Macro indicators, financial distributions, and volume metrics.
      - `entity_deep_dive`: Multi-hop entity exploration and salience profiling.
      - `negative_coverage_audit`: Rigorous proof of unreported topics across publications.
-3. **Specialized Tool Execution** ([`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)):
-   - `InspectVisualAsset`: Executes 5-Tier Strategy Cascade (A: photo_id; B: headline; C: article_id; D: multi-criteria DB; E: scoped caption/VLM).
+3. **Specialized Tool Execution & Modular Retrieval Engines** ([`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)):
+   - `InspectVisualAsset`: Handled by `VisualInspectionEngine` ([`retrieval/visual_inspector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/visual_inspector.py)) executing the 5-Tier Strategy Cascade (A: photo_id; B: headline; C: article_id; D: multi-criteria DB; E: scoped caption/VLM).
      - Enforces query-date priority invariant (`effective_date = explicit_query_date or asset_date`).
      - Streams on-demand raw crop bytes from MinIO for lazy VLM table transcription.
+     - Utilizes `asset_resolver.py` for attached asset context reconciliation and `formatters.py` for clean markdown snippets.
    - `DynamicAnalysis`, `ToolMaker` & `ToolCritic` ([`backend/app/agent/tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_maker.py), [`backend/app/agent/tool_critic.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_critic.py), [`backend/app/agent/sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox.py)):
      - Synthesizes bespoke Python/SQL functions for novel analytical queries.
      - **Auto-Import Pre-Injection**: Injects missing standard imports (`re`, `math`, `statistics`, `json`, `pd`, `np`, `text`).
@@ -432,8 +446,12 @@ sequenceDiagram
    - **Photo Annotation Noise Reduction**: Suppresses bulky visual bounding box dumps during purely textual and editorial queries.
    - **Quantitative Metric Absence Hard-Stop**: Truthfully reports absence when numerical metrics cannot be computed, preventing mathematical hallucinations.
    - **Strict Citations**: Guarantees broadsheet citations `[Newspaper, YYYY-MM-DD, Page N, "Headline"]` and emits visual citation metadata with thumbnail endpoints (`/api/photos/{id}/image`).
-6. **Server-Sent Events (SSE) Protocol** ([`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py)):
-   - `event: stage`: Live progress notifications (`condensing_query`, `planning_tools`, `executing_tools`, `evaluating_evidence`, `re_planning`, `synthesizing_answer`).
+6. **Reflective LLM Answer Verifier & Editorial Fact-Checking Critic** ([`backend/app/agent/answer_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py)):
+   - **Fast Deterministic Gates (<5ms)**: Audits publication scope boundaries, temporal date alignment, and absence faithfulness without LLM overhead.
+   - **Reflexive LLM Audit**: Evaluates 4 dimensions: Faithfulness, Contradiction Detection, Fluff Elimination, and Evidence Gap Detection.
+   - **Closed-Loop Dynamic Tool Rollback**: If an evidentiary gap requires code synthesis, emits `fallback_to_dynamic_tool`, triggering LangGraph to branch back to `execute_dynamic_code` with a 1-cycle cap.
+7. **Server-Sent Events (SSE) Protocol** ([`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py)):
+   - `event: stage`: Live progress notifications (`condensing_query`, `planning_tools`, `executing_tools`, `evaluating_evidence`, `re_planning`, `synthesizing_answer`, `verifying_answer`).
    - `event: thought`: Model internal chain-of-thought tokens.
    - `event: token`: Streaming answer tokens.
    - `event: citations`: Fully resolved textual and visual citation cards.
