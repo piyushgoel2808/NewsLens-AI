@@ -808,6 +808,27 @@ class TestAgentWorkflowToolExecution:
                 assert call.arguments.get("issue_date") != "2026-08-01"
 
 
+    def test_plan_query_availability_routes_to_count_issues_with_date(self) -> None:
+        """Verify archive availability inquiry routes to count_issues with normalized date and availability blueprint."""
+        planner = QueryPlanner()
+        query = "IS ANY NEWSPAPER AVAILABLE FOR DATED 28/04/2026"
+        res = planner._plan_query_heuristic(query)
+
+        assert res.archetype == "quantitative_trend"
+        assert len(res.tool_calls) == 1
+        call = res.tool_calls[0]
+        assert call.tool_name == "sql_analytics"
+        assert call.arguments.get("analysis_type") == "count_issues"
+        assert call.arguments.get("issue_date") == "2026-04-28"
+
+        assert res.answer_blueprint is not None
+        assert res.answer_blueprint.user_intent == "archive_availability"
+        sec_titles = [s.title for s in res.answer_blueprint.sections]
+        assert "### ⚡ Availability Status" in sec_titles
+        assert "### 📋 Archive Scope & Available Coverage" in sec_titles
+
+
+
 
 
 

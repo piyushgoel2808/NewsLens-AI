@@ -514,18 +514,51 @@ async def test_count_advertisements() -> None:
 @pytest.mark.asyncio
 async def test_count_issues() -> None:
     mock_db = AsyncMock()
-    mock_res = MagicMock()
-    mock_res.scalar.return_value = 8
-    mock_db.execute.return_value = mock_res
+    mock_res_count = MagicMock()
+    mock_res_count.scalar.return_value = 8
+
+    mock_res_det = MagicMock()
+    mock_res_det.all.return_value = [(1, "2026-08-01", "The Goan", 12)]
+
+    mock_db.execute.side_effect = [mock_res_count, mock_res_det]
 
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__.return_value = mock_db
 
     engine = SQLAnalyticsEngine(session_factory=mock_session_factory)
-    res = await engine.count_issues(newspaper_name="The Goan")
+    res = await engine.count_issues(newspaper_name="The Goan", issue_date="2026-08-01")
 
     assert res["count"] == 8
     assert res["filters"]["newspaper_name"] == "The Goan"
+    assert res["filters"]["issue_date"] == "2026-08-01"
+    assert "The Goan" in res["newspapers"]
+
+
+@pytest.mark.asyncio
+async def test_count_issues_zero_hits_returns_archive_range() -> None:
+    mock_db = AsyncMock()
+    mock_res_count = MagicMock()
+    mock_res_count.scalar.return_value = 0
+
+    mock_res_range = MagicMock()
+    mock_res_range.one_or_none.return_value = ("2026-08-01", "2026-09-11")
+
+    mock_res_nps = MagicMock()
+    mock_res_nps.all.return_value = [("The Goan",), ("Hindustan Times",)]
+
+    mock_db.execute.side_effect = [mock_res_count, mock_res_range, mock_res_nps]
+
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__.return_value = mock_db
+
+    engine = SQLAnalyticsEngine(session_factory=mock_session_factory)
+    res = await engine.count_issues(issue_date="28/04/2026")
+
+    assert res["count"] == 0
+    assert res["filters"]["issue_date"] == "2026-04-28"
+    assert res["archive_range"] == {"start": "2026-08-01", "end": "2026-09-11"}
+    assert "The Goan" in res["archive_newspapers"]
+
 
 
 

@@ -26,7 +26,7 @@ from app.agent.evaluator import EvidenceEvaluator
 from app.agent.executor import ToolExecutor
 from app.agent.planner import QueryPlanner
 from app.agent.state import AgentState, ToolExecutionRecord
-from app.agent.synthesizer import AnswerSynthesizer
+from app.agent.synthesizer import AnswerSynthesizer, verify_and_correct_answer_groundedness
 from app.agent.sandbox import ASTSafetyScanner, SandboxedExecutor
 from app.agent.tool_maker import ToolMaker
 from app.core.config import get_settings
@@ -484,6 +484,12 @@ class AgentWorkflow:
             chat_history=state.get("chat_history", []),
             answer_blueprint=state.get("answer_blueprint"),
         )
+
+        answer, was_corrected, diag = verify_and_correct_answer_groundedness(
+            answer, query, evidence, archetype=archetype
+        )
+        if was_corrected:
+            logger.warning("Graph synthesizer node intercepted ungrounded answer", extra={"diagnosis": diag})
 
         return {
             "synthesized_answer": answer,

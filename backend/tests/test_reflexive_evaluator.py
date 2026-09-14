@@ -266,3 +266,69 @@ async def test_adaptive_replanner_heuristic_fallback_on_missing_coverage():
         call = replan_res.tool_calls[0]
         assert call.tool_name == "hybrid_search"
         assert call.arguments.get("newspaper_name") == "The Morning Standard"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_flags_missing_date_filter_on_date_query(mock_engines):
+    """Verify evaluator flags missing date filter when user explicitly requests a date."""
+    entity_search, web_search, tool_maker, sql_analytics = mock_engines
+    evaluator = EvidenceEvaluator(entity_search, web_search, tool_maker, sql_analytics)
+
+    state = _make_state(
+        query="IS ANY NEWSPAPER AVAILABLE FOR DATED 28/04/2026",
+        archetype="quantitative_trend",
+    )
+    # Evidence item has no date filter (Active Filters: None) and Overview
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Issue Count Analysis: 24 issues found",
+            "newspaper_name": "Archive",
+            "issue_date": "Overview",
+            "snippet": "=== RELATIONAL ISSUE COUNT AUDIT ===\n• Total Matching Issues: 24\n• Active Filters: None",
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+            "metadata": {"count": 24, "filters": {}},
+        }
+    ]
+
+    verdict = evaluator.audit_evidence_sufficiency(evidence, state)
+    assert not verdict.is_sufficient
+    assert any("temporal_mismatch" in g for g in verdict.detected_gaps)
+    assert verdict.recommended_action == "replan_static_tools"
+    assert verdict.corrective_hints.get("issue_date") == "2026-04-28"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_accepts_grounded_zero_count_availability_evidence(mock_engines):
+    """Verify evaluator accepts verified zero-count audit specifically targeting the queried date as grounded proof."""
+    entity_search, web_search, tool_maker, sql_analytics = mock_engines
+    evaluator = EvidenceEvaluator(entity_search, web_search, tool_maker, sql_analytics)
+
+    state = _make_state(
+        query="IS ANY NEWSPAPER AVAILABLE FOR DATED 28/04/2026",
+        archetype="quantitative_trend",
+    )
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Archive Availability Audit: 0 issues found for 2026-04-28",
+            "newspaper_name": "Archive",
+            "issue_date": "2026-04-28",
+            "snippet": (
+                "=== RELATIONAL ISSUE COUNT AUDIT ===\n"
+                "• Target Date: 2026-04-28\n"
+                "• Total Matching Issues: 0\n"
+                "• Verification Status: No newspaper issues are available in the archive for 2026-04-28.\n"
+                "• Archive Coverage Range: 2026-08-01 to 2026-09-11"
+            ),
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+            "metadata": {"count": 0, "target_date": "2026-04-28"},
+        }
+    ]
+
+    verdict = evaluator.audit_evidence_sufficiency(evidence, state)
+    assert verdict.is_sufficient
+    assert verdict.quality_score >= 0.70
+

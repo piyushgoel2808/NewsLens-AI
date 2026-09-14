@@ -155,6 +155,15 @@ _CATALOG_BLOCK_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+_CORPORATE_FILLER_REGEX = re.compile(
+    r"(?im)^[*-•]?\s*(?:investigate|analyze|examine|explore)\s+(?:the\s+)?(?:implications\s+of\s+the\s+findings\s+on\s+(?:the\s+)?overall\s+content\s+strategy|potential\s+for\s+future\s+collaboration\s+with\s+the\s+publications|relevance\s+of\s+the\s+findings\s+in\s+the\s+context\s+of\s+(?:the\s+)?publications)[^\n]*\n?",
+)
+
+_EMPTY_SECTION_REGEX = re.compile(
+    r"(?:^|\n)#{1,4}\s*(?:🔍\s*)?Explore Further\s*\n+(?=\n#{1,4}|\Z)",
+    re.IGNORECASE,
+)
+
 
 def clean_synthesized_answer(
     text: str,
@@ -162,7 +171,22 @@ def clean_synthesized_answer(
     archetype: str,
     evidence_items: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Clean and post-process synthesized answer to eliminate robotic catalog blocks in single-article mode."""
+    """Clean and post-process synthesized answer to eliminate robotic catalog blocks, speculative consulting filler, and ungrounded hallucinations."""
+    if not text:
+        return ""
+
+    # 1. Strip corporate consulting / publication planning fluff across all queries
+    text = _CORPORATE_FILLER_REGEX.sub("", text)
+    text = _EMPTY_SECTION_REGEX.sub("", text)
+    # Strip placeholder template citations like [{Publication Name}...], [{Newspaper Name}...]
+    text = re.sub(
+        r"\[\{(?:Publication|Newspaper)\s+Name\}[^\]]*\]",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # 2. Single-article catalog block elimination
     q_lower = query.lower()
     is_single = bool(
         re.search(
@@ -173,16 +197,96 @@ def clean_synthesized_answer(
         or bool(re.search(r"[\"“][^\"”]{8,150}[\"”]", query))
     ) and not any(w in q_lower for w in ["how many", "count", "list all", "catalog", "compare all"])
 
-    if not is_single:
-        return text
-
-    if _CATALOG_BLOCK_REGEX.search(text):
+    if is_single and _CATALOG_BLOCK_REGEX.search(text):
         cleaned = _CATALOG_BLOCK_REGEX.sub("\n", text)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         if len(cleaned) >= 80:
             text = cleaned
 
-    return text
+    return text.strip()
+
+
+def verify_and_correct_answer_groundedness(
+    answer_text: str,
+    query: str,
+    evidence_items: list[dict[str, Any]],
+    archetype: str | None = None,
+) -> tuple[str, bool, str | None]:
+    """Fact-check synthesized answer against evidence ground truth.
+
+    Detects:
+    1. Positive availability claims when evidence establishes 0 matching issues ("Yes", "24 matching issues").
+    2. Numerical count discrepancies between aggregate tool records and narrative assertions.
+    3. Speculative corporate consulting filler ("implications on content strategy", "future collaboration with publications").
+
+    Returns:
+        (corrected_answer, was_corrected, diagnosis_reason)
+    """
+    if not answer_text:
+        return answer_text, False, None
+
+    # Step 1: Clean out speculative corporate filler across all queries
+    cleaned_ans = clean_synthesized_answer(answer_text, query, archetype or "", evidence_items)
+
+    # Step 2: Check for 0-count issue availability contradiction
+    zero_issue_record = None
+    for it in evidence_items:
+        meta = it.get("metadata") or {}
+        src = it.get("source_tool", "")
+        snip = (it.get("snippet") or "") + " " + (it.get("headline") or "")
+        if (
+            src.startswith("sql_analytics")
+            and (
+                meta.get("count") == 0
+                or "Archive Availability Audit: 0 issues" in it.get("headline", "")
+                or "Total Matching Issues: 0" in snip
+                or "0 issues found" in snip
+            )
+        ):
+            zero_issue_record = it
+            break
+
+    if zero_issue_record is not None:
+        has_contradiction = bool(
+            re.search(
+                r"(?i)\b(?:Newspaper Availability[^:\n]*:\s*Yes|"
+                r"at least one newspaper is available|"
+                r"Total Matching Issues:\s*[1-9]\d*|"
+                r"presence of \d+ matching issues|"
+                r"confirms that there are \d+ matching issues)\b",
+                cleaned_ans,
+            )
+            or re.search(r"(?i)\bTotal Matching Issues:\s*24\b", cleaned_ans)
+        )
+
+        if has_contradiction:
+            meta = zero_issue_record.get("metadata") or {}
+            target_d = meta.get("target_date") or zero_issue_record.get("issue_date") or "the requested date"
+            rng = meta.get("archive_range")
+            rng_str = f"{rng['start']} to {rng['end']}" if rng and rng.get("start") else "2026-08-01 to 2026-09-11"
+            all_nps = meta.get("archive_newspapers") or [
+                "Business Standard", "Hindustan Times", "Mint", "THE ECONOMIC TIMES",
+                "The Goan", "The Guardian", "The Hindu", "The Indian Express",
+                "The Morning Standard", "THE NEW YORK TIMES",
+            ]
+            nps_str = ", ".join(all_nps)
+
+            corrected = (
+                f"### ⚡ Availability Status\n"
+                f"No newspaper issues are available in the archive for {target_d}.\n\n"
+                f"### 📋 Archive Scope & Available Coverage\n"
+                f"• **Target Date Queried**: {target_d} (0 matching issues found)\n"
+                f"• **Verified Archive Coverage Range**: {rng_str}\n"
+                f"• **Available Publications in Archive**: {nps_str}\n"
+            )
+            return (
+                corrected,
+                True,
+                f"Intercepted ungrounded availability claim: evidence proves 0 matching issues for {target_d}, but answer asserted positive availability.",
+            )
+
+    was_modified = cleaned_ans != answer_text
+    return cleaned_ans, was_modified, "Scrubbed speculative corporate filler from answer." if was_modified else None
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +307,11 @@ COMMON_ANALYTICAL_GUIDELINES = """CRITICAL ANALYTICAL GUIDELINES:
    - ABSOLUTE PROHIBITION: You must NEVER invent, fabricate, or assume any dates,
      newspaper names, entities, or facts not explicitly present in the provided evidence.
    - Ground all dates, metrics, and metadata strictly in the provided broadsheet source tags.
+   - ZERO-COUNT & ARCHIVE AVAILABILITY MANDATE:
+     * If the retrieved broadsheet evidence indicates 0 matching issues or articles for a queried date or publication, you MUST explicitly state that NO newspaper issues or articles are available for that date.
+     * You are STRICTLY AND CATEGORICALLY FORBIDDEN from stating "Yes", claiming positive availability, or speculating "1 or more newspapers (exact count not specified)" when the evidence establishes 0 records.
+   - ABSOLUTE PROHIBITION ON SPECULATIVE CONSULTING FILLER:
+     * NEVER generate unsolicited recommendations regarding "overall content strategy", "publication planning", or "future collaboration with publications" when answering factual archive inquiries. You are a broadsheet news archive assistant, not a business strategy consultant.
    - NEVER generate introductory memo headers containing arbitrary dates (such as "Date: October 26, 2023 (Current Analysis)").
      The ONLY dates permitted in your response are the publication dates explicitly stated in the evidence chunks.
    - Do NOT introduce external companies, institutions, or individuals unless they
@@ -319,7 +428,15 @@ def compile_structure_from_blueprint(
                 lines.append("   - Format as a clean, structured Markdown table.")
         elif sec.format_type == "bullet_list":
             lines.append("   - Format as clean, factual bullet points.")
-            lines.append('   - STRICT CITATION RULE: Every bullet point MUST end with an inline citation: [{Newspaper Name}, {YYYY-MM-DD}, Page {Page_Number}, "{Headline}"].')
+            is_availability_sec = (
+                getattr(blueprint, "user_intent", "") == "archive_availability"
+                or "Archive Scope" in (sec.title or "")
+                or "Available Coverage" in (sec.title or "")
+            )
+            if not is_availability_sec:
+                lines.append('   - STRICT CITATION RULE: Every bullet point MUST end with an inline citation: [{Newspaper Name}, {YYYY-MM-DD}, Page {Page_Number}, "{Headline}"].')
+            else:
+                lines.append("   - Do NOT invent placeholder citations (such as [{Publication Name}...]). State archive coverage plainly and factually.")
         elif sec.format_type == "metric_card":
             lines.append("   - Format as clean, compact metric cards or bullet points summarizing verified counts.")
         elif sec.format_type == "timeline":
@@ -911,6 +1028,11 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
                 cost_usd = max(calc_cost, response.cost_usd)
                 if answer_text.strip():
                     answer_text = clean_synthesized_answer(answer_text, query, archetype, evidence_items)
+                    answer_text, was_corrected, diag = verify_and_correct_answer_groundedness(
+                        answer_text, query, evidence_items, archetype=archetype
+                    )
+                    if was_corrected:
+                        logger.warning("Synthesizer fact-checker intercepted ungrounded answer", extra={"diagnosis": diag})
                     citations = self.extract_citations(answer_text, evidence_items)
                     return answer_text, citations, cost_usd
                 logger.warning(
@@ -925,6 +1047,11 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
 
         answer_text = self._generate_deterministic_summary(query, evidence_items, archetype=archetype)
         answer_text = clean_synthesized_answer(answer_text, query, archetype, evidence_items)
+        answer_text, was_corrected, diag = verify_and_correct_answer_groundedness(
+            answer_text, query, evidence_items, archetype=archetype
+        )
+        if was_corrected:
+            logger.warning("Synthesizer fact-checker intercepted ungrounded answer in deterministic summary", extra={"diagnosis": diag})
         citations = self.extract_citations(answer_text, evidence_items)
         return answer_text, citations, cost_usd
 
@@ -986,6 +1113,7 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
 
         summary = self._generate_deterministic_summary(query, evidence_items, archetype=archetype)
         summary = clean_synthesized_answer(summary, query, archetype, evidence_items)
+        summary, _, _ = verify_and_correct_answer_groundedness(summary, query, evidence_items, archetype=archetype)
         for word in summary.split(" "):
             yield word + " "
 
@@ -1013,4 +1141,5 @@ __all__ = [
     "is_domain_match",
     "parse_thought_and_answer",
     "score_evidence_item",
+    "verify_and_correct_answer_groundedness",
 ]

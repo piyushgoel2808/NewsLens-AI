@@ -31,6 +31,7 @@ from app.agent.models import (
     ToolCallSpec,
     ToolName,
 )
+from app.agent.state import ToolExecutionRecord
 from app.agent.tool_factory import (
     build_coverage_analysis_tool,
     build_dynamic_analysis_tool,
@@ -100,6 +101,9 @@ Output: {"thought_process": "Inquiring about visual assets, charts, or infograph
 
 Query: "How many issues of The Goan are in the archive?"
 Output: {"thought_process": "Quantitative count of newspaper issues. Schedule sql_analytics to retrieve archive count.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "analysis_type": "count_issues"}, "purpose": "Count total issues of The Goan"}]}
+
+Query: "Is any newspaper available for dated 28/04/2026?"
+Output: {"thought_process": "Relational archive availability inquiry for 2026-04-28. Schedule sql_analytics count_issues with exact date.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues", "issue_date": "2026-04-28"}, "purpose": "Check archive newspaper availability for 2026-04-28"}], "answer_blueprint": {"user_intent": "archive_availability", "overall_tone": "concise_atomic", "target_word_count": 90, "sections": [{"title": "### ⚡ Availability Status", "format_type": "narrative", "content_focus": "Direct authoritative statement stating whether newspaper issues exist in the archive for the queried date", "target_length": "1 to 2 crisp sentences"}, {"title": "### 📋 Archive Scope & Available Coverage", "format_type": "bullet_list", "content_focus": "Compact list of available newspapers on that date, or if none, the verified archive date range and available publications", "target_length": "Compact bullet points"}], "prohibited_elements": ["speculative corporate strategy or publication planning advice", "fake future collaboration suggestions", "claiming positive availability when count is zero", "conversational filler"]}}
 
 Query: "How many advertisements are there in Hindustan Times 2026-09-11?"
 Output: {"thought_process": "Quantitative count of advertisements in Hindustan Times on 2026-09-11. Schedule sql_analytics count_advertisements.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "Hindustan Times", "issue_date": "2026-09-11", "analysis_type": "count_advertisements"}, "purpose": "Count total advertisements in Hindustan Times on 2026-09-11"}]}
@@ -177,6 +181,14 @@ def build_heuristic_answer_blueprint(
         or re.search(r"\b(?:in\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b", q_lower)
     ) and not any(w in q_lower for w in ["how many", "count", "list all", "catalog", "compare all"])
 
+    # 3.5. Detect archive / newspaper availability query
+    is_availability_query = bool(
+        re.search(
+            r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b",
+            q_lower,
+        )
+    )
+
     # 4. Detect scalar or count queries
     is_scalar_or_count = bool(
         re.search(
@@ -184,6 +196,36 @@ def build_heuristic_answer_blueprint(
             q_lower,
         )
     )
+
+    # Branch A0: Archive Availability Query
+    if is_availability_query:
+        return AnswerBlueprint(
+            user_intent="archive_availability",
+            overall_tone="concise_atomic",
+            target_word_count=target_word_count or 90,
+            sections=[
+                SectionSpec(
+                    title="### ⚡ Availability Status",
+                    format_type="narrative",
+                    content_focus="Direct, authoritative statement stating whether newspaper issues exist in the archive for the queried date or publication.",
+                    target_length="1 to 2 crisp sentences",
+                ),
+                SectionSpec(
+                    title="### 📋 Archive Scope & Available Coverage",
+                    format_type="bullet_list",
+                    content_focus="Compact list of available newspapers on that date, or if none, the verified archive date range and available publications.",
+                    target_length="Compact bullet points",
+                ),
+            ],
+            prohibited_elements=[
+                "speculative corporate strategy or publication planning advice",
+                "fake future collaboration suggestions",
+                "claiming positive availability when count is zero",
+                "claiming 1 or more newspapers when count is zero",
+                "artificial explore further questions",
+                "conversational filler",
+            ],
+        )
 
     # Branch A: Scalar / Count Query
     if is_scalar_or_count or (archetype in ("quantitative_trend", "analytical_computation") and not table_requested and not is_target_art):
@@ -820,6 +862,8 @@ class QueryPlanner:
         """Adaptive closed-loop re-planner: inspects gap diagnosis and previous executions to generate targeted corrective tool calls."""
         q_lower = query.lower()
 
+        extracted = extract_parameters_from_query(query)
+
         # Build set of tried calls for strict anti-repetition
         tried_calls: list[tuple[str, dict[str, Any]]] = []
         for t in tool_executions:
@@ -922,7 +966,14 @@ class QueryPlanner:
                             continue
 
                         raw_args = rc.get("arguments", {})
-                        san_args = reconcile_and_sanitize_arguments(t_name, raw_args, query)
+                        san_args = reconcile_and_sanitize_arguments(
+                            tool_name=t_name,
+                            args=raw_args,
+                            extracted=extracted,
+                            query=query,
+                            active_issue_date=active_issue_date,
+                            active_newspapers=active_newspapers,
+                        )
                         purpose = rc.get("purpose") or f"Recovery {t_name}"
 
                         # Anti-repetition check against previously attempted calls
@@ -930,7 +981,10 @@ class QueryPlanner:
                         for prev_name, prev_args in tried_calls:
                             if prev_name == t_name:
                                 # Compare relevant keys
-                                if all(str(san_args.get(k, "")) == str(prev_args.get(k, "")) for k in ("query", "newspaper_name", "date_from", "date_to", "analysis_type")):
+                                if (
+                                    all(str(san_args.get(k, "")) == str(prev_args.get(k, "")) for k in ("query", "newspaper_name", "date_from", "date_to", "analysis_type"))
+                                    or all(str(raw_args.get(k, "")) == str(prev_args.get(k, "")) for k in ("query", "newspaper_name", "date_from", "date_to", "analysis_type"))
+                                ):
                                     is_repeated = True
                                     break
 
@@ -944,6 +998,8 @@ class QueryPlanner:
                                 san_args.pop("issue_date", None)
                                 san_args.pop("date_from", None)
                                 san_args.pop("date_to", None)
+                        elif t_name == "hybrid_search" and "top_k" not in san_args:
+                            san_args["top_k"] = 8
 
                         planned_calls.append(PlannedToolCall(
                             tool_name=t_name,
@@ -960,7 +1016,7 @@ class QueryPlanner:
         # Deterministic fallback if LLM replanner didn't produce calls
         if not planned_calls:
             diag = (gap_diagnosis or "").lower()
-            params = extract_parameters_from_query(query)
+            params = extracted
             newspaper = params.get("newspaper_name")
 
             if "missing_newspaper_coverage" in diag or "missing articles from" in diag:
@@ -1142,18 +1198,27 @@ class QueryPlanner:
                 if not category and not newspaper:
                     tool_calls.append(build_sql_coverage_comparison_tool(target_date=target_dt, query=query))
 
-        # 5. Quantitative Trend / Article Catalog / Issue Manifest / Page Listings / Counts
+        # 5. Quantitative Trend / Article Catalog / Issue Manifest / Page Listings / Counts / Availability
         elif (
             (page_filter and any(w in q_lower for w in ["article", "story", "stories", "no of", "how many", "list"]))
             or any(w in q_lower for w in [
                 "how many", "count", "number of", "no of", "frequency", "trend", "distribution",
                 "volume", "statistics", "summarize", "overview", "whole", "entire", "all articles",
                 "list", "manifest", "today's paper", "edition", "what articles", "articles on",
+                "is any newspaper available", "are there any newspapers", "available for dated",
+                "newspaper available", "newspapers available", "paper available", "issues available",
             ])
             or (category and any(w in q_lower for w in ["news", "articles", "stories", "headlines"]))
         ):
+            is_availability = bool(
+                re.search(
+                    r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b",
+                    q_lower,
+                )
+            )
             is_count = (
-                any(w in q_lower for w in [
+                is_availability
+                or any(w in q_lower for w in [
                     "how many", "total articles", "number of articles", "count of articles",
                     "no of", "count of", "number of issues", "total issues", "no of newspaper",
                     "how many issues", "count of pages", "number of pages",
@@ -1161,14 +1226,15 @@ class QueryPlanner:
                 and not page_filter
             )
             is_whole_issue_or_count = (
-                bool(page_filter)
+                is_availability
+                or bool(page_filter)
                 or is_count
                 or any(w in q_lower for w in [
                     "today's paper", "edition", "whole", "entire", "overview", "summarize",
                     "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume",
                 ])
             )
-            is_catalog_request = any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories"]) or bool(category)
+            is_catalog_request = (not is_availability) and (any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories"]) or bool(category))
 
             if is_catalog_request and not is_whole_issue_or_count:
                 archetype = "article_catalog"
@@ -1185,7 +1251,7 @@ class QueryPlanner:
                 analysis_type = "count_advertisements"
             elif is_photo_count:
                 analysis_type = "count_photos"
-            elif is_count and ("issue" in q_lower or "newspaper" in q_lower) and not has_article_words:
+            elif is_availability or (is_count and ("issue" in q_lower or "newspaper" in q_lower) and not has_article_words):
                 analysis_type = "count_issues"
             elif is_count:
                 analysis_type = "count_articles"

@@ -689,32 +689,70 @@ class ToolExecutor:
                     }
                 )
 
-        elif analysis_type in ("count_issues", "issue_counts", "total_issues"):
+        elif analysis_type in ("count_issues", "issue_counts", "total_issues", "newspaper_availability", "check_availability"):
             np_name = args.get("newspaper_name") or active_newspaper_name
+            iss_date = args.get("issue_date") or args.get("date") or active_issue_date
+            d_from = args.get("date_from")
+            d_to = args.get("date_to")
             iss_res = await self._sql_analytics.count_issues(
                 newspaper_name=np_name,
-                date_from=args.get("date_from"),
-                date_to=args.get("date_to"),
+                issue_date=iss_date,
+                date_from=d_from,
+                date_to=d_to,
             )
             c_val = iss_res.get("count", 0)
             hits_count = c_val
             filt_info = ", ".join(f"{k}: {v}" for k, v in iss_res.get("filters", {}).items() if v)
-            summary_str = (
-                f"=== RELATIONAL ISSUE COUNT AUDIT ===\n"
-                f"• Total Matching Issues: {c_val}\n"
-                f"• Newspaper: {np_name or 'All Newspapers'}\n"
-                f"• Active Filters: {filt_info or 'None'}\n"
-            )
+            target_date_val = iss_res.get("filters", {}).get("issue_date") or iss_date or "Overview"
+
+            if c_val > 0:
+                nps_str = ", ".join(iss_res.get("newspapers", [])) or (np_name or "All Newspapers")
+                issues_sample = ", ".join(
+                    f"{iss.get('newspaper')} ({iss.get('issue_date')})"
+                    for iss in iss_res.get("issues", [])[:5]
+                )
+                summary_str = (
+                    f"=== RELATIONAL ISSUE COUNT AUDIT ===\n"
+                    f"• Total Matching Issues: {c_val}\n"
+                    f"• Target Date: {target_date_val}\n"
+                    f"• Newspaper(s): {nps_str}\n"
+                    f"• Active Filters: {filt_info or 'None'}\n"
+                    f"• Issues Found: {issues_sample}\n"
+                )
+                hl_text = f"Issue Count Analysis: {c_val} issues found for {target_date_val}"
+            else:
+                rng = iss_res.get("archive_range")
+                rng_str = f"{rng['start']} to {rng['end']}" if rng else "Archive Range Available"
+                all_nps = ", ".join(iss_res.get("archive_newspapers", [])[:10])
+                summary_str = (
+                    f"=== RELATIONAL ISSUE COUNT AUDIT ===\n"
+                    f"• Target Date: {target_date_val}\n"
+                    f"• Total Matching Issues: 0\n"
+                    f"• Newspaper Scope: {np_name or 'All Newspapers'}\n"
+                    f"• Verification Status: No newspaper issues are available in the archive for {target_date_val}.\n"
+                    f"• Archive Coverage Range: {rng_str}\n"
+                    f"• Available Publications in Archive: {all_nps or 'None'}\n"
+                )
+                hl_text = f"Archive Availability Audit: 0 issues found for {target_date_val}"
+
             items.append(
                 {
                     "article_id": 0,
-                    "headline": f"Issue Count Analysis: {c_val} issues found",
+                    "headline": hl_text,
                     "newspaper_name": np_name or "Archive",
-                    "issue_date": "Overview",
+                    "issue_date": target_date_val,
                     "pages": [1],
                     "snippet": summary_str,
                     "prominence_score": 1.0,
                     "source_tool": "sql_analytics",
+                    "metadata": {
+                        "count": c_val,
+                        "target_date": target_date_val,
+                        "newspapers": iss_res.get("newspapers", []),
+                        "archive_range": iss_res.get("archive_range"),
+                        "archive_newspapers": iss_res.get("archive_newspapers", []),
+                        "filters": iss_res.get("filters", {}),
+                    },
                 }
             )
 

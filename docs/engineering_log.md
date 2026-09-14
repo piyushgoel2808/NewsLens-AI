@@ -3571,3 +3571,45 @@ When users interacted with broadsheet articles containing companion infographics
 ### Verification Results
 - `backend/tests/test_dynamic_answer_blueprint.py`: **10/10 tests passing (100% green)**.
 - **Full Backend Suite**: **512/512 tests passing (100% green)** in 80s.
+
+---
+
+## Phase 9.55 — Archive Availability Grounding, Temporal Alignment Audit & Post-Synthesis Fact-Checking
+
+**Date**: 2026-09-14  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Unfiltered Archive Issue Counting**:
+   - When users asked date-specific availability queries like *"IS ANY NEWSPAPER AVAILABLE FOR DATED 28/04/2026"*, `sql_analytics.count_issues` omitted the `issue_date` parameter, executing an unconstrained `SELECT count(Issue.id) FROM issues` and returning 24 (the entire archive total across all months).
+2. **Evaluator Temporal Blindspot**:
+   - `EvidenceEvaluator` granted any `sql_analytics` result a fast-floor score of 1.0 without verifying whether the requested date was filtered or matched in the evidence.
+3. **Speculative Consulting Boilerplate & False Positive Claims**:
+   - The synthesizer hallucinated positive availability (*"Newspaper Availability: Yes"*, *"Total Matching Issues: 24"*) and appended irrelevant corporate consulting filler (*"investigate the implications on overall content strategy and publication planning"*).
+4. **Missing Post-Synthesis Verification Node**:
+   - There was no downstream fact-checking gate to catch contradictions between aggregate analytical records (e.g. 0 matching issues) and narrative assertions.
+
+### Architectural Solutions & Implementations
+1. **Relational Issue Date Filtering & Zero-Count Archive Scoping (`backend/app/retrieval/sql_analytics.py`, `executor.py`)**:
+   - Updated `count_issues()` to accept and normalize `issue_date` (`YYYY-MM-DD`).
+   - When issues match, returns verified issue and newspaper details.
+   - When count is 0, queries and returns the archive's actual coverage range (`start` to `end`) and list of available publications.
+   - `executor.py` forwards `issue_date` and formats an unambiguous audit snippet stating exact availability status, archive boundaries, and zero matching issues.
+2. **Temporal & Date Alignment Audit in Evaluator (`backend/app/agent/evaluator.py`)**:
+   - Added Section 1.5 Temporal & Date Alignment Audit: verifies whether explicit dates in user queries match evidence filters or date audit records.
+   - Flags missing date filters as `temporal_mismatch_missing_date` to trigger adaptive replanning when needed.
+   - Explicitly recognizes grounded zero-count relational audits as sufficient (`quality_score = 1.0`), preventing redundant retries when the archive genuinely lacks issues for that date.
+3. **Availability Blueprint & Fluff Elimination (`backend/app/agent/planner.py`, `synthesizer.py`)**:
+   - Introduced `archive_availability` intent in `planner.py` with sections `### ⚡ Availability Status` and `### 📋 Archive Scope & Available Coverage`.
+   - Prohibited speculative corporate strategy advice, fake collaboration suggestions, and asserting availability on zero count.
+   - Added `_CORPORATE_FILLER_REGEX` and placeholder citation stripping in `clean_synthesized_answer`.
+4. **Post-Synthesis Fact-Checking Node (`backend/app/agent/synthesizer.py`, `graph.py`)**:
+   - Implemented `verify_and_correct_answer_groundedness()` to catch contradictions where the text claims availability despite zero-issue evidence, automatically correcting the response to accurately reflect zero availability with verified archive date bounds.
+   - Integrated fact-checker into synchronous synthesis, streaming synthesis, and LangGraph workflow node.
+
+### Verification Results
+- `backend/tests/test_sql_analytics.py`: **12/12 tests passing (100% green)**.
+- `backend/tests/test_reflexive_evaluator.py`: **8/8 tests passing (100% green)**.
+- `backend/tests/test_planner.py`: **35/35 tests passing (100% green)**.
+- `backend/tests/test_synthesizer.py`: **31/31 tests passing (100% green)**.
+- **Full Backend Suite**: **518/518 tests passing (100% green)** in 74s.

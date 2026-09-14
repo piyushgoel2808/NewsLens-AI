@@ -20,7 +20,7 @@ from app.core.logging import get_logger
 from app.providers.base import ChatModelProvider, Message
 from app.providers.registry import get_registry
 from app.retrieval.entity_filter import EntitySearchEngine
-from app.retrieval.sql_analytics import SQLAnalyticsEngine
+from app.retrieval.sql_analytics import SQLAnalyticsEngine, normalize_date_to_iso
 from app.retrieval.web_search import WebSearchEngine
 
 logger = get_logger(__name__)
@@ -143,12 +143,36 @@ def _score_relevance(item: dict[str, Any], query_tokens: list[str]) -> float:
     return matches / max(1.0, float(len(query_tokens)))
 
 
-def is_structural_or_relevant_evidence(item: dict[str, Any], archetype: str) -> bool:
+def is_structural_or_relevant_evidence(
+    item: dict[str, Any],
+    archetype: str,
+    target_date: str | None = None,
+) -> bool:
     """Determine whether evidence is structural or has a high-confidence semantic floor.
 
     Protects relational manifests, matrices, and high-confidence dense vector search hits
-    (prominence_score >= 0.65) from naive lexical stem pruning.
+    (prominence_score >= 0.65) from naive lexical stem pruning, while ensuring that if an
+    explicit target date was requested, items from completely unrelated dates or unfiltered
+    data without auditing target_date are not falsely given full protection.
     """
+    if target_date:
+        norm_target = normalize_date_to_iso(target_date)
+        it_date = normalize_date_to_iso(item.get("issue_date"))
+        it_snip = item.get("snippet", "")
+        it_meta = item.get("metadata") or {}
+        meta_target = normalize_date_to_iso(it_meta.get("target_date")) or normalize_date_to_iso(
+            (it_meta.get("filters") or {}).get("issue_date")
+        )
+        if it_date and it_date != norm_target and it_date != "Overview":
+            return False
+        if (
+            it_date == "Overview"
+            and norm_target
+            and norm_target not in it_snip
+            and meta_target != norm_target
+        ):
+            return False
+
     src = item.get("source_tool", "")
     return (
         archetype in ("cross_newspaper_comparison", "quantitative_trend", "article_catalog", "analytical_computation")
@@ -183,13 +207,16 @@ class EvidenceEvaluator:
         """Retain evidence items that have positive relevance to query tokens OR are protected structural/semantic hits."""
         raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower())
         query_tokens = [w for w in raw_query_words if w not in _STOP_WORDS]
+        params = extract_parameters_from_query(query)
+        target_dates = params.get("target_dates") or []
+        target_date = params.get("issue_date") or (target_dates[0] if target_dates else None)
 
         filtered = [
             item for item in evidence
-            if is_structural_or_relevant_evidence(item, archetype) or _score_relevance(item, query_tokens) > 0.0
+            if is_structural_or_relevant_evidence(item, archetype, target_date=target_date) or _score_relevance(item, query_tokens) > 0.0
         ]
         filtered.sort(
-            key=lambda it: (1.0 if is_structural_or_relevant_evidence(it, archetype) else _score_relevance(it, query_tokens)),
+            key=lambda it: (1.0 if is_structural_or_relevant_evidence(it, archetype, target_date=target_date) else _score_relevance(it, query_tokens)),
             reverse=True,
         )
         return filtered
@@ -252,6 +279,43 @@ class EvidenceEvaluator:
                     corrective_hints={"missing_newspapers": missing_nps},
                 )
 
+        # 1.5. Temporal / Date Alignment Audit
+        target_dates = params.get("target_dates") or []
+        target_date = params.get("issue_date") or (target_dates[0] if target_dates else None)
+        norm_target = normalize_date_to_iso(target_date) if target_date else None
+        if norm_target:
+            matches_target_date = False
+            for item in evidence:
+                it_date = normalize_date_to_iso(item.get("issue_date"))
+                it_snip = item.get("snippet", "") + " " + item.get("headline", "")
+                it_meta = item.get("metadata") or {}
+                meta_target = normalize_date_to_iso(it_meta.get("target_date")) or normalize_date_to_iso(
+                    (it_meta.get("filters") or {}).get("issue_date")
+                )
+                if (
+                    (it_date and it_date == norm_target)
+                    or (meta_target and meta_target == norm_target)
+                    or (norm_target in it_snip)
+                    or (target_date and target_date in it_snip)
+                ):
+                    matches_target_date = True
+                    break
+
+            if not matches_target_date:
+                detected_gaps.append(f"temporal_mismatch_missing_date:{norm_target}")
+                gap_msg = (
+                    f"Query explicitly requested broadsheet information for date {norm_target}, "
+                    f"but retrieved evidence contains data from different dates or unfiltered archives without auditing this date."
+                )
+                return EvaluationVerdict(
+                    is_sufficient=False,
+                    quality_score=0.30,
+                    gap_reason=gap_msg,
+                    detected_gaps=detected_gaps,
+                    recommended_action="replan_static_tools",
+                    corrective_hints={"issue_date": norm_target},
+                )
+
         # 2. Quantitative / Aggregate Metric Audit
         is_quant_query = bool(_QUANT_QUERY_PATTERN.search(query))
         if is_quant_query:
@@ -275,7 +339,7 @@ class EvidenceEvaluator:
         raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower())
         query_tokens = [w for w in raw_query_words if w not in _STOP_WORDS]
         scores = [
-            (1.0 if is_structural_or_relevant_evidence(it, archetype) else _score_relevance(it, query_tokens))
+            (1.0 if is_structural_or_relevant_evidence(it, archetype, target_date=norm_target) else _score_relevance(it, query_tokens))
             for it in evidence
         ]
         avg_score = sum(scores) / max(1, len(scores))

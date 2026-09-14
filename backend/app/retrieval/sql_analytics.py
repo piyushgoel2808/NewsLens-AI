@@ -823,14 +823,20 @@ class SQLAnalyticsEngine:
     async def count_issues(
         self,
         newspaper_name: str | None = None,
+        issue_date: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
     ) -> dict[str, Any]:
-        """Return count of issues matching newspaper and/or date filters."""
+        """Return count and list of issues matching newspaper and/or date filters, with archive range context on 0 hits."""
         from app.models.newspaper import Newspaper
 
+        norm_date = normalize_date_to_iso(issue_date) if issue_date else None
         norm_from = normalize_date_to_iso(date_from) if date_from else None
         norm_to = normalize_date_to_iso(date_to) if date_to else None
+
+        if norm_date:
+            norm_from = norm_date
+            norm_to = norm_date
 
         async with self._session_factory() as db:
             stmt = select(func.count(Issue.id))
@@ -838,19 +844,66 @@ class SQLAnalyticsEngine:
                 stmt = stmt.join(Newspaper, Issue.newspaper_id == Newspaper.id).where(
                     Newspaper.name.ilike(f"%{newspaper_name}%")
                 )
-            if norm_from:
-                stmt = stmt.where(Issue.issue_date >= norm_from)
-            if norm_to:
-                stmt = stmt.where(Issue.issue_date <= norm_to)
+            if norm_date:
+                stmt = stmt.where(Issue.issue_date == norm_date)
+            else:
+                if norm_from:
+                    stmt = stmt.where(Issue.issue_date >= norm_from)
+                if norm_to:
+                    stmt = stmt.where(Issue.issue_date <= norm_to)
 
             res = await db.execute(stmt)
             count = res.scalar() or 0
+
+            matching_newspapers: list[str] = []
+            matching_issues: list[dict[str, Any]] = []
+            archive_range: dict[str, str] | None = None
+            archive_newspapers: list[str] = []
+
+            if count > 0:
+                stmt_detail = (
+                    select(Issue.id, Issue.issue_date, Newspaper.name, Issue.total_pages)
+                    .join(Newspaper, Issue.newspaper_id == Newspaper.id)
+                )
+                if newspaper_name:
+                    stmt_detail = stmt_detail.where(Newspaper.name.ilike(f"%{newspaper_name}%"))
+                if norm_date:
+                    stmt_detail = stmt_detail.where(Issue.issue_date == norm_date)
+                else:
+                    if norm_from:
+                        stmt_detail = stmt_detail.where(Issue.issue_date >= norm_from)
+                    if norm_to:
+                        stmt_detail = stmt_detail.where(Issue.issue_date <= norm_to)
+                stmt_detail = stmt_detail.order_by(Issue.issue_date.desc(), Newspaper.name).limit(20)
+                res_det = await db.execute(stmt_detail)
+                for r in res_det.all():
+                    if r[2] and r[2] not in matching_newspapers:
+                        matching_newspapers.append(r[2])
+                    matching_issues.append({
+                        "id": r[0],
+                        "issue_date": str(r[1]),
+                        "newspaper": r[2],
+                        "pages": r[3] or 1,
+                    })
+            else:
+                res_rng = await db.execute(select(func.min(Issue.issue_date), func.max(Issue.issue_date)))
+                row_rng = res_rng.one_or_none()
+                if row_rng and row_rng[0] and row_rng[1]:
+                    archive_range = {"start": str(row_rng[0]), "end": str(row_rng[1])}
+                res_nps = await db.execute(select(Newspaper.name).distinct().order_by(Newspaper.name))
+                archive_newspapers = [r[0] for r in res_nps.all() if r[0]]
+
             return {
                 "count": count,
+                "newspapers": matching_newspapers,
+                "issues": matching_issues,
+                "archive_range": archive_range,
+                "archive_newspapers": archive_newspapers,
                 "filters": {
                     "newspaper_name": newspaper_name,
-                    "date_from": norm_from,
-                    "date_to": norm_to,
+                    "issue_date": norm_date or issue_date,
+                    "date_from": norm_from or date_from,
+                    "date_to": norm_to or date_to,
                 },
             }
 

@@ -731,6 +731,75 @@ class TestAnswerSynthesizer:
         assert 0 not in art_ids  # Macro item (article_id: 0) must be excluded
 
 
+def test_clean_synthesized_answer_prunes_corporate_filler() -> None:
+    from app.agent.synthesizer import clean_synthesized_answer
+
+    raw = (
+        "### ⚡ Direct Finding\n"
+        "No newspapers available for this date.\n\n"
+        "### 🔍 Explore Further\n"
+        "* Investigate the implications of the findings on the overall content strategy and publication planning for the available newspapers.\n"
+        "* Analyze the potential for future collaboration with the publications to enhance the archive's content coverage.\n"
+        "* Examine the relevance of the findings in the context of the publications' overall content."
+    )
+    cleaned = clean_synthesized_answer(raw, query="is any newspaper available for dated 28/04/2026", archetype="quantitative_trend")
+    assert "content strategy and publication planning" not in cleaned
+    assert "future collaboration with the publications" not in cleaned
+    assert "relevance of the findings in the context" not in cleaned
+    assert "### ⚡ Direct Finding" in cleaned
+
+
+def test_verify_and_correct_contradictory_availability_claim() -> None:
+    from app.agent.synthesizer import verify_and_correct_answer_groundedness
+
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Archive Availability Audit: 0 issues found for 2026-04-28",
+            "newspaper_name": "Archive",
+            "issue_date": "2026-04-28",
+            "snippet": (
+                "=== RELATIONAL ISSUE COUNT AUDIT ===\n"
+                "• Target Date: 2026-04-28\n"
+                "• Total Matching Issues: 0\n"
+                "• Verification Status: No newspaper issues are available in the archive for 2026-04-28.\n"
+                "• Archive Coverage Range: 2026-08-01 to 2026-09-11"
+            ),
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+            "metadata": {
+                "count": 0,
+                "target_date": "2026-04-28",
+                "archive_range": {"start": "2026-08-01", "end": "2026-09-11"},
+                "archive_newspapers": ["The Goan", "Hindustan Times"],
+            },
+        }
+    ]
+
+    # Hallucinated answer claiming positive availability
+    bad_answer = (
+        "### ⚡ EXECUTIVE SUMMARY: AVAILABILITY OF NEWSPAPERS FOR DATED 28/04/2026\n"
+        "Total Matching Issues: 24\n"
+        "Newspaper Availability for 28/04/2026: Yes\n\n"
+        "### 🔍 CONCLUSION\n"
+        "The available evidence confirms that there are 24 matching issues available for 28/04/2026."
+    )
+
+    corrected, was_corrected, diag = verify_and_correct_answer_groundedness(
+        bad_answer,
+        query="IS ANY NEWSPAPER AVAILABLE FOR DATED 28/04/2026",
+        evidence_items=evidence,
+        archetype="quantitative_trend",
+    )
+
+    assert was_corrected is True
+    assert "No newspaper issues are available in the archive for 2026-04-28" in corrected
+    assert "2026-08-01 to 2026-09-11" in corrected
+    assert "Availability for 28/04/2026: Yes" not in corrected
+    assert "Total Matching Issues: 24" not in corrected
+
+
+
 
 
 
