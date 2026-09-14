@@ -478,6 +478,7 @@ sequenceDiagram
            CRAG_Gap["CRAG Evaluator Feedback<br/>(EvaluationVerdict.gap_diagnosis)"] -.->|Trigger Re-Plan| ReplanEngine["replan_with_feedback_async()<br/>• Relax Page / Category Constraints<br/>• Scale top_k = max(8, top_k + 4)<br/>• Anti-Repetition Guard<br/>• 1-Cycle Hard Ceiling"]
            ReplanEngine -.-> SanitizedPlan
        end
+   ```
 
    #### A. Dynamic Brand Pattern Resolution & Typo-Tolerant Parameter Extraction
    - **Dynamic Registry Merging** (`get_brand_patterns()` in `extractor.py`): Combines hardcoded regular expressions for known broadsheets with dynamically introspected publications from MySQL (`get_known_publications()`), cached in memory.
