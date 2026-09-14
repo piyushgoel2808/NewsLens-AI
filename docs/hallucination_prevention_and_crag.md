@@ -1,6 +1,6 @@
-# NewsLens-AI: Hallucination Prevention, Corrective RAG (CRAG) & Self-Correcting Fallback Architecture
+# NewsLens-AI: Hallucination Prevention, Multi-Stage Evaluation & Corrective RAG (CRAG) Architecture
 
-This document provides an exhaustive, production-grade architectural guide to **Hallucination Prevention, Corrective RAG (CRAG), Tool Critic Evaluation, and Closed-Loop Fallback Recovery** in **NewsLens-AI**. It details how the platform eliminates factual errors, prevents mathematical and relational schema hallucinations, audits evidence sufficiency, and dynamically self-corrects to deliver grounded broadsheet intelligence.
+This document provides an exhaustive, production-grade architectural specification for **Hallucination Prevention, Multi-Stage Pipeline Evaluation, Corrective RAG (CRAG), ToolCritic Code Auditing, and Closed-Loop Fallback Recovery** in **NewsLens-AI**. It details where and when evaluations occur across the pipeline lifecycle, what dimensions are audited (such as **Recall**, **Faithfulness**, **Relational Schema Fidelity**, **Subprocess Health**, and **Absence Grounding**), and exactly what self-correcting actions are executed after each evaluation.
 
 ---
 
@@ -22,247 +22,376 @@ Retrieval-Augmented Generation (RAG) over historical print newspapers presents u
 │                          │ by 5x to 20x               │ from 12 to 180 articles.       │
 ├──────────────────────────┼────────────────────────────┼────────────────────────────────┤
 │ **Absence Contradiction**│ Model asserts positive     │ DB returns 0 issues on Sunday; │
-│                          │ availability when the      │ LLM says: *"Yes, at least one  │
+│                          │ availability when the      │ LLM says: "Yes, at least one   │
 │                          │ archive contains 0 records │ issue is available on that date"│
 ├──────────────────────────┼────────────────────────────┼────────────────────────────────┤
-│ **Publication Narrowing**│ Archive-wide query is      │ User asks: *"List all papers in│
-│                          │ artificially restricted to │ July"*; LLM narrows to solely  │
-│                          │ a single favorite brand    │ *"The Goan"* or *"The Hindu"*. │
+│ **Publication Narrowing**│ Archive-wide query is      │ User asks: "List all papers in │
+│                          │ artificially restricted to │ July"; LLM narrows to solely   │
+│                          │ a single favorite brand    │ "The Goan" or "The Hindu".     │
 ├──────────────────────────┼────────────────────────────┼────────────────────────────────┤
 │ **Mathematical / NaN**   │ Model computes `NaN` on    │ Dividing by 0 on empty sets    │
 │                          │ empty sets or invents      │ yields `NaN words`; model prints│
-│                          │ plausible averages         │ *"Average word count is NaN"*. │
+│                          │ plausible averages         │ "Average word count is NaN".   │
 ├──────────────────────────┼────────────────────────────┼────────────────────────────────┤
 │ **Context Contamination**│ Multi-turn session carries │ User attached a photo from Aug │
 │                          │ forward stale asset date   │ 5, then asks about Aug 1; model│
 │                          │ or headline across dates   │ retrieves the wrong story.     │
 ├──────────────────────────┼────────────────────────────┼────────────────────────────────┤
-│ **Speculative Fluff**    │ Empty archive triggers     │ *"Investigate implications on  │
+│ **Speculative Fluff**    │ Empty archive triggers     │ "Investigate implications on   │
 │                          │ management consulting      │ overall content strategy and   │
-│                          │ boilerplate filler         │ editorial publication plans."* │
+│                          │ boilerplate filler         │ editorial publication plans."  │
 └──────────────────────────┴────────────────────────────┴────────────────────────────────┘
 ```
 
 ---
 
-## 2. The 6-Layer Hallucination Defense Architecture
+## 2. Master Evaluation Lifecycle Architecture
 
-NewsLens-AI implements an end-to-end defense-in-depth framework across six distinct architectural layers:
+In NewsLens-AI, evaluation is not a monolithic final check. Instead, evaluations occur at **four distinct checkpoints** in the query lifecycle, each specialized for its stage:
 
 ```mermaid
 flowchart TD
-    UserQuery["User Query + Multi-Turn Context"] --> L1
+    UserQuery["User Query + Multi-Turn Context"] --> Stage1
 
-    subgraph L1 ["Layer 1: Grounded Planning & Static Schema Decoupling"]
-        P1["STATIC_BROADSHEET_SCHEMA Catalog"]
-        P2["KNOWN_COLUMN_HALLUCINATIONS Mapping"]
-        P3["Strict 7-Enum Contract for sql_analytics"]
-        P4["Typo-Tolerant Brand Patterns & Date Regexes"]
-        P5["Dynamic Analysis Permission Gate"]
+    subgraph Stage1 ["Stage 1: Planning-Time Contract Evaluation"]
+        P1["Parameter Extraction Validation (extractor.py)"]
+        P2["Static Broadsheet Schema Contract (STATIC_BROADSHEET_SCHEMA)"]
+        P3["Column Remapping Gate (KNOWN_COLUMN_HALLUCINATIONS)"]
+        P4["Dynamic Analysis Permission Check (is_dynamic_analysis_permitted)"]
+        P5["Strict 7-Enum Negative Constraints (sql_analytics)"]
     end
 
-    L1 --> L2
+    Stage1 --> ToolExec["Concurrent Tool Execution Engine (executor.py)"]
+    ToolExec --> DynamicBranch{"Tool Type"}
 
-    subgraph L2 ["Layer 2: AST Security & Sandboxed Subprocess Isolation"]
-        S1["ASTSafetyScanner (Blocks os, sys, subprocess, eval)"]
-        S2["Subprocess Sandbox (15s Timeout, 512MB RAM Cap)"]
-        S3["Read-Only DB Connection with Auto-Rollback"]
-        S4["Pre-Injected Math & Data Science Globals"]
-    end
+    DynamicBranch -->|"dynamic_analysis"| Stage2
+    DynamicBranch -->|"Static Tools (hybrid, sql, entity, etc.)"| Stage3
 
-    L2 --> L3
-
-    subgraph L3 ["Layer 3: Tool Critic 5-Metric Diagnostic Scorecard"]
-        C1["SASC: Syntactic & AST Security Compliance"]
-        C2["SRF: Schema Fidelity & Cartesian COUNT Prevention"]
-        C3["REH: Runtime Execution & Subprocess Health"]
-        C4["DSF: Data-to-Summary Faithfulness & Absence Logic"]
+    subgraph Stage2 ["Stage 2: Dynamic Tool Code & Execution Evaluation (tool_critic.py)"]
+        C1["SASC: Syntactic & AST Security Audit"]
+        C2["SRF: Schema Fidelity & Cartesian Product Audit"]
+        C3["REH: Subprocess Runtime Health & Memory Limit"]
+        C4["DSF: Data-to-Summary Faithfulness & NaN Audit"]
         C5["RPS: Intent Alignment & Filter Plausibility"]
-        C6["Closed-Loop Refinement (Up to 3 Retries with Hints)"]
+        C6["Post-Eval Action: 3-Retry Closed-Loop Code Refinement"]
     end
 
-    L3 --> L4
+    Stage2 --> Stage3
 
-    subgraph L4 ["Layer 4: Corrective RAG (CRAG) Evidence Evaluation"]
-        E1["Fast-Floor Bypass (<5ms for >= 100 Words Factual Body)"]
-        E2["Lexical & Semantic Relevance Scoring (Stemming & Stopwords)"]
-        E3["Reflexive LLM-as-Judge EvaluationVerdict"]
+    subgraph Stage3 ["Stage 3: Post-Retrieval CRAG Evidence Evaluation (evaluator.py)"]
+        E1["Fast-Floor Gate (<5ms for >= 100 Words Editorial Text)"]
+        E2["Lexical & Semantic Recall Scoring (Stemming + Stopwords)"]
+        E3["Legitimate Absence Discrimination Invariant"]
         E4["Comparative Multi-Newspaper Balance Audit"]
-        E5["Temporal ISO Date Alignment Check"]
-        E6["Quantitative Payload & Non-Zero Metric Verification"]
+        E5["Temporal ISO Date Alignment Audit"]
+        E6["Quantitative Payload Verification"]
+        E7["Post-Eval Action: replan_static_tools / synthesize_dynamic_tool"]
     end
 
-    L4 --> L5
+    Stage3 --> Synthesis["Blueprint-Driven Grounded Synthesis (synthesizer.py)"]
+    Synthesis --> Stage4
 
-    subgraph L5 ["Layer 5: Blueprint-Driven Grounded Synthesis"]
-        B1["Dynamic AnswerBlueprint (Strict Section Directives)"]
-        B2["Mandatory Broadsheet Citation Contract"]
-        B3["Quantitative Metric Absence Hard-Stop Directive"]
-        B4["Deterministic Catalog Table Stripper for Narrative Reading"]
-        B5["Photo Annotation Noise Suppressor"]
-    end
-
-    L5 --> L6
-
-    subgraph L6 ["Layer 6: Reflective LLM Answer Verifier"]
+    subgraph Stage4 ["Stage 4: Post-Synthesis Answer Verification (answer_verifier.py)"]
         V1["Fast Groundedness Floor Gate (<5ms Deterministic Checks)"]
-        V2["Publication Scope Contradiction Interceptor"]
+        V2["Scope Mismatch Interceptor"]
         V3["Calculation NaN / Null Detector"]
-        V4["Zero-Issue Contradiction Refiner (Emits Clean Facts)"]
+        V4["Zero-Issue Contradiction Refiner"]
         V5["Reflexive LLM Fact-Checking Critic (4 Dimensions)"]
-        V6["Dynamic Tool Rollback (1-Cycle LangGraph Ceiling)"]
+        V6["Post-Eval Action: accept / refine_answer / rollback loop"]
     end
 
-    L6 --> VerifiedSSE["Verified, Factual SSE Stream Delivered to Client"]
+    Stage4 --> VerifiedSSE["Verified, Factual SSE Stream Delivered to Client"]
 ```
 
 ---
 
-## 3. Deep Dive into Defense Layers
+## 3. Evaluation Times, Places, Audited Dimensions & Remediation
 
-### 3.1. Layer 1: Grounded Planning & Static Schema Decoupling
-Located in [`archive_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/archive_context.py), [`extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py), and [`planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py):
+The table below outlines every evaluation performed in the platform, specifying **where** in the code it resides, **when** in the query lifecycle it executes, **what** metrics and dimensions it audits, and **what action is taken after evaluation**:
 
-1. **Declarative Static Broadsheet Schema**:
-   The planner prompt does not receive an arbitrary relational schema or make runtime DB calls to inspect tables. It is provided a ~150-token static declarative catalog (`STATIC_BROADSHEET_SCHEMA`) describing the 6 core tables: `newspapers`, `issues`, `pages`, `articles`, `photos`, and `article_categories`.
-2. **Column Hallucination Mapping (`KNOWN_COLUMN_HALLUCINATIONS`)**:
-   Prevents common LLM hallucinations before code or queries are executed:
-   - Hallucinated `published_at` $\to$ Automatically corrected to `issues.issue_date`.
-   - Hallucinated `newspaper` $\to$ Automatically corrected to `newspapers.name`.
-   - Hallucinated `category` $\to$ Mapped to `article_categories.name` via explicit table join.
-   - Hallucinated `title` $\to$ Corrected to `articles.headline`.
-   - Hallucinated `author` $\to$ Corrected to `articles.byline_author`.
-3. **Strict 7-Enum Contract for `sql_analytics`**:
-   The planner is bound by strict negative contracts: `sql_analytics` **only** supports 7 pre-compiled routines (`count_issues`, `count_articles`, `count_advertisements`, `count_photos`, `issue_summary`, `coverage_difference`, `shared_coverage`). It cannot execute custom SQL or compute averages.
-4. **Dynamic Analysis Permission Boundary (`is_dynamic_analysis_permitted`)**:
-   Ensures `dynamic_analysis` is only invoked for mathematical calculations, averages, distributions, and custom groupings. Pure reading or summarization requests (e.g. *"Summarize the lead article in 100 words"*) are barred from dynamic code synthesis, preventing code execution errors for narrative queries.
+| Evaluation Stage | Component & File | Lifecycle Execution Time | Audited Dimensions & Metrics | Trigger Condition | Post-Evaluation Action & Remediation |
+|---|---|---|---|---|---|
+| **1. Planning Contracts** | `extractor.py`, `planner.py`, `archive_context.py` | Query Ingestion (Pre-Execution) | • Parameter format & ISO regex<br/>• Typo-tolerant brand normalization<br/>• Static schema bounds<br/>• Dynamic analysis permission | Non-ISO date, brand typo, or unsupported aggregation | Automatically normalizes dates; replaces column aliases; restricts narrative reading from dynamic code synthesis. |
+| **2. AST & Security** | `sandbox.py`, `tool_maker.py` | Tool Synthesis (Pre-Execution) | • **SASC**: Banned modules (`os`, `sys`, `subprocess`)<br/>• Dangerous builtins (`eval`, `exec`, `open`)<br/>• Dunder attribute traversal | Banned import or built-in function detected | Score set to 0.0; execution aborted; re-prompts LLM with AST security violation critique. |
+| **3. SQL Schema Fidelity** | `tool_critic.py` (`audit_sql_schema`) | Dynamic Tool Synthesis (Pre-Execution) | • **SRF**: Relational schema conformance<br/>• Known column hallucinations<br/>• Cartesian joins (`COUNT` without `DISTINCT`) | Non-existent column or unconstrained 1:N join | Re-prompts LLM with schema critique and recommended fixes (e.g. use `COUNT(DISTINCT a.id)`). |
+| **4. Subprocess Runtime Health** | `tool_critic.py`, `sandbox_runner.py` | Dynamic Tool Execution (Runtime) | • **REH**: Exit codes, stdout/stderr<br/>• 15s process timeout<br/>• 512MB RAM ceiling (`setrlimit`) | Subprocess crash, timeout, or OOM | Score set to 0.0; captures stderr trace; re-prompts LLM with runtime traceback for self-correction. |
+| **5. Data-to-Summary Faithfulness** | `tool_critic.py` (`audit_data_to_summary`) | Dynamic Tool (Post-Execution) | • **DSF**: Internal consistency<br/>• Positive count claims over 0 rows<br/>• Unhandled `NaN` or `null` metrics<br/>• Tabular alignment with metadata | Summary claims rows when DB returned 0, or emits `NaN` | Rejects summary (score 0.0–0.1); forces re-prompt with NaN-handling instructions or truthful absence reporting. |
+| **6. Retrieval Recall & Substance** | `evaluator.py` (`_score_relevance`) | Post-Tool Retrieval (Pre-Synthesis) | • Lexical keyword recall & stemming<br/>• Stopword filtering<br/>• Editorial text depth (>= 100 words)<br/>• Prominence score (>= 0.65) | Fast-floor criteria satisfied | Bypasses LLM evaluation latency (<5ms) and immediately advances high-confidence broadsheet text to synthesis. |
+| **7. CRAG Evidence Sufficiency** | `evaluator.py` (`evaluate_evidence`) | Post-Tool Retrieval (Pre-Synthesis) | • Multi-newspaper balance<br/>• Temporal ISO date alignment<br/>• Quantitative payload completeness<br/>• Legitimate absence invariant | Missing publication, missing date, or 0 metrics on quant query | Emits typed `EvaluationVerdict`: triggers `replan_static_tools` (widen dates/filters, scale `top_k`) or `synthesize_dynamic_tool`. |
+| **8. Fast Groundedness Floor** | `answer_verifier.py` (`_fast_groundedness_check`) | Post-Synthesis (Pre-Delivery) | • Scope mismatch (archive vs brand)<br/>• Calculation `NaN` / `null` in draft<br/>• Zero-issue contradiction in draft | Relational 0 contradicted by "Yes, available" or NaN emitted | Intercepts draft (<5ms): auto-replaces with clean absence report (`refine_answer`) or triggers dynamic tool rollback. |
+| **9. Reflective Editorial Audit** | `answer_verifier.py` (`verify_answer_async`) | Post-Synthesis (Pre-Delivery) | • **Faithfulness & Groundedness**<br/>• **Freedom from Fluff**<br/>• **Archival Absence Fidelity**<br/>• **Quantitative Accuracy** | Factual error, corporate fluff, or missing citations | Emits `accept`, `refine_answer` (substitutes cleaned grounded brief), or `fallback_to_dynamic_tool` (LangGraph rollback). |
 
 ---
 
-### 3.2. Layer 2: AST Security & Sandboxed Subprocess Isolation
-Located in [`sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox.py) and [`tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_maker.py):
+## 4. Deep Dive: Dynamic Tool Evaluation (`ToolCritic`)
 
-1. **AST Safety Scanner (`ASTSafetyScanner`)**:
-   Before any synthesized Python code is written to disk or executed, it is parsed into an Abstract Syntax Tree (AST). The scanner traverses the tree and rejects any script that:
-   - Imports unauthorized modules (`os`, `sys`, `subprocess`, `shutil`, `socket`, `http`, `urllib`, `requests`, `importlib`).
-   - Invokes built-in dangerous functions (`eval`, `exec`, `open`, `compile`, `__import__`, `globals`, `locals`).
-   - Accesses dunder attributes (`__class__`, `__subclasses__`, `__bases__`).
-2. **Subprocess Isolation**:
-   The validated script runs inside an isolated worker subprocess with:
-   - Strict 15-second execution timeout.
-   - 512 MB memory ceiling (via `resource.setrlimit`).
-   - Read-only MySQL credentials (`mysql_readonly_url`) preventing any `INSERT`, `UPDATE`, `DELETE`, or `DROP` mutation.
-   - Auto-injected standard math and data science libraries (`re`, `math`, `statistics`, `json`, `pandas`, `numpy`, `sqlalchemy.text`).
+Located in [`backend/app/agent/tool_critic.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_critic.py).
 
----
-
-### 3.3. Layer 3: Tool Critic 5-Metric Diagnostic Scorecard
-Located in [`tool_critic.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_critic.py):
-
-Generated dynamic tools are evaluated across 5 quantitative dimensions before their results can enter the agent's evidence stream:
-
-| Metric | Dimension | Inspection Logic | Score Penalty |
-|---|---|---|---|
-| **SASC** | Syntactic & AST Compliance | Verifies syntax validity and absence of banned imports/builtins. | Rejection on violation (0.0). |
-| **SRF** | SQL Relational Fidelity | Checks AST SQL query strings for non-existent columns, unparameterized string formatting, and unconstrained Cartesian joins (`COUNT(a.id)` across 1:N joins without `DISTINCT`). | -0.3 per bad column, -0.2 per Cartesian risk. |
-| **REH** | Runtime Health | Evaluates exit code, execution duration, and standard error traces. | 0.0 on crash or timeout. |
-| **DSF** | Data-to-Summary Faithfulness | Audits internal consistency between raw execution data/metadata and generated summary. | 0.1 on positive count claim over 0 rows. 0.0 on unhandled `NaN`. |
-| **RPS** | Intent & Filter Plausibility | Ensures date arguments match ISO formats and newspaper names match archive context. | -0.3 on format defects. |
-
-#### The "Legitimate Absence" Discrimination Invariant
-A major breakthrough in NewsLens-AI is the discrimination between **legitimate archival absence** and **hallucination**:
-- If a database query returns 0 rows, and the generated summary truthfully states *"No articles or issues were found in the archive for 2026-04-28"*, the DSF score is **1.0 (Accepted)**.
-- If the database query returns 0 rows, but the summary claims *"The archive contains 12 articles discussing economic policy"*, the DSF score is **0.1 (Severe Hallucination Rejection)**.
-
----
-
-### 3.4. Layer 4: Corrective RAG (CRAG) & Evidence Evaluation Gate
-Located in [`evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py):
-
-After the `ToolExecutor` executes planned tools, the retrieved items enter the CRAG `EvidenceEvaluator`:
+When ad-hoc queries require runtime Python and SQL generation, the code is evaluated across **five quantitative dimensions** before any results are accepted into the agent's evidence stream:
 
 ```mermaid
 flowchart TD
-    EvidenceIn["Raw Evidence Items from ToolExecutor"] --> FastFloor{"Fast-Floor Check:<br/>• >= 1 Broadsheet Record?<br/>• Clean Editorial Text >= 100 Words?<br/>• Prominence >= 0.65?"}
-    
-    FastFloor -->|Yes: High Quality| PassFast["Pass Immediately to Synthesizer<br/>(< 5ms Latency Overhead)"]
-    
-    FastFloor -->|No: Analytical / Edge Case| FullAudit["Full Qualitative CRAG Audit<br/>(Lexical Relevance + LLM-as-Judge)"]
-    
-    FullAudit --> Check1{"Check 1: Legitimate Absence?"}
-    Check1 -->|Availability query & '0 issues found'| PassAbsence["Verdict: Sufficient (Score: 0.85)<br/>Proceed to Synthesizer with Absence Grounding"]
-    
-    Check1 -->|No| Check2{"Check 2: Multi-Newspaper Balance?"}
-    Check2 -->|Missing requested publication| FailComp["Verdict: Insufficient (Score: 0.35)<br/>Action: replan_static_tools<br/>Hint: missing_newspapers"]
-    
-    Check2 -->|Balanced| Check3{"Check 3: Temporal ISO Date Alignment?"}
-    Check3 -->|Target date missing from evidence| FailDate["Verdict: Insufficient (Score: 0.30)<br/>Action: replan_static_tools<br/>Hint: issue_date"]
-    
-    Check3 -->|Aligned| Check4{"Check 4: Quantitative Payload Present?"}
-    Check4 -->|Quant query but 0 metrics/tables| FailQuant["Verdict: Insufficient (Score: 0.40)<br/>Action: synthesize_dynamic_tool<br/>Hint: require_dynamic_tool"]
-    
-    Check4 -->|Payload Present| PassJudge["Verdict: Sufficient (Score >= 0.70)<br/>Proceed to Synthesizer"]
+    SynthesizedCode["Synthesized Python Code from ToolMaker"] --> Step1
+
+    subgraph Step1 ["1. Pre-Execution AST & Security Evaluation (SASC)"]
+        AST_Parse["AST Parser (ast.parse)"]
+        AST_Scan["ASTSafetyScanner: Scan imports & function calls"]
+        BannedCheck{"Banned Import or Dangerous Builtin?<br/>(os, sys, subprocess, eval, open, dunders)"}
+        PassSASC["SASC Score: 1.0 (Pass)"]
+        FailSASC["SASC Score: 0.0 (Security Reject)<br/>suggested_fixes: 'Remove unauthorized imports'"]
+    end
+
+    AST_Parse --> AST_Scan --> BannedCheck
+    BannedCheck -->|Clean| PassSASC
+    BannedCheck -->|Violation| FailSASC
+
+    PassSASC --> Step2
+
+    subgraph Step2 ["2. Pre-Execution Relational Schema Evaluation (SRF)"]
+        ExtractSQL["extract_sql_queries_ast()<br/>Resilient AST SQL Extractor"]
+        ColCheck{"Check Known Column Hallucinations<br/>(published_at, category, title, author)"}
+        CartCheck{"Check Cartesian Join Multiplier<br/>(COUNT across 1:N join without DISTINCT)"}
+        ParamCheck{"Check Parameterized Binding<br/>(f-string/format instead of :params)"}
+        PassSRF["SRF Score: 1.0 (Pass)"]
+        FailSRF["SRF Penalty: -0.3 per bad column, -0.2 per Cartesian risk<br/>suggested_fixes: 'Use COUNT(DISTINCT a.id)'"]
+    end
+
+    ExtractSQL --> ColCheck --> CartCheck --> ParamCheck
+    ColCheck & CartCheck & ParamCheck -->|Schema Valid| PassSRF
+    ColCheck & CartCheck & ParamCheck -->|Defect Found| FailSRF
+
+    PassSRF --> Step3
+
+    subgraph Step3 ["3. Runtime Subprocess Health Evaluation (REH)"]
+        SubprocessRun["Execute in Isolated Subprocess (sandbox_runner.py)<br/>• 15s Timeout Ceiling<br/>• 512MB RAM Cap (setrlimit)<br/>• Read-Only DB Connection with Rollback"]
+        ExecCheck{"Process Exit Code == 0 AND No Exceptions?"}
+        PassREH["REH Score: 1.0 (Healthy)"]
+        FailREH["REH Score: 0.0 (Crashed / Timeout / OOM)<br/>Captures Stderr Traceback"]
+    end
+
+    Step3 --> Step4
+
+    subgraph Step4 ["4. Data-to-Summary Faithfulness Evaluation (DSF)"]
+        ResultData["Subprocess Result: {data, metadata, summary}"]
+        AbsenceCheck{"Check Legitimate Archival Absence:<br/>0 rows AND summary truthfully states 'No records found'?"}
+        LegitPass["DSF Score: 1.0 (Accepted Legitimate Absence)"]
+        
+        HallucCheck{"0 rows BUT summary asserts positive counts?<br/>(e.g. claims 12 articles found)"}
+        SevereFail["DSF Score: 0.1 (Severe Hallucination Rejection)"]
+        
+        NaNCheck{"NaN or Null in summary or metadata metrics?<br/>('nan words', 'is nan')"}
+        NaNFail["DSF Score: 0.0 (Calculation Failure Rejection)<br/>suggested_fixes: 'Check row count before mean()'"]
+        
+        NumberCheck{"Metadata Numbers vs Summary Numbers Alignment"}
+        PassDSF["DSF Score: 1.0 (Faithful & Grounded)"]
+    end
+
+    ResultData --> AbsenceCheck
+    AbsenceCheck -->|Yes| LegitPass
+    AbsenceCheck -->|No| HallucCheck
+    HallucCheck -->|Hallucination| SevereFail
+    HallucCheck -->|Clean| NaNCheck
+    NaNCheck -->|NaN Detected| NaNFail
+    NaNCheck -->|Clean| NumberCheck
+    NumberCheck -->|Consistent| PassDSF
+
+    Step4 --> Step5
+
+    subgraph Step5 ["5. Intent & Filter Plausibility Evaluation (RPS)"]
+        FilterCheck{"Date format matches ISO YYYY-MM-DD?<br/>Newspaper names match archive catalog?"}
+        PassRPS["RPS Score: 1.0 (Valid)"]
+        FailRPS["RPS Score: 0.7 (Penalty for formatting defects)"]
+    end
+
+    FilterCheck -->|Valid| PassRPS
+    FilterCheck -->|Defect| FailRPS
+
+    subgraph PostEval ["6. Post-Evaluation Closed-Loop Remediation"]
+        Scorecard["Compile EvaluationScorecard<br/>is_acceptable = (SASC==1.0 & SRF>=0.7 & REH==1.0 & DSF>=0.7)"]
+        ScorecardCheck{"is_acceptable?"}
+        PassTelemetry["Inject Verified Telemetry into Agent Evidence Stream"]
+        RePromptLLM["Re-Prompt LLM with Diagnostic Critique & Fixes<br/>(Closed-loop retry cycle, max 3 attempts)"]
+    end
+
+    PassDSF & PassRPS & PassREH --> Scorecard
+    FailSASC & FailSRF & FailREH & SevereFail & NaNFail & FailRPS --> Scorecard
+    Scorecard --> ScorecardCheck
+    ScorecardCheck -->|Accepted| PassTelemetry
+    ScorecardCheck -->|Rejected| RePromptLLM
+    RePromptLLM -.->|Corrected Code| SynthesizedCode
 ```
 
-#### The CRAG `EvaluationVerdict`
-The evaluator emits a typed `EvaluationVerdict` data structure stored in `AgentState`:
-- `is_sufficient: bool`
-- `quality_score: float` (0.0 to 1.0)
-- `gap_reason: str | None`
-- `detected_gaps: list[str]` (e.g. `["missing_newspaper_coverage:Mint"]`, `["zero_count_aggregate_gap"]`)
-- `recommended_action: str` (`"proceed_to_synthesis"`, `"replan_static_tools"`, `"synthesize_dynamic_tool"`)
-- `corrective_hints: dict[str, Any]`
+### The "Legitimate Absence" Discrimination Invariant
+A key innovation in NewsLens-AI is the ability of the evaluator to distinguish between a **failed query** and a **legitimate archival absence**:
+- **Legitimate Archival Absence**: A database query for issues on Sunday returns 0 rows. The dynamic tool summary states: *"No newspaper issues were published or archived for 2026-04-28."* The `ToolCritic` scores this as **`DSF = 1.0 (Accepted)`**.
+- **Hallucinated Positive Assertion**: The database query returns 0 rows. The summary states: *"The archive contains 14 articles covering state politics."* The `ToolCritic` detects that positive counts are claimed over empty rows and scores this as **`DSF = 0.1 (Severe Hallucination Rejection)`**, triggering an automated code regeneration cycle.
 
 ---
 
-### 3.5. Layer 5: Blueprint-Driven Grounded Synthesis
-Located in [`synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py) and [`models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py):
+## 5. Deep Dive: Corrective RAG (CRAG) Evidence Evaluation (`EvidenceEvaluator`)
 
-Rather than asking the LLM to write a generic response, the synthesizer compiles the planner's declarative `AnswerBlueprint` into structured section directives:
+Located in [`backend/app/agent/evaluator.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/evaluator.py).
 
-1. **Section Specifications (`SectionSpec`)**:
-   Directs the model to generate explicit sections (e.g., `### ⚡ Executive Overview`, `### 📊 Comparative Analysis Matrix`, `### 🔍 Editorial Divergence`) with enforced presentation types (`narrative`, `bullet_list`, `markdown_table`, `metric_card`).
-2. **Quantitative Metric Absence Hard-Stop**:
-   The prompt injects an immutable directive:
-   > *"If statistical, volume, or average metrics were requested but the tool results returned 0 records or could not be computed, you MUST explicitly state that the metrics are unavailable. You are STRICTLY FORBIDDEN from estimating, guessing, or making up numbers."*
-3. **Robotic Catalog Table Stripper**:
-   When answering focused single-article questions (e.g., *"Summarize the article on renewable energy"*), the synthesizer deterministically strips mechanical catalog tables (`| # | Headline | Section | Page | Words |`), preserving journalistic narrative focus.
-4. **Mandatory Broadsheet Citation Contract**:
-   Every factual claim must cite its source broadsheet: `[Newspaper, YYYY-MM-DD, Page N, "Headline"]`. The synthesizer correlates these with visual asset IDs to generate interactive frontend citation cards with thumbnail previews (`/api/photos/{id}/image`).
-
----
-
-### 3.6. Layer 6: Reflective LLM Answer Verifier & Fact-Checking Critic
-Located in [`answer_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py):
-
-The synthesized response is not sent directly to the client. It is audited by the `AnswerVerifier` across four dimensions:
+After tools execute concurrently, the retrieved evidence items pass through the CRAG `EvidenceEvaluator` before prompt assembly:
 
 ```mermaid
 flowchart TD
-    DraftAnswer["Draft Synthesized Answer from Synthesizer"] --> FastGate{"Fast Groundedness Floor Gate (< 5ms)"}
-    
-    FastGate --> Gate1{"Scope Mismatch?<br/>(Archive-wide query restricted to 1 brand?)"}
-    Gate1 -->|Yes| RollbackScope["Verdict: Invalid (Score 0.2)<br/>Action: fallback_to_dynamic_tool<br/>Hint: Query across all publications"]
-    
-    Gate1 -->|No| Gate2{"Calculation NaN / Null?<br/>('nan words', 'is nan')"}
-    Gate2 -->|Yes| RollbackNaN["Verdict: Invalid (Score 0.1)<br/>Action: fallback_to_dynamic_tool<br/>Hint: Recompute metrics in Python"]
-    
-    Gate2 -->|No| Gate3{"Zero-Issue Contradiction?<br/>(0 records in DB but draft claims 'Yes, available')"}
-    Gate3 -->|Yes| AutoRefine["Verdict: Invalid (Score 0.2)<br/>Action: refine_answer<br/>Emit Clean Deterministic Availability Report"]
-    
-    Gate3 -->|No| LLM_Judge["LLM-as-Judge Fact-Checker<br/>(Faithfulness, Freedom from Fluff, Evidence Gaps)"]
-    
-    LLM_Judge --> JudgeVerdict{"Judge Verdict Action"}
-    JudgeVerdict -->|"accept"| Deliver["Deliver to Client via SSE Stream"]
-    JudgeVerdict -->|"refine_answer"| ReplaceDraft["Replace Draft with refined_answer<br/>Deliver to Client"]
-    JudgeVerdict -->|"fallback_to_dynamic_tool"| RollbackNode["LangGraph State Machine Rollback:<br/>Branch to execute_dynamic_code (1-Cycle Ceiling)"]
+    EvidenceIn["Raw Evidence Items from ToolExecutor<br/>(ToolExecutionRecord Collection)"] --> FastFloor
+
+    subgraph FastFloorCheck ["1. Deterministic Fast-Floor Evaluation (<5ms)"]
+        FastFloor{"Fast-Floor Gate Check:<br/>• >= 1 Broadsheet Record?<br/>• Clean Editorial Text >= 100 Words?<br/>• Prominence Score >= 0.65?"}
+        ImmediateBypass["High-Confidence Immediate Bypass<br/>• is_sufficient = True<br/>• quality_score = 1.0<br/>• Bypasses LLM Evaluator Latency Overhead"]
+    end
+
+    FastFloor -->|"Pass (Rich Editorial Text)"| ImmediateBypass
+    FastFloor -->|"Fail (Sparse / Analytical / Edge Case)"| LLM_Judge
+
+    subgraph LLM_Judge ["2. Multi-Dimensional Quality Evaluation Audit"]
+        JudgeAudit["EvidenceEvaluator (Reflexive LLM-as-Judge)<br/>Audits Evidence Against User Query Intent"]
+        
+        CheckAbsence{"Check 1: Legitimate Absence Invariant?<br/>(Query asks about availability AND DB returns 0 issues?)"}
+        PassAbsence["Verdict: Sufficient (Score: 0.85)<br/>Proceed with Truthful Absence Grounding"]
+        
+        CheckBalance{"Check 2: Multi-Newspaper Balance?<br/>(Comparative query missing requested publication?)"}
+        FailBalance["Verdict: Insufficient (Score: 0.35)<br/>gap_reason: 'missing_newspaper_coverage:Mint'<br/>recommended_action: 'replan_static_tools'"]
+        
+        CheckDate{"Check 3: Temporal ISO Date Alignment?<br/>(Evidence records missing requested target date?)"}
+        FailDate["Verdict: Insufficient (Score: 0.30)<br/>gap_reason: 'temporal_mismatch'<br/>recommended_action: 'replan_static_tools'"]
+        
+        CheckQuant{"Check 4: Quantitative Payload Verification?<br/>(Math/volume query but 0 metrics or tables in evidence?)"}
+        FailQuant["Verdict: Insufficient (Score: 0.40)<br/>gap_reason: 'zero_count_aggregate_gap'<br/>recommended_action: 'synthesize_dynamic_tool'"]
+        
+        CheckOverall{"Check 5: Overall Relevance Score >= 0.70?"}
+        PassOverall["Verdict: Sufficient (Score >= 0.70)<br/>recommended_action: 'proceed_to_synthesis'"]
+        FailOverall["Verdict: Insufficient (Score < 0.70)<br/>recommended_action: 'replan_static_tools'"]
+    end
+
+    JudgeAudit --> CheckAbsence
+    CheckAbsence -->|"Yes"| PassAbsence
+    CheckAbsence -->|"No"| CheckBalance
+    CheckBalance -->|"Missing Brand"| FailBalance
+    CheckBalance -->|"Balanced"| CheckDate
+    CheckDate -->|"Date Mismatch"| FailDate
+    CheckDate -->|"Dates Aligned"| CheckQuant
+    CheckQuant -->|"0 Metrics"| FailQuant
+    CheckQuant -->|"Payload Valid"| CheckOverall
+    CheckOverall -->|"Yes"| PassOverall
+    CheckOverall -->|"No"| FailOverall
+
+    subgraph PostEvalAction ["3. Post-Evaluation Action & Remediation Pathways"]
+        ActionRouter{"EvaluationVerdict Action Router"}
+        
+        subgraph StaticReplan ["Pathway 1: Adaptive Static Re-Planning (replan_with_feedback_async)"]
+            ReplanLogic["• Relax narrow page & category constraints<br/>• Broaden date range bounds<br/>• Scale top_k = max(8, current_top_k + 4)<br/>• Enforce Anti-Repetition Guard<br/>• Strict 1-cycle ceiling"]
+            ReExecTools["ToolExecutor Re-Executes Reformed Tools"]
+        end
+        
+        subgraph DynamicToolMaker ["Pathway 2: Dynamic ToolMaker Recovery"]
+            MakerLogic["DynamicToolMaker.generate_and_execute()<br/>• Synthesize ad-hoc Python/SQL script<br/>• Execute in Subprocess Sandbox (512MB RAM, 15s)<br/>• ToolCritic 5-metric audit (up to 3 retries)<br/>• Inject verified metrics into evidence state"]
+        end
+        
+        subgraph TruthfulSilence ["Pathway 3: Authoritative Archival Silence"]
+            SilenceNotice["Empty Evidence Hard-Stop Check<br/>Emit Authoritative Archival Absence:<br/>'The archived broadsheets contain no verifiable<br/>record of [Query]'<br/>Strict Anti-Hallucination Invariant"]
+        end
+    end
+
+    ImmediateBypass & PassAbsence & PassOverall --> AdvanceSynthesis["Proceed to AnswerSynthesizer"]
+    FailBalance & FailDate & FailOverall --> ActionRouter
+    FailQuant --> ActionRouter
+
+    ActionRouter -->|"replan_static_tools"| StaticReplan
+    StaticReplan --> ReExecTools
+    ReExecTools -->|"Recovery Evidence"| FastFloor
+    ReExecTools -.->|"Still Empty"| SilenceNotice
+
+    ActionRouter -->|"synthesize_dynamic_tool"| DynamicToolMaker
+    DynamicToolMaker -->|"Verified Evidence"| AdvanceSynthesis
+    DynamicToolMaker -.->|"Execution Failed"| SilenceNotice
+
+    SilenceNotice --> AdvanceSynthesis
 ```
 
 ---
 
-## 4. Closed-Loop Fallback Recovery & Self-Correction Mechanisms
+## 6. Deep Dive: Post-Synthesis Answer Verification (`AnswerVerifier`)
 
-When an evidence gap, retrieval failure, or ungrounded synthesis is detected, NewsLens-AI does not fail or present a blank screen. It activates four closed-loop fallback pathways designed to improve the response iteratively:
+Located in [`backend/app/agent/answer_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py).
+
+Even when evidence is grounded, an LLM synthesizer may still inject unsupported speculative filler, make mathematical errors, or misread relational zero counts. The `AnswerVerifier` serves as the final **editorial critic** before any tokens are streamed to the client:
+
+```mermaid
+flowchart TD
+    SynthesizedDraft["Synthesized Draft Answer (from AnswerSynthesizer)<br/>+ Ground Truth Evidence Items"] --> FastFloorGate
+
+    subgraph FastFloorGate ["1. Fast Groundedness Floor Gate (<5ms Deterministic)"]
+        GateScope{"Scope Mismatch Check:<br/>Archive-wide query narrowed to 1 brand?"}
+        FailScope["Flagged: Scope Contradiction (Score: 0.2)<br/>recommended_action: 'fallback_to_dynamic_tool'<br/>hint: 'Query across all broadsheets'"]
+        
+        GateNaN{"Calculation NaN / Null Check:<br/>Draft contains 'nan words', 'is nan', 'null count'?"}
+        FailNaN["Flagged: Math Defect (Score: 0.1)<br/>recommended_action: 'fallback_to_dynamic_tool'<br/>hint: 'Recompute statistics in sandbox'"]
+        
+        GateZero{"Zero-Issue Contradiction Check:<br/>DB returned 0 records but draft says 'Yes, available'?"}
+        RefineZero["Flagged: Absence Contradiction (Score: 0.2)<br/>recommended_action: 'refine_answer'<br/>Deterministic substitution of clean absence report"]
+    end
+
+    GateScope -->|"Mismatch Found"| FailScope
+    GateScope -->|"Pass"| GateNaN
+    GateNaN -->|"NaN Found"| FailNaN
+    GateNaN -->|"Pass"| GateZero
+    GateZero -->|"Contradiction Found"| RefineZero
+    GateZero -->|"Pass"| LLM_Critic
+
+    subgraph LLM_Critic ["2. Reflexive LLM-as-Judge Fact-Checking Critic"]
+        CriticPrompt["Reflexive Answer Verifier Prompt<br/>Audits Draft against Evidence Ground Truth"]
+        
+        Crit1["Dimension 1: Faithfulness & Groundedness<br/>Every factual claim must cite [Paper, Date, Page, Headline]"]
+        Crit2["Dimension 2: Anti-Fluff & Precision<br/>Strip corporate consulting filler & speculative prose"]
+        Crit3["Dimension 3: Archival Absence Fidelity<br/>No speculative inventing on unindexed dates"]
+        Crit4["Dimension 4: Quantitative Metric Accuracy<br/>Zero mathematical hallucination on averages/counts"]
+        
+        CriticPrompt --- Crit1 & Crit2 & Crit3 & Crit4
+        CriticPrompt --> CriticVerdict{"Critic Evaluation Verdict"}
+    end
+
+    subgraph VerifierRemediation ["3. Post-Evaluation Action & Remediation Pathways"]
+        ActionAccept["Action: 'accept'<br/>Quality Score >= 0.70<br/>Grounded, factual, citation-compliant"]
+        
+        ActionRefine["Action: 'refine_answer'<br/>Quality Score 0.40 - 0.69<br/>Draft contains minor fluff or ungrounded claims<br/>Replace draft with verified refined_answer"]
+        
+        ActionFallback["Action: 'fallback_to_dynamic_tool'<br/>Quality Score < 0.40<br/>Diagnostic evidence gap or calculation defect"]
+        
+        subgraph RollbackLoop ["4. LangGraph State Machine Rollback Loop"]
+            RollbackNode["LangGraph Dynamic Tool Recovery<br/>(1-Cycle State Machine Ceiling)<br/>Branch directly to execute_dynamic_code"]
+            ReCompute["Synthesize bespoke query in Subprocess Sandbox<br/>Inject verified metrics into evidence state"]
+            ReSynth["Re-Synthesize Final Grounded Brief<br/>(AnswerSynthesizer)"]
+        end
+    end
+
+    subgraph ClientDelivery ["5. Client Delivery Channel"]
+        SSEStream["FastAPI SSE Streaming Output (/api/query/stream)<br/>• Stage & Thought Events<br/>• Token-by-Token Markdown Stream<br/>• Interactive Broadsheet Citation Cards<br/>• High-Res Visual Asset Thumbnails (/api/photos/{id}/image)"]
+    end
+
+    CriticVerdict -->|"accept"| ActionAccept
+    CriticVerdict -->|"refine_answer"| ActionRefine
+    CriticVerdict -->|"fallback_to_dynamic_tool"| ActionFallback
+
+    FailScope & FailNaN --> ActionFallback
+    RefineZero --> ActionRefine
+
+    ActionAccept --> SSEStream
+    ActionRefine --> SSEStream
+
+    ActionFallback --> RollbackNode
+    RollbackNode --> ReCompute
+    ReCompute --> ReSynth
+    ReSynth --> SSEStream
+```
+
+---
+
+## 7. Closed-Loop Fallback Recovery & Self-Correction Mechanisms
+
+When an evidence gap, retrieval failure, or ungrounded synthesis is detected, NewsLens-AI does not terminate with an error or present speculative prose. It activates **four closed-loop fallback pathways** designed to improve the response iteratively:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -270,105 +399,70 @@ When an evidence gap, retrieval failure, or ungrounded synthesis is detected, Ne
 ├────────────────────┬─────────────────────────────┬─────────────────────────────────────┤
 │ Fallback Pathway   │ Triggering Condition        │ Iterative Self-Correction Applied   │
 ├────────────────────┼─────────────────────────────┼─────────────────────────────────────┤
-│ **Pathway 1:**     │ CRAG detects missing        │ • Relaxes narrow page & section filters│
-│ **Adaptive Static**│ newspaper or over-          │ • Broadens date ranges              │
-│ **Re-Planning**    │ constrained date bounds     │ • Dynamically scales top_k = max(8, k+4)│
-│                    │                             │ • Anti-repetition guard prevents dups│
+│ **Pathway 1:**     │ CRAG detects missing        │ • Relaxes narrow page & section     │
+│ **Adaptive Static**│ newspaper or over-          │   filters                           │
+│ **Re-Planning**    │ constrained date bounds     │ • Broadens date ranges              │
+│                    │                             │ • Dynamically scales                │
+│                    │                             │   top_k = max(8, k+4)               │
+│                    │                             │ • Anti-repetition guard prevents    │
+│                    │                             │   duplicate calls                   │
 ├────────────────────┼─────────────────────────────┼─────────────────────────────────────┤
-│ **Pathway 2:**     │ Query requires calculations │ • Injects validated context & schema │
-│ **Dynamic Tool**   │ or static tools return 0    │ • Synthesizes bespoke Python/SQL code│
-│ **Synthesis**      │ counts                      │ • ToolCritic audits 5 metrics (3x)   │
+│ **Pathway 2:**     │ Query requires calculations │ • Injects validated context & schema│
+│ **Dynamic Tool**   │ or static tools return 0    │ • Synthesizes bespoke Python/SQL    │
+│ **Synthesis**      │ counts                      │ • ToolCritic audits 5 metrics (3x)  │
+│                    │                             │ • Runs in AST Subprocess Sandbox    │
 ├────────────────────┼─────────────────────────────┼─────────────────────────────────────┤
-│ **Pathway 3:**     │ Answer Verifier catches     │ • Emits clean grounded answer without│
-│ **In-Flight Answer**│ availability contradiction  │   consulting fluff                   │
-│ **Refinement**     │ or speculative filler       │ • Injects accurate archive bounds    │
+│ **Pathway 3:**     │ Answer Verifier catches     │ • Emits clean grounded answer       │
+│ **In-Flight Answer**│ availability contradiction │   without consulting fluff          │
+│ **Refinement**     │ or speculative filler       │ • Injects accurate archive bounds   │
 ├────────────────────┼─────────────────────────────┼─────────────────────────────────────┤
 │ **Pathway 4:**     │ Inquiries outside broadsheet│ • 4-tier live news search cascade   │
-│ **External Web &** │ coverage dates or unindexed │ • NewsData.io ➔ Serper ➔ Tavily ➔ DDG│
-│ **Truthful Silence**│ archival absence            │ • Or authoritative Anti-Hallucination│
-│                    │                             │   Notice confirming archival silence │
+│ **External Web &** │ coverage dates or unindexed │ • NewsData.io ➔ Serper ➔ Tavily ➔   │
+│ **Truthful Silence**│ archival absence           │   DuckDuckGo                        │
+│                    │                             │ • Or authoritative Anti-            │
+│                    │                             │   Hallucination Notice confirming   │
+│                    │                             │   archival silence                  │
 └────────────────────┴─────────────────────────────┴─────────────────────────────────────┘
 ```
 
----
+### 7.1. Pathway 1: Adaptive Static Re-Planning (`replan_with_feedback_async`)
+When the CRAG Evaluator diagnoses a retrieval gap, it invokes `replan_with_feedback_async(query, gap_diagnosis, attempted_tools)`:
+1. **Filter Relaxation**: Strips narrow `page_filter` (e.g. `page="1"`) and `category_filter` constraints that caused retrieval starvation.
+2. **Dynamic Top-K Scaling**: Expands candidate retrieval window via `top_k = max(8, int(current_top_k) + 4)`.
+3. **Anti-Repetition Guard**: Inspects `attempted_tools`; if the LLM proposes the identical tool signature that already failed, the engine mutates arguments or switches strategies.
+4. **Strict Single-Cycle Ceiling**: Hard-capped at **1 recovery cycle** (`recovery_attempts < 1`) to preserve deterministic response times.
 
-### 4.1. Pathway 1: Adaptive Static Re-Planning (`replan_with_feedback_async`)
-Located in [`planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py):
+### 7.2. Pathway 2: Dynamic Tool Synthesis (ToolMaker & ToolCritic Loop)
+When analytical questions exceed static tools, or static queries return 0 counts for aggregate calculations:
+1. **Context & Schema Injection**: Injects `STATIC_BROADSHEET_SCHEMA` and pre-normalized context parameters (`available_dates`, `available_newspapers`).
+2. **AST Safety & Schema Audit**: `ToolCritic` checks SASC and SRF before code executes.
+3. **Sandboxed Subprocess**: Runs with 15s timeout, 512MB RAM ceiling, autocommit disabled, and unconditional `rollback()`.
+4. **Data-to-Summary Faithfulness**: Detects positive claims over 0 rows or unhandled `NaN` metrics.
+5. **Self-Correction Retry Loop**: Re-prompts the LLM with structured diagnostic critique up to 3 times before accepting evidence.
 
-When the CRAG Evaluator identifies an evidence deficiency, it invokes `replan_with_feedback_async(query, gap_diagnosis, attempted_tools)`.
+### 7.3. Pathway 3: In-Flight Answer Refinement
+If the synthesizer generates an answer containing ungrounded speculation or misrepresents a zero-issue audit as positive availability:
+1. **Absence Extraction**: Extracts verified date and publication scope directly from database metadata.
+2. **Deterministic Substitution**: Auto-replaces drafted hallucination with clean, authoritative text:
+   ```markdown
+   ### ⚡ Availability Status
+   No newspaper issues are available in the archive for 2026-04-28.
 
-#### Specific Improvements Applied:
-1. **Filter Relaxation**: If the initial plan failed because a `page_filter` (e.g. `page="1"`) or `category_filter` was too restrictive, the re-planner automatically strips the page and category constraints.
-2. **Dynamic Top-K Scaling**: Scaled via `top_k = max(8, int(current_top_k) + 4)`. If the initial attempt retrieved 6 chunks, the re-planned pass retrieves 10 chunks, expanding the candidate retrieval window.
-3. **Anti-Repetition Guard**: Checks the proposed tool call against `attempted_tools`. If the model attempts to emit the exact same tool and arguments that already failed, the re-planner mutates the arguments or substitutes an alternative retrieval strategy.
-4. **Strict Single-Cycle Ceiling**: Re-planning is strictly capped at **1 recovery cycle** (`recovery_attempts < 1`), ensuring predictable response latency.
+   ### 📋 Archive Scope & Available Coverage
+   * Available publications in the archive: The Goan, The Navhind Times, O Heraldo, The Times of India, Mint, The Hindu
+   * Archive coverage range: 2026-04-01 to 2026-08-31
+   ```
+3. **Transmission**: The clean refined answer is delivered to the client via SSE without consulting fluff.
 
----
-
-### 4.2. Pathway 2: Dynamic Tool Synthesis (ToolMaker & ToolCritic Loop)
-Located in [`tool_maker.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_maker.py) and [`tool_critic.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_critic.py):
-
-When an analytical question cannot be answered by static search, or when static counts return 0, the system triggers the **LLM-as-Tool-Maker** engine:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Graph as LangGraph Engine
-    participant Maker as ToolMaker
-    participant LLM as LLM Code Synthesizer
-    participant Sandbox as Subprocess Sandbox
-    participant Critic as ToolCritic
-
-    Graph->>Maker: generate_and_execute(query, context, gap_diagnosis)
-    Maker->>LLM: Prompt with STATIC_BROADSHEET_SCHEMA & Pre-Normalized Context
-    LLM-->>Maker: Synthesized Python Script
-    Maker->>Critic: Pre-Execution AST & Schema Audit (SASC, SRF)
-    
-    alt Schema Flaw Detected (e.g. Cartesian join or bad column)
-        Critic-->>Maker: Scorecard: Rejected (SRF=0.4, suggested_fixes=[...])
-        Maker->>LLM: Re-prompt with Diagnostic Critique & Fixes
-        LLM-->>Maker: Corrected Python Script
-    end
-
-    Maker->>Sandbox: Execute in Subprocess (15s, 512MB RAM, Read-Only DB)
-    Sandbox-->>Maker: Execution Result: {data: [...], metadata: {...}, summary: '...'}
-    
-    Maker->>Critic: Post-Execution Audit (REH, DSF, RPS)
-    alt Calculation Error or NaN
-        Critic-->>Maker: Scorecard: Rejected (DSF=0.0, NaN detected)
-        Maker->>LLM: Re-prompt with NaN Diagnostic Critique
-        LLM-->>Maker: Refined Script handling empty rows gracefully
-        Maker->>Sandbox: Re-execute in Subprocess
-        Sandbox-->>Maker: Verified Grounded Result
-    end
-
-    Critic-->>Maker: Scorecard: Accepted (Score >= 0.70)
-    Maker-->>Graph: Grounded Structured Evidence Items
-```
+### 7.4. Pathway 4: External Web Grounding & Truthful Silence
+When an inquiry falls outside historical broadsheet coverage:
+1. **Journalistic Web Search Cascade**: Queries accredited press agencies via NewsData.io, falling back to Google Search (Serper), Tavily, and DuckDuckGo, explicitly tagging results as `[Live Web Context]`.
+2. **Authoritative Anti-Hallucination Notice**: If both the archive and web return zero records, the engine outputs:
+   > *"No archival records or verified news reporting could be found for this inquiry within the broadsheet archive. The archive covers 2026-04-01 to 2026-08-31 across The Goan, The Navhind Times, O Heraldo, The Times of India, Mint, and The Hindu."*
 
 ---
 
-### 4.3. Pathway 3: In-Flight Answer Refinement
-Located in [`answer_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/answer_verifier.py):
-
-If the synthesis contains contradictions or speculative consulting fluff, the `AnswerVerifier` intervenes **before transmission**:
-- It extracts verified facts from the evidence metadata (such as the verified archival date range and active publications).
-- It synthesizes an authoritative `refined_answer` adhering strictly to verified broadsheet reality.
-- The raw drafted hallucination is discarded in memory, and the clean `refined_answer` is streamed to the user via SSE.
-
----
-
-### 4.4. Pathway 4: External Web Grounding & Truthful Silence
-Located in [`web_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/web_search.py) and [`synthesizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/synthesizer.py):
-
-When a user query refers to events completely outside the archive (e.g. inquiring about 2024 when the archive covers 2026), the system executes a dual response:
-1. **Accredited Web Search**: Queries NewsData.io and Google Search (Serper) to obtain external grounding, tagging all results explicitly as `[Live Web Context]`.
-2. **Authoritative Anti-Hallucination Notice**: If both the broadsheet archive and external search find no verified records, the system displays an authoritative notice:
-   > *"No archival records or verified news reporting could be found for this inquiry within the broadsheet archive. The archive covers [Start Date] to [End Date] across [List of Newspapers]."*
-
----
-
-## 5. Verification Matrix & Quality Guarantees
+## 8. Verification Matrix & Quality Guarantees
 
 | Metric / Requirement | Target Standard | Enforcement Engine | Failure Recovery Action |
 |---|---|---|---|
@@ -378,3 +472,7 @@ When a user query refers to events completely outside the archive (e.g. inquirin
 | **Mathematical Soundness** | Zero `NaN` or unhandled errors | `ToolCritic` & `AnswerVerifier` | Flags `NaN` in summaries; triggers code re-synthesis with empty dataset handling. |
 | **Broadsheet Citations** | Minimum 1 Citation per Claim | `AnswerSynthesizer` | Enforces format `[Newspaper, YYYY-MM-DD, Page N, "Headline"]` with thumbnail cards. |
 | **Execution Latency Cap** | Fast Path < 5ms, Re-plan < 1 Cycle | `EvidenceEvaluator` fast-floor & LangGraph state machine | Fast-floor bypass skips LLM evaluators on clear high-confidence hits. |
+
+---
+
+*End of NewsLens-AI Hallucination Prevention, Multi-Stage Evaluation & Corrective RAG (CRAG) Specification.*
