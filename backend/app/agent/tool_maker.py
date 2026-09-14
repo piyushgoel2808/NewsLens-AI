@@ -79,6 +79,9 @@ async def analyze(db, query: str, context: dict) -> dict:
 11. **Category Relational Schema**: The `articles` table has NO `category` column! It only contains `category_id (INT FK -> article_categories.id)`. To query or group by category, ALWAYS join: `JOIN article_categories c ON a.category_id = c.id` and select `c.name AS category_name`. NEVER write `articles.category` or `a.category`.
 12. **Advertisements Schema**: Advertisements and commercial notices are stored as records in the `articles` table with `article_type = 'advertisement'` or in section `'Advertisements & Notices'`. Do NOT query `photos` for advertisements (`photos.visual_type` is `'photo'`, not `'ad'`). Full-page advertisement wraps are also flagged on `pages.is_advertisement_page = 1`.
 13. **Variable Naming & SQLAlchemy text() Safety**: NEVER name a variable `text = ...`! Assigning to a variable named `text` shadows `from sqlalchemy import text` and causes a fatal Python `UnboundLocalError`. Always use `snippet`, `content`, `article_text`, or `row_text` for string content.
+14. **Pre-Normalized Context Parameters**: The `context` dictionary may contain pre-normalized keys: `context.get('target_date')` ('YYYY-MM-DD' ISO format), `context.get('newspaper_name')`, `context.get('date_from')`, `context.get('date_to')`, and `context.get('category')`. ALWAYS check and prioritize these values over attempting to regex-parse dates or newspaper names from `query`. Note that `context.get('target_date')` is ALREADY in standard MySQL 'YYYY-MM-DD' format; do NOT parse it with `strptime('%m/%d/%Y')`.
+15. **Zero-Division & Strict No-NaN Safety**: NEVER return `NaN`, `nan`, or `null` in your summary or metadata! Before calculating `.mean()`, `.std()`, correlations, or averages, verify that rows exist (`if not rows:` or `if df.empty:`). If 0 rows match, explicitly return `{'summary': 'No matching records found in the archive...', 'data': [], 'metadata': {'count': 0}}`. Never output `nan` or `NaN` for any metric.
+16. **Pandas Filtering Safety**: SQL `WHERE` clauses already filter by date and newspaper. NEVER do `df['newspaper_name'] == np_pattern` in pandas if `np_pattern` contains SQL wildcards (`%`) like `'%Goan%'`, as literal equality will evaluate to False and filter out all rows. If doing optional post-filtering in pandas, use `.str.contains(clean_np, case=False, na=False)` without SQL wildcards.
 
 ### FEW-SHOT EXAMPLES
 
@@ -245,25 +248,30 @@ async def analyze(db, query: str, context: dict) -> dict:
         LIMIT 5
     \"\"\")
 
-    # Extract date if present (e.g. 2/8/2026 -> 2026-08-02 or YYYY-MM-DD)
-    date_match = re.search(r"(\\b\\d{4}-\\d{1,2}-\\d{1,2}\\b)", query)
-    target_dt = None
-    if date_match:
-        target_dt = date_match.group(1)
-    else:
-        dmy_match = re.search(r"(\\b\\d{1,2})[/.-](\\d{1,2})[/.-](\\d{4})\\b", query)
-        if dmy_match:
-            d, m, y = dmy_match.groups()
-            target_dt = f"{y}-{int(m):02d}-{int(d):02d}"
+    # Prioritize pre-normalized context parameters over query regex parsing
+    target_dt = context.get("target_date")
+    if not target_dt:
+        date_match = re.search(r"(\b\d{4}-\d{1,2}-\d{1,2}\b)", query)
+        if date_match:
+            target_dt = date_match.group(1)
+        else:
+            dmy_match = re.search(r"(\b\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b", query)
+            if dmy_match:
+                d, m, y = dmy_match.groups()
+                target_dt = f"{y}-{int(m):02d}-{int(d):02d}"
 
-    # Extract newspaper pattern
-    np_pattern = "%Goan%" if "goan" in query.lower() else (
-        "%Hindustan Times%" if "hindustan" in query.lower() or "ht" in query.lower() else (
-            "%Navhind%" if "navhind" in query.lower() else (
-                "%Herald%" if "herald" in query.lower() else "%"
+    newspaper_name = context.get("newspaper_name")
+    if newspaper_name:
+        clean_np = newspaper_name.replace("The ", "").strip()
+        np_pattern = f"%{clean_np}%"
+    else:
+        np_pattern = "%Goan%" if "goan" in query.lower() else (
+            "%Hindustan Times%" if "hindustan" in query.lower() or "ht" in query.lower() else (
+                "%Navhind%" if "navhind" in query.lower() else (
+                    "%Herald%" if "herald" in query.lower() else "%"
+                )
             )
         )
-    )
 
     res = await db.execute(stmt, {
         "np_name": np_pattern if np_pattern != "%" else None,
@@ -338,15 +346,25 @@ def normalize_dynamic_output(
     summary_text = output.get("summary") or ""
     metadata = output.get("metadata") or {}
 
+    # Sanitize NaN values from metadata
+    clean_metadata: dict[str, Any] = {}
+    for k, v in metadata.items():
+        if isinstance(v, float) and (v != v or str(v).lower() == "nan"):
+            clean_metadata[k] = 0.0
+        elif isinstance(v, str) and v.lower() == "nan":
+            clean_metadata[k] = "0"
+        else:
+            clean_metadata[k] = v
+
     # 1. Primary Structural Evidence Item (Summary)
     if summary_text:
-        target_np = str(metadata.get("newspaper_name") or "Archive Analytics")
+        target_np = str(clean_metadata.get("newspaper_name") or "Archive Analytics")
         evidence_items.append({
             "article_id": 0,
             "issue_id": 0,
             "headline": f"Analytical Computation: {query[:60]}",
             "newspaper_name": target_np,
-            "issue_date": str(metadata.get("issue_date") or ""),
+            "issue_date": str(clean_metadata.get("issue_date") or ""),
             "page_number": 0,
             "pages": [],
             "snippet": summary_text,
@@ -354,7 +372,7 @@ def normalize_dynamic_output(
             "source_tool": "dynamic_analysis",
             "is_statistical_metric": True,
             "is_article": False,
-            "metadata": metadata,
+            "metadata": clean_metadata,
         })
 
     # 2. Supporting Individual Article Records

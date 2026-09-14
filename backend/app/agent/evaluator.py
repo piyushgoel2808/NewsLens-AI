@@ -40,7 +40,9 @@ _QUANT_QUERY_PATTERN = re.compile(
 
 _ANALYTICAL_QUERY_PATTERN = re.compile(
     r"\b(correlation|regression|variance|standard deviation|percentile|median word count|"
-    r"histogram|distribution of word|distribution of|moving average|pearson|spearman|gini)\b",
+    r"histogram|distribution of word|distribution of|moving average|pearson|spearman|gini|"
+    r"avg length|average length|average word count|avg word count|length of articles|word count statistics|"
+    r"longest article|shortest article|article length|article word count)\b",
     re.IGNORECASE,
 )
 
@@ -73,7 +75,12 @@ def _has_quantitative_payload(evidence: list[dict[str, Any]]) -> bool:
     for item in evidence:
         meta = item.get("metadata")
         if meta and isinstance(meta, dict):
-            if any(isinstance(v, (int, float, dict, list)) and bool(v) for v in meta.values()):
+            if any(
+                isinstance(v, (int, float, dict, list))
+                and bool(v)
+                and not (isinstance(v, float) and (v != v or str(v).lower() == "nan"))
+                for v in meta.values()
+            ):
                 return True
         snip = item.get("snippet") or item.get("summary") or ""
         # Check for Markdown table
@@ -163,7 +170,14 @@ def is_structural_or_relevant_evidence(
     """
     snip = str(item.get("snippet") or "")
     hl = str(item.get("headline") or "")
-    if snip.startswith("⚠️") or "Issue Summary Error:" in hl or "error" in hl.lower() or "error" in snip.lower():
+    if (
+        snip.startswith("⚠️")
+        or "Issue Summary Error:" in hl
+        or "error" in hl.lower()
+        or "error" in snip.lower()
+        or bool(re.search(r"\b(?:nan|null)\s*(?:words?|articles?|issues?|pages?|%|\b)", snip, re.I))
+        or "is nan" in snip.lower()
+    ):
         return False
 
     if target_date:
@@ -250,13 +264,15 @@ class EvidenceEvaluator:
             if not str(item.get("snippet") or "").startswith("⚠️")
             and "Issue Summary Error:" not in str(item.get("headline") or "")
             and not ("error" in str(item.get("headline") or "").lower() and item.get("article_id") == 0)
+            and not bool(re.search(r"\b(?:nan|null)\s*(?:words?|articles?|issues?|pages?|%|\b)", str(item.get("snippet") or ""), re.I))
+            and "is nan" not in str(item.get("snippet") or "").lower()
         ]
         if not valid_evidence or not any(len((item.get("snippet") or item.get("summary") or "").strip()) >= 20 for item in valid_evidence):
             gap_type = "tool_execution_error_gap" if evidence else "empty_retrieval"
             return EvaluationVerdict(
                 is_sufficient=False,
                 quality_score=0.0,
-                gap_reason="Static retrieval returned 0 grounded evidence records or encountered tool execution errors.",
+                gap_reason="Static retrieval returned 0 grounded evidence records, encountered tool execution errors, or returned invalid NaN calculations.",
                 detected_gaps=[gap_type],
                 recommended_action="synthesize_dynamic_tool" if (is_analytical or is_quant_query) else "replan_static_tools",
             )

@@ -53,6 +53,26 @@ from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
 
+
+def is_dynamic_analysis_permitted(query: str) -> bool:
+    """Verify whether dynamic_analysis is appropriate for this query.
+
+    Dynamic analysis is permitted for ANY query requiring calculations, aggregations,
+    averages, lengths, word counts, distributions, metrics, or statistical analysis across broadsheet tables.
+    It is ONLY disallowed when the query is purely an article reading/summarization request where word
+    count refers to an answer length constraint (e.g. 'summarize the article in 100 words' or 'explain in 2 sentences').
+    """
+    q_low = query.lower()
+    is_answer_length_constraint = bool(
+        re.search(
+            r"\b(?:summarize|summary|overview|explain|tell me about|write an essay|in brief)\b"
+            r".*\b(?:in|under|around|within|less than)\s+\d+\s+(?:words|sentences|paragraphs)\b",
+            q_low,
+        )
+    )
+    return not is_answer_length_constraint
+
+
 # ---------------------------------------------------------------------------
 # Planner System Prompt
 # ---------------------------------------------------------------------------
@@ -61,34 +81,44 @@ PLANNER_SYSTEM_PROMPT = """You are the expert Query Planner for NewsLens-AI, an 
 Analyze the user's query, understand their underlying intent, produce step-by-step reasoning, and directly schedule the optimal ordered sequence of 1 to 3 tool calls.
 
 ### 🛠️ AVAILABLE RETRIEVAL TOOLS
-1. `sql_analytics`: Relational system of record.
+1. `sql_analytics`: Relational system of record for FIXED, PREDEFINED queries.
    - Arguments: {"analysis_type": "issue_summary" | "count_articles" | "count_advertisements" | "count_photos" | "count_issues" | "coverage_difference" | "shared_coverage", "newspaper_name": str, "comparison_newspaper": str, "issue_date": "YYYY-MM-DD", "date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "category_filter": str, "page_filter": str, "query": str}
-   - Use for: Catalogs, section manifests, whole issue overviews, article counts, advertisement/ad counts, photo counts, issue counts, cross-newspaper article differences, or shared/similar wire coverage between two newspapers.
-   - For listing distinct newspapers, checking availability of newspapers across a month or date range, or counting issues across publications (e.g. 'LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN SEPTEMBER 2026', 'which newspapers are available in August'): use "analysis_type": "count_issues" with date_from/date_to (do NOT set newspaper_name unless a specific publication was requested).
-2. `hybrid_search`: Dense vector + BM25 keyword search for factual answers, quotes, and specific events.
+   - Supported predefined routines:
+     * `count_issues`: issue availability & issue counts (e.g. 'LIST DISTINCT NEWSPAPER NAMES IN SEPTEMBER 2026', 'is any newspaper available on 28/04/2026').
+     * `count_articles`: total number of articles.
+     * `count_advertisements`: total number of advertisements.
+     * `count_photos`: total number of photos.
+     * `issue_summary`: section catalog / manifest of a single broadsheet issue.
+     * `coverage_difference`: exclusive articles published in one newspaper but not another.
+     * `shared_coverage`: shared wire/syndicated stories published across two newspapers.
+   - IMPORTANT RESTRICTION: `sql_analytics` only executes these 7 exact routines. It CANNOT compute averages, word count lengths, distributions, custom groupings, or arbitrary ad-hoc calculations.
+2. `dynamic_analysis`: LLM-synthesized custom Python & SQL analysis engine.
+   - Arguments: {"query": str, "analysis_description": str}
+   - Use for ANY question requiring custom aggregations, averages, word counts / article lengths, distributions, ratios, author stats, or statistical analyses across database tables (e.g. 'WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026', 'average word count of editorials', 'distribution of articles by section', 'Pearson correlation between daily volumes').
+   - CRITICAL RESTRICTION: NEVER schedule dynamic_analysis for text summarization, reading articles, or narrative questions (e.g. 'summarize article in 100 words' uses `hybrid_search`, where length constraint refers to the answer length, not database analytics).
+3. `hybrid_search`: Dense vector + BM25 keyword search for factual answers, quotes, and specific events.
    - Arguments: {"query": str, "newspaper_name": str, "date_from": str, "date_to": str, "page_filter": str, "category_filter": str, "top_k": int}
    - Use for: Point-in-time facts, quotes, event details, or targeted content.
-3. `timeline_builder`: Chronological evolution and milestone articles.
+4. `timeline_builder`: Chronological evolution and milestone articles.
    - Arguments: {"query": str, "limit": int}
    - Use for: Evolution over time, trajectories, and multi-date developments.
-4. `entity_search`: Multi-hop entity network search and profiles.
+5. `entity_search`: Multi-hop entity network search and profiles.
    - Arguments: {"entity_name": str, "top_k": int}
    - Use for: Deep profiles of specific people or corporations.
-5. `coverage_analysis`: Unreported news and negative coverage audit.
+6. `coverage_analysis`: Unreported news and negative coverage audit.
    - Arguments: {"query": str, "target_date": str}
    - Use for: Identifying what a newspaper omitted or missed across the archive.
-6. `web_search`: Live internet search.
+7. `web_search`: Live internet search.
    - Arguments: {"query": str, "num_results": int}
    - Use for: Real-time current events outside the archive.
-7. `inspect_visual_asset`: Deep multimodal visual inspection, numerical table extraction, and chart axis reading from broadsheet visual crops.
+8. `inspect_visual_asset`: Deep multimodal visual inspection, numerical table extraction, and chart axis reading from broadsheet visual crops.
    - Arguments: {"photo_id": int, "article_id": int, "query": str, "newspaper_name": str, "issue_date": str, "page_filter": str}
    - Use for: Extracting specific numbers, data tables, infographic graphics, charts, and captions from an attached, cited, or inquired broadsheet visual asset, or checking if an article/page has infographics or graphs.
-8. `dynamic_analysis`: LLM-synthesized custom Python analysis engine for complex statistical and analytical computations.
-   - Arguments: {"query": str, "analysis_description": str}
-   - Use ONLY when existing tools cannot answer the question: custom statistical aggregations (mean, median, variance, standard deviation, percentile), mathematical correlations (Pearson/Spearman correlation between publications), regression/trend line computation, or custom pivots not supported by `sql_analytics`.
-   - CRITICAL RESTRICTION: NEVER schedule dynamic_analysis for text summarization, explanation, or length constraints (e.g. 'summarize in 100 words', 'explain in 2 paragraphs', 'brief overview'). dynamic_analysis is STRICTLY for database SQL queries and statistical calculations across database tables. Summarization length and brevity are handled exclusively by the Answer Synthesizer.
 
 ### 📚 FEW-SHOT EXAMPLES
+Query: "WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026"
+Output: {"thought_process": "Calculating the average article length or word count requires database aggregation beyond the fixed count tools in sql_analytics. Schedule dynamic_analysis.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026", "analysis_description": "Compute the average article length and word count distribution in The Goan on 2026-08-01"}, "purpose": "Synthesize and execute dynamic Python/SQL tool to calculate average article length"}]}
+
 Query: "LIST DISTINCT NEWSPAPER NAMES AVAILABLE IN SEPTEMBER 2026"
 Output: {"thought_process": "User is requesting a roster of distinct newspapers available across September 2026. Schedule sql_analytics count_issues across the September date range without publication constraints.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues", "date_from": "2026-09-01", "date_to": "2026-09-30"}, "purpose": "Retrieve distinct newspapers and issue counts in September 2026"}]}
 
@@ -795,16 +825,9 @@ class QueryPlanner:
         # Guardrail: If inspect_visual_asset was emitted for non-visual text query, strip it
         if not is_visual_query and not (attached_photo_id and any(w in q_lower for w in ["see", "look", "what is", "shown", "attached"])):
             tool_calls = [t for t in tool_calls if t.tool_name != "inspect_visual_asset"]
-        # Guardrail: dynamic_analysis is ONLY permitted for queries with genuine analytical/statistical intent
-        has_analytical_intent = any(
-            w in q_lower
-            for w in [
-                "correlation", "regression", "variance", "standard deviation",
-                "percentile", "median word count", "histogram", "distribution of word",
-                "distribution of", "moving average", "pearson", "spearman", "gini",
-            ]
-        )
-        if not has_analytical_intent:
+        # Guardrail: dynamic_analysis is for database calculations, aggregations, averages, and statistics.
+        # Only strip it if the query was a narrative reading/summarization request with an answer length constraint.
+        if not is_dynamic_analysis_permitted(query):
             tool_calls = [t for t in tool_calls if t.tool_name != "dynamic_analysis"]
 
         if not any(t.tool_name in ("hybrid_search", "sql_analytics", "dynamic_analysis", "timeline", "entity_search") for t in tool_calls):
@@ -931,14 +954,7 @@ class QueryPlanner:
         except Exception as e:
             logger.warning("Could not resolve providers for replanner", extra={"error": str(e)})
 
-        has_analytical_intent = any(
-            w in q_lower
-            for w in [
-                "correlation", "regression", "variance", "standard deviation",
-                "percentile", "median word count", "histogram", "distribution of word",
-                "distribution of", "moving average", "pearson", "spearman", "gini",
-            ]
-        )
+        is_dyn_allowed = is_dynamic_analysis_permitted(query)
 
         planned_calls: list[PlannedToolCall] = []
         archetype = "factual_lookup"
@@ -966,8 +982,8 @@ class QueryPlanner:
                         t_name = rc.get("tool_name", "")
                         if not t_name:
                             continue
-                        # Never allow dynamic_analysis unless analytical intent is present
-                        if t_name == "dynamic_analysis" and not has_analytical_intent:
+                        # Never allow dynamic_analysis if query was a narrative reading length constraint
+                        if t_name == "dynamic_analysis" and not is_dyn_allowed:
                             continue
 
                         raw_args = rc.get("arguments", {})
@@ -1153,11 +1169,20 @@ class QueryPlanner:
             tool_calls.append(build_hybrid_search_tool(query=query, top_k=8, purpose="Semantic context"))
 
         # 3. Analytical Computation / Statistical Analysis (Dynamic Tool)
-        elif any(w in q_lower for w in [
-            "correlation", "regression", "variance", "standard deviation",
-            "percentile", "median word count", "histogram", "distribution of word",
-            "moving average", "pearson", "spearman", "gini coefficient",
-        ]):
+        elif (
+            any(
+                re.search(pat, q_lower)
+                for pat in [
+                    r"\b(?:avg|average|mean|median)\b",
+                    r"\b(?:length|word count|word length|longest|shortest)\s+of\s+articles?\b",
+                    r"\b(?:article\s+length|article\s+word\s+count)\b",
+                    r"\b(?:correlation|regression|variance|standard deviation|percentile|quantile|histogram|moving average|pearson|spearman|gini)\b",
+                    r"\b(?:distribution of\s+(?:words?|lengths?|sizes?)|word count distribution|length distribution)\b",
+                    r"\b(?:ratio of\s+.*to|proportion of\s+.*to)\b",
+                ]
+            )
+            and is_dynamic_analysis_permitted(query)
+        ):
             archetype = "analytical_computation"
             tool_calls.append(build_dynamic_analysis_tool(
                 query=query,
@@ -1371,4 +1396,5 @@ __all__ = [
     "_build_targeted_web_query",
     "resolve_tool_sequence",
     "build_heuristic_answer_blueprint",
+    "is_dynamic_analysis_permitted",
 ]

@@ -213,3 +213,33 @@ def test_answer_verifier_catches_publication_scope_mismatch():
     assert res.recommended_action == "fallback_to_dynamic_tool"
     assert "Publication scope mismatch" in res.critique
 
+
+def test_answer_verifier_catches_nan_in_draft_answer():
+    """Verify that AnswerVerifier detects 'nan words' in draft answers and routes to dynamic fallback."""
+    verifier = AnswerVerifier()
+    query = "WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026"
+    draft = (
+        "⚡ EXECUTIVE SUMMARY: QUANTITATIVE ANALYSIS OF ARTICLE LENGTH IN THE GOAN ON 2026-08-01\n"
+        "The query seeks to analyze the average article length in The Goan on 2026-08-01.\n"
+        "Average Article Length in The Goan on 2026-08-01: nan words\n"
+        "The average article length in The Goan on 2026-08-01 is nan words, indicating a consistent trend in article length."
+    )
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Analytical Computation: WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DAT",
+            "newspaper_name": "Archive Analytics",
+            "issue_date": "2026-08-01",
+            "snippet": "The average article length in The Goan on 2026-08-01 is nan words.",
+            "source_tool": "dynamic_analysis",
+        }
+    ]
+
+    res = verifier._fast_groundedness_check(draft_answer=draft, evidence_items=evidence, query=query)
+    assert res is not None
+    assert res.is_valid is False
+    assert res.evidence_gap_detected is True
+    assert res.recommended_action == "fallback_to_dynamic_tool"
+    assert "nan" in res.critique.lower()
+
+

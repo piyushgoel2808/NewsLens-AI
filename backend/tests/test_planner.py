@@ -827,6 +827,31 @@ class TestAgentWorkflowToolExecution:
         assert "### ⚡ Availability Status" in sec_titles
         assert "### 📋 Archive Scope & Available Coverage" in sec_titles
 
+    def test_is_dynamic_analysis_permitted_allows_computations_blocks_answer_length(self) -> None:
+        """Verify is_dynamic_analysis_permitted permits analytical questions and blocks text summary word limits."""
+        from app.agent.planner import is_dynamic_analysis_permitted
+
+        assert is_dynamic_analysis_permitted("WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026") is True
+        assert is_dynamic_analysis_permitted("average word count of editorials in Hindustan Times") is True
+        assert is_dynamic_analysis_permitted("distribution of articles by category across all issues") is True
+        assert is_dynamic_analysis_permitted("Pearson correlation between daily article counts") is True
+
+        # Pure text summarization with answer length limit
+        assert is_dynamic_analysis_permitted("summarize the article about Tata in 100 words") is False
+        assert is_dynamic_analysis_permitted("explain the Supreme Court verdict in 2 sentences") is False
+
+    def test_plan_query_heuristic_routes_average_length_to_dynamic_analysis(self) -> None:
+        """Verify heuristic planner routes average article length query to dynamic_analysis."""
+        planner = QueryPlanner()
+        query = "WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026"
+        res = planner._plan_query_heuristic(query)
+
+        assert res.archetype == "analytical_computation"
+        dyn_call = next((t for t in res.tool_calls if t.tool_name == "dynamic_analysis"), None)
+        assert dyn_call is not None
+        assert "avg length" in dyn_call.arguments.get("query", "").lower()
+
+
 
 
 

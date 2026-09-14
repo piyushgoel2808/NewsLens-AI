@@ -458,6 +458,19 @@ class AgentWorkflow:
             context["available_dates"] = list(meta.get("available_dates", {}).keys())
             context["categories"] = meta.get("categories", [])
 
+        # Inject pre-normalized parameters from extracted state
+        extracted = state.get("extracted_params") or {}
+        if extracted.get("issue_date"):
+            context["target_date"] = extracted["issue_date"]
+        if extracted.get("newspaper_name"):
+            context["newspaper_name"] = extracted["newspaper_name"]
+        if extracted.get("date_from"):
+            context["date_from"] = extracted["date_from"]
+        if extracted.get("date_to"):
+            context["date_to"] = extracted["date_to"]
+        if extracted.get("category_filter"):
+            context["category"] = extracted["category_filter"]
+
         dyn_res = await self._tool_maker.generate_and_execute(
             query=state.get("query", ""),
             context=context,

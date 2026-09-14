@@ -178,6 +178,21 @@ class AnswerVerifier:
                             dynamic_tool_hint=f"Execute dynamic SQL query across all publications for {query}.",
                         )
 
+        # 2. Check for NaN in draft answer (e.g. "nan words", "is nan", "nan %")
+        nan_match = re.search(r"(?i)\b(?:nan|null)\s*(?:words?|articles?|issues?|pages?|%|\b)", draft_answer)
+        if nan_match or re.search(r"(?i)\bis\s+nan\b", draft_answer):
+            return AnswerVerificationResult(
+                is_valid=False,
+                has_hallucination=True,
+                has_contradiction=True,
+                evidence_gap_detected=True,
+                quality_score=0.1,
+                factual_errors=["Draft answer contains ungrounded NaN computation. Critical calculation failure."],
+                critique="Draft answer reports 'nan' (Not a Number) for calculated metric. Fallback to dynamic database tool required.",
+                recommended_action="fallback_to_dynamic_tool",
+                dynamic_tool_hint=f"Execute dynamic Python/SQL query to compute grounded metrics for {query}.",
+            )
+
         zero_issue_record = None
         for it in evidence_items:
             meta = it.get("metadata") or {}

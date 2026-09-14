@@ -1765,6 +1765,7 @@ class ToolExecutor:
             return [], 0
 
         query = args.get("query") or state.get("query", "")
+        extracted = state.get("extracted_params") or {}
         context: dict[str, Any] = {
             "available_newspapers": [],
             "available_dates": [],
@@ -1776,11 +1777,31 @@ class ToolExecutor:
             context["available_dates"] = list(meta.get("available_dates", {}).keys())
             context["categories"] = meta.get("categories", [])
 
+        # Inject pre-normalized parameters so ToolMaker directly receives validated context
+        target_date = args.get("issue_date") or extracted.get("issue_date")
+        target_np = args.get("newspaper_name") or extracted.get("newspaper_name")
+        date_from = args.get("date_from") or extracted.get("date_from")
+        date_to = args.get("date_to") or extracted.get("date_to")
+        category = args.get("category_filter") or extracted.get("category_filter")
+
+        if target_date:
+            context["target_date"] = target_date
+        if target_np:
+            context["newspaper_name"] = target_np
+        if date_from:
+            context["date_from"] = date_from
+        if date_to:
+            context["date_to"] = date_to
+        if category:
+            context["category"] = category
+
         model_override = state.get("model_override")
         res = await self._tool_maker.generate_and_execute(
             query=query,
             context=context,
             model_override=model_override,
+            attempted_tools=state.get("tool_executions", []),
+            gap_diagnosis=state.get("gap_diagnosis"),
         )
 
         if res.success:

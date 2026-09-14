@@ -286,3 +286,24 @@ def test_tool_critic_dsf_allows_aggregate_markdown_table_with_empty_article_data
     assert len(scorecard.suggested_fixes) == 0
     assert scorecard.critique == ""
 
+
+def test_tool_critic_rejects_nan_metric_and_demands_repair():
+    """Verify ToolCritic detects NaN/nan in summary or metadata, rejects output, and provides actionable repair advice."""
+    critic = ToolCritic()
+    nan_output = {
+        "summary": "The average article length in The Goan on 2026-08-01 is nan words.",
+        "data": [],
+        "metadata": {"avg_word_count": float("nan")},
+    }
+    scorecard = critic.evaluate(
+        code="async def analyze(db, query, context): return {}",
+        raw_output=nan_output,
+        query="WHAT IS THE AVG LENGTH OF ARTICLES IN NEWSPAPER THE GOAN DATED 1/8/2026",
+        context={"available_newspapers": ["The Goan"], "available_dates": ["2026-08-01"]},
+    )
+    assert scorecard.is_acceptable is False
+    assert scorecard.dsf_score == 0.0
+    assert any("NaN" in issue for issue in scorecard.critique.split("\n"))
+    assert any("pre-normalized context" in fix for fix in scorecard.suggested_fixes)
+
+

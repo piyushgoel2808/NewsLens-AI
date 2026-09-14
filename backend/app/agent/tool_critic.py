@@ -278,7 +278,26 @@ class ToolCritic:
 
             return 0.9, [], []
 
-        # 2. When data or aggregate computation is present: check numerical consistency
+        # 2. Check for NaN / null in summary or metadata (computational failure or empty dataset)
+        summary_has_nan = bool(
+            re.search(r"\b(?:nan|null)\s*(?:words?|articles?|issues?|pages?|%|\b)", summary_lower)
+            or "is nan" in summary_lower
+        )
+        metadata_has_nan = any(
+            (isinstance(v, float) and (v != v or str(v).lower() == "nan"))
+            or (isinstance(v, str) and v.lower() in ("nan", "null"))
+            for v in metadata.values()
+        )
+        if summary_has_nan or metadata_has_nan:
+            issues.append("Calculation produced NaN (Not a Number) or null values in summary or metadata metrics.")
+            fixes.append(
+                "Verify SQL WHERE clauses and table joins against schema. Check that rows exist before computing statistics "
+                "(e.g. df['col'].mean() on empty DataFrame yields NaN). Use pre-normalized context parameters "
+                "(context.get('target_date'), context.get('newspaper_name')) and handle empty results gracefully."
+            )
+            return 0.0, issues, fixes
+
+        # 3. When data or aggregate computation is present: check numerical consistency
         # Extract numbers in metadata vs summary
         penalties = 0.0
         for k, v in metadata.items():
@@ -325,23 +344,36 @@ class ToolCritic:
         dmy_match = re.search(r"(\b\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b", query)
         if dmy_match:
             d, m, y = dmy_match.groups()
-            expected_iso = f"{y}-{int(m):02d}-{int(d):02d}"
-            # Check if code didn't convert to ISO
-            if expected_iso not in code:
+            expected_iso = context.get("target_date") or f"{y}-{int(m):02d}-{int(d):02d}"
+            normalizes_date = (
+                expected_iso in code
+                or (("target_date" in code or "date_from" in code) and "context" in code)
+                or ("int(m)" in code or "strftime" in code or "strptime" in code)
+            )
+            # Check if code didn't convert to ISO or use normalized date
+            if (dmy_match.group(0) in code and not normalizes_date) or (not normalizes_date and expected_iso not in code):
                 issues.append(f"Date formatting mismatch: Query mentions date '{dmy_match.group(0)}' which was not normalized to ISO '{expected_iso}'.")
-                fixes.append(f"Convert input date '{dmy_match.group(0)}' to MySQL DATE format '{expected_iso}'.")
+                fixes.append(f"Convert input date '{dmy_match.group(0)}' to MySQL DATE format '{expected_iso}' or use `context.get('target_date')` directly.")
                 return 0.3, issues, fixes
+
+        # Check for pandas comparison against SQL wildcards
+        if re.search(r'==\s*np_pattern|\.str\.lower\(\)\s*==\s*.*pattern', code):
+            issues.append("Pandas wildcard comparison defect: Code compares a pandas DataFrame column directly against a pattern containing SQL wildcards '%', resulting in 0 matching rows.")
+            fixes.append("Remove redundant pandas equality filtering on wildcard patterns, or use `df[col].str.contains(clean_name, case=False, na=False)` without '%' signs.")
+            return 0.3, issues, fixes
 
         # Check newspaper name matching
         # e.g. user says 'goan', code searches '= 'Goan'' instead of 'The Goan' or LIKE '%Goan%'
-        for np in available_newspapers:
-            clean_np = np.lower().replace("the ", "").strip()
-            if clean_np in query.lower():
-                # Verify if code does exact match with wrong case or missing 'The '
-                if f"'{clean_np}'" in code or f'"{clean_np}"' in code:
-                    issues.append(f"Newspaper naming mismatch: Searched for '{clean_np}' but database record is '{np}'.")
-                    fixes.append(f"Use `LOWER(n.name) LIKE '%{clean_np}%'` or exact match '{np}'.")
-                    return 0.4, issues, fixes
+        uses_context_np = "newspaper_name" in code and "context" in code
+        if not uses_context_np:
+            for np in available_newspapers:
+                clean_np = np.lower().replace("the ", "").strip()
+                if clean_np in query.lower():
+                    # Verify if code does exact match with wrong case or missing 'The '
+                    if f"'{clean_np}'" in code or f'"{clean_np}"' in code:
+                        issues.append(f"Newspaper naming mismatch: Searched for '{clean_np}' but database record is '{np}'.")
+                        fixes.append(f"Use `LOWER(n.name) LIKE '%{clean_np}%'` or exact match '{np}'.")
+                        return 0.4, issues, fixes
 
         # If available dates exist and user asked for date out of bounds
         if available_dates:
