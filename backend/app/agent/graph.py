@@ -10,6 +10,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.archive_context import get_archive_and_schema_context
 from app.agent.condenser import (
     CLEAN_SESSION_CLARIFICATION_MESSAGE,
     condense_conversational_query,
@@ -249,16 +250,7 @@ class AgentWorkflow:
             attached_asset=attached_asset,
         )
 
-        archive_context_str: str | None = None
-        try:
-            meta = await self._sql_analytics.get_archive_metadata()
-            available_dates = meta.get("available_dates", {})
-            if available_dates:
-                dates_info = [f"- {dt}: {', '.join(nps)}" for dt, nps in list(available_dates.items())[:10]]
-                cats_info = ", ".join(meta.get("categories", []))
-                archive_context_str = "Available Issues:\n" + "\n".join(dates_info) + f"\nCanonical Categories: {cats_info}"
-        except Exception as e:
-            logger.warning("Failed to fetch archive metadata for planner", extra={"error": str(e)})
+        archive_context_str = await get_archive_and_schema_context(self._session_factory)
 
         # Only pass active_issue_date and active_newspapers to planner if an asset is attached,
         # or if this is an active follow-up query. Do NOT constrain standalone text queries.
