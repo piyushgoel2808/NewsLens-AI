@@ -175,6 +175,7 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
             params["date_to"] = sorted_dates[-1]
     else:
         # Named month + year without explicit day (e.g. "August 2026", "during August 2026")
+        matched_month = False
         for my_m in re.finditer(r"\b([a-zA-Z]+)\s+(\d{4})\b", query):
             m_name = my_m.group(1).lower()
             if m_name in _MONTH_MAP:
@@ -187,7 +188,24 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
                 params["date_to"] = d_to
                 params["target_dates"] = [d_from, d_to]
                 params["issue_date"] = None
+                matched_month = True
                 break
+
+        if not matched_month:
+            # Bare named month without explicit year (e.g. "in August", "during September") -> default to archive year 2026
+            for bare_m in re.finditer(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", query, re.I):
+                m_name = bare_m.group(1).lower()
+                if m_name in _MONTH_MAP:
+                    month_val = _MONTH_MAP[m_name]
+                    year_val = 2026
+                    _, last_day = calendar.monthrange(year_val, month_val)
+                    d_from = f"{year_val:04d}-{month_val:02d}-01"
+                    d_to = f"{year_val:04d}-{month_val:02d}-{last_day:02d}"
+                    params["date_from"] = d_from
+                    params["date_to"] = d_to
+                    params["target_dates"] = [d_from, d_to]
+                    params["issue_date"] = None
+                    break
 
     # 4. Section / Category Extraction (mask matched brands to avoid false bleed like 'The Economic Times' matching 'Economy')
     query_for_sections = query

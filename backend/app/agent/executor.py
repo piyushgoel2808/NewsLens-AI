@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from typing import Any
 
@@ -690,10 +691,23 @@ class ToolExecutor:
                 )
 
         elif analysis_type in ("count_issues", "issue_counts", "total_issues", "newspaper_availability", "check_availability"):
-            np_name = args.get("newspaper_name") or active_newspaper_name
-            iss_date = args.get("issue_date") or args.get("date") or active_issue_date
             d_from = args.get("date_from")
             d_to = args.get("date_to")
+            if d_from or d_to:
+                iss_date = None
+            else:
+                iss_date = args.get("issue_date") or args.get("date") or active_issue_date
+
+            q_low = str(state.get("query", "")).lower()
+            is_archive_wide = bool(
+                re.search(r"\b(?:no|number|count|how many|all|total)\s+(?:of\s+)?newspapers?\b", q_low)
+                or any(w in q_low for w in ["all available", "all newspaper", "both newspaper", "across newspaper"])
+            )
+            if is_archive_wide or args.get("newspaper_name") == "":
+                np_name = None
+            else:
+                np_name = args.get("newspaper_name") or active_newspaper_name
+
             iss_res = await self._sql_analytics.count_issues(
                 newspaper_name=np_name,
                 issue_date=iss_date,
@@ -703,10 +717,15 @@ class ToolExecutor:
             c_val = iss_res.get("count", 0)
             hits_count = c_val
             filt_info = ", ".join(f"{k}: {v}" for k, v in iss_res.get("filters", {}).items() if v)
-            target_date_val = iss_res.get("filters", {}).get("issue_date") or iss_date or "Overview"
+            if d_from and d_to:
+                target_date_val = f"{d_from} to {d_to}"
+            else:
+                target_date_val = iss_res.get("filters", {}).get("issue_date") or iss_date or "Overview"
 
             if c_val > 0:
-                nps_str = ", ".join(iss_res.get("newspapers", [])) or (np_name or "All Newspapers")
+                matching_nps = iss_res.get("newspapers", [])
+                nps_count = len(matching_nps)
+                nps_str = ", ".join(matching_nps) or (np_name or "All Newspapers")
                 issues_sample = ", ".join(
                     f"{iss.get('newspaper')} ({iss.get('issue_date')})"
                     for iss in iss_res.get("issues", [])[:5]
@@ -714,20 +733,23 @@ class ToolExecutor:
                 summary_str = (
                     f"=== RELATIONAL ISSUE COUNT AUDIT ===\n"
                     f"• Total Matching Issues: {c_val}\n"
-                    f"• Target Date: {target_date_val}\n"
+                    f"• Total Distinct Newspapers: {nps_count}\n"
+                    f"• Distinct Publication Count: {nps_count}\n"
+                    f"• Target Date / Range: {target_date_val}\n"
                     f"• Newspaper(s): {nps_str}\n"
                     f"• Active Filters: {filt_info or 'None'}\n"
                     f"• Issues Found: {issues_sample}\n"
                 )
-                hl_text = f"Issue Count Analysis: {c_val} issues found for {target_date_val}"
+                hl_text = f"Issue & Newspaper Count Analysis: {nps_count} newspapers ({c_val} issues) found for {target_date_val}"
             else:
                 rng = iss_res.get("archive_range")
                 rng_str = f"{rng['start']} to {rng['end']}" if rng else "Archive Range Available"
                 all_nps = ", ".join(iss_res.get("archive_newspapers", [])[:10])
                 summary_str = (
                     f"=== RELATIONAL ISSUE COUNT AUDIT ===\n"
-                    f"• Target Date: {target_date_val}\n"
+                    f"• Target Date / Range: {target_date_val}\n"
                     f"• Total Matching Issues: 0\n"
+                    f"• Total Distinct Newspapers: 0\n"
                     f"• Newspaper Scope: {np_name or 'All Newspapers'}\n"
                     f"• Verification Status: No newspaper issues are available in the archive for {target_date_val}.\n"
                     f"• Archive Coverage Range: {rng_str}\n"
@@ -747,6 +769,8 @@ class ToolExecutor:
                     "source_tool": "sql_analytics",
                     "metadata": {
                         "count": c_val,
+                        "total_issues": c_val,
+                        "distinct_newspapers_count": len(iss_res.get("newspapers", [])) if c_val > 0 else 0,
                         "target_date": target_date_val,
                         "newspapers": iss_res.get("newspapers", []),
                         "archive_range": iss_res.get("archive_range"),

@@ -1076,8 +1076,20 @@ class QueryPlanner:
         q_lower = query.lower().strip()
         params = extract_parameters_from_query(query)
 
-        newspaper = params.get("newspaper_name")
-        issue_id = params.get("issue_id")
+        is_archive_wide_np = bool(
+            re.search(r"\b(?:no|number|count|how many|all|total|which|list)\s+(?:of\s+)?newspapers?\b", q_lower)
+            or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper"])
+        )
+        raw_np = params.get("newspaper_name")
+        if raw_np and is_archive_wide_np and raw_np.lower() not in q_lower:
+            newspaper = None
+            issue_id = None
+        elif not is_archive_wide_np or (raw_np and raw_np.lower() in q_lower):
+            newspaper = raw_np
+            issue_id = params.get("issue_id")
+        else:
+            newspaper = None
+            issue_id = None
         has_explicit_range = bool(params.get("date_from") and params.get("date_to"))
         issue_date = params.get("issue_date") or (None if has_explicit_range else active_issue_date)
         date_from = params.get("date_from") or issue_date

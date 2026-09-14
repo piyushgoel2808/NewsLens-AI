@@ -3654,3 +3654,53 @@ When users interacted with broadsheet articles containing companion infographics
 - `backend/tests/test_graph.py`: **11/11 tests passing (100% green)**.
 - `backend/tests/test_synthesizer.py`: **31/31 tests passing (100% green)**.
 - **Full Backend Suite**: **524/524 tests passing (100% green)** in 66s.
+
+---
+
+## Phase 9.61 — Quantitative Closed-Loop Routing, ToolMaker Fallback & Context Leak Elimination
+
+**Date**: 2026-09-14  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivation
+1. **Context Leakage Across Conversational Turns**:
+   - In conversational sessions, queries like `"NO OF NEWSPAPER IN AUGUST "` erroneously inherited single-publication (`Business Standard`) and single-day (`2026-08-01`) filters from prior chat turns.
+   - Archive-wide aggregate requests were incorrectly collapsed into narrow single-paper checks.
+2. **Bare Month Parsing Absence**:
+   - Standalone month tokens (e.g. `"August"`, `"in August"`, `"September"`) were not converted into archive date ranges (`2026-08-01` to `2026-08-31`), leaving static tools to fall back to stale session dates.
+3. **Premature Acceptance of Zero Counts by Evaluator**:
+   - For quantitative count queries, static retrieval records reporting 0 hits (or availability records for a single date) were accepted as 100% sufficient by `audit_evidence_sufficiency`, bypassing dynamic tools.
+4. **LLM Judge Safeguard Overly Restrictive**:
+   - `evaluator.py` line 523 previously overrode `synthesize_dynamic_tool` back to `replan_static_tools` for all queries not matching `_ANALYTICAL_QUERY_PATTERN` (statistical math like correlation/variance), preventing ToolMaker execution on aggregations, counts, and multi-table grouping.
+
+### Architectural Solutions & Implementations
+1. **Bare Month Extraction (`backend/app/agent/extractor.py`)**:
+   - Added regex extraction for bare month names defaulting to archive year 2026 (`date_from: 2026-MM-01`, `date_to: 2026-MM-[28-31]`).
+2. **Anti-Leak Context Guardrails (`backend/app/agent/condenser.py`, `planner.py`)**:
+   - Guardrail 1: Discards inherited `newspaper_name`, `issue_id`, `article_id` for queries matching archive-wide newspaper count patterns (`no/how many/count/number/total of newspapers`).
+   - Guardrail 4: Discards single-day `issue_date` whenever the current query has an explicit date range (`date_from` and `date_to`).
+   - Heuristic Planner: Clears `newspaper` when query is archive-wide unless the newspaper is explicitly named in the current query text.
+3. **Quantitative Zero-Count & Scope Audit in Evaluator (`backend/app/agent/evaluator.py`)**:
+   - Added `no of`, `total`, `volume of`, and publication aggregates to `_QUANT_QUERY_PATTERN`.
+   - In `audit_evidence_sufficiency`:
+     * When `is_quant_query` is True and query is NOT an explicit single-date availability question: flags 0-count evidence as `zero_count_aggregate_gap` and routes to `synthesize_dynamic_tool`.
+     * Detects temporal range scope mismatch (query asks for month/range, but evidence only audited 1 day) -> routes to `synthesize_dynamic_tool`.
+     * Detects archive-wide publication scope mismatch (query asks for all newspapers, but evidence narrowed to single publication) -> routes to `synthesize_dynamic_tool`.
+   - Updated LLM Judge safeguard to allow `synthesize_dynamic_tool` whenever `_ANALYTICAL_QUERY_PATTERN` OR `_QUANT_QUERY_PATTERN` matches.
+4. **Executor Relational Publication Counts (`backend/app/agent/executor.py`)**:
+   - Added missing `import re`.
+   - Updated `count_issues` to calculate `distinct_newspapers_count` and output `• Total Distinct Newspapers: {nps_count}` and `• Target Date / Range: {target_date_val}` in summary and metadata.
+5. **Tool Factory Argument Reconciliation (`backend/app/agent/tool_factory.py`)**:
+   - Injects extracted `date_from` and `date_to` into planned tool calls when omitted by LLM planners; purges empty string filter parameters.
+6. **AnswerVerifier Quantitative Gap Detection (`backend/app/agent/answer_verifier.py`)**:
+   - Enriched `_fast_groundedness_check` with query awareness: flags quantitative count queries that received 0 records from static tools with `evidence_gap_detected=True` and recommends `fallback_to_dynamic_tool`.
+
+### Verification Results
+- `backend/tests/test_evaluator_crag_dynamic.py`: **10/10 tests passing (100% green)**.
+- `backend/tests/test_answer_verifier.py`: **4/4 tests passing (100% green)**.
+- `backend/tests/test_planner.py`: **35/35 tests passing (100% green)**.
+- `backend/tests/test_condenser.py`: **17/17 tests passing (100% green)**.
+- `backend/tests/test_query_condenser.py`: **12/12 tests passing (100% green)**.
+- End-to-end August chat-history verification test: **All 6 assertions passed (7 newspapers, 16 issues)**.
+- **Full Backend Suite**: **527/527 tests passing (100% green)** in 75s.
+

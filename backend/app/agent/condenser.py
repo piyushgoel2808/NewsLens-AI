@@ -279,6 +279,7 @@ def extract_active_issue_from_history(
     is_cross_newspaper = bool(
         re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff(?:erence[s]?|ering)?|versus|vs\.?)\b", q_lower)
         or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper", "different newspaper"])
+        or re.search(r"\b(?:no|number|count|how many|which|list|total)\s+(?:of\s+)?newspapers?\b", q_lower)
     )
     current_date = explicit_query_date or (attached_issue_date if not has_date_conflict else None)
     current_np = explicit_query_np or (attached_newspaper_name if not has_np_conflict else None)
@@ -407,6 +408,13 @@ def extract_active_issue_from_history(
         res.pop("target_newspapers", None)
         if not current_date:
             res.pop("issue_date", None)
+
+    # Guardrail 4: If current query specifies a date range, do NOT constrain to single-day issue_date
+    if current_params.get("date_from") and current_params.get("date_to") and not explicit_query_date:
+        res.pop("issue_date", None)
+        res.pop("issue_id", None)
+        res["date_from"] = current_params["date_from"]
+        res["date_to"] = current_params["date_to"]
 
     # Re-apply explicit current query parameters
     if current_np:

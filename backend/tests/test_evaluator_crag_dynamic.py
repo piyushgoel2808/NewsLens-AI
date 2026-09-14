@@ -396,3 +396,182 @@ async def test_evaluate_and_fallback_passes_sufficient_evidence_without_tool_mak
     assert len(res_evidence) == 2
     # ToolMaker should NOT have been invoked
     assert not tool_maker.generate_and_execute.called
+
+
+def test_audit_evidence_sufficiency_quantitative_zero_count_routes_to_dynamic_tool(mock_dependencies):
+    """Verify that when a quantitative query receives 0 count from static tools, it routes to dynamic tool synthesis."""
+    entity_search, web_search, tool_maker, sql_analytics = mock_dependencies
+    evaluator = EvidenceEvaluator(entity_search, web_search, tool_maker, sql_analytics)
+
+    state: AgentState = {
+        "query": "NO OF NEWSPAPER IN AUGUST",
+        "chat_history": [],
+        "archetype": "quantitative_trend",
+        "plan": [],
+        "tool_executions": [],
+        "evidence_items": [],
+        "synthesized_answer": "",
+        "citations": [],
+        "cost_usd": 0.0,
+        "latency_ms": 0,
+        "user_id": None,
+        "model_override": None,
+        "enable_web_search": False,
+        "web_search_results": [],
+        "active_issue_id": None,
+        "active_newspaper_name": None,
+        "active_issue_date": None,
+        "attached_article_id": None,
+        "attached_photo_id": None,
+        "attached_asset": None,
+        "error": None,
+    }
+
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Archive Availability Audit: 0 issues found for 2026-08-01",
+            "newspaper_name": "Archive",
+            "issue_date": "2026-08-01",
+            "snippet": (
+                "=== RELATIONAL ISSUE COUNT AUDIT ===\n"
+                "• Target Date: 2026-08-01\n"
+                "• Total Matching Issues: 0\n"
+                "• Newspaper Scope: All Newspapers\n"
+                "• Verification Status: No newspaper issues are available in the archive for 2026-08-01.\n"
+                "• Archive Coverage Range: 2026-08-01 to 2026-09-11\n"
+                "• Available Publications in Archive: The Goan, The Hindu\n"
+            ),
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+            "metadata": {
+                "count": 0,
+                "target_date": "2026-08-01",
+                "archive_range": {"start": "2026-08-01", "end": "2026-09-11"},
+            },
+        }
+    ]
+
+    verdict = evaluator.audit_evidence_sufficiency(evidence, state)
+    assert verdict.is_sufficient is False
+    assert verdict.recommended_action == "synthesize_dynamic_tool"
+    assert "zero_count_aggregate_gap" in verdict.detected_gaps
+
+
+def test_audit_evidence_sufficiency_availability_zero_count_is_sufficient(mock_dependencies):
+    """Verify that an explicit single-date availability query with 0 issues IS accepted as sufficient."""
+    entity_search, web_search, tool_maker, sql_analytics = mock_dependencies
+    evaluator = EvidenceEvaluator(entity_search, web_search, tool_maker, sql_analytics)
+
+    state: AgentState = {
+        "query": "IS ANY NEWSPAPER AVAILABLE FOR DATED 08/11/2026",
+        "chat_history": [],
+        "archetype": "quantitative_trend",
+        "plan": [],
+        "tool_executions": [],
+        "evidence_items": [],
+        "synthesized_answer": "",
+        "citations": [],
+        "cost_usd": 0.0,
+        "latency_ms": 0,
+        "user_id": None,
+        "model_override": None,
+        "enable_web_search": False,
+        "web_search_results": [],
+        "active_issue_id": None,
+        "active_newspaper_name": None,
+        "active_issue_date": None,
+        "attached_article_id": None,
+        "attached_photo_id": None,
+        "attached_asset": None,
+        "error": None,
+    }
+
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Archive Availability Audit: 0 issues found for 2026-11-08",
+            "newspaper_name": "Archive",
+            "issue_date": "2026-11-08",
+            "snippet": (
+                "=== RELATIONAL ISSUE COUNT AUDIT ===\n"
+                "• Target Date: 2026-11-08\n"
+                "• Total Matching Issues: 0\n"
+                "• Newspaper Scope: All Newspapers\n"
+                "• Verification Status: No newspaper issues are available in the archive for 2026-11-08.\n"
+                "• Archive Coverage Range: 2026-08-01 to 2026-09-11\n"
+                "• Available Publications in Archive: The Goan, The Hindu\n"
+            ),
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+            "metadata": {
+                "count": 0,
+                "target_date": "2026-11-08",
+                "archive_range": {"start": "2026-08-01", "end": "2026-09-11"},
+            },
+        }
+    ]
+
+    verdict = evaluator.audit_evidence_sufficiency(evidence, state)
+    assert verdict.is_sufficient is True
+    assert verdict.recommended_action == "proceed_to_synthesis"
+
+
+def test_audit_evidence_sufficiency_date_range_scope_mismatch_routes_to_dynamic_tool(mock_dependencies):
+    """Verify that when a date-range query only receives single-day evidence, it routes to dynamic tool."""
+    entity_search, web_search, tool_maker, sql_analytics = mock_dependencies
+    evaluator = EvidenceEvaluator(entity_search, web_search, tool_maker, sql_analytics)
+
+    state: AgentState = {
+        "query": "NO OF NEWSPAPER IN AUGUST",
+        "chat_history": [],
+        "archetype": "quantitative_trend",
+        "plan": [],
+        "tool_executions": [],
+        "evidence_items": [],
+        "synthesized_answer": "",
+        "citations": [],
+        "cost_usd": 0.0,
+        "latency_ms": 0,
+        "user_id": None,
+        "model_override": None,
+        "enable_web_search": False,
+        "web_search_results": [],
+        "active_issue_id": None,
+        "active_newspaper_name": None,
+        "active_issue_date": None,
+        "attached_article_id": None,
+        "attached_photo_id": None,
+        "attached_asset": None,
+        "error": None,
+    }
+
+    # Evidence has positive count (5 issues), but ONLY for a single day (2026-08-01), not the full month
+    evidence = [
+        {
+            "article_id": 0,
+            "headline": "Issue Count Analysis: 5 issues found for 2026-08-01",
+            "newspaper_name": "Archive",
+            "issue_date": "2026-08-01",
+            "snippet": (
+                "=== RELATIONAL ISSUE COUNT AUDIT ===\n"
+                "• Total Matching Issues: 5\n"
+                "• Target Date: 2026-08-01\n"
+                "• Newspaper(s): The Goan\n"
+            ),
+            "prominence_score": 1.0,
+            "source_tool": "sql_analytics",
+            "metadata": {
+                "count": 5,
+                "total_issues": 5,
+                "target_date": "2026-08-01",
+                "filters": {"issue_date": "2026-08-01"},
+            },
+        }
+    ]
+
+    verdict = evaluator.audit_evidence_sufficiency(evidence, state)
+    assert verdict.is_sufficient is False
+    assert verdict.recommended_action == "synthesize_dynamic_tool"
+    assert any("temporal_range_scope_mismatch" in g for g in verdict.detected_gaps)
+

@@ -223,7 +223,7 @@ def verify_and_correct_answer_groundedness(
     cleaned_ans = clean_synthesized_answer(answer_text, query, archetype or "", evidence_items)
 
     verifier = AnswerVerifier()
-    res = verifier._fast_groundedness_check(cleaned_ans, evidence_items)
+    res = verifier._fast_groundedness_check(cleaned_ans, evidence_items, query=query)
     if res is not None and not res.is_valid and res.refined_answer:
         return res.refined_answer, True, res.critique
 

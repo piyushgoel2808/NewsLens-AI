@@ -175,10 +175,22 @@ def reconcile_and_sanitize_arguments(
                     if not any(part in query for part in d_parts):
                         sanitized.pop(d_key, None)
 
+    if extracted.get("date_from") and ("date_from" not in sanitized or not sanitized.get("date_from")):
+        sanitized["date_from"] = extracted["date_from"]
+    if extracted.get("date_to") and ("date_to" not in sanitized or not sanitized.get("date_to")):
+        sanitized["date_to"] = extracted["date_to"]
+
+    if sanitized.get("date_from") and sanitized.get("date_to") and not extracted.get("issue_date"):
+        sanitized.pop("issue_date", None)
+
     if active_issue_date and not extracted.get("date_from") and not extracted.get("date_to"):
         for d_key in ("date_from", "date_to"):
             if not sanitized.get(d_key) or not str(sanitized[d_key]).strip():
                 sanitized[d_key] = active_issue_date
+
+    for empty_k in ["newspaper_name", "comparison_newspaper", "source_newspaper", "page_filter", "category_filter"]:
+        if sanitized.get(empty_k) == "":
+            sanitized.pop(empty_k, None)
 
     # 3. Category Filter Ground Truth
     if sanitized.get("category_filter"):

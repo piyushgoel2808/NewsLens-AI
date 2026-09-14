@@ -150,6 +150,7 @@ class AnswerVerifier:
         self,
         draft_answer: str,
         evidence_items: list[dict[str, Any]],
+        query: str = "",
     ) -> AnswerVerificationResult | None:
         """Fast-floor check catching explicit relational zero-count contradictions deterministically."""
         zero_issue_record = None
@@ -167,6 +168,35 @@ class AnswerVerifier:
                 break
 
         if zero_issue_record is not None:
+            if query:
+                q_low = query.lower()
+                is_quant = bool(
+                    re.search(
+                        r"\b(how many|no of|number of|count of|total issues|total newspapers|how many newspapers)\b",
+                        q_low,
+                    )
+                )
+                is_avail = bool(
+                    re.search(
+                        r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|"
+                        r"papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|"
+                        r"available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b",
+                        q_low,
+                    )
+                )
+                if is_quant and not is_avail:
+                    return AnswerVerificationResult(
+                        is_valid=False,
+                        has_hallucination=False,
+                        has_contradiction=False,
+                        evidence_gap_detected=True,
+                        quality_score=0.2,
+                        factual_errors=["Static retrieval produced 0 records for an aggregate count query."],
+                        critique="Evidence gap: quantitative count query received 0 records from static tool. Fallback to dynamic database tool required.",
+                        recommended_action="fallback_to_dynamic_tool",
+                        dynamic_tool_hint="Execute dynamic SQL query to count distinct newspapers and issues.",
+                    )
+
             has_positive_claim = bool(
                 re.search(
                     r"(?i)\b(?:Newspaper Availability[^:\n]*:\s*Yes|"
@@ -231,7 +261,7 @@ class AnswerVerifier:
             )
 
         # 1. Fast Groundedness Floor Check
-        fast_result = self._fast_groundedness_check(draft_answer, evidence_items)
+        fast_result = self._fast_groundedness_check(draft_answer, evidence_items, query=query)
         if fast_result is not None:
             fast_result.latency_ms = round((time.monotonic() - t0) * 1000)
             return fast_result

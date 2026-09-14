@@ -26,7 +26,9 @@ from app.retrieval.web_search import WebSearchEngine
 logger = get_logger(__name__)
 
 _QUANT_QUERY_PATTERN = re.compile(
-    r"\b(how many|count of|number of|percentage|ratio|average|mean|median|"
+    r"\b(how many|count of|number of|no of|volume of|trend of|distribution of|"
+    r"total|total issues|total articles|total photos|total newspapers|"
+    r"percentage|ratio|average|mean|median|"
     r"correlation|variance|distribution|frequency|breakdown|photos? in each|"
     r"photos? per|articles? per|word count|how much)\b",
     re.IGNORECASE,
@@ -233,13 +235,14 @@ class EvidenceEvaluator:
         is_analytical = bool(_ANALYTICAL_QUERY_PATTERN.search(query))
 
         # 0. Empty or stub evidence
+        is_quant_query = bool(_QUANT_QUERY_PATTERN.search(query))
         if not evidence or not any(len((item.get("snippet") or item.get("summary") or "").strip()) >= 20 for item in evidence):
             return EvaluationVerdict(
                 is_sufficient=False,
                 quality_score=0.0,
                 gap_reason="Static retrieval returned 0 grounded evidence records from the archive.",
                 detected_gaps=["empty_retrieval"],
-                recommended_action="synthesize_dynamic_tool" if is_analytical else "replan_static_tools",
+                recommended_action="synthesize_dynamic_tool" if (is_analytical or is_quant_query) else "replan_static_tools",
             )
 
         # 1. Comparative / Cross-Newspaper Balance Audit
@@ -318,6 +321,14 @@ class EvidenceEvaluator:
 
         # 2. Quantitative / Aggregate Metric Audit
         is_quant_query = bool(_QUANT_QUERY_PATTERN.search(query))
+        is_availability = bool(
+            re.search(
+                r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|"
+                r"papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|"
+                r"available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b",
+                query.lower(),
+            )
+        )
         if is_quant_query:
             has_quant = _has_quantitative_payload(evidence)
             if not has_quant:
@@ -331,9 +342,101 @@ class EvidenceEvaluator:
                     quality_score=0.40,
                     gap_reason=gap_msg,
                     detected_gaps=detected_gaps,
-                    recommended_action="synthesize_dynamic_tool" if is_analytical else "replan_static_tools",
+                    recommended_action="synthesize_dynamic_tool" if (is_analytical or is_quant_query) else "replan_static_tools",
                     corrective_hints={"missing_quantitative": True},
                 )
+
+            # Check if quantitative query returned all zeros when not an explicit availability check
+            if not is_availability:
+                has_positive = False
+                for it in evidence:
+                    m = it.get("metadata") or {}
+                    if isinstance(m, dict):
+                        for k in ("count", "total_issues", "total_articles", "total_photos", "distinct_newspapers_count"):
+                            v = m.get(k)
+                            if isinstance(v, (int, float)) and v > 0:
+                                has_positive = True
+                                break
+                    if has_positive:
+                        break
+                    sn = (it.get("snippet") or "") + " " + (it.get("headline") or "")
+                    if re.search(r"\|.*\|.*\|\s*\n\|[\s\-:]+\|", sn):
+                        has_positive = True
+                        break
+                    if re.search(r"\b(?:total|count|breakdown|photos?|articles?|advertisements?|ads?|issues?)(?:\s+[a-zA-Z]+)*:\s*([1-9]\d*)\b", sn, re.I):
+                        has_positive = True
+                        break
+                    if re.search(r"\b([1-9]\d*)\s+(?:articles?|photos?|advertisements?|ads?|issues?)\s+found\b", sn, re.I):
+                        has_positive = True
+                        break
+
+                if not has_positive:
+                    detected_gaps.append("zero_count_aggregate_gap")
+                    gap_msg = (
+                        "Static archive retrieval returned 0 matching records or failed to compute aggregated counts for this quantitative query. "
+                        "Dynamic database tool synthesis required to inspect schema and compute exact aggregate results."
+                    )
+                    return EvaluationVerdict(
+                        is_sufficient=False,
+                        quality_score=0.25,
+                        gap_reason=gap_msg,
+                        detected_gaps=detected_gaps,
+                        recommended_action="synthesize_dynamic_tool",
+                        corrective_hints={"require_dynamic_tool": True},
+                    )
+
+            # Temporal range scope audit: query requested a range/month, but evidence only audited a single day
+            req_from = params.get("date_from")
+            req_to = params.get("date_to")
+            if req_from and req_to and req_from != req_to:
+                range_audited = False
+                for it in evidence:
+                    m = it.get("metadata") or {}
+                    filt = m.get("filters") or {}
+                    sn = (it.get("snippet") or "") + " " + (it.get("headline") or "")
+                    if (filt.get("date_from") and filt.get("date_to")) or (req_from in sn and req_to in sn):
+                        range_audited = True
+                        break
+                if not range_audited:
+                    detected_gaps.append(f"temporal_range_scope_mismatch:{req_from}_to_{req_to}")
+                    gap_msg = (
+                        f"Query requested coverage across date range {req_from} to {req_to}, "
+                        f"but retrieved evidence only audited a single day without covering the full range."
+                    )
+                    return EvaluationVerdict(
+                        is_sufficient=False,
+                        quality_score=0.30,
+                        gap_reason=gap_msg,
+                        detected_gaps=detected_gaps,
+                        recommended_action="synthesize_dynamic_tool",
+                        corrective_hints={"date_from": req_from, "date_to": req_to},
+                    )
+
+            # Archive-wide publication scope audit: query asked for total newspapers across archive, but evidence narrowed to single publication
+            q_low = query.lower()
+            is_archive_np_query = bool(re.search(r"\b(?:no|number|count|how many|all|total)\s+(?:of\s+)?newspapers?\b", q_low))
+            if is_archive_np_query:
+                only_single_np = False
+                for it in evidence:
+                    m = it.get("metadata") or {}
+                    filt = m.get("filters") or {}
+                    np_filtered = filt.get("newspaper_name") or it.get("newspaper_name")
+                    if np_filtered and np_filtered not in ("Archive", "All Newspapers", None, "") and not m.get("distinct_newspapers_count"):
+                        only_single_np = True
+                        break
+                if only_single_np:
+                    detected_gaps.append("archive_newspaper_scope_mismatch")
+                    gap_msg = (
+                        "Query requested archive-wide newspaper count, but retrieved evidence was narrowed to a single publication."
+                    )
+                    return EvaluationVerdict(
+                        is_sufficient=False,
+                        quality_score=0.30,
+                        gap_reason=gap_msg,
+                        detected_gaps=detected_gaps,
+                        recommended_action="synthesize_dynamic_tool",
+                        corrective_hints={"is_archive_wide": True},
+                    )
 
         # 3. Semantic Relevance Floor Audit
         raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower())
@@ -459,14 +562,14 @@ class EvidenceEvaluator:
             f"- `sql_analytics`: Relational manifests, article counts, ad counts, photo counts, issue counts, coverage diffs.\n"
             f"- `timeline_builder`: Chronological story evolution.\n"
             f"- `entity_search`: Entity network profiles.\n"
-            f"- `dynamic_analysis`: Custom Python script execution (STRICTLY for multi-table statistical math like Pearson correlation, variance, or percentiles. NEVER for text summarization or explanation).\n\n"
+            f"- `dynamic_analysis`: Custom Python/SQL script execution (for multi-table statistical math like Pearson correlation, variance, percentiles, or custom database aggregations and counts across date ranges when static tools fail or return 0 records. NEVER for plain text summarization).\n\n"
             f"Evaluation Criteria:\n"
             f"1. Is the retrieved evidence sufficient to answer the user's specific question?\n"
             f"2. If NOT sufficient, diagnose the exact gap (e.g. wrong date, overly narrow search terms, missing comparison publication, or missing quantitative counts).\n"
             f"3. Select the best recovery action:\n"
             f"   - 'proceed_to_synthesis': Evidence is adequate or best-effort answer can be generated.\n"
             f"   - 'replan_static_tools': Missing articles, wrong dates/sections, or missing counts/manifests that standard archive tools can retrieve.\n"
-            f"   - 'synthesize_dynamic_tool': Query requires complex statistical computation (correlation, regression, variance) across tables.\n\n"
+            f"   - 'synthesize_dynamic_tool': Query requires complex statistical computation (correlation, regression, variance) or custom aggregations/counts across tables where static tools fail or yield 0 records.\n\n"
             f"Respond ONLY with a valid JSON object matching this schema:\n"
             f"{{\n"
             f'  "is_sufficient": boolean,\n'
@@ -519,8 +622,10 @@ class EvidenceEvaluator:
                     if action not in ("proceed_to_synthesis", "replan_static_tools", "synthesize_dynamic_tool"):
                         action = "proceed_to_synthesis" if is_suff else "replan_static_tools"
 
-                    # Safeguard: Never allow synthesize_dynamic_tool unless analytical intent is genuinely present
-                    if action == "synthesize_dynamic_tool" and not _ANALYTICAL_QUERY_PATTERN.search(query):
+                    # Safeguard: Allow synthesize_dynamic_tool for analytical queries AND quantitative queries
+                    if action == "synthesize_dynamic_tool" and not (
+                        _ANALYTICAL_QUERY_PATTERN.search(query) or _QUANT_QUERY_PATTERN.search(query)
+                    ):
                         action = "replan_static_tools"
 
                     gap_diag = data.get("gap_diagnosis")
