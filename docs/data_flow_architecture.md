@@ -525,7 +525,7 @@ sequenceDiagram
     Reader->>Assistant: Submits query (e.g. "Explain the GDP projections in this chart")
     Assistant->>API: POST /api/query/stream<br/>{query, attached_article_id, attached_photo_id}
     API->>Condenser: Pass query, chat history, and attached IDs
-    Condenser->>Condenser: Bind attached IDs to active turn;<br/>Purge on subsequent unrelated turns
+    Condenser->>Condenser: Bind attached IDs to active turn -<br/>Purge on subsequent unrelated turns
     Condenser->>Executor: Plan tool execution with Strategy A/C (photo_id/article_id)
     Executor->>DB: Query Photo record by photo_id or article_id
     alt vlm_description is Placeholder
@@ -602,66 +602,183 @@ sequenceDiagram
 
 ## 12. Corrective RAG (CRAG), Answer Verification & Streaming Delivery Flow
 
+The post-retrieval verification pipeline in NewsLens-AI ensures that every synthesized brief is factually accurate, citation-grounded, and free of hallucinations before reaching the user. It operates as a two-stage closed-loop quality gate:
+1. **Corrective RAG (CRAG) Evidence Evaluation (`evaluator.py`)**: Intercepts retrieved tool evidence before synthesis. It evaluates qualitative and quantitative sufficiency, catches legitimate archival absences, and dynamically routes deficient queries into adaptive static re-planning or sandboxed ad-hoc tool synthesis.
+2. **Reflective LLM Answer Verification (`answer_verifier.py`)**: Audits the synthesized draft response against raw database ground truth. It applies sub-5ms deterministic scope and math checks, followed by an LLM-as-judge fact-checker that strips fluff, refines ungrounded statements, or triggers a dynamic tool rollback loop.
+
+### 12.1. CRAG Evidence Evaluation & Adaptive Fallback Routing Flowchart
+
+```mermaid
+flowchart TD
+    subgraph INPUT ["1. Evidence Ingestion"]
+        EvidenceIn["Retrieved Evidence Items from ToolExecutor<br/>(ToolExecutionRecord Collection)"]
+    end
+
+    subgraph FAST_FLOOR ["2. Deterministic Fast-Floor Gate (<5ms)"]
+        FastFloor{"Fast-Floor Evaluation Check:<br/>• >= 1 Broadsheet Record?<br/>• Clean Editorial Text >= 100 Words?<br/>• Relevance Prominence >= 0.65?"}
+        ImmediatePass["High-Confidence Immediate Bypass<br/>(is_sufficient=True, quality_score=1.0)<br/>Skip LLM Evaluator Latency Overhead"]
+    end
+
+    subgraph LLM_JUDGE ["3. Reflexive LLM-as-Judge Evaluation (evaluator.py)"]
+        JudgePrompt["EvidenceEvaluator (LLM Judge)<br/>Audits Evidence Sufficiency & Gaps"]
+        
+        CheckAbsence{"Check 1: Legitimate Absence Invariant?<br/>(Availability query with 0 DB issues?)"}
+        PassAbsence["Verdict: Sufficient (Score: 0.85)<br/>Proceed with Truthful Absence Grounding"]
+        
+        CheckBalance{"Check 2: Multi-Newspaper Balance?<br/>(Missing requested publication brand?)"}
+        FailBalance["Verdict: Insufficient (Score: 0.35)<br/>Action: replan_static_tools<br/>Hint: missing_newspapers"]
+        
+        CheckDate{"Check 3: Temporal ISO Date Alignment?<br/>(Target date missing from evidence?)"}
+        FailDate["Verdict: Insufficient (Score: 0.30)<br/>Action: replan_static_tools<br/>Hint: issue_date"]
+        
+        CheckQuant{"Check 4: Quantitative Payload Verification?<br/>(Math/volume query but 0 metrics/tables?)"}
+        FailQuant["Verdict: Insufficient (Score: 0.40)<br/>Action: synthesize_dynamic_tool<br/>Hint: require_dynamic_tool"]
+        
+        CheckOverall{"Check 5: Overall Relevance Score >= 0.70?"}
+        PassJudge["Verdict: Sufficient (Score >= 0.70)<br/>Action: proceed_to_synthesis"]
+        FailGeneral["Verdict: Insufficient (Score < 0.70)<br/>Action: replan_static_tools"]
+    end
+
+    subgraph FALLBACK_ROUTING ["4. Corrective Fallback Routing Engine"]
+        ActionRouter{"EvaluationVerdict Action Router"}
+        
+        subgraph PATHWAY_STATIC ["Pathway 1: Adaptive Static Re-Planning"]
+            ReplanEngine["replan_with_feedback_async()<br/>• Relax narrow page & category filters<br/>• Broaden date ranges<br/>• Scale top_k = max(8, k + 4)<br/>• Anti-repetition guard prevents dups<br/>• 1-Cycle hard ceiling"]
+            ReExecTools["ToolExecutor Re-Execution Node"]
+        end
+        
+        subgraph PATHWAY_DYNAMIC ["Pathway 2: Dynamic ToolMaker Recovery"]
+            ToolMakerEngine["DynamicToolMaker.generate_and_execute()<br/>• Synthesize bespoke Python script<br/>• Read-only MySQL connection with rollback<br/>• ToolCritic 5-metric scorecard (3 retries)<br/>• AST Subprocess Sandbox (15s, 512MB RAM)"]
+        end
+        
+        subgraph PATHWAY_SILENCE ["Pathway 3: Authoritative Archival Absence"]
+            SilenceNotice["Empty Evidence Hard-Stop Check<br/>Emit Authoritative Archival Silence:<br/>'The archived broadsheets contain no<br/>verifiable record of [Query]'<br/>Strict Anti-Hallucination Invariant"]
+        end
+    end
+
+    subgraph SYNTHESIS ["5. Grounded Broadsheet Synthesis"]
+        SynthesizerNode["AnswerSynthesizer<br/>(Blueprint-Driven Grounded Synthesis)"]
+    end
+
+    EvidenceIn --> FastFloor
+    FastFloor -->|"Passes Fast Floor"| ImmediatePass
+    FastFloor -->|"Below Fast Floor"| JudgePrompt
+    
+    JudgePrompt --> CheckAbsence
+    CheckAbsence -->|"Yes (Legitimate Absence)"| PassAbsence
+    CheckAbsence -->|"No"| CheckBalance
+    
+    CheckBalance -->|"Missing Requested Brand"| FailBalance
+    CheckBalance -->|"Balanced Coverage"| CheckDate
+    
+    CheckDate -->|"Date Mismatch"| FailDate
+    CheckDate -->|"Dates Aligned"| CheckQuant
+    
+    CheckQuant -->|"0 Metrics for Quant Query"| FailQuant
+    CheckQuant -->|"Payload Valid"| CheckOverall
+    
+    CheckOverall -->|"Yes (Score >= 0.70)"| PassJudge
+    CheckOverall -->|"No (Score < 0.70)"| FailGeneral
+    
+    ImmediatePass --> SynthesizerNode
+    PassAbsence --> SynthesizerNode
+    PassJudge --> SynthesizerNode
+    
+    FailBalance & FailDate & FailGeneral --> ActionRouter
+    FailQuant --> ActionRouter
+    
+    ActionRouter -->|"replan_static_tools"| ReplanEngine
+    ReplanEngine --> ReExecTools
+    ReExecTools -->|"Recovery Evidence"| FastFloor
+    ReExecTools -.->|"Evidence Still Empty"| SilenceNotice
+    
+    ActionRouter -->|"synthesize_dynamic_tool"| ToolMakerEngine
+    ToolMakerEngine -->|"Verified Telemetry"| SynthesizerNode
+    ToolMakerEngine -.->|"Execution Failed"| SilenceNotice
+    
+    SilenceNotice --> SynthesizerNode
 ```
-[ Retrieved Evidence Items from Multi-Tool Execution ]
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 1. Fast-Floor Evaluation Check (<5ms)                       │
-│ • Check: Evidence >= 1 high-confidence broadsheet hit AND   │
-│   clean body text >= 100 words                              │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-            ┌──────────────────┴──────────────────┐
-            ▼ (Passes Fast Floor)                 ▼ (Below Fast Floor)
-┌─────────────────────────────────────┐ ┌─────────────────────────────────────┐
-│ High-Confidence Immediate Pass      │ │ Reflexive LLM-as-Judge Evaluation   │
-│ • Skip LLM evaluation latency       │ │ • Prompt evaluator with evidence    │
-│ • is_sufficient = True, score = 1.0 │ │ • Emit typed EvaluationVerdict      │
-└──────────────────┬──────────────────┘ └──────────────────┬──────────────────┘
-                   │                                       │
-                   │           ┌───────────────────────────┴───────────────────────────┐
-                   │           ▼ (replan_static_tools)                                 ▼ (synthesize_dynamic_tool)
-                   │  ┌─────────────────────────────────┐                     ┌─────────────────────────────────┐
-                   │  │ Closed-Loop Adaptive Re-Plan    │                     │ Dynamic ToolMaker Recovery      │
-                   │  │ • replan_with_feedback_async    │                     │ • Generate bespoke Python/SQL   │
-                   │  │ • Widen dates / expand top_k    │                     │ • ToolCritic 5-dimension audit  │
-                   │  │ • Anti-repetition guard         │                     │ • AST Subprocess Sandbox        │
-                   │  └────────────────┬────────────────┘                     └────────────────┬────────────────┘
-                   │                   │                                                       │
-                   └───────────────────┼───────────────────────────────────────────────────────┘
-                                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 2. Empty Evidence Hard-Stop Check                           │
-│ • If evidence is empty or only non-matching errors:         │
-│   → Short-circuit to strict anti-hallucination notice:      │
-│     "The archived broadsheets in this database contain      │
-│      no verifiable record of [Query]."                      │
-│   → DO NOT invent or hallucinate unsupported facts          │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ (Evidence Present)
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 3. Blueprint-Driven Grounded Broadsheet Synthesis           │
-│ • Compile prompt structure dynamically from AnswerBlueprint │
-│ • Preserve full parent text (up to 7,500 chars) for single  │
-│   article questions, filtering visual annotation noise      │
-│ • Strip mechanical robotic catalog tables from summaries    │
-│ • Enforce strict broadsheet citation format:                │
-│   [{Newspaper}, {YYYY-MM-DD}, Page {N}, "{Headline}"]       │
-│ • Enforce Quantitative Metric Absence Hard-Stop             │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 4. Reflective Answer Verification (answer_verifier.py)      │
-│ • Fast Gates (<5ms): scope check, date alignment, absence   │
-│ • Reflexive LLM Audit: 4-dimension groundedness & fluff cut │
-│ • If evidence gap diagnosed: emit fallback_to_dynamic_tool  │
-│   → Loops back to execute_dynamic_code (1-cycle ceiling)    │
-│ • Verified brief passed to SSE streaming engine             │
-└─────────────────────────────────────────────────────────────┘
+
+### 12.2. Reflective LLM Answer Verifier & Editorial Critic Gate Flowchart
+
+```mermaid
+flowchart TD
+    subgraph DRAFT_INPUT ["1. Synthesis Completion"]
+        DraftAnswer["Synthesized Draft Answer (AnswerSynthesizer)<br/>+ Verified Ground Truth Evidence Payload"]
+    end
+
+    subgraph FAST_GATES ["2. Fast Groundedness Floor Gates (<5ms Deterministic)"]
+        GateScope{"Gate 1: Scope Mismatch Interceptor<br/>(Archive-wide query restricted to 1 paper?)"}
+        FailScope["Flagged: Scope Contradiction (Score: 0.2)<br/>Action: fallback_to_dynamic_tool<br/>Hint: Query across all broadsheets"]
+        
+        GateNaN{"Gate 2: Calculation NaN / Null Detector<br/>(Matches 'nan words', 'is nan', 'null count'?)"}
+        FailNaN["Flagged: Math Defect (Score: 0.1)<br/>Action: fallback_to_dynamic_tool<br/>Hint: Recompute statistics in sandbox"]
+        
+        GateZero{"Gate 3: Zero-Issue Contradiction Refiner<br/>(0 DB records but draft claims 'Yes, available'?)"}
+        RefineZero["Flagged: Absence Contradiction (Score: 0.2)<br/>Action: refine_answer<br/>Auto-replace with deterministic absence report"]
+    end
+
+    subgraph LLM_CRITIC ["3. Reflexive LLM-as-Judge Fact-Checking Critic"]
+        CriticPrompt["Reflexive Answer Verifier (LLM Judge)<br/>Audits Draft against Ground Truth Evidence"]
+        
+        Dim1["Dimension 1: Groundedness & Citations<br/>Every claim backed by [Paper, Date, Page, Headline]"]
+        Dim2["Dimension 2: Anti-Fluff & Precision<br/>Strip corporate consulting filler & speculative prose"]
+        Dim3["Dimension 3: Archival Absence Fidelity<br/>No speculative inventing on unindexed dates"]
+        Dim4["Dimension 4: Quantitative Accuracy<br/>Zero mathematical hallucination on averages/counts"]
+        
+        CriticPrompt --- Dim1 & Dim2 & Dim3 & Dim4
+        CriticPrompt --> CriticDecision{"Evaluator Verdict Decision"}
+    end
+
+    subgraph VERIFIER_ACTIONS ["4. Verification Actions & State Machine Branching"]
+        ActionAccept["Action: 'accept'<br/>Quality Score >= 0.70<br/>Grounded, factual, citation-compliant"]
+        
+        ActionRefine["Action: 'refine_answer'<br/>Quality Score 0.40 - 0.69<br/>Draft contains minor fluff or ungrounded claims<br/>Replace draft with verified refined_answer"]
+        
+        ActionFallback["Action: 'fallback_to_dynamic_tool'<br/>Quality Score < 0.40<br/>Diagnostic evidence gap or calculation defect"]
+        
+        subgraph ROLLBACK_LOOP ["5. LangGraph Dynamic Tool Rollback Loop"]
+            RollbackNode["LangGraph Dynamic Tool Recovery<br/>(1-Cycle State Machine Ceiling)<br/>Branch directly to execute_dynamic_code"]
+            ReCompute["Synthesize bespoke query in Subprocess Sandbox<br/>Inject verified metrics into evidence state"]
+            ReSynth["Re-Synthesize Final Grounded Brief<br/>(AnswerSynthesizer)"]
+        end
+    end
+
+    subgraph SSE_OUTPUT ["6. Client Delivery Channel"]
+        SSEStream["FastAPI SSE Streaming Output (/api/query/stream)<br/>• Stage & Thought Events<br/>• Token-by-Token Markdown Stream<br/>• Interactive Broadsheet Citation Cards<br/>• High-Res Visual Asset Thumbnails (/api/photos/{id}/image)"]
+    end
+
+    DraftAnswer --> GateScope
+    GateScope -->|"Violation Detected"| FailScope
+    GateScope -->|"Pass"| GateNaN
+    
+    GateNaN -->|"NaN / Null Found"| FailNaN
+    GateNaN -->|"Pass"| GateZero
+    
+    GateZero -->|"Contradiction Found"| RefineZero
+    GateZero -->|"Pass"| CriticPrompt
+    
+    CriticDecision -->|"accept"| ActionAccept
+    CriticDecision -->|"refine_answer"| ActionRefine
+    CriticDecision -->|"fallback_to_dynamic_tool"| ActionFallback
+    
+    FailScope & FailNaN --> ActionFallback
+    RefineZero --> ActionRefine
+    
+    ActionAccept --> SSEStream
+    ActionRefine --> SSEStream
+    
+    ActionFallback --> RollbackNode
+    RollbackNode --> ReCompute
+    ReCompute --> ReSynth
+    ReSynth --> SSEStream
 ```
+
+### 12.3. Key Technical Invariants in Post-Retrieval Verification
+1. **The Fast-Floor Optimization**: If retrieval already fetched `>= 1` broadsheet record with `>= 100` words of clean editorial body text and prominence `>= 0.65`, the system immediately passes to synthesis (`<5ms` latency), eliminating unnecessary LLM-as-judge calls for clean factual queries.
+2. **Legitimate Archival Absence vs. Hallucination**: When a query asks for broadsheet availability on an unindexed date (e.g., Sunday) and the database returns 0 issues, the evaluator recognizes this as legitimate absence (`score = 0.85`), preventing false positive retries and instructing the synthesizer to state the absence authoritatively.
+3. **Adaptive Static Re-Planning Safeguards**: When `replan_static_tools` triggers, narrow page or category constraints are purged, date ranges are widened, and `top_k` expands (`max(8, k+4)`). An anti-repetition filter guarantees the planner never re-runs identical tool configurations.
+4. **LangGraph Dynamic Tool Rollback Ceiling**: If the `AnswerVerifier` detects a critical mathematical or comparative evidence gap, it triggers a 1-cycle rollback into `execute_dynamic_code`. The engine synthesizes, executes, and audits a bespoke Python tool in the AST sandbox before generating the final verified response. A strict 1-cycle counter prevents infinite fallback loops.
 
 ---
 
