@@ -3905,3 +3905,54 @@ When users interacted with broadsheet articles containing companion infographics
 - **Unit & Integration Test Suite**: 49/49 passing in `backend/tests/test_planner.py` and `backend/tests/test_query_condenser.py`.
 - **Full Test Suite Compatibility**: Verified across condenser, planner, SQL analytics, tool critic, and visual inspection modules.
 - **Documentation Synchronization**: Updated across all 8 architectural and reference guides in `docs/`.
+
+---
+
+## Phase 9.68 — GitHub Mermaid Parser Hardening & Comprehensive Query Planner Documentation
+
+**Date**: 2026-09-15  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+1. **Mermaid Rendering Parse Errors on GitHub**:
+   - Mermaid edge labels containing unquoted special characters (`(`, `)`, `<`, `>`, `:`) caused GitHub's Mermaid parser to fail with errors such as `Expecting 'SQE', 'DOUBLECIRCLEEND'... got 'PS'`:
+     - `ToolCritic -->|Pass (>= 0.70)| CRAG`
+     - `E1 ---|co-occurs (weight: 12)| E2`
+     - `Stage1 -->|Dim < 80px or Aspect > 10:1| Decorative`
+2. **Missing Core Query Planner Architectural Concepts**:
+   - `docs/data_flow_architecture.md` (Section 6.2) and `docs/end_to_end_data_flow_guide.md` (Phase 3) lacked detailed breakdowns of the 7 Query Archetypes, strict operational tool contracts, dynamic `AnswerBlueprint` + `SectionSpec` compilation, softly-decoupled live archive metadata grounding, and closed-loop adaptive re-planning.
+
+### Architectural Solutions & Documentation Enhancements
+
+1. **Mermaid Diagram Syntax Hardening Across Repository**:
+   - Enclosed all Mermaid edge labels with special characters in explicit double quotes `|"..."|` across all `.md` files:
+     - `ToolCritic -->|"Pass (>= 0.70)"| CRAG`
+     - `E1 ---|"co-occurs (weight: 12)"| E2`
+     - `Stage1 -->|"Dim < 80px or Aspect > 10:1"| Decorative["Filter as Decorative Divider / Icon"]`
+   - Automated regex verification confirmed zero unquoted special character edge labels across the entire codebase.
+
+2. **Comprehensive Query Planner Synchronization**:
+   - **`docs/data_flow_architecture.md` (Section 6.2)**:
+     - Documented the **7 Core Broadsheet Query Archetypes & Autonomous Routing Decision Matrix** (`factual_lookup`, `article_catalog`, `cross_newspaper_comparison`, `thematic_timeline`, `quantitative_trend`, `entity_deep_dive`, `negative_coverage_audit`, plus `analytical_computation`).
+     - Documented **Strict Operational Tool Contracts & Negative Constraints**: `sql_analytics` 7 fixed enums (`count_issues`, `count_articles`, `count_advertisements`, `count_photos`, `issue_summary`, `coverage_difference`, `shared_coverage`) vs `dynamic_analysis` mathematical calculations.
+     - Documented the `is_dynamic_analysis_permitted(query)` guardrail preventing code synthesis for text reading/summarization queries.
+     - Documented **Dynamic Answer Blueprint Compilation (`AnswerBlueprint` & `SectionSpec`)** with declarative registry and format types.
+     - Documented **Softly-Decoupled Live Archive Metadata Grounding (`ArchiveMetadata`)** with 5-minute in-memory TTL caching and static schema fallback (`STATIC_BROADSHEET_SCHEMA`).
+     - Documented the **Two-Tier Top-K Decision Framework** and **Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`)** with strict anti-repetition guard.
+   - **`docs/end_to_end_data_flow_guide.md` (Section 4, Phase 3)**:
+     - Expanded Table of Contents and Section 4 into subsections 3.1 to 3.8:
+       - 3.1 Parameter Extraction with Dynamic Brand Patterns & Typo Tolerance
+       - 3.2 The 7 Core Broadsheet Query Archetypes & Autonomous Routing Decision Matrix
+       - 3.3 Dynamic Answer Blueprint Compilation (`AnswerBlueprint` & `SectionSpec`)
+       - 3.4 Strict Operational Tool Contracts & Negative Constraints
+       - 3.5 Softly-Decoupled Live Archive Metadata Grounding (`ArchiveMetadata`)
+       - 3.6 Two-Tier Top-K Decision Framework in Query Planning
+       - 3.7 Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`) with Anti-Repetition Guard
+       - 3.8 Dynamic Model Provider Registry & Runtime Model Swapping (`model_config.yaml`)
+
+### Verification & QA
+- **Mermaid Parser Verification**: 100% valid edge labels verified across all `.md` files via AST regex scanner.
+- **Pytest Verification**:
+  - `backend/tests/test_planner.py`, `backend/tests/test_condenser.py`, `backend/tests/test_query_condenser.py`: 66/66 passed.
+  - `backend/tests/test_dynamic_answer_blueprint.py`, `backend/tests/test_sql_analytics.py`, `backend/tests/test_evaluator_crag_dynamic.py`, `backend/tests/test_answer_verifier.py`: 42/42 passed.
+

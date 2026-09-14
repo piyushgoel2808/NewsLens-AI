@@ -25,9 +25,14 @@
    - [2.4 Coreference Resolution & Live Condensed Query Transformation](#24-coreference-resolution--live-condensed-query-transformation)
    - [2.5 Cross-Date Conflict Eviction & Attached Asset Isolation](#25-cross-date-conflict-eviction--attached-asset-isolation)
 4. [Phase 3: Cognitive Query Planner & Dynamic Model Provider Registry](#4-phase-3-cognitive-query-planner--dynamic-model-provider-registry)
-   - [3.1 Parameter Extraction with Typo Tolerance](#31-parameter-extraction-with-typo-tolerance)
-   - [3.2 The Live Structured `PlanResult` & `QueryPlan`](#32-the-live-structured-planresult--queryplan)
-   - [3.3 Dynamic Model Provider Registry & Runtime Model Swapping (`model_config.yaml`)](#33-dynamic-model-provider-registry--runtime-model-swapping-model_configyaml)
+   - [3.1 Parameter Extraction with Dynamic Brand Patterns & Typo Tolerance](#31-parameter-extraction-with-dynamic-brand-patterns--typo-tolerance)
+   - [3.2 The 7 Core Broadsheet Query Archetypes & Autonomous Routing Decision Matrix](#32-the-7-core-broadsheet-query-archetypes--autonomous-routing-decision-matrix)
+   - [3.3 Dynamic Answer Blueprint Compilation (`AnswerBlueprint` & `SectionSpec`)](#33-dynamic-answer-blueprint-compilation-answerblueprint--sectionspec)
+   - [3.4 Strict Operational Tool Contracts & Negative Constraints](#34-strict-operational-tool-contracts--negative-constraints)
+   - [3.5 Softly-Decoupled Live Archive Metadata Grounding (`ArchiveMetadata`)](#35-softly-decoupled-live-archive-metadata-grounding-archivemetadata)
+   - [3.6 Two-Tier Top-K Decision Framework in Query Planning](#36-two-tier-top-k-decision-framework-in-query-planning)
+   - [3.7 Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`) with Anti-Repetition Guard](#37-closed-loop-adaptive-re-planning-replan_with_feedback_async-with-anti-repetition-guard)
+   - [3.8 Dynamic Model Provider Registry & Runtime Model Swapping (`model_config.yaml`)](#38-dynamic-model-provider-registry--runtime-model-swapping-model_configyaml)
 5. [Phase 4: Tool Execution Deep Dive (Live Inputs, SQL Queries & Real Outputs)](#5-phase-4-tool-execution-deep-dive-live-inputs-sql-queries--real-outputs)
    - [Tool 1: `hybrid_search` (Dense + Sparse + RRF + Cross-Encoder Reranking)](#tool-1-hybrid_search-dense--sparse--rrf--cross-encoder-reranking)
    - [Tool 2: `sql_analytics` (Relational Broadsheet Manifests & Coverage Differences)](#tool-2-sql_analytics-relational-broadsheet-manifests--coverage-differences)
@@ -694,23 +699,80 @@ NewsLens-AI eliminates this contamination through three coordinated safeguards:
 
 ---
 
-## 4. Phase 3: Cognitive Query Planner & Structured Chain-of-Thought
+## 4. Phase 3: Cognitive Query Planner & Dynamic Model Provider Registry
 
-### 3.1 Parameter Extraction with Typo Tolerance
+The Cognitive Query Planner ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py)) serves as the central reasoning dispatcher of NewsLens-AI. Operating on condensed user queries, it maps complex broadsheet research inquiries into structured tool sequences and compiles an authoritative **`AnswerBlueprint`** to govern the final synthesis format.
 
-In [`planner.py:extract_parameters_from_query()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py#L320):
-- User typed: `"he Morning Standard"` $\implies$ Typo-tolerant regex `(?:(?:the|he)\s+)?morning\s+standard` correctly resolves to `The Morning Standard`.
-- `"The Goan"` extracted as primary publication.
-- `"but not in"` detected $\implies$ `is_differential = True`.
+---
 
-### 3.2 The Live Structured `PlanResult` & `QueryPlan`
+### 3.1 Parameter Extraction with Dynamic Brand Patterns & Typo Tolerance
 
-The real planner executes and emits:
+Before invoking cognitive planning models, the system runs high-speed deterministic parameter extraction via [`extract_parameters_from_query()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py#L107):
+
+#### A. Dynamic Brand Pattern Registry Merging
+Newspaper brands are resolved through [`get_brand_patterns()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py#L43), which merges hardcoded regex patterns for major Indian broadsheets with dynamically introspected publication names from MySQL (`get_known_publications()`):
+
+```python
+# Live Pattern Resolution in extractor.py
+_KNOWN_BRANDS_PATTERNS = [
+    (re.compile(r"\b(?:the\s+)?goan(?:\s+everyday)?\b", re.I), "The Goan"),
+    (re.compile(r"\b(?:the\s+)?economic\s+times\b|\bthe\s+economics\s+times\b|\beconomics\s+times\b", re.I), "The Economic Times"),
+    (re.compile(r"\b(?:the\s+)?times\s+of\s+india\b|\bTOI\b", re.I), "The Times of India"),
+    (re.compile(r"\b(?:the\s+)?indian\s+express\b|\bIE\b", re.I), "The Indian Express"),
+    (re.compile(r"\b(?:the\s+)?hindu\b", re.I), "The Hindu"),
+    (re.compile(r"\bhindustan\s+times\b|\bHT\b", re.I), "Hindustan Times"),
+    (re.compile(r"\bmint\b|\blivemint\b", re.I), "Mint"),
+    (re.compile(r"\bbusiness\s+standard\b|\bBS\b", re.I), "Business Standard"),
+    (re.compile(r"\b(?:(?:the|he)\s+)?morning\s+standard\b|\bmorning\s+standard\b", re.I), "The Morning Standard"),
+]
+```
+
+#### B. Typo Tolerance & Multi-Newspaper Extraction
+In our running example query (*"List the news that are in the GOAN dated 1/8/2026 but not in he Morning Standard dated 1/8/2026"*):
+1. **Typo Handling**: The user typed `"he Morning Standard"` $\implies$ Regex `(?:(?:the|he)\s+)?morning\s+standard` matches and normalizes to canonical `"The Morning Standard"`.
+2. **Order Preservation**: `"The Goan"` is matched at index 26; `"The Morning Standard"` is matched at index 68. The primary target is assigned as `newspaper_name = "The Goan"`, and secondary as `comparison_newspaper = "The Morning Standard"`.
+3. **Differential Detection**: The trigger phrase `"but not in"` activates `is_differential = True` and sets `source_newspaper = "The Goan"`.
+4. **Date Normalization**: Dates formatted as `1/8/2026` or `1-8-2026` are parsed and standardized into ISO-8601 `2026-08-01`.
+5. **Section Recognition**: If section keywords appear (e.g. `sports`, `business`, `economy`, `health`), `_SECTION_PATTERNS` extracts canonical category filters.
+
+```json
+// Output of extract_parameters_from_query(query)
+{
+  "newspaper_name": "The Goan",
+  "target_newspapers": ["The Goan", "The Morning Standard"],
+  "comparison_newspaper": "The Morning Standard",
+  "source_newspaper": "The Goan",
+  "issue_date": "2026-08-01",
+  "is_differential": true,
+  "is_shared": false
+}
+```
+
+---
+
+### 3.2 The 7 Core Broadsheet Query Archetypes & Autonomous Routing Decision Matrix
+
+The planner classifies incoming inquiries into 1 of 7 primary broadsheet archetypes (plus a specialized computation archetype). This classification governs tool selection, parameter bounds, and the synthesis structure:
+
+| Archetype | Journalistic Intent & Typical Query | Primary Planned Tools | Rationale & Retrieval Focus |
+|---|---|---|---|
+| **`factual_lookup`** | Point-in-time facts, quotes, event details, or visual checks.<br/>*"What happened regarding high-speed rail on page 3?"* | `hybrid_search` (primary),<br/>`inspect_visual_asset` (if visual) | High-precision vector + BM25 search focused on specific paragraphs or visual charts. |
+| **`article_catalog`** | Whole-issue manifests, section catalogs, front-page listings.<br/>*"List all business news in The Economic Times on 2026-05-20"* | `sql_analytics`<br/>(`analysis_type="issue_summary"`) | Fast relational metadata query retrieving all article headlines, pages, authors, and sections. |
+| **`cross_newspaper_comparison`** | Multi-broadsheet coverage diffs, exclusive stories, or shared wire news.<br/>*"Stories in The Goan but not in The Morning Standard on 2026-08-01"* | `sql_analytics` (`coverage_difference` or `shared_coverage`) + `hybrid_search` | Relational set-difference or title fuzzy intersection + corroborating semantic text evidence. |
+| **`thematic_timeline`** | Chronological evolution of developing storylines across editions.<br/>*"Timeline of regulatory actions against fintech firms in Aug 2026"* | `timeline_builder` (primary),<br/>`hybrid_search` (secondary) | Chronological clustering across multi-day broadsheet issues to construct milestone progressions. |
+| **`quantitative_trend`** | Volume metrics, publication rosters, issue counts, ad counts.<br/>*"How many advertisements are in Times of India on 2026-06-15?"* | `sql_analytics` (`count_advertisements`, `count_issues`, etc.) | Direct SQL count aggregations over indexed `pages`, `articles`, or `issues` tables. |
+| **`entity_deep_dive`** | Multi-hop relational entity networks, corporate profiles, salience.<br/>*"Profile HAL's recent joint ventures and defense contracts"* | `entity_search` (primary),<br/>`hybrid_search` (secondary) | Graph traversal across `entities` and `article_entities` combined with salience-ranked excerpts. |
+| **`negative_coverage_audit`** | Verifying silence or absence of coverage across the broadsheet archive.<br/>*"Did any newspaper report on the private port tariff hike on 2026-08-05?"* | `coverage_analysis` (primary),<br/>`sql_analytics` (secondary) | 3-tier archive-wide audit checking primary targets, corroborating papers, and omission status. |
+| **`analytical_computation`** *(Special)* | Ad-hoc statistics, averages, length distributions, ratios, joins.<br/>*"What is the average article length in Mint on 2026-08-01?"* | `dynamic_analysis`<br/>(Python/SQL AST Sandbox) | Generates and executes bespoke code in a secure sandbox when queries exceed fixed SQL routines. |
+
+#### Live Running Example: The Structured `PlanResult`
+
+For our running query (*"List the news that are in the GOAN dated 1/8/2026 but not in he Morning Standard dated 1/8/2026"*), the Query Planner produces the following structured [`PlanResult`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py#L72):
 
 ```python
 PlanResult(
     archetype="cross_newspaper_comparison",
-    reasoning="Query requests exclusive articles in The Goan absent from The Morning Standard.",
+    reasoning="Query requests exclusive articles in The Goan absent from The Morning Standard on 2026-08-01. Relational coverage difference tool is required alongside corroborating hybrid search.",
     tool_calls=[
         PlannedToolCall(
             tool_name="sql_analytics",
@@ -725,7 +787,7 @@ PlanResult(
         ),
         PlannedToolCall(
             tool_name="hybrid_search",
-            purpose="Retrieve key articles and snippets from The Goan",
+            purpose="Retrieve key articles and snippets from The Goan for the same date",
             arguments={
                 "query": "List the news that are in the GOAN dated 1/8/2026 but not in he Morning Standard dated 1/8/2026",
                 "newspaper_name": "The Goan",
@@ -736,39 +798,191 @@ PlanResult(
         )
     ],
     answer_blueprint=AnswerBlueprint(
-        archetype="cross_newspaper_comparison",
-        executive_framing="Contrast exclusive coverage in The Goan with omissions in The Morning Standard.",
+        user_intent="cross_newspaper_tabular_comparison",
+        overall_tone="analytical_comparison",
+        target_word_count=400,
         sections=[
             SectionSpec(
-                title="⚡ Comparative Executive Overview",
+                title="### ⚡ Comparative Executive Overview",
                 format_type="narrative",
-                content_guideline="Summarize the core themes and article counts exclusive to The Goan.",
-                is_optional=False
+                content_focus="Summarize the core themes and article counts exclusive to The Goan.",
+                target_length="1-2 crisp paragraphs"
             ),
             SectionSpec(
-                title="📰 Verified Exclusive Articles Manifest",
+                title="### 📰 Verified Exclusive Articles Manifest",
                 format_type="markdown_table",
-                content_guideline="Tabulate exclusive stories with page numbers and section tags.",
-                is_optional=False
+                content_focus="Tabulate exclusive stories with page numbers and section tags.",
+                target_length="Full table of exclusive articles"
             ),
             SectionSpec(
-                title="📌 Thematic Breakdown of Uncovered Stories",
+                title="### 📌 Thematic Breakdown of Uncovered Stories",
                 format_type="bullet_list",
-                content_guideline="Group exclusive reports by domain (Civic, Sports, Business).",
-                is_optional=True
+                content_focus="Group exclusive reports by domain (Civic, Sports, Business).",
+                target_length="3 to 5 bullet points"
             )
         ],
-        target_word_count=400,
         table_columns=["#", "Headline", "Section", "Page", "Significance"],
-        prohibited_elements=["speculative reporting", "unverified counts"],
-        tone_and_style="Authoritative investigative broadsheet tone"
+        prohibited_elements=["speculative reporting", "unverified counts", "conversational filler"]
     )
 )
 ```
 
 ---
 
-### 3.3 Dynamic Model Provider Registry & Runtime Model Swapping (`model_config.yaml`)
+### 3.3 Dynamic Answer Blueprint Compilation (`AnswerBlueprint` & `SectionSpec`)
+
+A major architectural innovation of NewsLens-AI is decoupling answer structuring from answer synthesis. Instead of allowing the synthesis LLM to produce arbitrary layouts, the Query Planner generates an **`AnswerBlueprint`** ([`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py#L51)):
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        ANSWER BLUEPRINT STRUCTURE                      │
+├────────────────────────────────────────────────────────────────────────┤
+│ • user_intent: "archive_availability" | "cross_newspaper_comparison"   │
+│ • overall_tone: "authoritative_journalistic" | "concise_atomic" | ...  │
+│ • target_word_count: Optional integer ceiling                          │
+│ • prohibited_elements: Strict list of disallowed formats or content    │
+│ • table_columns: List of required markdown table header strings        │
+│ • sections: Ordered list of SectionSpec objects:                       │
+│     ├── title: "### ⚡ Executive Summary"                               │
+│     ├── format_type: "narrative" | "bullet_list" | "markdown_table"    │
+│     │                | "metric_card" | "timeline"                      │
+│     ├── content_focus: "Core operational details and findings"         │
+│     └── target_length: "1 to 2 paragraphs" | "3-4 bullets"             │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Declarative Blueprint Registry
+When the LLM planner does not emit an explicit blueprint, [`build_heuristic_answer_blueprint()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py#L464) matches query characteristics against `DEFAULT_BLUEPRINTS`:
+- **`archive_availability`**: Ultra-compact (`target_word_count = 90`), narrative status statement + compact coverage bullet list; strictly forbids speculative publication planning advice.
+- **`scalar_count_metric`**: Compact finding (`target_word_count = 80`) + metric card block; strictly forbids generating empty or single-row tables.
+- **`single_article_summary`**: Executive summary + operational highlights + explore further angles.
+- **`cross_newspaper_comparison`**: Executive synthesis + Markdown comparison matrix + editorial framing divergence bullets.
+- **`article_catalog`**: Scope summary + full catalog Markdown table (`#`, Publication, Date, Page, Section, Headline, Byline) + featured stories.
+- **`thematic_timeline`**: Progression arc + milestone timeline blocks + trajectory narrative.
+- **`entity_deep_dive`**: Executive profile + corporate moves bullets + media scrutiny review.
+- **`factual_lookup`**: Direct findings + verified details & quotes + related coverage context.
+
+---
+
+### 3.4 Strict Operational Tool Contracts & Negative Constraints
+
+To ensure zero parameter confusion across tool boundaries, the Query Planner enforces strict contracts:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                   TOOL BOUNDARY CONTRACTS & GUARDRAILS                           │
+├───────────────────────────────────────┬──────────────────────────────────────────┤
+│ sql_analytics (Fixed Relational Enums)│ dynamic_analysis (Synthesized Sandbox)   │
+├───────────────────────────────────────┼──────────────────────────────────────────┤
+│ • ONLY 7 Pre-Compiled Literals:       │ • Positive Scope:                        │
+│   - count_issues                      │   - Average article lengths / word counts│
+│   - count_articles                    │   - Mathematical distributions / ratios  │
+│   - count_advertisements              │   - Author statistics & correlation      │
+│   - count_photos                      │   - Multi-table relational joins         │
+│   - issue_summary                     │ • Negative Guardrail:                    │
+│   - coverage_difference               │   - STRICTLY DISALLOWED for text         │
+│   - shared_coverage                   │     reading, summaries, or quotes.       │
+│ • NEGATIVE CONSTRAINT:                │   - is_dynamic_analysis_permitted()      │
+│   - Cannot generate custom SQL.       │     blocks queries like:                 │
+│   - Cannot calculate averages, word   │     "summarize article in 100 words"     │
+│     lengths, medians, or ratios.      │     (routes to hybrid_search instead).   │
+└───────────────────────────────────────┴──────────────────────────────────────────┘
+```
+
+#### The `is_dynamic_analysis_permitted` Guardrail
+In [`planner.py:is_dynamic_analysis_permitted()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py#L71):
+- Uses `MATH_AGGREGATE_PATTERNS` to detect genuine mathematical intent: `\b(?:avg|average|mean|median|correlation|distribution|ratio)\b`.
+- Detects narrative length constraints: `\b(?:summarize|explain|overview)\b.*\b(?:in|under|around)\s+\d+\s+(?:words|sentences)\b`.
+- If word count is simply an answer length constraint, `dynamic_analysis` is rejected, preventing expensive and irrelevant code synthesis.
+
+#### Parameter Reconciliation & Sanitization
+The function [`reconcile_and_sanitize_arguments()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/tool_factory.py#L52) ensures that arguments emitted by the LLM are sanitized:
+- Dates are converted to ISO format (`YYYY-MM-DD`).
+- Active session dates and active newspapers are injected if omitted by the LLM.
+- For `sql_analytics`, if `analysis_type` is not in the 7 allowed enums, it is automatically corrected (e.g. `issue_catalog` $\to$ `issue_summary`).
+
+---
+
+### 3.5 Softly-Decoupled Live Archive Metadata Grounding (`ArchiveMetadata`)
+
+To prevent the planner from hallucinating non-existent newspapers or dates, NewsLens-AI grounds all planning in live physical archive bounds via [`backend/app/agent/archive_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/archive_context.py):
+
+#### A. Structured `ArchiveMetadata` Container
+```python
+@dataclass(frozen=True)
+class ArchiveMetadata:
+    min_date: str           # Earliest issue date in archive (e.g. "2026-08-01")
+    max_date: str           # Latest issue date in archive (e.g. "2026-09-11")
+    publications: list[str] # Active broadsheets (e.g. ["The Goan", "Mint", ...])
+    categories: list[str]   # Canonical categories (e.g. ["Business & Markets", ...])
+    context_str: str        # Formatted system prompt grounding block
+```
+
+#### B. 5-Minute In-Memory TTL Caching
+`get_archive_metadata(session_factory)` caches metadata in memory for 300 seconds (`_ARCHIVE_CACHE`), ensuring zero recurring MySQL overhead during active chat sessions.
+
+#### C. Declarative In-Memory Fallback (`STATIC_BROADSHEET_SCHEMA`)
+If MySQL is temporarily disconnected or uninitialized, `get_fallback_archive_metadata()` returns static defaults (`STATIC_ARCHIVE_DATE_MIN`, `STATIC_CANONICAL_PUBLICATIONS`), guaranteeing **zero runtime crashes** and **zero network latency**.
+
+#### D. Schema Hallucination Dictionary
+The planner prompt includes `KNOWN_COLUMN_HALLUCINATIONS` to correct frequent LLM misconceptions:
+
+| Hallucinated Column | Correct Relational Target | Rationale |
+|---|---|---|
+| `published_at`, `publish_date` | `issues.issue_date` | Date is an issue-level attribute, not an article column. |
+| `newspaper`, `source` | `newspapers.name` | Resolved via `JOIN issues ON articles.issue_id = issues.id JOIN newspapers ON issues.newspaper_id = newspapers.id`. |
+| `category` | `article_categories.name` | Resolved via `JOIN article_categories ON articles.category_id = article_categories.id`. |
+| `ad`, `is_ad` | `articles.article_type = 'advertisement'` | Broadsheets store ads as structured articles with distinct `article_type`. |
+
+---
+
+### 3.6 Two-Tier Top-K Decision Framework in Query Planning
+
+The planner dynamically assigns `top_k` retrieval bounds based on the information density demanded by the query:
+
+- **Tier 1: High-Density Factoid & Verification Queries (`top_k = 4` to `6`)**:
+  - Used for: Specific factual questions, quotes, single-article drilldowns, and companion visual asset inquiries.
+  - Why: Keeping `top_k` compact avoids flooding the context window with low-relevance paragraphs that trigger LLM confusion or hallucination.
+- **Tier 2: Broad Thematic, Synthesis & Comparative Queries (`top_k = 8` to `12`)**:
+  - Used for: Cross-newspaper comparisons, policy trajectory investigations, and domain overviews.
+  - Why: Requires multi-edition representation across competing editorial desks to identify subtle divergences in reporting tone and coverage depth.
+
+*(For the complete system-wide reference of all retrieval tool limits, see [Section 9.1 Master Parameter Matrix](#81-master-parameter-matrix-for-all-retrieval-tools)).*
+
+---
+
+### 3.7 Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`) with Anti-Repetition Guard
+
+When the downstream Corrective RAG (CRAG) Evaluator determines that retrieved evidence is deficient (`verdict.quality_score < 0.70`), the agent graph loops back to the planner via [`replan_with_feedback_async()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py#L898):
+
+```mermaid
+flowchart TD
+    InitialPlan["Initial Plan Executed"] --> CRAG_Eval{"CRAG Evaluator<br/>(quality_score < 0.70?)"}
+    CRAG_Eval -->|Pass| Synth["Answer Synthesizer"]
+    CRAG_Eval -->|Deficient| Replan["Adaptive Re-Planner<br/>(replan_with_feedback_async)"]
+    
+    subgraph SAFEGUARDS ["Re-Planning Safeguards"]
+        Record["Record Tried Calls in tried_calls"] --> AntiRep{"Matches Previous Call?"}
+        AntiRep -->|Yes| Mutate["Mutate Parameters:<br/>• Strip over-constrained date bounds<br/>• Remove narrow newspaper filters<br/>• Increase top_k (max(8, top_k + 4))"]
+        AntiRep -->|No| EmitNew["Emit Targeted Corrective Tool"]
+    end
+    
+    Replan --> SAFEGUARDS
+    Mutate --> ExecRetry["Execute Corrective Tool (1-Cycle Ceiling)"]
+    EmitNew --> ExecRetry
+    ExecRetry --> Synth
+```
+
+#### Strict Anti-Repetition Safeguards
+1. **History Tracking**: `tried_calls` maintains exact `(tool_name, arguments)` pairs executed in preceding turns.
+2. **Deterministic Mutation**: If the LLM proposes an identical tool call:
+   - For `hybrid_search`: Strips `date_from` and `date_to` to search across the entire archive, and increases `top_k` by $+4$.
+   - For `sql_analytics`: Strips specific `issue_date` filters to check adjacent issue dates.
+3. **Hard 1-Cycle Ceiling**: Re-planning is strictly bounded to a single correction pass, ensuring predictable user-facing response times.
+
+---
+
+### 3.8 Dynamic Model Provider Registry & Runtime Model Swapping (`model_config.yaml`)
 
 NewsLens-AI decouples cognitive reasoning and vision tasks from hardcoded LLM vendors via a **Unified Model Provider Registry** ([`backend/app/models/registry.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/models/registry.py)). The platform supports dynamic runtime reconfiguration across three distinct architectural tiers:
 

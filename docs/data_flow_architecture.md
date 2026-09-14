@@ -61,7 +61,7 @@ flowchart TD
         CRAG -->|Zero Evidence / Analytical Query| ToolMaker["LLM Tool Maker<br/>(Ad-Hoc Tool Synthesis)"]
         ToolMaker --> Tool_Dynamic
         Tool_Dynamic --> ToolCritic["ToolCritic (5-Metric Audit)<br/>(SASC, SRF, REH, DSF, RPS)"]
-        ToolCritic -->|Pass (>= 0.70)| CRAG
+        ToolCritic -->|"Pass (>= 0.70)"| CRAG
         ToolCritic -->|Defect Detected| ToolMaker
         CRAG -->|Zero Evidence / Ambiguous| FallbackRouter["Fallback Web/Entity Search<br/>or Anti-Hallucination Notice"]
         FallbackRouter --> Synthesizer
@@ -232,7 +232,7 @@ Handled by `backend/app/ingestion/layout/` and `backend/app/ingestion/parsers/`:
 flowchart TD
     AssetCrop["Raw Visual Asset Crop<br/>(from 300 DPI Broadsheet Page)"] --> Stage1{"Stage 1: Fast Visual Triage Gate<br/>(PIL Heuristics + Number Density)"}
     
-    Stage1 -->|Dim < 80px or Aspect > 10:1| Decorative["Filter as Decorative Divider / Icon"]
+    Stage1 -->|"Dim < 80px or Aspect > 10:1"| Decorative["Filter as Decorative Divider / Icon"]
     Stage1 -->|Data Density / Chart Features| DataCandidate["Data-Bearing Candidate<br/>(data_chart, table, infographic)"]
     Stage1 -->|Photographic Texture| PhotoCandidate["Editorial Photo Candidate<br/>(scene, portrait, ceremony)"]
 
@@ -407,17 +407,64 @@ sequenceDiagram
    - **Attached Asset Propagation & Date Isolation**: Carries forward `attached_article_id` or `attached_photo_id` selected in the broadsheet viewer, but strictly evicts attached assets if their publication date or headline conflicts with explicit query intention.
    - **Headline Conflict Invalidation**: Automatically clears stale article IDs when the user transitions to a different article headline or topic.
    - **Differential Exclusion Retention**: Preserves comparative context (*"list all those 11 articles"* $\to$ *"list all articles in The Goan but not in The Morning Standard on 2026-08-01"*).
-2. **Cognitive Query Planner & Dynamic Answer Blueprint** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py), [`backend/app/agent/archive_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/archive_context.py), [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)):
-   - Grounded with softly-decoupled live archive metadata (`get_archive_and_schema_context()`) with declarative in-memory schema fallback (`STATIC_BROADSHEET_SCHEMA`), preventing the model from inventing dates or newspapers.
-   - Formulates both tool invocations and an **`AnswerBlueprint`** with ordered `SectionSpec` directives (narrative, bullet lists, metric cards, markdown tables, timelines), target word counts, and prohibited elements.
-   - Classifies query into 1 of 7 Archetypes:
-     - `factual_lookup`: Specific figures, quotes, events, or companion charts.
-     - `article_catalog`: Front-page lead manifests and section listings.
-     - `cross_newspaper_comparison`: Differing coverage, multi-broadsheet audits, and differential exclusions (*"In X but not in Y"*).
-     - `thematic_timeline`: Evolution of storylines across time.
-     - `quantitative_trend`: Macro indicators, financial distributions, and volume metrics.
-     - `entity_deep_dive`: Multi-hop entity exploration and salience profiling.
-     - `negative_coverage_audit`: Rigorous proof of unreported topics across publications.
+2. **Cognitive Query Planner & Dynamic Answer Blueprint** ([`backend/app/agent/planner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/planner.py), [`backend/app/agent/archive_context.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/archive_context.py), [`backend/app/agent/models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py), [`backend/app/agent/extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/extractor.py)):
+   - **Architectural Philosophy**: Rather than hardcoding fixed tool pipelines or relying on unbounded LLM tool loops, NewsLens-AI employs a high-cohesion, single-turn direct planning engine. It reconciles LLM tool sequence planning with single-pass deterministic heuristic fallbacks, multi-provider candidate failovers, and closed-loop adaptive re-planning.
+
+   #### A. Dynamic Brand Pattern Resolution & Typo-Tolerant Parameter Extraction
+   - **Dynamic Registry Merging** (`get_brand_patterns()` in `extractor.py`): Combines hardcoded regular expressions for known broadsheets with dynamically introspected publications from MySQL (`get_known_publications()`), cached in memory.
+   - **Prefix & Abbreviation Normalization**: Strips conversational prefixes (*"Can you please tell me about..."*) while recognizing brand abbreviations (`TOI`, `HT`, `ET`, `IE`, `BS`, `WSJ`, `NYT`, `FT`) and optional leading articles (*"The Goan"*, *"The Hindu"*).
+   - **Typo-Tolerant Brand Matching**: Employs phonetic and character-tolerant regexes (e.g. `(?:(?:the|he)\s+)?morning\s+standard` correctly resolves `"he Morning Standard"` to `"The Morning Standard"`).
+   - **Differential & Shared Indicator Recognition**: Detects comparative exclusion triggers (*"but not in"*, *"absent from"*, *"exclusive to"*) setting `is_differential = True`, and syndicated wire triggers (*"shared"*, *"similar"*, *"both newspapers"*) setting `is_shared = True`.
+   - **Parameter Reconciliation** (`reconcile_and_sanitize_arguments()`): Normalizes raw LLM-emitted arguments against regex-extracted parameters and active session filters, enforcing date formats (`YYYY-MM-DD`) and canonical publication names.
+
+   #### B. The 7 Core Broadsheet Query Archetypes & Routing Decision Matrix
+   Every incoming query is mapped into an explicit journalistic query archetype that dictates downstream retrieval strategies, tool sequencing (1 to 3 concurrent calls), and structural answer formatting:
+
+   | Archetype | Journalistic Intent | Primary Planned Tools | Typical Parameter Payload | Downstream Output Format |
+   |---|---|---|---|---|
+   | **`factual_lookup`** | Point-in-time facts, quotes, event details, or visual checks | `hybrid_search` (primary), `inspect_visual_asset` (if visual) | `query`, `newspaper_name`, `date_from`, `date_to`, `page_filter`, `top_k=6` | Direct narrative findings + bulleted operational details + citations |
+   | **`article_catalog`** | Whole-issue manifests, section catalogs, front-page listings | `sql_analytics` (`analysis_type="issue_summary"`) | `newspaper_name`, `issue_date`, `category_filter`, `page_filter` | Markdown manifest table (`#`, Headline, Page, Section, Byline) + featured highlights |
+   | **`cross_newspaper_comparison`** | Multi-broadsheet coverage diffs, exclusive stories, or shared wire news | `sql_analytics` (`coverage_difference` or `shared_coverage`) + `hybrid_search` | `newspaper_name`, `comparison_newspaper`, `issue_date`, `query` | Cross-newspaper comparison matrix table + editorial framing divergence bullets |
+   | **`thematic_timeline`** | Chronological evolution of developing storylines across editions | `timeline_builder` (primary), `hybrid_search` (corroborating) | `query`, `limit=8` | Chronological dated milestone timeline + trajectory narrative |
+   | **`quantitative_trend`** | Volume metrics, publication rosters, issue counts, ad counts | `sql_analytics` (`count_issues`, `count_articles`, `count_advertisements`, `count_photos`) | `analysis_type`, `newspaper_name`, `date_from`, `date_to`, `issue_date` | Direct authoritative findings + compact metric cards |
+   | **`entity_deep_dive`** | Multi-hop relational entity networks, corporate profiles, salience | `entity_search` (primary), `hybrid_search` (corroborating) | `entity_name`, `top_k=8` | Executive profile + corporate actions bullets + media scrutiny narrative |
+   | **`negative_coverage_audit`** | Verifying silence or absence of coverage across the broadsheet archive | `coverage_analysis` (primary), `sql_analytics` (secondary) | `query`, `target_date` | 3-tier coverage matrix table (Primary, Corroborating, Omission verdict) |
+   | **`analytical_computation`** *(Special)* | Ad-hoc statistics, averages, length distributions, ratios, joins | `dynamic_analysis` (synthesized Python/SQL sandbox) | `query`, `analysis_description` | Computed mathematical metrics + verified tabular statistics |
+
+   #### C. Strict Operational Tool Contracts & Negative Constraints
+   To eliminate model confusion and tool parameter hallucinations, the query planner operates under strict contractual boundaries:
+   - **`sql_analytics` Contract & Negative Boundary**:
+     - Dedicated relational system of record strictly constrained to **7 fixed pre-compiled enum routines**: `count_issues`, `count_articles`, `count_advertisements`, `count_photos`, `issue_summary`, `coverage_difference`, `shared_coverage`.
+     - ⚠️ **Negative Constraint**: CANNOT execute arbitrary SQL, CANNOT compute averages, CANNOT calculate word lengths, medians, percentiles, or dynamic groupings. Calling `sql_analytics` for any analytical calculation outside these 7 enums results in fatal schema validation failure.
+   - **`dynamic_analysis` Contract & Guardrail Boundary**:
+     - LLM-synthesized Python and SQL analysis engine executed in an isolated subprocess AST sandbox.
+     - **Positive Scope**: Permitted for calculations, mathematical aggregations, averages (*"average article length in Mint"*), distributions, ratios, author frequencies, or multi-table joins.
+     - ⚠️ **Negative Constraint (`is_dynamic_analysis_permitted(query)`)**: Strictly barred from text summarization, article reading, quotes, or narrative inquiries (e.g. *"summarize the article in 100 words"*). When word count denotes an answer length constraint rather than a database column calculation, the planner strips `dynamic_analysis` and routes exclusively to `hybrid_search`.
+
+   #### D. Dynamic Answer Blueprint Compilation (`AnswerBlueprint` & `SectionSpec`)
+   Simultaneously with tool scheduling, the planner compiles a structured `AnswerBlueprint` ([`models.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/models.py)) injected directly into the `AnswerSynthesizer`:
+   - **Declarative Blueprint Registry**: Built-in specialized blueprints for `archive_availability`, `scalar_count_metric`, `single_article_summary`, `cross_newspaper_comparison`, `article_catalog`, `thematic_timeline`, `entity_deep_dive`, and `factual_lookup`.
+   - **Typed Section Directives (`SectionSpec`)**: Specifies ordered headers (`title`), presentation format (`format_type`: `narrative`, `bullet_list`, `markdown_table`, `metric_card`, `timeline`), editorial objective (`content_focus`), and length bounds (`target_length`).
+   - **Stylistic Constraints & Anti-Hallucination Directives**: Injects strict `prohibited_elements` (e.g. prohibiting robotic catalog tables for single-article summaries, forbidding speculative future corporate strategy when availability is zero, barring conversational filler), `target_word_count`, and `table_columns`.
+
+   #### E. Softly-Decoupled Live Archive Metadata Grounding & Introspection
+   To anchor planning in physical reality and prevent the model from inventing non-existent publication dates or newspapers:
+   - **Dynamic Metadata Introspection** (`get_archive_metadata()` in `archive_context.py`): Queries MySQL with a 5-minute TTL cache (`_ARCHIVE_CACHE`) to resolve `min_date`, `max_date`, distinct `publications`, and `categories`.
+   - **Soft Decoupling Guarantee**: If MySQL is unreachable, uninitialized, or in offline CI/CD, the planner automatically falls back to `STATIC_BROADSHEET_SCHEMA` and `get_fallback_archive_metadata()`, guaranteeing zero runtime crashes and zero network latency.
+   - **Hallucination Prevention**: Explicit mapping dictionary `KNOWN_COLUMN_HALLUCINATIONS` prevents common SQL schema errors (e.g. maps hallucinated `published_at` $\to$ `issues.issue_date`, `newspaper` $\to$ `newspapers.name`, `category` $\to$ `article_categories.name`).
+   - **Critical Date Restraint**: If a user query contains no dates, the planner strictly forbids inventing historical dates (e.g. "2020-01-01"), leaving date parameters empty to search across the full broadsheet archive.
+
+   #### F. Two-Tier Top-K Decision Framework in Query Planning
+   The planner balances context window budget against coverage density using a two-tier top-k framework:
+   - **Tier 1: High-Density Factoid & Verification Queries (`top_k = 4` to `6`)**: Applied to specific factual lookups, single-article extractions, quotes, and visual asset companion inspections to prevent noisy context dilution.
+   - **Tier 2: Broad Thematic, Synthesis & Comparative Queries (`top_k = 8` to `12`)**: Applied to cross-newspaper comparisons, domain overviews, and policy explorations to ensure diverse broadsheet representation across editorial desks.
+
+   #### G. Closed-Loop Adaptive Re-Planning (`replan_with_feedback_async`)
+   When the Corrective RAG (CRAG) Evaluator diagnoses an evidence deficiency or zero grounded hits:
+   - **Gap-Informed Adaptation**: Evaluator emits an `EvaluationVerdict` with `gap_diagnosis` (e.g. *"missing articles from The Hindu"* or *"over-constrained date filter"*).
+   - **Strict Anti-Repetition Guard**: Tracks `tried_calls` across previous turns. If a proposed tool call matches an already-executed call's `tool_name` and parameters, the re-planner modifies the call by stripping over-restrictive `date_from`/`date_to` bounds, relaxing newspaper filters, and increasing `top_k` (`top_k = max(8, top_k + 4)`).
+   - **Hard Single-Cycle Ceiling**: Re-planning is strictly capped at 1 adaptive cycle to guarantee bounded query latency.
+
 3. **Specialized Tool Execution & Modular Retrieval Engines** ([`backend/app/agent/executor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/executor.py)):
    - `InspectVisualAsset`: Handled by `VisualInspectionEngine` ([`retrieval/visual_inspector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/retrieval/visual_inspector.py)) executing the 5-Tier Strategy Cascade (A: photo_id; B: headline; C: article_id; D: multi-criteria DB; E: scoped caption/VLM).
      - Enforces query-date priority invariant (`effective_date = explicit_query_date or asset_date`).
@@ -471,7 +518,7 @@ graph LR
         E3(("Entity: SAFHAL Helicopter Engine<br/>(Product / Defense)"))
         E4(("Entity: Ministry of Defence<br/>(Government)"))
         
-        E1 ---|co-occurs (weight: 12)| E2
+        E1 ---|"co-occurs (weight: 12)"| E2
         E2 ---|developed_product| E3
         E1 ---|manufactures| E3
         E1 ---|procurement_contract| E4
