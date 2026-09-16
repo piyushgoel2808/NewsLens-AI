@@ -93,11 +93,18 @@ async def update_model_bindings(
         extra={"new_bindings": request.task_bindings, "saved_to_disk": saved},
     )
 
-    return {
+    result: dict[str, Any] = {
         "status": "updated",
         "saved_to_disk": saved,
         "task_bindings": model_cfg.task_bindings,
     }
+    if not saved:
+        result["warning"] = (
+            "Task bindings updated in memory for the active session, "
+            "but could not be persisted to model_config.yaml on disk. "
+            "Verify host volume mount permissions."
+        )
+    return result
 
 
 @router.post("/model-bindings/reset", summary="Reset task-provider bindings to system defaults")
@@ -123,8 +130,15 @@ async def reset_model_bindings() -> dict[str, Any]:
         extra={"saved_to_disk": saved},
     )
 
-    return {
+    result: dict[str, Any] = {
         "status": "reset_to_default",
         "saved_to_disk": saved,
         "task_bindings": model_cfg.task_bindings,
     }
+    if not saved:
+        result["warning"] = (
+            "Task bindings reset in memory for the active session, "
+            "but could not be persisted to model_config.yaml on disk. "
+            "Verify host volume mount permissions."
+        )
+    return result

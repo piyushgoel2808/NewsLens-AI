@@ -13,10 +13,13 @@ Usage:
 from __future__ import annotations
 
 import functools
+import logging
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -512,6 +515,9 @@ class Settings(BaseSettings):
         if not target_path:
             target_path = (root / "model_config.yaml").resolve()
 
+        # Always update in-memory configuration so active session reflects new bindings
+        object.__setattr__(self, "_model_config_data", config)
+
         try:
             raw_providers = {
                 k: {
@@ -528,9 +534,12 @@ class Settings(BaseSettings):
             with target_path.open("w", encoding="utf-8") as f:
                 yaml.safe_dump(dump_data, f, default_flow_style=False, sort_keys=False)
 
-            object.__setattr__(self, "_model_config_data", config)
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "Could not persist model_config.yaml to disk (check volume write permissions); in-memory bindings updated",
+                extra={"target_path": str(target_path), "error": str(e)},
+            )
             return False
 
 
