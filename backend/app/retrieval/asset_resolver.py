@@ -6,7 +6,8 @@ and authoritative article ID lookup for quoted headlines.
 
 from __future__ import annotations
 
-import contextlib
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -146,10 +147,6 @@ async def resolve_authoritative_article_id(
         )
 
     return None
-
-
-from dataclasses import dataclass
-import re
 
 
 @dataclass(frozen=True)

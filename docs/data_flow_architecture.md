@@ -84,32 +84,33 @@ NewsLens-AI decouples application pipelines from hardcoded AI vendors using a **
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                 DYNAMIC MODEL PROVIDER REGISTRY                                 │
 ├──────────────────────────────┬───────────────────────────────┬──────────────────────────────────┤
-│ Tier 1: Local Sovereign      │ Tier 2: Cloud Dual-Key        │ Tier 3: Direct Cloud Enterprise  │
-│ (100% On-Premise / Offline)  │ (OpenRouter Rotated Pool)     │ (Commercial Enterprise APIs)     │
+│ Tier 1: Local Sovereign      │ Tier 2: Google Gemini Cloud   │ Tier 3: Multi-Provider Gateways │
+│ (100% On-Premise / Offline)  │ (Google AI Studio Primary)    │ (Commercial Gateways & Fallbacks)│
 ├──────────────────────────────┼───────────────────────────────┼──────────────────────────────────┤
-│ • Ollama Llama 3.1 8B        │ • OpenRouter Gemma 4 26B      │ • Google Gemini 2.5 Flash & Pro  │
-│ • Ollama DeepSeek R1 14B     │ • OpenRouter Nemotron 3.5     │ • OpenAI GPT-4o & GPT-4o-mini    │
-│ • Ollama Qwen 2.5 VL / 3 VL  │ • Cooldown Circuit Breaker    │ • NVIDIA NIM Catalog             │
-│ • Docling Layout + RapidOCR  │ • Dual-Key 429 Failover       │ • Google Cloud Vision OCR        │
-│ • BAAI/bge-m3 (1024d Dense)  │ • HTTP 429 Cooldown Timer     │ • Text-Embedding-3-Large         │
+│ • Ollama Llama 3.1 8B        │ • Google Gemini 2.5 Flash     │ • OpenAI GPT-4o & GPT-4o-mini    │
+│ • Ollama DeepSeek R1 14B     │   (Workhorse VLM, Plan, Synth)│ • OpenRouter (Gemma 4, Nemotron) │
+│ • Ollama Qwen 2.5 VL / 3 VL  │ • Google Gemini 2.5 Pro       │ • NVIDIA NIM Catalog             │
+│ • Docling Layout + RapidOCR  │   (Frontier Reasoning/Synthesis│ • Google Cloud Vision OCR        │
+│ • BAAI/bge-m3 (1024d Dense)  │ • Google Gemini 2.5 Flash-Lite│ • Text-Embedding-3-Large         │
+│                              │ • Transparent Model Failover  │ • HTTP 429 Cooldown Circuit Breaker
 └──────────────────────────────┴───────────────────────────────┴──────────────────────────────────┘
 ```
 
 ### Granular Pipeline Task Bindings
 1. **Stage 1 — Agentic Reasoning & Synthesis**:
    - `query_planner`: Autonomous tool sequence planner & sub-query generator (`gemini-2.5-flash` / `ollama_llama3`).
-   - `answerer`: Multi-newspaper factual synthesizer & citation linker (`gemini-2.5-flash` / `ollama_llama3`).
-   - `answer_verifier`: Reflective fact-checking critic and fluff eliminator.
+   - `answerer`: Multi-newspaper factual synthesizer & citation linker (`gemini-2.5-flash` / `gemini-2.5-pro` / `ollama_llama3`).
+   - `answer_verifier`: Reflective fact-checking critic and fluff eliminator (`gemini-2.5-flash` / `ollama_llama3`).
 2. **Stage 2 — Vision & Broadsheet Ingestion**:
-   - `visual_extraction`: Multimodal chart, table, and scene extractor (`ollama_qwen3vl` / `gemini-2.5-flash`).
-   - `layout_analysis`: 2D spatial layout and column parsing (`docling_parser`).
+   - `visual_extraction`: Multimodal chart, table, and scene extractor (`gemini-2.5-flash` / `ollama_qwen3vl`).
+   - `layout_analysis`: 2D spatial layout and column parsing (`gemini-2.5-flash` / `docling_parser`).
    - `document_parser`: Broadsheet hierarchy structure extractor (`docling_parser`).
    - `ocr`: Character transcription engine (`rapidocr` / `docling`).
 3. **Stage 3 — Classification & Indexing**:
    - `embedding`: 1024-dimensional dense vector generator (`local_embed_bge` - BAAI/bge-m3).
-   - `article_segmentation`: Complex multi-column jump-line stitcher (`ollama_deepseek`).
-   - `classification`: 12-domain probabilistic categorization (`ollama_llama3`).
-   - `metadata_extraction`: Publication, edition, and date extractor (`ollama_llama3`).
+   - `article_segmentation`: Complex multi-column jump-line stitcher (`gemini-2.5-flash` / `ollama_deepseek`).
+   - `classification`: 12-domain probabilistic categorization (`gemini-2.5-flash` / `ollama_llama3`).
+   - `metadata_extraction`: Publication, edition, and date extractor (`gemini-2.5-flash` / `ollama_llama3`).
 
 ---
 
@@ -198,8 +199,8 @@ flowchart TD
     DataCandidate --> VLM_Dispatch{"Resolve Vision Provider<br/>(_get_provider)"}
     PhotoCandidate --> VLM_Photo_Dispatch{"Resolve Vision Provider<br/>(_get_provider)"}
 
-    VLM_Dispatch -->|Circuit Breaker Open| SecondaryVLM["Secondary Fallback VLM<br/>(Priority: ollama_qwen3vl)"]
-    VLM_Dispatch -->|Healthy Primary| PrimaryVLM["Primary VLM Provider<br/>(e.g. OpenRouter / Gemma 4 / Gemini)"]
+    VLM_Dispatch -->|Circuit Breaker Open| SecondaryVLM["Secondary Fallback VLM<br/>(Priority: Google Cloud Vision / Ollama Qwen 3 VL)"]
+    VLM_Dispatch -->|Healthy Primary| PrimaryVLM["Primary VLM Provider<br/>(Google Gemini 2.5 Flash / Pro)"]
 
     PrimaryVLM -->|HTTP 429 / RateLimitExhausted| TripBreaker["Trip Circuit Breaker (60s Cooldown)<br/>Immediate Secondary Failover"]
     TripBreaker --> SecondaryVLM
@@ -786,7 +787,7 @@ flowchart TD
 
 | Failure Scenario | Trigger Detection | Immediate Mitigation | Ultimate Safety Net |
 |---|---|---|---|
-| **Cloud VLM Rate Limit** | OpenRouter returns HTTP 429 (`RateLimitExhaustedError`) | `trip_circuit_breaker(60.0)` activates; subsequent requests bypass failing provider; immediate failover to **`ollama_qwen3vl`** | **Deterministic Spatial OCR Matrix Engine** reconstructs tabular data from token coordinates; zero ingestion abort |
+| **Cloud VLM Rate Limit** | Gemini / OpenRouter returns HTTP 429 (`RateLimitExhaustedError`) | `trip_circuit_breaker(60.0)` activates; subsequent requests bypass failing provider; immediate failover to **`google_cloud_vision`** / **`ollama_qwen3vl`** | **Deterministic Spatial OCR Matrix Engine** reconstructs tabular data from token coordinates; zero ingestion abort |
 | **Malformed VLM Output** | VLM returns conversational text instead of structured JSON | Regex extraction of Markdown table blocks (`extract_markdown_table_from_raw_text`) | Deterministic OCR text density fallback |
 | **Low-Confidence OCR** | Poor print quality, bleed-through, or broken text on old broadsheets | Consensus multi-page folio voting across Pages 1–15; RapidOCR ONNX with Unicode superscript normalization | Minimum confidence threshold filter; human verification flag in DB |
 | **Zero Retrieval Hits** | Query mentions unindexed historical date or outside broadsheet scope | Evidence Relevance Gate detects 0 grounded chunks; triggers fallback web search via NewsData.io | Enforces strict Anti-Hallucination notice; explicitly states zero archival evidence found |

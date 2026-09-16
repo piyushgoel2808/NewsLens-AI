@@ -141,7 +141,7 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Visual Asset Harvesting**: Automatically crops photos, corporate logos, data charts, circular/donut infographics, and tabular graphics from broadsheet pages.
 * **Dual-Engine Visual Intelligence**:
   * **Multimodal VLM Analysis (Qwen-3VL & Vision LLMs)**:
-    * Primary inference using local/hosted vision models (`qwen3-vl`, `qwen2.5-vl`, `gemini-1.5-pro`, `claude-3-5-sonnet`, `gpt-4o`) to transcribe financial bar charts, multi-year trend graphs, pie/donut charts, and tabular grids.
+    * Primary inference using local/hosted vision models (Google Gemini 2.5 Flash / Pro, `qwen3-vl`, `qwen2.5-vl`, `claude-3-5-sonnet`, `gpt-4o`) to transcribe financial bar charts, multi-year trend graphs, pie/donut charts, and tabular grids.
     * Generates 2-sentence executive summaries, extracts 3 to 6 key statistical metrics, and outputs clean GitHub-flavored Markdown tables.
     * **Anti-GBNF Deadlock & Token Starvation Protections**: Bypasses strict schema grammar locks on local vision models while utilizing multi-layer `repair_and_parse_json()` and recovering table transcriptions from reasoning thinking tokens when content buffers are starved.
   * **Deterministic Spatial OCR Matrix Reconstruction**: Zero-failure fallback engine that clusters OCR tokens into horizontal rows and column lanes, reconstructing GitHub-flavored Markdown tables and deriving statistical metrics (e.g. IPO subscription matrices) with confidence $\ge 0.85$.
@@ -471,5 +471,23 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Dynamic Brand Pattern Resolution (`agent/extractor.py`)**:
   * `get_brand_patterns()` merges static brand regexes with newly ingested broadsheet titles discovered via `get_known_publications()`, cached dynamically via `_DYNAMIC_PATTERNS_CACHE`.
 * **Multi-Tier Chat Failover Candidates (`providers/registry.py`)**:
-  * `ModelRegistry.get_chat_failover_candidates(prefer_local=False)` evaluates configured models and produces ordered fallback sequences across cloud providers (`nvidia_nemotron`, `openrouter_nemotron`, `openrouter_gemma4_26b`, `gemini_flash`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, etc.) and sovereign local Ollama models.
+  * `ModelRegistry.get_chat_failover_candidates(prefer_local=False)` evaluates configured models and produces ordered fallback sequences prioritizing Google Gemini Cloud (`gemini_flash`, `gemini_pro`), followed by commercial gateways (`nvidia_nemotron`, `openai_gpt4o_mini`, `openrouter_nemotron`, `groq_compound`, `openai_gpt4o`), and sovereign local Ollama models.
+
+---
+
+## 23. Google Gemini Full Cloud Architecture & Production Containerization
+
+* **Unified Google AI Studio Foundation**:
+  * Leverages official Google Gemini API keys (`GEMINI_API_KEY` or `GOOGLE_API_KEY`) with full support for `gemini-2.5-flash` (workhorse for visual extraction, query planning, and grounded answering), `gemini-2.5-pro` (complex multi-newspaper synthesis and editorial audits), `gemini-2.5-flash-lite` (conversational query condensation), and `gemini-2.0-flash` (backward-compatible fallback).
+* **Transparent Multi-Candidate Failover (`GeminiProvider._get_model_candidates`)**:
+  * Transparently cycles through model candidates if an upstream Google AI Studio endpoint returns 404/deprecation errors on newly provisioned API keys, preventing request drops.
+* **Recursive Pydantic Schema Sanitization**:
+  * Automatically strips disallowed JSON schema attributes (`title`, `description`, `$defs`) before submitting structured output schemas to Google AI Studio, guaranteeing zero OpenAPI validation rejections.
+* **Full Production Container Stack (8 Microservices)**:
+  * Deploys via `docker-compose.yml` across `backend` (Python 3.13 + uv), `frontend` (React 18 + Vite + Nginx SSE proxy), `worker` (Celery broadsheet ingestion), `mysql` (8.4 LTS), `qdrant` (1024d vectors), `minio` (S3 blob storage), `redis` (task queue & cache), and `ollama` (local sovereign LLM/VLM).
+* **Developer & Operator Automation (`Makefile`)**:
+  * Standardized single-command operations for setup, bootstrapping, health inspection, testing, and teardown (`make setup`, `make up`, `make down`, `make test`, `make health`).
+* **Open-Source Repository Governance**:
+  * Enterprise repository standards including Apache 2.0 License (`LICENSE`), Contributor Guide (`CONTRIBUTING.md`), Security Vulnerability Reporting Policy (`SECURITY.md`), and Semantic Versioning Release Notes (`CHANGELOG.md`).
+
 

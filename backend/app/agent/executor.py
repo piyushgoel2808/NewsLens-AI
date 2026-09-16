@@ -8,21 +8,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import time
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.extractor import (
-    _KNOWN_BRANDS_PATTERNS,
-    is_archive_wide_newspaper_query,
+    extract_parameters_from_query,
 )
+from app.agent.sql_dispatcher import SQLAnalyticsDispatcher
 from app.agent.state import AgentState, ToolExecutionRecord
 from app.agent.tool_maker import ToolMaker
 from app.core.logging import get_logger
 from app.models.article import Photo
-from app.retrieval.coverage_analyzer import CoverageAnalyzer, CoverageMatrix
+from app.retrieval.coverage_analyzer import CoverageAnalyzer
 from app.retrieval.entity_filter import EntitySearchEngine
 from app.retrieval.formatters import (
     format_coverage_difference_snippet,
@@ -33,7 +32,6 @@ from app.retrieval.formatters import (
 from app.retrieval.hybrid_search import HybridSearchEngine, SearchFilter
 from app.retrieval.sanitizer import repair_text_ligatures
 from app.retrieval.sql_analytics import SQLAnalyticsEngine, sanitize_headline
-from app.agent.sql_dispatcher import SQLAnalyticsDispatcher
 from app.retrieval.timeline_builder import TimelineBuilder
 from app.retrieval.visual_inspector import VisualInspectionEngine
 from app.retrieval.web_search import WebSearchEngine
@@ -176,6 +174,19 @@ class ToolExecutor:
     # Tool-Specific Implementations
     # -----------------------------------------------------------------------
 
+    async def _resolve_newspaper_id(self, newspaper_name: str | None) -> int | None:
+        """Resolve newspaper ID by name using SQL analytics engine."""
+        if not newspaper_name:
+            return None
+        try:
+            return await self._sql_analytics.get_newspaper_id_by_name(newspaper_name)
+        except Exception as e:
+            logger.warning(
+                "Could not resolve newspaper_id by name",
+                extra={"name": newspaper_name, "error": str(e)},
+            )
+            return None
+
     async def _execute_hybrid_search(
         self,
         args: dict[str, Any],
@@ -184,10 +195,7 @@ class ToolExecutor:
         np_id = args.get("newspaper_id")
         np_name = args.get("newspaper_name")
         if not np_id and np_name:
-            try:
-                np_id = await self._sql_analytics.get_newspaper_id_by_name(np_name)
-            except Exception as e:
-                logger.warning("Could not resolve newspaper_id by name in hybrid_search", extra={"name": np_name, "error": str(e)})
+            np_id = await self._resolve_newspaper_id(np_name)
 
         filter_keys = (
             "newspaper_id",
@@ -283,9 +291,13 @@ class ToolExecutor:
         self,
         args: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], int]:
+        np_id = await self._resolve_newspaper_id(args.get("newspaper_name"))
         entity_results = await self._entity_search.search_by_entity(
             entity_name=args.get("entity_name"),
             entity_type=args.get("entity_type"),
+            newspaper_id=np_id,
+            date_from=args.get("date_from"),
+            date_to=args.get("date_to"),
             top_k=args.get("top_k", 10),
         )
         items: list[dict[str, Any]] = []
@@ -372,9 +384,11 @@ class ToolExecutor:
         args: dict[str, Any],
         state: AgentState,
     ) -> tuple[list[dict[str, Any]], int]:
+        target_dt = args.get("target_date") or args.get("issue_date")
         cov_matrix = await self._coverage_analyzer.generate_coverage_matrix(
             query_or_event=args.get("query", state["query"]),
-            target_date=args.get("target_date"),
+            target_date=target_dt,
+            newspaper_name=args.get("newspaper_name"),
         )
         items = [
             {
@@ -454,7 +468,7 @@ class ToolExecutor:
             return [], 0
 
         query = args.get("query") or state.get("query", "")
-        extracted = state.get("extracted_params") or {}
+        extracted = state.get("extracted_params") or extract_parameters_from_query(query)
         context: dict[str, Any] = {
             "available_newspapers": [],
             "available_dates": [],

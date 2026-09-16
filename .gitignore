@@ -102,6 +102,7 @@ celery_*.pid
 *.tmp
 .aider*
 .serena/
+scratch/
 demo/
 Newspaper_RAG/
 *.pdf

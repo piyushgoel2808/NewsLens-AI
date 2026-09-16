@@ -22,9 +22,9 @@ export function ActiveHighlightProvider({ children }) {
     return {};
   });
 
-  // Persistent Selected LLM Model (Default: openrouter_gemma4_26b or active answerer binding)
+  // Persistent Selected LLM Model (Default: gemini_flash or active answerer binding)
   const [selectedModel, setSelectedModelState] = useState(() => {
-    return localStorage.getItem('newslens_selected_model') || 'openrouter_gemma4_26b';
+    return localStorage.getItem('newslens_selected_model') || 'gemini_flash';
   });
 
   // Refresh and synchronize task bindings from backend on mount

@@ -10,15 +10,13 @@ Provides:
 
 from __future__ import annotations
 
-import contextlib
 import inspect
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # 1. Declarative Broadsheet Database Schema Catalog (100% Static & In-Memory)
@@ -209,9 +207,10 @@ async def get_archive_metadata(
 
     if session_factory is not None:
         try:
+            from sqlalchemy import func
+
             from app.models.article import ArticleCategory
             from app.models.newspaper import Issue, Newspaper
-            from sqlalchemy import func
 
             async with session_factory() as db:
                 # Query date range and distinct publications

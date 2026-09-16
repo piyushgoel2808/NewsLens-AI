@@ -77,7 +77,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as prewarm_err:
             logger.warning("Model pre-warming non-critical warning", extra={"error": str(prewarm_err)})
 
-    asyncio.create_task(_prewarm_models())
+    if not settings.testing:
+        asyncio.create_task(_prewarm_models())
 
     logger.info("NewsLens-AI startup complete")
     yield
@@ -104,14 +105,17 @@ def create_app() -> FastAPI:
     )
 
     # CORS
-    origins = ["*"] if settings.app_debug else []
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    cors_kwargs: dict[str, Any] = {
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+    if "*" in settings.cors_origins:
+        cors_kwargs["allow_origins"] = ["*"]
+        cors_kwargs["allow_credentials"] = False
+    else:
+        cors_kwargs["allow_origins"] = settings.cors_origins
+        cors_kwargs["allow_credentials"] = True
+    app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     # Prometheus Metrics Middleware
     from app.core.metrics import PrometheusMiddleware, generate_prometheus_metrics

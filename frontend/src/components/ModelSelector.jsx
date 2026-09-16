@@ -3,18 +3,22 @@ import { Cpu, Cloud, Laptop, Sparkles, ShieldCheck } from 'lucide-react';
 
 // Hardcoded reference models for clean display labels
 const CORE_MODELS = {
-  openrouter: [
-    { id: 'openrouter_gemma4_26b', label: 'Gemma 4 26B (Dual-Key Free)', hint: 'Vision + Chat' },
-    { id: 'openrouter_nemotron', label: 'Nemotron 3.5 Lightning (Dual-Key Free)', hint: 'Reasoning' },
+  gemini_cloud: [
+    { id: 'gemini_flash', label: 'Gemini 2.5 Flash (Google Cloud)', hint: 'Vision + Fast Reasoning' },
+    { id: 'gemini_pro', label: 'Gemini 2.5 Pro (Google Cloud)', hint: 'Frontier Reasoning' },
+    { id: 'gemini_flash_lite', label: 'Gemini 2.5 Flash-Lite', hint: 'High-Volume / Low-Cost' },
+    { id: 'gemini_2_flash', label: 'Gemini 2.0 Flash', hint: 'Previous Gen Fallback' },
   ],
   cloud_direct: [
-    { id: 'gemini_flash', label: 'Gemini 3.7 Flash', hint: 'Google Grounding' },
-    { id: 'gemini_pro', label: 'Gemini Pro Latest', hint: 'Google Deep Analysis' },
     { id: 'groq_compound', label: 'Groq Compound AI', hint: 'Ultra-Fast' },
     { id: 'groq_qwen', label: 'Groq Qwen 3.6 27B', hint: 'Fast Reasoning' },
     { id: 'groq_gpt_oss', label: 'Groq GPT-OSS 120B', hint: 'Open Weight' },
     { id: 'openai_gpt4o', label: 'OpenAI GPT-4o', hint: 'Omni Multimodal' },
     { id: 'openai_gpt4o_mini', label: 'OpenAI GPT-4o Mini', hint: 'Lightweight' },
+  ],
+  openrouter: [
+    { id: 'openrouter_gemma4_26b', label: 'Gemma 4 26B (OpenRouter)', hint: 'Vision + Chat' },
+    { id: 'openrouter_nemotron', label: 'Nemotron 3.5 Lightning (OpenRouter)', hint: 'Reasoning' },
   ],
   local: [
     { id: 'ollama_llama3', label: 'Llama 3.1 8B (Local)', hint: 'Fast General (~5GB)' },
@@ -51,22 +55,24 @@ export default function ModelSelector({
 
   // Determine environment tag for currently selected model
   const getModelEnv = (modelId) => {
-    if (!modelId) return { type: 'cloud_or', label: 'Dual-Key Cloud', color: 'emerald' };
+    if (!modelId) return { type: 'cloud_gemini', label: 'Google Gemini Cloud', color: 'sky' };
     const lower = modelId.toLowerCase();
-    if (
-      lower.startsWith('openrouter') ||
-      lower.includes('google/gemma-4') ||
-      lower.includes('nemotron-3.5-lightning:free')
-    ) {
-      return { type: 'cloud_or', label: 'Dual-Key Cloud', color: 'emerald' };
+    if (lower.startsWith('gemini')) {
+      return { type: 'cloud_gemini', label: 'Google Gemini Cloud', color: 'sky' };
     }
     if (
-      lower.startsWith('gemini') ||
       lower.startsWith('groq') ||
       lower.startsWith('openai') ||
       lower.includes('gpt')
     ) {
       return { type: 'cloud', label: 'Cloud Direct', color: 'sky' };
+    }
+    if (
+      lower.startsWith('openrouter') ||
+      lower.includes('google/gemma-4') ||
+      lower.includes('nemotron-3.5-lightning')
+    ) {
+      return { type: 'cloud_or', label: 'OpenRouter Cloud', color: 'emerald' };
     }
     if (lower.startsWith('ollama') || lower.startsWith('local')) {
       return { type: 'local', label: 'Local Machine', color: 'amber' };
@@ -78,15 +84,16 @@ export default function ModelSelector({
 
   // Filter out any models from dynamically fetched that are already represented in core lists
   const knownIds = new Set([
-    ...CORE_MODELS.openrouter.map((m) => m.id),
+    ...CORE_MODELS.gemini_cloud.map((m) => m.id),
     ...CORE_MODELS.cloud_direct.map((m) => m.id),
+    ...CORE_MODELS.openrouter.map((m) => m.id),
     ...CORE_MODELS.local.map((m) => m.id),
   ]);
 
-  const extraCloudOR = allAvailable.filter(
+  const extraGemini = allAvailable.filter(
     (m) =>
       !knownIds.has(m.id || m.name) &&
-      (m.provider === 'openrouter' || (m.id && m.id.includes('openrouter')))
+      (m.provider === 'gemini' || (m.id && m.id.startsWith('gemini')))
   );
 
   const extraCloudDirect = allAvailable.filter(
@@ -94,7 +101,14 @@ export default function ModelSelector({
       !knownIds.has(m.id || m.name) &&
       !m.is_local &&
       m.provider !== 'openrouter' &&
-      !(m.id && m.id.includes('openrouter'))
+      m.provider !== 'gemini' &&
+      !(m.id && (m.id.startsWith('gemini') || m.id.includes('openrouter')))
+  );
+
+  const extraCloudOR = allAvailable.filter(
+    (m) =>
+      !knownIds.has(m.id || m.name) &&
+      (m.provider === 'openrouter' || (m.id && m.id.includes('openrouter')))
   );
 
   const extraLocal = allAvailable.filter(
@@ -105,7 +119,7 @@ export default function ModelSelector({
     <div className={`flex items-center gap-2 ${className}`}>
       {showLabel && !compact && (
         <div className="flex items-center gap-1.5 text-slate-400 font-medium text-xs select-none">
-          <Cpu className="w-3.5 h-3.5 text-emerald-400" />
+          <Cpu className="w-3.5 h-3.5 text-sky-400" />
           <span>Model:</span>
         </div>
       )}
@@ -113,19 +127,47 @@ export default function ModelSelector({
       {/* Grouped Model Dropdown */}
       <div className="relative inline-flex items-center">
         <select
-          value={value || 'openrouter_gemma4_26b'}
+          value={value || 'gemini_flash'}
           onChange={(e) => onChange && onChange(e.target.value)}
           className={`appearance-none bg-slate-900 border rounded-lg pl-2.5 pr-8 py-1 font-medium text-xs outline-none cursor-pointer transition-all duration-150 ${
-            currentEnv.color === 'emerald'
-              ? 'border-emerald-500/50 text-emerald-300 hover:border-emerald-400 focus:border-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
-              : currentEnv.color === 'sky'
-              ? 'border-sky-500/50 text-sky-300 hover:border-sky-400 focus:border-sky-400'
+            currentEnv.color === 'sky'
+              ? 'border-sky-500/50 text-sky-300 hover:border-sky-400 focus:border-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.15)]'
+              : currentEnv.color === 'emerald'
+              ? 'border-emerald-500/50 text-emerald-300 hover:border-emerald-400 focus:border-emerald-400'
               : 'border-amber-500/50 text-amber-300 hover:border-amber-400 focus:border-amber-400'
           }`}
           title={`Active inference model: ${value}`}
         >
-          {/* Group 1: OpenRouter Dual-Key Cloud */}
-          <optgroup label="☁️ OpenRouter Cloud (Dual-Key Free Tier)" className="bg-slate-900 text-slate-400 font-semibold">
+          {/* Group 1: Google Gemini Cloud */}
+          <optgroup label="☁️ Google Gemini Cloud (Google AI Studio)" className="bg-slate-900 text-slate-400 font-semibold">
+            {CORE_MODELS.gemini_cloud.map((m) => (
+              <option key={m.id} value={m.id} className="bg-slate-900 text-slate-200 font-normal">
+                ✨ {m.label} — {m.hint}
+              </option>
+            ))}
+            {extraGemini.map((m) => (
+              <option key={m.id || m.name} value={m.id || m.name} className="bg-slate-900 text-slate-200 font-normal">
+                ✨ {m.name || m.id} ({m.model || m.provider})
+              </option>
+            ))}
+          </optgroup>
+
+          {/* Group 2: Direct Cloud Hosted */}
+          <optgroup label="⚡ Cloud Hosted Direct (Groq, OpenAI)" className="bg-slate-900 text-slate-400 font-semibold">
+            {CORE_MODELS.cloud_direct.map((m) => (
+              <option key={m.id} value={m.id} className="bg-slate-900 text-slate-200 font-normal">
+                ⚡ {m.label} — {m.hint}
+              </option>
+            ))}
+            {extraCloudDirect.map((m) => (
+              <option key={m.id || m.name} value={m.id || m.name} className="bg-slate-900 text-slate-200 font-normal">
+                ⚡ {m.name || m.id} ({m.provider})
+              </option>
+            ))}
+          </optgroup>
+
+          {/* Group 3: OpenRouter Cloud */}
+          <optgroup label="☁️ OpenRouter Cloud" className="bg-slate-900 text-slate-400 font-semibold">
             {CORE_MODELS.openrouter.map((m) => (
               <option key={m.id} value={m.id} className="bg-slate-900 text-slate-200 font-normal">
                 ☁️ {m.label} — {m.hint}
@@ -138,21 +180,7 @@ export default function ModelSelector({
             ))}
           </optgroup>
 
-          {/* Group 2: Direct Cloud Hosted */}
-          <optgroup label="⚡ Cloud Hosted Direct" className="bg-slate-900 text-slate-400 font-semibold">
-            {CORE_MODELS.cloud_direct.map((m) => (
-              <option key={m.id} value={m.id} className="bg-slate-900 text-slate-200 font-normal">
-                ✨ {m.label} — {m.hint}
-              </option>
-            ))}
-            {extraCloudDirect.map((m) => (
-              <option key={m.id || m.name} value={m.id || m.name} className="bg-slate-900 text-slate-200 font-normal">
-                ⚡ {m.name || m.id} ({m.provider})
-              </option>
-            ))}
-          </optgroup>
-
-          {/* Group 3: Local Offline Inference */}
+          {/* Group 4: Local Offline Inference */}
           <optgroup label="🖥️ Local Offline (Ollama - High Compute)" className="bg-slate-900 text-slate-400 font-semibold">
             {CORE_MODELS.local.map((m) => (
               <option key={m.id} value={m.id} className="bg-slate-900 text-slate-200 font-normal">
@@ -177,22 +205,25 @@ export default function ModelSelector({
       {!compact && (
         <span
           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide border transition-all ${
-            currentEnv.color === 'emerald'
+            currentEnv.color === 'sky'
+              ? 'bg-sky-500/10 text-sky-400 border-sky-500/30 shadow-[0_0_8px_rgba(56,189,248,0.15)]'
+              : currentEnv.color === 'emerald'
               ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.12)]'
-              : currentEnv.color === 'sky'
-              ? 'bg-sky-500/10 text-sky-400 border-sky-500/30'
               : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
           }`}
           title={
-            currentEnv.type === 'cloud_or'
-              ? 'Dual-Account Round-Robin distribution over OpenRouter'
+            currentEnv.type === 'cloud_gemini'
+              ? 'Direct API calls to Google AI Studio Gemini Cloud'
               : currentEnv.type === 'cloud'
               ? 'Direct API calls to cloud provider'
+              : currentEnv.type === 'cloud_or'
+              ? 'API calls routed via OpenRouter gateway'
               : 'Runs locally on device hardware via Ollama'
           }
         >
-          {currentEnv.type === 'cloud_or' && <ShieldCheck className="w-3 h-3 text-emerald-400" />}
+          {currentEnv.type === 'cloud_gemini' && <Sparkles className="w-3 h-3 text-sky-400" />}
           {currentEnv.type === 'cloud' && <Cloud className="w-3 h-3 text-sky-400" />}
+          {currentEnv.type === 'cloud_or' && <ShieldCheck className="w-3 h-3 text-emerald-400" />}
           {currentEnv.type === 'local' && <Laptop className="w-3 h-3 text-amber-400" />}
           <span>{currentEnv.label}</span>
         </span>

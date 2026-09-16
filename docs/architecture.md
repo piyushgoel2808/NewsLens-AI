@@ -56,8 +56,14 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
 
 ### Evolution & Model Transitions
 1. **Local vs. Hosted Provider Flexibility**:
-   - **Local Inference (Ollama & Sentence-Transformers)**: Supports privacy-conscious, offline deployments using `llama3.1:70b` / `llama3.2:3b` for planning and answer synthesis, `qwen2.5-vl` / `qwen3-vl` for visual layout triage, and `BAAI/bge-m3` for local dense embeddings.
-   - **Hosted Production Models (NVIDIA NIM, Anthropic, OpenAI, Google, Groq, OpenRouter)**: Supports NVIDIA NIM (`nvidia/nemotron-3.5-lightning-30b-a3b` with native CoT reasoning streaming, `meta/llama-3.2-11b-vision-instruct` for multimodal layout analysis), `claude-sonnet-4-5`, `gpt-4o`, `gemini-3.7-flash`, and Groq LPU inference for ultra-fast response times.
+   - **Local Inference (Ollama & Sentence-Transformers)**: Supports privacy-conscious, offline deployments using `llama3.1:8b` / `deepseek-r1:14b` for planning and answer synthesis, `qwen2.5-vl` / `qwen3-vl` for visual layout triage, IBM Docling for 2D geometry parsing, and `BAAI/bge-m3` for local dense embeddings.
+   - **Primary Hosted Cloud Engine (Google AI Studio / Gemini Cloud)**:
+     - **`gemini-2.5-flash`** (Primary Workhorse): 1,048,576-token context window, sub-second latency (~450–600ms), native multimodal visual extraction, and zero-failure adherence to Pydantic JSON schemas. Bounded to `query_planner`, `answerer`, `visual_extraction`, and `layout_analysis`.
+     - **`gemini-2.5-pro`** (Frontier Reasoning): 1,048,576-token context window with deep multi-step analysis for complex cross-newspaper synthesis, editorial sentiment audits, and multi-edition investigations.
+     - **`gemini-2.5-flash-lite`**: High-volume, cost-effective model for conversational query condensation (`condenser.py`).
+     - **`gemini-2.0-flash`**: High-speed previous generation fallback.
+     - **Transparent Candidate Failover**: `GeminiProvider` incorporates an automatic multi-model candidate failover (`[gemini-2.5-flash, gemini-3.6-flash, gemini-3.5-flash, gemini-2.0-flash]`), ensuring continuous zero-downtime execution across varying Google API account access tiers.
+   - **Hosted Gateways & Alternative Endpoints (Groq, OpenAI, NVIDIA NIM, OpenRouter)**: Supports Groq LPU inference (`groq_compound`, `groq_qwen`), OpenAI (`gpt-4o`, `gpt-4o-mini`), NVIDIA NIM (`nvidia/nemotron-3.5-lightning`), and optional multi-provider routing via OpenRouter.
 2. **Why `BAAI/bge-m3` as Default Embedding**:
    - 1024-dimensional dense representation.
    - 8,192-token context window (accommodates lengthy long-form newspaper articles without aggressive truncation).
@@ -68,7 +74,7 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
    - **The Deterministic Spatial OCR Matrix Reconstruction Engine** was engineered as a zero-failure fallback: when VLM structured extraction returns empty, the spatial matrix algorithm reconstructs tabular data directly from OCR bounding boxes with confidence $\ge 0.85$.
 4. **Resilient Dynamic Provider Failover (`ModelRegistry.get_chat_failover_candidates`)**:
    - Computes an ordered, filtered candidate list of active providers capable of chat/tool-calling.
-   - Automatically prioritizes cloud endpoints (`nvidia_nemotron`, `openrouter_nemotron`, `openrouter_gemma4_26b`, `gemini_flash`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, etc.) or sovereign local Ollama instances based on `prefer_local` policy, ensuring uninterrupted agent execution during external rate limits or transient outages.
+   - Automatically prioritizes cloud endpoints (`gemini_flash`, `gemini_pro`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, `openrouter_nemotron`, etc.) or sovereign local Ollama instances based on `prefer_local` policy, ensuring uninterrupted agent execution during external rate limits or transient outages.
 
 ---
 
@@ -673,10 +679,65 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 20: Retrieval Engine Modularization & Clean Separation of Concerns** | Monolithic `executor.py` conflated tool dispatch, visual inspection cascades, database asset reconciliation, and presentation formatting in 3,000+ lines. | Extracted `visual_inspector.py` (`VisualInspectionEngine` with Strategies A-E and MinIO crop enrichment), `asset_resolver.py` (ground truth database asset lookup and conflict analysis), and `formatters.py` (manifest and coverage matrix snippets). |
 | **Phase 21: Softly-Decoupled Broadsheet Schema & In-Memory Archive Context** | Planner depended on live MySQL database connections for archive metadata; database connection delays stalled agent planning. | Engineered `archive_context.py` providing `STATIC_BROADSHEET_SCHEMA`, in-memory TTL caching with fallback defaults (`get_archive_and_schema_context`), eliminating hard database dependencies during planning. |
 | **Phase 22: Decoupled SQL Analytics Dispatcher & Resilient Provider Failover** | Relational SQL execution logic in `executor.py` was tightly coupled to tool management; provider failover lacked dynamic chat candidate filtering. | Extracted `SQLAnalyticsDispatcher` (`sql_dispatcher.py`) encapsulating 11 pre-compiled analytical routines; added `ArchiveMetadata` dataclass and dynamic brand cache in `archive_context.py`/`extractor.py`; implemented `get_chat_failover_candidates` in `ModelRegistry`. |
+| **Phase 23: Google Gemini Full Cloud Architecture & Production Containerization** | OpenRouter dual-key rate limits and legacy model deprecations created operational friction; onboarding required manual multi-service orchestration without container guarantees. | Transitioned primary cloud engine to Google AI Studio Gemini (`gemini-2.5-flash`, `gemini-2.5-pro`); engineered multi-candidate failover cascade (`GeminiProvider._get_model_candidates`) and Pydantic schema title cleaner; built 8-service Docker Compose specification (`docker-compose.yml`), multi-stage Dockerfiles (`backend/Dockerfile`, `frontend/Dockerfile`, `frontend/nginx.conf` with SSE reverse proxy), unified developer `Makefile`, and open-source governance standard (`LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`). |
 
 ---
 
-## 7. Future Work & Roadmap
+## 7. Production Deployment & Containerization Architecture
+
+NewsLens-AI provides an enterprise-ready, containerized deployment infrastructure orchestrated via modern **Docker Compose** (`docker-compose.yml`) and supported by a unified developer `Makefile`.
+
+```
+                                  ┌──────────────────────────────────────────────────────────┐
+                                  │                  Nginx Reverse Proxy                     │
+                                  │           (frontend container - Port 5173)               │
+                                  │  • Serves React 18 / Vite SPA Single Page Application   │
+                                  │  • Reverse-proxies /api/ with SSE buffering disabled     │
+                                  └────────────┬─────────────────────────────┬───────────────┘
+                                               │ /api/                       │ Static SPA
+                                               ▼                             ▼
+                                  ┌──────────────────────────┐   ┌───────────────────────────┐
+                                  │   FastAPI Backend Server │   │   Compiled React UI       │
+                                  │    (backend:8000)        │   │   (HTML, JS, CSS, Assets) │
+                                  └──────┬────────────┬──────┘   └───────────────────────────┘
+                                         │            │
+                         Celery Task RPC │            │ Direct Connection
+                                         ▼            ▼
+┌────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 INFRASTRUCTURE SERVICES CLUSTER                             │
+├──────────────────────────────┬───────────────────────────────┬─────────────────────────────┤
+│ MySQL 8.0 (Relational SoR)   │ Qdrant (Vector Engine)        │ MinIO (S3 Object Storage)   │
+│ • Port 3306                  │ • Port 6333 (HTTP & Dashboard)│ • Port 9000 (S3 API)        │
+│ • Fulltext & JSON columns    │ • 1024-dim BGE-M3 collections │ • Port 9001 (Web Console)   │
+├──────────────────────────────┼───────────────────────────────┼─────────────────────────────┤
+│ Redis 7 (Cache & Broker)     │ Celery Worker (worker)        │ Ollama (Local AI Engine)    │
+│ • Port 6379                  │ • Distributed ingestion queue │ • Port 11434                │
+│ • In-memory cache & pub/sub  │ • Multi-page PDF rasterization│ • Sovereign local models    │
+└──────────────────────────────┴───────────────────────────────┴─────────────────────────────┘
+```
+
+### Production Service Specifications
+1. **`frontend` (Nginx + React 18 SPA)**:
+   - Multi-stage Docker build (`node:20-alpine` $\to$ `nginx:1.27-alpine`).
+   - Custom `nginx.conf` featuring SPA fallback (`try_files $uri $uri/ /index.html`), gzip compression, and reverse-proxy for `/api/` with `proxy_buffering off` and `proxy_read_timeout 300s` for real-time Server-Sent Events (SSE) streaming.
+2. **`backend` (FastAPI + Python 3.12)**:
+   - Multi-stage Docker build utilizing `astral-sh/uv:latest` for ultra-fast dependency resolution.
+   - Pre-configured system libraries (`tesseract-ocr`, `libgl1`, `curl`, `build-essential`).
+   - Automatically executes database migrations (`alembic upgrade head`) before launching Uvicorn workers.
+3. **`worker` (Celery Async Ingestion Engine)**:
+   - Reuses backend container image to process asynchronous broadsheet PDF ingestion, OCR rasterization, and vector indexing.
+4. **`mysql`, `qdrant`, `minio`, `redis`, `ollama`**:
+   - Production Docker images configured with health checks, persistent volumes, and custom network bridging (`newslens-network`).
+
+### Unified Developer Interface (`Makefile`)
+- `make setup`: Single command onboarding (checks `.env`, spins up database & storage, runs `uv sync` & `alembic upgrade`, installs frontend).
+- `make dev` / `make run-all`: Concurrent development server runner.
+- `make prod-up` / `make prod-down` / `make prod-logs`: Docker production lifecycle management.
+- `make secrets-check`: Automated pre-flight security scan ensuring zero API keys or credentials enter git.
+
+---
+
+## 8. Future Work & Roadmap
 
 1. **Temporal Lineage & Storyline Delta Tracking**:
    - Automated entity sentiment and financial valuation evolution across decades of archived issues.

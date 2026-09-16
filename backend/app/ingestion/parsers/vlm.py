@@ -100,8 +100,8 @@ class UnifiedExtractor:
         except Exception as ex:
             logger.warning("Failed to resolve layout_analysis provider from registry", extra={"error": str(ex)})
 
-        # 3. Fallback to Google Cloud Vision, Ollama Qwen3-VL, OpenRouter Gemma 4, or Gemini
-        for candidate_id in ("google_cloud_vision", "ollama_qwen3vl", "openrouter_gemma4_26b", "gemini_vision"):
+        # 3. Fallback to Gemini Vision, Google Cloud Vision, Ollama Qwen3-VL, or OpenRouter
+        for candidate_id in ("gemini_vision", "google_cloud_vision", "ollama_qwen3vl", "openrouter_gemma4_26b"):
             try:
                 prov = reg.get_provider_by_id(candidate_id)
                 if isinstance(prov, VisionModelProvider):

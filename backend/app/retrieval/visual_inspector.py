@@ -224,27 +224,26 @@ class VisualInspectionEngine:
                     logger.warning("Photo ID %s rejected for visual inspection due to newspaper/date mismatch", photo_id)
                     params["photo_id"] = None
 
-                if photos_to_process and single_photo in photos_to_process:
-                    if single_photo.article_id:
-                        comp_stmt = (
-                            select(Photo)
-                            .where(
-                                Photo.article_id == single_photo.article_id,
-                                Photo.id != single_photo.id,
-                            )
-                            .order_by(Photo.id.asc())
-                            .options(
-                                selectinload(Photo.article)
-                                .selectinload(Article.issue)
-                                .selectinload(Issue.newspaper),
-                                selectinload(Photo.article).selectinload(Article.article_pages),
-                            )
+                if photos_to_process and single_photo in photos_to_process and single_photo.article_id:
+                    comp_stmt = (
+                        select(Photo)
+                        .where(
+                            Photo.article_id == single_photo.article_id,
+                            Photo.id != single_photo.id,
                         )
-                        comp_res = await session.execute(comp_stmt)
-                        companion_photos = comp_res.scalars().all()
-                        for cp in companion_photos:
-                            if cp.visual_type in ("data_chart", "infographic", "table") and len(photos_to_process) < 6:
-                                photos_to_process.append(cp)
+                        .order_by(Photo.id.asc())
+                        .options(
+                            selectinload(Photo.article)
+                            .selectinload(Article.issue)
+                            .selectinload(Issue.newspaper),
+                            selectinload(Photo.article).selectinload(Article.article_pages),
+                        )
+                    )
+                    comp_res = await session.execute(comp_stmt)
+                    companion_photos = comp_res.scalars().all()
+                    for cp in companion_photos:
+                        if cp.visual_type in ("data_chart", "infographic", "table") and len(photos_to_process) < 6:
+                            photos_to_process.append(cp)
 
         # Strategy B: Target headline resolved from query citation or context, find article
         if target_headline and not photos_to_process:
@@ -512,8 +511,8 @@ class VisualInspectionEngine:
             if is_placeholder and target_photo.object_key:
                 try:
                     from app.core.config import get_settings
-                    from app.storage.minio_store import MinioStore
                     from app.ingestion.visual_extractor import VisualDataExtractor
+                    from app.storage.minio_store import MinioStore
 
                     cfg = get_settings()
                     minio = MinioStore(cfg.minio)

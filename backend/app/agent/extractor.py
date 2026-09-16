@@ -260,6 +260,16 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
         if not any(pat.fullmatch(cand_hl) for pat, _ in brand_patterns):
             params["headline"] = cand_hl
 
+    # 6. Page Filter Extraction (including front page / cover page)
+    if re.search(r"\b(?:front[\s-]*page|cover[\s-]*page|page\s*(?:1|one))\b", query, re.I):
+        params["page_filter"] = "1"
+        params["page_number"] = 1
+    else:
+        p_match = re.search(r"\b(?:page|pg|p\.?)\s*(\d{1,3})\b", query, re.I)
+        if p_match:
+            params["page_filter"] = p_match.group(1)
+            params["page_number"] = int(p_match.group(1))
+
     return params
 
 

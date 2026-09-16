@@ -7,9 +7,7 @@ import re
 from collections.abc import AsyncIterator
 from typing import Any
 
-from app.agent.models import AnswerBlueprint, SectionSpec
 from app.agent.answer_verifier import AnswerVerifier
-
 from app.agent.fallback_presenter import (
     EMPTY_EVIDENCE_RESPONSE,
     generate_deterministic_summary,
@@ -19,6 +17,7 @@ from app.agent.fallback_presenter import (
     render_explore_further,
     render_front_page_comparison,
 )
+from app.agent.models import AnswerBlueprint
 from app.agent.prompt_context import (
     build_evidence_context,
     build_synthesizer_user_prompt,

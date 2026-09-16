@@ -26,6 +26,19 @@ except ImportError:
 
 try:
     import pandas as pd
+    _orig_DataFrame = pd.DataFrame
+
+    class SafeDataFrame(_orig_DataFrame):
+        """Pandas DataFrame wrapper that normalizes date/datetime objects to ISO strings for safe equality filtering."""
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            for col in self.columns:
+                if self[col].dtype == object and len(self) > 0:
+                    first_val = self[col].dropna().iloc[0] if len(self[col].dropna()) > 0 else None
+                    if isinstance(first_val, (datetime.date, datetime.datetime)):
+                        self[col] = self[col].astype(str)
+
+    pd.DataFrame = SafeDataFrame
 except ImportError:
     pd = None
 
@@ -131,7 +144,6 @@ async def main() -> None:
         return
 
     # 4. Manage database session
-    db_session = None
     engine = None
     session_maker = None
 
@@ -140,7 +152,7 @@ async def main() -> None:
             from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
             engine = create_async_engine(db_url, echo=False, pool_pre_ping=True)
             session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-        except Exception as e:
+        except Exception:
             # If DB engine fails to initialize, notify
             pass
 

@@ -1,0 +1,242 @@
+# =============================================================================
+# NewsLens-AI — Full-Stack Production Docker Compose
+# =============================================================================
+# Brings up the complete NewsLens-AI stack in containers:
+#   - Infrastructure: MySQL 8, Qdrant, MinIO, Redis, Ollama
+#   - Applications: FastAPI Backend, Celery Ingestion Worker, React/Nginx Frontend
+#
+# Usage:
+#   docker compose up -d --build
+#   docker compose logs -f
+#   docker compose down
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. MySQL 8 — System of record
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0.39
+    container_name: newslens-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-newslens_root}
+      MYSQL_DATABASE: ${MYSQL_DB:-newslens}
+      MYSQL_USER: ${MYSQL_USER:-newslens}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-newslens_pass}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "--password=${MYSQL_ROOT_PASSWORD:-newslens_root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+      --innodb-buffer-pool-size=256M
+
+  # ---------------------------------------------------------------------------
+  # 2. Qdrant — Vector Store
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.11.3
+    container_name: newslens-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # 3. MinIO — Object Storage (S3 API)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2024-08-17T01-24-54Z
+    container_name: newslens-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # 4. Redis — Cache & Celery Broker
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    container_name: newslens-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # 5. Ollama — Local LLM / VLM Server
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:0.3.12
+    container_name: newslens-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  # ---------------------------------------------------------------------------
+  # 6. Backend — FastAPI Application Server
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: newslens-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER:-newslens}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-newslens_pass}
+      - MYSQL_DB=${MYSQL_DB:-newslens}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-article_chunks}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin123}
+      - MINIO_SECURE=false
+      - MINIO_BUCKET_PAGES=${MINIO_BUCKET_PAGES:-newslens-pages}
+      - MINIO_BUCKET_ORIGINALS=${MINIO_BUCKET_ORIGINALS:-newslens-originals}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - MODEL_CONFIG_PATH=/app/model_config.yaml
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
+      - APP_SECRET_KEY=${APP_SECRET_KEY:-change-me-in-production-use-a-random-64-char-string}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEYS=${OPENROUTER_API_KEYS:-}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - NEWSDATA_API_KEY=${NEWSDATA_API_KEY:-}
+    volumes:
+      - ./model_config.yaml:/app/model_config.yaml:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  # ---------------------------------------------------------------------------
+  # 7. Celery Worker — Asynchronous Broadsheet Ingestion
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: newslens-worker
+    restart: unless-stopped
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER:-newslens}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-newslens_pass}
+      - MYSQL_DB=${MYSQL_DB:-newslens}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-article_chunks}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin123}
+      - MINIO_SECURE=false
+      - MINIO_BUCKET_PAGES=${MINIO_BUCKET_PAGES:-newslens-pages}
+      - MINIO_BUCKET_ORIGINALS=${MINIO_BUCKET_ORIGINALS:-newslens-originals}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - MODEL_CONFIG_PATH=/app/model_config.yaml
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEYS=${OPENROUTER_API_KEYS:-}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+    volumes:
+      - ./model_config.yaml:/app/model_config.yaml:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info
+
+  # ---------------------------------------------------------------------------
+  # 8. Frontend — React SPA (Nginx)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: newslens-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+# =============================================================================
+# Persistent Storage Volumes
+# =============================================================================
+volumes:
+  mysql_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  minio_data:
+    driver: local
+  redis_data:
+    driver: local
+  ollama_data:
+    driver: local

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.agent.evaluator import (
-    EvaluationVerdict,
     EvidenceEvaluator,
     _has_quantitative_payload,
 )

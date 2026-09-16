@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import json
-import os
-import resource
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -118,8 +118,17 @@ class ASTSafetyScanner:
         """Parse and scan Python source code for security violations."""
         violations: list[str] = []
 
+        # Sanitize trailing whitespace on line continuation characters
+        cleaned_lines = []
+        for line in code.splitlines():
+            cl = re.sub(r"\\\s+$", "\\\\", line)
+            if not cl.endswith("\\"):
+                cl = cl.rstrip()
+            cleaned_lines.append(cl)
+        sanitized_code = "\n".join(cleaned_lines).strip()
+
         try:
-            tree = ast.parse(code)
+            tree = ast.parse(sanitized_code)
         except SyntaxError as e:
             return ScanResult(is_safe=False, violations=[f"Syntax error on line {e.lineno}: {e.msg}"])
 
@@ -312,7 +321,7 @@ class SandboxedExecutor:
                 raw_stderr=stderr_str,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             dur_ms = round((time.monotonic() - t_start) * 1000)
             if proc:
                 try:
@@ -329,10 +338,8 @@ class SandboxedExecutor:
         except Exception as ex:
             dur_ms = round((time.monotonic() - t_start) * 1000)
             if proc:
-                try:
+                with contextlib.suppress(Exception):
                     proc.kill()
-                except Exception:
-                    pass
             logger.error(f"Unexpected sandbox execution error: {ex}")
             return SandboxResult(
                 success=False,
@@ -354,7 +361,7 @@ class SandboxedExecutor:
             res = await asyncio.wait_for(coro, timeout=float(self._timeout_seconds))
             dur_ms = round((time.monotonic() - t_start) * 1000)
             return SandboxResult(success=True, output=res, execution_time_ms=dur_ms)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             dur_ms = round((time.monotonic() - t_start) * 1000)
             return SandboxResult(success=False, error="Execution timed out.", execution_time_ms=dur_ms)
         except Exception as ex:

@@ -281,6 +281,7 @@ class Settings(BaseSettings):
     app_log_level: str = "INFO"
     app_secret_key: str = "change-me-in-production"
     testing: bool = False
+    cors_allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
 
     # --- Model config file path ---
     model_config_path: str = "model_config.yaml"
@@ -425,6 +426,15 @@ class Settings(BaseSettings):
     @property
     def redis(self) -> RedisSettings:
         return RedisSettings(url=self.redis_url)
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Allowed origins for CORS middleware."""
+        if self.app_debug:
+            return ["*"]
+        if not self.cors_allowed_origins:
+            return ["*"]
+        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
     def load_model_config(self) -> ModelConfig:
         """Load and parse model_config.yaml with robust root discovery and default fallbacks."""

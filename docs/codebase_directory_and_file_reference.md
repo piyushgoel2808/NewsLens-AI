@@ -35,12 +35,19 @@
 
 ```text
 NewsLens-AI/
-├── docker-compose.local.yml         # Containerized services: MySQL 8.4 LTS, Qdrant, MinIO, Redis, Celery
+├── docker-compose.yml               # Production 8-service container stack (backend, frontend, worker, mysql, qdrant, minio, redis, ollama)
+├── docker-compose.local.yml         # Local infrastructure container stack (MySQL 8.4 LTS, Qdrant, MinIO, Redis, Celery)
+├── Makefile                         # Developer & operator workflow automation (setup, up, down, test, health)
 ├── model_config.yaml                # Unified LLM/VLM model provider registry and dynamic task bindings
 ├── service-account.json             # Google Cloud Vision API credentials for document OCR
 ├── README.md                        # Master repository overview, setup guide, and documentation links
+├── LICENSE                          # Apache 2.0 Open-Source License
+├── CONTRIBUTING.md                   # Developer contribution guidelines and PR workflows
+├── SECURITY.md                      # Security disclosure and vulnerability reporting policy
+├── CHANGELOG.md                     # Release notes and milestone change history
 │
 ├── backend/                         # Python 3.13+ backend application root
+│   ├── Dockerfile                   # Multi-stage production container image with uv & Python 3.13
 │   ├── pyproject.toml               # Poetry/Hatch/uv project configuration & locked dependency specs
 │   ├── uv.lock                      # Deterministic locked dependency graph managed by uv
 │   │
@@ -56,13 +63,15 @@ NewsLens-AI/
 │   │   │   ├── metadata.py          # Consolidated header, folio, masthead verification & issue consensus
 │   │   │   └── storage.py           # Consolidated stream deflation, 3-tier hard deletion & debug exporter
 │   │   ├── models/                  # SQLAlchemy 2.0 async relational schemas and ORM entities
-│   │   ├── providers/               # Abstract model providers (Ollama, Groq, Gemini, OpenAI, GCV)
+│   │   ├── providers/               # Abstract model providers (Gemini, Ollama, Groq, OpenAI, NVIDIA NIM, GCV)
 │   │   ├── retrieval/               # Multi-tool retrieval engines (hybrid search, visual inspection, asset resolution, SQL analytics, reranking)
 │   │   └── storage/                 # Persistence clients (MySQL FULLTEXT, Qdrant, MinIO S3, Redis Cache)
 │   │
-│   └── tests/                       # Over 55 pytest test suites (411 unit, integration, and regression tests)
+│   └── tests/                       # Complete pytest test suites (unit, integration, and regression tests)
 │
 ├── frontend/                        # Modern Single Page Application (React 18, Vite, Tailwind CSS)
+│   ├── Dockerfile                   # Multi-stage production build (Node 22 build -> Nginx Alpine runtime)
+│   ├── nginx.conf                   # High-performance reverse proxy with SSE streaming buffer disabling
 │   ├── index.html                   # HTML5 entrypoint with broadsheet typography & viewport
 │   ├── package.json                 # Node dependencies, scripts, and build tooling
 │   ├── vite.config.js               # Vite bundler configuration & local API reverse proxy
@@ -86,8 +95,7 @@ NewsLens-AI/
 └── docs/                            # Architectural guides, schemas, logs, and data flow manuals
     ├── architecture.md              # System design, multi-tier storage, and data flow architecture
     ├── database_schema.md           # Database ER diagram, column types, foreign keys, indexes
-    ├── data_flow.md                 # Visual sequence diagrams tracing queries and document ingestion
-    ├── data_flow_architecture.md    # Detailed data flow diagrams with component boundaries
+    ├── data_flow_architecture.md    # Master technical data flow specification and component diagrams
     ├── end_to_end_data_flow_guide.md# Live production-verified data flow walkthrough with real DB traces
     ├── engineering_log.md           # Chronological technical log of architectural fixes and milestones
     ├── features.md                  # Comprehensive inventory of user-facing intelligence capabilities
@@ -124,8 +132,27 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Important Tools / Frameworks**: YAML 1.2, PyYAML parser.
 * **LLM / VLM / Embedding Models**: Configures `gemma4:12b`, `qwen3-vl:latest`, `nemotron-3.5-lightning`, `llama3.1:8b`, `deepseek-r1:14b`, `BAAI/bge-m3`, `gemini-3.7-flash`, `gpt-4o`, `text-embedding-3-large`.
 
+##### [`docker-compose.yml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docker-compose.yml)
+* **What It Has**: Production-grade orchestration for all 8 microservices: `mysql`, `qdrant`, `minio`, `redis`, `backend`, `frontend`, `worker`, and optional `ollama`.
+* **Work It Is Doing**:
+  - `backend`: FastAPI Python 3.13 application container with multi-stage build, exposed on port 8000.
+  - `frontend`: High-performance Nginx reverse proxy serving compiled React 18 assets and streaming SSE without proxy buffering on port 3000.
+  - `worker`: Celery background worker container processing PDF broadsheet ingestion tasks.
+  - `mysql`: MySQL 8.4 LTS relational system of record with healthchecks and persistent volumes.
+  - `qdrant`: Vector database with HNSW indexes for 1024-dim BGE-M3 dense embeddings.
+  - `minio`: High-throughput S3-compatible asset store for PDFs, page rasters, and photo crops.
+  - `redis`: In-memory broker for Celery queues and sub-millisecond query caching.
+  - `ollama`: Optional local sovereign LLM/VLM container with GPU acceleration support.
+* **Important Tools / Frameworks**: Docker Compose v2, healthcheck conditions, network bridges, volume persistence.
+* **LLM / VLM / Embedding Models**: Orchestrates the entire runtime environment.
+
+##### [`Makefile`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/Makefile)
+* **What It Has**: Unified developer and operator workflow commands: `make setup`, `make up`, `make down`, `make test`, `make test-frontend`, `make test-all`, `make health`, `make logs`, `make clean`.
+* **Work It Is Doing**: Encapsulates common operational routines into single self-documenting commands, standardizing dependency installation, container bootstrapping, verification test suites, and teardowns.
+* **Important Tools / Frameworks**: GNU Make, Bash, Docker Compose, uv, npm.
+
 ##### [`docker-compose.local.yml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docker-compose.local.yml)
-* **What It Has**: Container configurations for 5 core services: `mysql`, `qdrant`, `minio`, `redis`, and `celery_worker`.
+* **What It Has**: Container configurations for 5 core infrastructure services: `mysql`, `qdrant`, `minio`, `redis`, and `celery_worker`.
 * **Work It Is Doing**:
   - `mysql`: Deploys MySQL 8.4 LTS with utf8mb4 collation, 1GB buffer pool, and persistent storage in `mysql_data`.
   - `qdrant`: Deploys Qdrant vector database on port 6333 with WAL persistence in `qdrant_data`.
@@ -139,6 +166,12 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Work It Is Doing**: Provides OAuth2 machine-to-machine authentication credentials for Google Cloud Vision OCR API calls during document layout parsing and text layer recovery.
 * **Important Tools / Frameworks**: Google Cloud IAM, OAuth2.
 * **LLM / VLM / Embedding Models**: Google Cloud Vision Document Text Detection Engine.
+
+##### Governance & Developer Tooling Files:
+- [`LICENSE`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/LICENSE): Apache 2.0 open-source software license.
+- [`CONTRIBUTING.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/CONTRIBUTING.md): Comprehensive contribution guidelines, branching conventions, commit standards, and PR workflows.
+- [`SECURITY.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/SECURITY.md): Security disclosure policy, vulnerability reporting guidelines, and contact channels.
+- [`CHANGELOG.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/CHANGELOG.md): SemVer release notes documenting features, optimizations, bug fixes, and breaking changes.
 
 ---
 
@@ -922,14 +955,14 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 * **Work It Is Doing**:
   - Reads `model_config.yaml`, instantiates concrete provider classes, and resolves task bindings (`get_provider("query_planner")`).
   - Supports dynamic runtime updates and task cache invalidation.
-  - **Prioritized Failover Routing (`get_chat_failover_candidates`)**: Computes ordered lists of configured chat-capable provider IDs for resilient fallbacks across cloud (`nvidia_nemotron`, `openrouter_nemotron`, `openrouter_gemma4_26b`, `gemini_flash`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, `openai_gpt4o`, `gemini_pro`) and sovereign local endpoints (`ollama_llama3`, `ollama_deepseek`, `ollama_nemotron`), respecting `prefer_local` flags.
+  - **Prioritized Failover Routing (`get_chat_failover_candidates`)**: Computes ordered lists of configured chat-capable provider IDs for resilient fallbacks across cloud (`gemini_flash`, `gemini_pro`, `nvidia_nemotron`, `openai_gpt4o_mini`, `openrouter_nemotron`, `openrouter_gemma4_26b`, `groq_compound`, `openai_gpt4o`) and sovereign local endpoints (`ollama_llama3`, `ollama_deepseek`, `ollama_nemotron`), respecting `prefer_local` flags.
 * **Important Tools / Frameworks**: Singleton pattern, YAML parsing, Dynamic failover lists.
 * **LLM / VLM / Embedding Models**: Manages the complete lifecycle and failover resolution of all configured models.
 
 ##### Concrete Provider Implementations:
 - [`backend/app/providers/ollama_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/ollama_provider.py): Local inference via Ollama HTTP API (`/api/chat`, `/api/generate`, `/api/embeddings`). Supports Qwen-VL, Gemma4-12B, Nemotron, Llama 3.1.
 - [`backend/app/providers/groq_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/groq_provider.py): Ultra-low-latency LPU inference via Groq SDK (`llama-3.3-70b-versatile`, `qwen-2.5-32b`).
-- [`backend/app/providers/gemini_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/gemini_provider.py): Google Gemini API (`gemini-3.7-flash`, `gemini-pro-latest`) supporting multimodal vision and structured JSON outputs.
+- [`backend/app/providers/gemini_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/gemini_provider.py): Google Gemini API (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`) supporting native multimodal vision, structured JSON outputs with recursive Pydantic schema sanitization (stripping titles, descriptions, and `$defs`), and transparent multi-candidate model failover.
 - [`backend/app/providers/google_vision_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/google_vision_provider.py): Google Cloud Vision API integration for OCR and document text detection.
 - [`backend/app/providers/openai_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/openai_provider.py): OpenAI API (`gpt-4o`, `gpt-4o-mini`, `text-embedding-3-large`).
 - [`backend/app/providers/nvidia_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/nvidia_provider.py): NVIDIA NIM hosted inference via OpenAI-compatible endpoint (`https://integrate.api.nvidia.com/v1`). Supports `nvidia/nemotron-3.5-lightning-30b-a3b` with progressive `<think>` reasoning streaming and `meta/llama-3.2-11b-vision-instruct` for multimodal vision.
@@ -1247,7 +1280,6 @@ To maintain zero breakage across external tools, legacy endpoints, and all 411 t
 - [`docs/end_to_end_data_flow_guide.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/end_to_end_data_flow_guide.md): The flagship production-verified data flow guide with real database IDs, table rows, Qdrant vectors, Qwen-VL infographic reasoning, and live tool execution traces.
 - [`docs/database_schema.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/database_schema.md): Complete database schema reference, entity diagrams, and index descriptions.
 - [`docs/data_flow_architecture.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/data_flow_architecture.md): Master technical specification unifying end-to-end broadsheet intake, visual VLM failover, query planner flowchart, all 8 tools, AST sandbox execution, CRAG evaluation, and resilience matrices.
-- [`docs/data_flow.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/data_flow.md): Consolidated pointer redirecting to `data_flow_architecture.md`.
 - [`docs/tools_reference_guide.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/tools_reference_guide.md): The exhaustive reference guide for all 8 agentic retrieval and analytical tools, schemas, and dynamic `top_k` flowcharts.
 - [`docs/hallucination_prevention_and_crag.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/hallucination_prevention_and_crag.md): Rigorous technical breakdown of multi-layer hallucination prevention, CRAG evidence evaluation, ToolCritic scorecards, and closed-loop self-correcting fallbacks.
 - [`docs/features.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/features.md): Inventory of user-facing intelligence features.

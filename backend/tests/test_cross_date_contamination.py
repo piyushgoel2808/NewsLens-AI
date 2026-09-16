@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.agent.condenser import (
-    extract_active_issue_from_history,
     condense_conversational_query,
+    extract_active_issue_from_history,
 )
-from app.agent.tool_factory import reconcile_and_sanitize_arguments
 from app.agent.executor import ToolExecutor
 from app.agent.state import AgentState
-from app.models.article import Article, Photo
+from app.agent.tool_factory import reconcile_and_sanitize_arguments
+from app.models.article import Article
 from app.models.newspaper import Issue, Newspaper
 
 
@@ -92,7 +93,7 @@ async def test_condense_query_excludes_stale_asset_block_on_date_conflict():
         "headline": "Ahead of protest, CM meets Shah on quota for STs",
     }
 
-    result = await condense_conversational_query(
+    _ = await condense_conversational_query(
         query="do the Goan dated 1/8/2026 have any pm modi or amit shah photo ?",
         chat_history=[],
         attached_asset=attached,

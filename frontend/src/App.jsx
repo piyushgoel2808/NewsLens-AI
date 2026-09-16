@@ -36,9 +36,9 @@ function MainApp() {
 
   // Derive active execution tier for global status badge
   const activeLlm = selectedModel || taskBindings?.answerer || taskBindings?.query_planner || '';
+  const isCloudGemini = activeLlm.startsWith('gemini');
   const isCloudOR = activeLlm.startsWith('openrouter');
   const isCloudDirect =
-    activeLlm.startsWith('gemini') ||
     activeLlm.startsWith('groq') ||
     activeLlm.startsWith('openai');
   const isLocal = activeLlm.startsWith('ollama') || activeLlm.startsWith('local');
@@ -88,7 +88,9 @@ function MainApp() {
         {/* Dynamic Global Execution Status Pill */}
         <div
           className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono shadow-sm transition-all duration-200 ${
-            isCloudOR
+            isCloudGemini
+              ? 'bg-sky-950/40 border-sky-500/40 text-sky-300 shadow-[0_0_10px_rgba(56,189,248,0.1)]'
+              : isCloudOR
               ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
               : isCloudDirect
               ? 'bg-sky-950/40 border-sky-500/40 text-sky-300'
@@ -98,12 +100,14 @@ function MainApp() {
         >
           <span
             className={`w-2 h-2 rounded-full animate-pulse ${
-              isCloudOR ? 'bg-emerald-400' : isCloudDirect ? 'bg-sky-400' : 'bg-amber-400'
+              isCloudGemini ? 'bg-sky-400' : isCloudOR ? 'bg-emerald-400' : isCloudDirect ? 'bg-sky-400' : 'bg-amber-400'
             }`}
           />
           <span>
-            {isCloudOR
-              ? '☁️ Cloud Dual-Key Active'
+            {isCloudGemini
+              ? '☁️ Google Gemini Cloud Active'
+              : isCloudOR
+              ? '☁️ OpenRouter Cloud Active'
               : isCloudDirect
               ? '☁️ Cloud Direct Active'
               : '🖥️ Local Hardware Active'}

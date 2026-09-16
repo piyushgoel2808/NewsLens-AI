@@ -3856,7 +3856,7 @@ When users interacted with broadsheet articles containing companion infographics
 2. **Full Documentation Synchronization Across All 8 Documentation Guides**:
    - **`docs/codebase_directory_and_file_reference.md`**: Updated to document all 23+ new and modularized agent, retrieval, and ingestion files.
    - **`docs/architecture.md`**: Updated high-level architecture diagram, LangGraph state machine flow, and subsystem specifications to reflect the 10 architectural pillars, Reflexive CRAG Evaluator, Dynamic Tool Maker, and LLM Answer Verifier.
-   - **`docs/data_flow.md` & `docs/data_flow_architecture.md`**: Updated sequence diagrams and stage-by-stage pipelines to trace the closed-loop agentic workflow and visual asset inspection.
+   - **`docs/data_flow_architecture.md`**: Updated sequence diagrams and stage-by-stage pipelines to trace the closed-loop agentic workflow and visual asset inspection.
    - **`docs/features.md`**: Documented new user-facing capabilities including Closed-Loop Dynamic Tool Synthesis, AST Sandboxed Code Execution, Reflective LLM Answer Verification, and Visual Layout Inspection.
    - **`docs/end_to_end_data_flow_guide.md`**: Updated to v3.1.0 reflecting schema-aware direct planning, dynamic tool synthesis fallback, answer verification, and visual asset resolution.
    - **`docs/database_schema.md`**: Verified all 17 relational tables, foreign key cascades, and spatial bounding box schemas.
@@ -3955,4 +3955,67 @@ When users interacted with broadsheet articles containing companion infographics
 - **Pytest Verification**:
   - `backend/tests/test_planner.py`, `backend/tests/test_condenser.py`, `backend/tests/test_query_condenser.py`: 66/66 passed.
   - `backend/tests/test_dynamic_answer_blueprint.py`, `backend/tests/test_sql_analytics.py`, `backend/tests/test_evaluator_crag_dynamic.py`, `backend/tests/test_answer_verifier.py`: 42/42 passed.
+
+---
+
+## Phase 9.69 — Google Gemini Full Cloud Architecture, OpenRouter Dual-Key Deprecation & Production Readiness Release
+
+**Date**: 2026-09-16  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+1. **Aggregator Fragility & Dual-Key Maintenance Overhead**:
+   - The platform previously promoted an OpenRouter "Dual-Key" pooling strategy with complex round-robin cooldown tracking to avoid free-tier HTTP 429 rate limits. This introduced unnecessary connection latency, periodic token starvation, and complex multi-key rotation bookkeeping for cloud reasoning.
+2. **First-Party Google AI Studio Enterprise Foundation**:
+   - The user activated Google AI Studio billing with dedicated Google Gemini API keys. The cognitive and visual pipelines required migration to native first-party Google Gemini Cloud models (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`).
+3. **Pydantic Schema Validation Rejections in Google API**:
+   - When passing structured Pydantic schemas for structured JSON output to the Google GenAI SDK, Google AI Studio rejected schemas containing OpenAPI attributes like `title`, `description`, and `$defs` (`400 Invalid argument: Schema contains unsupported keywords`).
+4. **Lack of Zero-Friction One-Command Deployment**:
+   - External users cloning the GitHub repository had to manually orchestrate local Python, Node, uv, and multiple database environments without a standardized container stack or workflow automation.
+
+### Architectural Solutions & Implementations
+
+1. **Google Gemini Full Cloud Provider Foundation (`backend/app/providers/gemini_provider.py`)**:
+   - **Recursive Pydantic Schema Sanitizer (`_clean_schema_for_gemini`)**: Recursively purges unsupported keywords (`title`, `description`, `$defs`, `additionalProperties`) from Pydantic JSON schemas, guaranteeing 100% compliance with Google AI Studio structured output requirements.
+   - **Transparent Candidate Failover (`_get_model_candidates`)**: Automatically discovers fallback model identifiers (e.g. `gemini-2.5-flash` ➔ `gemini-2.5-pro` ➔ `gemini-2.0-flash`), gracefully preventing 404 or deprecation errors on newly provisioned API keys.
+   - **Native Multimodal Vision & Grounded Answering**: Full support for native high-resolution broadsheet crop analysis, 1M+ token context windows, and real-time token streaming.
+
+2. **Model Registry & Pipeline Task Realignment (`model_config.yaml`)**:
+   - Promoted `gemini_flash` (`gemini-2.5-flash`) as the primary cloud workhorse across all major tasks: `query_planner`, `answerer`, `answer_verifier`, `visual_extraction`, `layout_analysis`, `metadata_extraction`, `classification`, and `article_segmentation`.
+   - Relegated OpenRouter from "Tier 2 Dual-Key" to an optional Tier 3 gateway provider alongside OpenAI and Groq.
+   - Updated frontend default presets in `frontend/src/components/ModelSelector.jsx`, `ActiveHighlightContext.jsx`, and `ModelSettingsStudio.jsx` to default to Google Gemini Cloud.
+
+3. **Complete Production Containerization Stack (`docker-compose.yml`)**:
+   - Engineered production-ready 8-microservice Docker Compose configuration:
+     - `backend`: Multi-stage Python 3.13 container leveraging `uv` for ultra-fast deterministic dependency builds.
+     - `frontend`: Multi-stage Node 22 build with production Nginx Alpine runtime.
+     - `frontend/nginx.conf`: Custom Nginx reverse proxy with `proxy_buffering off;` and `proxy_read_timeout 600s;` for real-time SSE streaming.
+     - `worker`: Celery asynchronous worker processing heavy broadsheet PDF ingestion jobs.
+     - `mysql`: MySQL 8.4 LTS relational system of record with healthcheck conditions.
+     - `qdrant`: Qdrant vector database for 1024-dim BGE-M3 embeddings.
+     - `minio`: High-throughput S3-compatible asset store.
+     - `redis`: Redis 7 Alpine in-memory cache and task queue broker.
+     - `ollama`: Optional local sovereign LLM/VLM container with GPU acceleration support.
+
+4. **Developer & Operator Automation (`Makefile`)**:
+   - Added standard development and deployment Makefile targets: `make setup`, `make up`, `make down`, `make test`, `make test-frontend`, `make test-all`, `make health`, `make logs`, `make clean`.
+
+5. **Open-Source Repository Governance**:
+   - Added Apache 2.0 license (`LICENSE`).
+   - Added Contributor Covenant guidelines (`CONTRIBUTING.md`).
+   - Added Security vulnerability disclosure policy (`SECURITY.md`).
+   - Added Semantic Versioning release notes (`CHANGELOG.md`).
+
+6. **Full Documentation Suite Synchronization Across `docs/`**:
+   - **`docs/architecture.md`**: Updated Section 3 (model specifications), Section 6 (Phase 23 milestone), Section 7 (Production Deployment & Containerization Architecture), and Section 8 (Roadmap).
+   - **`docs/data_flow_architecture.md`**: Updated 3-Tier Model Provider Registry diagram, granular task bindings, VLM failover flowchart, and resilience matrix.
+   - **`docs/end_to_end_data_flow_guide.md`**: Updated verification status to v3.2.0, Section 1.5.E (Visual failover with Gemini 2.5 Flash VLM), and Phase 3.8 (Dynamic Model Provider Registry & Runtime Swapping API).
+   - **`docs/codebase_directory_and_file_reference.md`**: Updated directory tree, Section 3 (Root operational infrastructure), Section 4.7 (`gemini_provider.py` & failover routing), and Section 8 (removed obsolete `data_flow.md`).
+   - **`docs/features.md`**: Updated Section 1.4 (vision models), Section 22 (chat failover priority), and added Section 23 (Google Gemini Full Cloud Architecture & Production Containerization).
+
+### Verification & QA
+- **Pytest Test Suites**: 83/83 core tests passing (100% green across providers, planner, synthesizer, condenser, SQL analytics, evaluators, and verifiers).
+- **Frontend Vite Build**: Production bundle built with 0 errors in 1.00s.
+- **Link Integrity**: Zero broken links across `docs/` (`grep -ri "data_flow.md" docs/` returns 0 hits).
+
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -73,7 +74,13 @@ class EntitySearchEngine:
             )
 
             if entity_name:
-                stmt = stmt.where(Entity.name.ilike(f"%{entity_name}%"))
+                clean_e = entity_name.strip()
+                if " or " in clean_e.lower():
+                    parts = [p.strip() for p in re.split(r"\s+or\s+", clean_e, flags=re.I) if p.strip()]
+                    if parts:
+                        stmt = stmt.where(or_(*(Entity.name.ilike(f"%{p}%") for p in parts)))
+                else:
+                    stmt = stmt.where(Entity.name.ilike(f"%{clean_e}%"))
             if entity_type:
                 stmt = stmt.where(Entity.type == entity_type)
             if min_salience > 0.0:

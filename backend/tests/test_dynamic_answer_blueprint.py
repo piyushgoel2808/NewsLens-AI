@@ -1,18 +1,20 @@
 """Unit and integration tests for Dynamic Answer Blueprint Architecture."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from app.agent.answer_verifier import AnswerVerificationResult
+from app.agent.evaluator import EvaluationVerdict
+from app.agent.graph import AgentWorkflow
 from app.agent.models import (
     AgentPlan,
     AnswerBlueprint,
-    PlanResult,
     SectionSpec,
     ToolCallSpec,
 )
 from app.agent.planner import QueryPlanner, build_heuristic_answer_blueprint
 from app.agent.synthesizer import AnswerSynthesizer, compile_structure_from_blueprint
-from app.agent.graph import AgentWorkflow
 from app.providers.base import ModelResponse
 
 
@@ -226,6 +228,26 @@ class TestEndToEndWorkflowWithBlueprint:
         )
         workflow._synthesizer._provider = mock_provider
         workflow._planner._provider = mock_provider
+        workflow._verifier._provider = mock_provider
+        workflow._evaluator._provider = mock_provider
+        workflow._executor.execute_tools = AsyncMock(return_value=([], [], {}))
+        workflow._evaluator.evaluate_evidence_async = AsyncMock(
+            return_value=EvaluationVerdict(
+                is_sufficient=True,
+                quality_score=1.0,
+                recommended_action="proceed_to_synthesis",
+            )
+        )
+        workflow._verifier.verify_answer_async = AsyncMock(
+            return_value=AnswerVerificationResult(
+                is_valid=True,
+                recommended_action="accept",
+            )
+        )
+        if workflow._tool_maker:
+            workflow._tool_maker.generate_and_execute = AsyncMock(
+                return_value=MagicMock(success=True, evidence_items=[])
+            )
 
         # Query asking for ad count
         state = await workflow.run(

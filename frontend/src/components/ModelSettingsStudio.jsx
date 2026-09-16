@@ -40,35 +40,35 @@ import { useActiveHighlight } from '../context/ActiveHighlightContext';
 const PRESET_PROFILES = [
   {
     id: 'cloud_full',
-    name: 'Full Cloud Dual-Key',
-    badge: 'Zero Local Stress',
+    name: 'Full Cloud Google Gemini',
+    badge: 'Google AI Studio Cloud',
     icon: Cloud,
-    tagline: 'Recommended for instant setup with 0% local GPU / CPU resource consumption.',
+    tagline: 'Recommended for ultra-fast, robust reasoning and vision with zero local GPU / CPU resource consumption.',
     theme: {
-      border: 'border-emerald-500/50 hover:border-emerald-400',
-      activeBorder: 'border-emerald-400 ring-2 ring-emerald-500/40 shadow-emerald-950/50 shadow-xl',
-      bg: 'bg-emerald-950/20 hover:bg-emerald-950/30',
-      badgeBg: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
-      text: 'text-emerald-400',
-      btn: 'bg-emerald-600 hover:bg-emerald-500 text-white',
+      border: 'border-sky-500/50 hover:border-sky-400',
+      activeBorder: 'border-sky-400 ring-2 ring-sky-500/40 shadow-sky-950/50 shadow-xl',
+      bg: 'bg-sky-950/20 hover:bg-sky-950/30',
+      badgeBg: 'bg-sky-500/10 text-sky-300 border-sky-500/30',
+      text: 'text-sky-400',
+      btn: 'bg-sky-600 hover:bg-sky-500 text-white',
     },
     pipelineHighlights: {
-      reasoning: 'Google Gemma 4 26B (262k ctx)',
-      vision: 'Google Cloud Vision OCR',
+      reasoning: 'Google Gemini 2.5 Flash (1M ctx)',
+      vision: 'Gemini 2.5 Flash VLM (Native OCR & Layout)',
       indexing: 'BAAI BGE-M3 (1024d)',
     },
     description:
-      'Routes all LLM reasoning, article segmentation, and visual inspection through OpenRouter Dual-Key Gemma 4 26B, paired with Google Cloud Vision OCR for broadsheet layout parsing.',
+      'Routes all LLM reasoning, article segmentation, visual extraction, and layout analysis through Google Gemini 2.5 Flash via Google AI Studio.',
     bindings: {
-      query_planner: 'openrouter_gemma4_26b',
-      answerer: 'openrouter_gemma4_26b',
-      metadata_extraction: 'openrouter_gemma4_26b',
-      classification: 'openrouter_gemma4_26b',
-      article_segmentation: 'openrouter_gemma4_26b',
-      visual_extraction: 'openrouter_gemma4_26b',
-      layout_analysis: 'google_cloud_vision',
-      document_parser: 'google_cloud_vision',
-      ocr: 'google_cloud_vision',
+      query_planner: 'gemini_flash',
+      answerer: 'gemini_flash',
+      metadata_extraction: 'gemini_flash',
+      classification: 'gemini_flash',
+      article_segmentation: 'gemini_flash',
+      visual_extraction: 'gemini_flash',
+      layout_analysis: 'gemini_flash',
+      document_parser: 'docling_parser',
+      ocr: 'docling_parser',
       embedding: 'local_embed_bge',
     },
   },
@@ -79,27 +79,27 @@ const PRESET_PROFILES = [
     icon: Zap,
     tagline: 'Ultra-low latency reasoning and specialized 2D document parsing.',
     theme: {
-      border: 'border-sky-500/50 hover:border-sky-400',
-      activeBorder: 'border-sky-400 ring-2 ring-sky-500/40 shadow-sky-950/50 shadow-xl',
-      bg: 'bg-sky-950/20 hover:bg-sky-950/30',
-      badgeBg: 'bg-sky-500/10 text-sky-300 border-sky-500/30',
-      text: 'text-sky-400',
-      btn: 'bg-sky-600 hover:bg-sky-500 text-white',
+      border: 'border-emerald-500/50 hover:border-emerald-400',
+      activeBorder: 'border-emerald-400 ring-2 ring-emerald-500/40 shadow-emerald-950/50 shadow-xl',
+      bg: 'bg-emerald-950/20 hover:bg-emerald-950/30',
+      badgeBg: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+      text: 'text-emerald-400',
+      btn: 'bg-emerald-600 hover:bg-emerald-500 text-white',
     },
     pipelineHighlights: {
-      reasoning: 'NVIDIA Nemotron 3.5 Lightning (1M ctx)',
-      vision: 'Docling 2D Layout Engine + Cloud Vision',
+      reasoning: 'Google Gemini 3.6 Flash + Nemotron',
+      vision: 'Gemini 3.6 Flash VLM + Docling 2D Layout',
       indexing: 'BAAI BGE-M3 (1024d)',
     },
     description:
-      'Employs NVIDIA Nemotron 3.5 Lightning with 1M context window for rapid synthesis, paired with IBM Docling 2D for table & column geometry parsing and Gemma 4 for visual extraction.',
+      'Combines Google Gemini 3.6 Flash for vision and synthesis, paired with IBM Docling 2D for table & column geometry parsing.',
     bindings: {
-      query_planner: 'openrouter_nemotron',
-      answerer: 'openrouter_nemotron',
-      metadata_extraction: 'openrouter_gemma4_26b',
-      classification: 'openrouter_nemotron',
-      article_segmentation: 'openrouter_gemma4_26b',
-      visual_extraction: 'openrouter_gemma4_26b',
+      query_planner: 'gemini_flash',
+      answerer: 'gemini_flash',
+      metadata_extraction: 'gemini_flash',
+      classification: 'gemini_flash',
+      article_segmentation: 'gemini_flash',
+      visual_extraction: 'gemini_vision',
       layout_analysis: 'docling_parser',
       document_parser: 'docling_parser',
       ocr: 'google_cloud_vision',
@@ -1188,21 +1188,22 @@ export default function ModelSettingsStudio() {
                             <select
                               value={selectedProviderId}
                               onChange={(e) => handleStageTaskBinding(task.id, e.target.value)}
-                              className="flex-1 bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-xs text-slate-200 outline-none focus:border-emerald-500 cursor-pointer font-mono"
+                              className="flex-1 bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-xs text-slate-200 outline-none focus:border-sky-500 cursor-pointer font-mono"
                             >
-                              <optgroup label="☁️ Cloud Dual-Key (OpenRouter)">
+                              <optgroup label="☁️ Google Gemini Cloud (Google AI Studio)">
                                 {configuredProviders
-                                  .filter((p) => p.provider === 'openrouter')
+                                  .filter((p) => p.provider === 'gemini')
                                   .map((p) => (
                                     <option key={p.id} value={p.id}>
                                       {reachabilityMap[p.id]?.name || p.id} ({p.model})
                                     </option>
                                   ))}
                               </optgroup>
-                              <optgroup label="☁️ Cloud Direct (Google, Groq, OpenAI, NVIDIA)">
+                              <optgroup label="⚡ Cloud Hosted Direct (Groq, OpenAI, Google Vision)">
                                 {configuredProviders
                                   .filter(
                                     (p) =>
+                                      p.provider !== 'gemini' &&
                                       p.provider !== 'openrouter' &&
                                       p.provider !== 'ollama' &&
                                       p.provider !== 'local_sentence_transformers' &&
@@ -1211,6 +1212,15 @@ export default function ModelSettingsStudio() {
                                   .map((p) => (
                                     <option key={p.id} value={p.id}>
                                       {reachabilityMap[p.id]?.name || p.id} ({p.provider})
+                                    </option>
+                                  ))}
+                              </optgroup>
+                              <optgroup label="☁️ OpenRouter Cloud">
+                                {configuredProviders
+                                  .filter((p) => p.provider === 'openrouter')
+                                  .map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {reachabilityMap[p.id]?.name || p.id} ({p.model})
                                     </option>
                                   ))}
                               </optgroup>

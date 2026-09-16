@@ -1,6 +1,7 @@
 """Unit tests for query condensation, coreference resolution, and anti-hallucination guardrails."""
 
 import pytest
+from unittest.mock import AsyncMock
 
 from app.agent.condenser import (
     condense_conversational_query,
@@ -197,6 +198,7 @@ def test_attached_asset_supersedes_stale_history_date():
 async def test_resolve_attached_asset_context_mock():
     """Verify resolve_attached_asset_context queries session for photo and extracts full attributes."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.agent.condenser import resolve_attached_asset_context
 
     mock_newspaper = MagicMock()
@@ -315,6 +317,7 @@ async def test_condense_query_with_attached_asset_prevents_context_leakage():
 async def test_condense_query_with_mock_llm_provider_decision():
     """Verify LLM reformulator prompt includes attached asset block and decision rules."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.providers.base import ModelResponse
 
     history = [
@@ -428,8 +431,10 @@ async def test_end_to_end_attached_asset_planning_with_dirty_history():
     assert "Hindustan Times" not in condensed_q
     assert "Modi" not in condensed_q
 
-    # 2. QueryPlanner builds plan
-    planner = QueryPlanner()
+    # 2. QueryPlanner builds plan with deterministic fallback
+    mock_p = AsyncMock()
+    mock_p.complete = AsyncMock(side_effect=Exception("Deterministic test"))
+    planner = QueryPlanner(provider=mock_p)
     plan_result = await planner.plan_query_async(
         condensed_q,
         enable_web_search=False,
@@ -508,7 +513,9 @@ async def test_normal_text_query_topic_switch_e2e_no_leakage():
     assert needs_condensation(query, dirty_history) is False
 
     # 2. Standalone planning: active_date and active_newspapers must be None/empty
-    planner = QueryPlanner()
+    mock_p = AsyncMock()
+    mock_p.complete = AsyncMock(side_effect=Exception("Deterministic test"))
+    planner = QueryPlanner(provider=mock_p)
     plan_result = await planner.plan_query_async(
         query,
         enable_web_search=False,

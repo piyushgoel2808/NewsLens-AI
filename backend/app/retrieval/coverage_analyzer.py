@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -155,8 +156,15 @@ class CoverageAnalyzer:
             date_to=d_to,
         )
 
+        clean_q = re.sub(
+            r"(?i)\b(?:did|was|were|is|are|has|have)\s+(?:the\s+)?[\w\s]+\s+(?:report\s+on|cover|publish|carry|mention)\s*",
+            "",
+            query_or_event,
+        )
+        clean_q = re.sub(r"(?i)\b(?:on|dated?)\s+\d{4}[/-]\d{1,2}[/-]\d{1,2}\b", "", clean_q).strip("?:!.,\"' ") or query_or_event
+
         hits = await self._hybrid_search.search(
-            query=query_or_event,
+            query=clean_q,
             top_k=5,
             filters=search_filter,
             rerank=True,
@@ -166,42 +174,71 @@ class CoverageAnalyzer:
         # Tier 3: Rigorous Confidence Classification
         if hits:
             top_hit = hits[0]
-            score = top_hit.rerank_score if top_hit.rerank_score is not None else top_hit.rrf_score
+            has_rerank = top_hit.rerank_score is not None
+            rerank_val = top_hit.rerank_score if has_rerank else None
+            score = rerank_val if has_rerank else top_hit.rrf_score
 
-            # Calibrate threshold: cross-encoder logits can be negative (e.g. -4.0 is a reasonable match)
-            # or RRF score indicates confirmed lexical/dense retrieval
-            is_covered = (
-                (top_hit.rerank_score is not None and top_hit.rerank_score >= -5.0)
-                or score >= self.high_threshold
-                or (top_hit.rrf_score >= 0.008 and len(hits) >= 1)
-            )
-            if is_covered:
-                matched_art_ids = [h.article_id for h in hits]
-                matched_hls = [h.headline for h in hits[:3] if h.headline]
-                conf = 0.95 if (top_hit.rerank_score is not None and top_hit.rerank_score >= -2.0) else 0.85
-                return PublicationCoverageReport(
-                    newspaper_id=newspaper.id,
-                    newspaper_name=newspaper.name,
-                    status=CoverageStatus.COVERED,
-                    confidence=conf,
-                    matched_article_ids=matched_art_ids,
-                    matched_headlines=matched_hls,
-                    top_score=round(float(score), 4),
-                    evidence_snippet=top_hit.snippet[:300],
-                    audit_notes=f"Confirmed coverage across {len(hits)} relevant article(s).",
-                )
-            elif score >= self.uncertainty_threshold or top_hit.rrf_score >= 0.005:
-                return PublicationCoverageReport(
-                    newspaper_id=newspaper.id,
-                    newspaper_name=newspaper.name,
-                    status=CoverageStatus.UNCERTAIN,
-                    confidence=0.5,
-                    matched_article_ids=[top_hit.article_id],
-                    matched_headlines=[top_hit.headline],
-                    top_score=round(float(score), 4),
-                    evidence_snippet=top_hit.snippet[:300],
-                    audit_notes="Borderline relevance match found. Manual editorial verification advised.",
-                )
+            if has_rerank and rerank_val is not None:
+                # Calibrated cross-encoder logits:
+                # >= -4.5: Confirmed coverage
+                # -7.0 to -4.5: Borderline / uncertain relevance
+                # < -7.0: Below semantic relevance baseline -> Confirmed omission (NOT_FOUND)
+                if rerank_val >= -4.5:
+                    matched_art_ids = [h.article_id for h in hits if h.rerank_score is not None and h.rerank_score >= -5.5]
+                    matched_hls = [h.headline for h in hits[:3] if h.headline and (h.rerank_score is None or h.rerank_score >= -5.5)]
+                    conf = 0.95 if rerank_val >= -2.0 else 0.85
+                    return PublicationCoverageReport(
+                        newspaper_id=newspaper.id,
+                        newspaper_name=newspaper.name,
+                        status=CoverageStatus.COVERED,
+                        confidence=conf,
+                        matched_article_ids=matched_art_ids or [top_hit.article_id],
+                        matched_headlines=matched_hls or ([top_hit.headline] if top_hit.headline else []),
+                        top_score=round(float(score), 4),
+                        evidence_snippet=top_hit.snippet[:300],
+                        audit_notes=f"Confirmed coverage across {len(matched_art_ids or [1])} relevant article(s).",
+                    )
+                elif rerank_val >= -7.0:
+                    return PublicationCoverageReport(
+                        newspaper_id=newspaper.id,
+                        newspaper_name=newspaper.name,
+                        status=CoverageStatus.UNCERTAIN,
+                        confidence=0.5,
+                        matched_article_ids=[top_hit.article_id],
+                        matched_headlines=[top_hit.headline] if top_hit.headline else [],
+                        top_score=round(float(score), 4),
+                        evidence_snippet=top_hit.snippet[:300],
+                        audit_notes="Borderline relevance match found. Manual editorial verification advised.",
+                    )
+            else:
+                # Fallback when reranker is unavailable: use RRF / dense scores
+                is_covered = (score >= self.high_threshold) or (top_hit.rrf_score >= 0.012 and len(hits) >= 1)
+                if is_covered:
+                    matched_art_ids = [h.article_id for h in hits]
+                    matched_hls = [h.headline for h in hits[:3] if h.headline]
+                    return PublicationCoverageReport(
+                        newspaper_id=newspaper.id,
+                        newspaper_name=newspaper.name,
+                        status=CoverageStatus.COVERED,
+                        confidence=0.85,
+                        matched_article_ids=matched_art_ids,
+                        matched_headlines=matched_hls,
+                        top_score=round(float(score), 4),
+                        evidence_snippet=top_hit.snippet[:300],
+                        audit_notes=f"Confirmed coverage across {len(hits)} relevant article(s).",
+                    )
+                elif score >= self.uncertainty_threshold or top_hit.rrf_score >= 0.008:
+                    return PublicationCoverageReport(
+                        newspaper_id=newspaper.id,
+                        newspaper_name=newspaper.name,
+                        status=CoverageStatus.UNCERTAIN,
+                        confidence=0.5,
+                        matched_article_ids=[top_hit.article_id],
+                        matched_headlines=[top_hit.headline] if top_hit.headline else [],
+                        top_score=round(float(score), 4),
+                        evidence_snippet=top_hit.snippet[:300],
+                        audit_notes="Borderline relevance match found. Manual editorial verification advised.",
+                    )
 
         # Issue is fully verified as ingested ('completed'), but 0 semantic matches met threshold
         return PublicationCoverageReport(
@@ -217,6 +254,7 @@ class CoverageAnalyzer:
         query_or_event: str,
         target_date: str | None = None,
         date_window_days: int = 2,
+        newspaper_name: str | None = None,
     ) -> CoverageMatrix:
         """Generate comparative multi-newspaper coverage reconciliation matrix."""
         async with self._session_factory() as db:
@@ -235,6 +273,8 @@ class CoverageAnalyzer:
                     stmt = select(Newspaper)
             else:
                 stmt = select(Newspaper)
+            if newspaper_name:
+                stmt = stmt.where(Newspaper.name.ilike(f"%{newspaper_name}%"))
             res = await db.execute(stmt)
             newspapers = res.scalars().all()
 

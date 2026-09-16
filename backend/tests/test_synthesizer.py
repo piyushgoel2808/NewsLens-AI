@@ -656,7 +656,7 @@ class TestAnswerSynthesizer:
 
     def test_synthesizer_system_prompt_mandates_metric_absence_hard_stop(self) -> None:
         """Verify synthesizer prompt explicitly mandates refusal to invent missing statistical metrics."""
-        from app.agent.synthesizer import AnswerSynthesizer, COMMON_ANALYTICAL_GUIDELINES
+        from app.agent.synthesizer import COMMON_ANALYTICAL_GUIDELINES, AnswerSynthesizer
 
         assert "QUANTITATIVE & STATISTICAL METRIC ABSENCE HARD-STOP" in COMMON_ANALYTICAL_GUIDELINES
         assert "could not be computed or is unavailable" in COMMON_ANALYTICAL_GUIDELINES

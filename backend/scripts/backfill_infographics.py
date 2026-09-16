@@ -5,18 +5,19 @@ that currently have fallback placeholder descriptions in the database.
 """
 import argparse
 import asyncio
-import sys
 import os
+import sys
 
 # Add backend directory to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from sqlalchemy import select, or_
-from app.models.base import get_session_factory, close_db
-from app.models.article import Photo
-from app.storage.minio_store import MinioStore
-from app.ingestion.visual_extractor import VisualDataExtractor
+from sqlalchemy import or_, select
+
 from app.core.config import get_settings
+from app.ingestion.visual_extractor import VisualDataExtractor
+from app.models.article import Photo
+from app.models.base import close_db, get_session_factory
+from app.storage.minio_store import MinioStore
 
 
 async def backfill_infographics(limit: int = 10, dry_run: bool = False):

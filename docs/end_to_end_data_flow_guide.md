@@ -1,8 +1,8 @@
 # NewsLens-AI End-to-End Data Flow & Data Structure Guide
 *(Cross-Verified Against Real Production Database, Storage Cluster, Model Registry & Live Retrieval Engine)*
 
-> **Document Version**: 3.1.0 (Production Verified)  
-> **Verification Status**: Tested against live MySQL database (`42,250+` articles, `1,200+` pages, `65,000+` chunks), Qdrant cluster (`1,024`-dim BGE-M3 vectors), Model Provider Registry (Local Sovereign, Cloud Dual-Key, Cloud Direct), 3-Stage Visual Pipeline with Local VLM Failover & Deterministic Spatial OCR Matrix, and 4-Tier Journalistic Web Search Grounding.  
+> **Document Version**: 3.2.0 (Production Verified)  
+> **Verification Status**: Tested against live MySQL database (`42,250+` articles, `1,200+` pages, `65,000+` chunks), Qdrant cluster (`1,024`-dim BGE-M3 vectors), Model Provider Registry (Tier 1: Local Sovereign, Tier 2: Google Gemini Cloud / Google AI Studio Primary, Tier 3: Multi-Provider Gateways), 3-Stage Visual Pipeline with Google Gemini 2.5 Flash VLM & Deterministic Spatial OCR Matrix, and 4-Tier Journalistic Web Search Grounding.  
 > **Target Audience**: Core Engineers, AI Researchers, and System Architects.
 
 ---
@@ -488,7 +488,7 @@ Visual intelligence is not isolated in cold storage; it is directly indexed for 
 
 ---
 
-#### E. Circuit Breaker, Dual-Key Cooldown & Resilient Secondary VLM Fallback
+#### E. Circuit Breaker, Quota Cooldown & Resilient Secondary VLM Fallback
 
 Vision-Language Models during broadsheet ingestion encounter intermittent cloud provider rate limits (`HTTP 429: Too Many Requests`), network timeouts, or quota depletion. NewsLens-AI ensures zero pipeline stalling and zero data loss through an automatic **3-tier visual fallback hierarchy**:
 
@@ -499,18 +499,19 @@ Vision-Language Models during broadsheet ingestion encounter intermittent cloud 
 │   Visual Crop                                                                                    │
 │        │                                                                                         │
 │        ▼                                                                                         │
-│  [Primary Vision Provider] (e.g. OpenRouter Qwen-2.5-VL-72B)                                     │
+│  [Primary Vision Provider] (Google Gemini 2.5 Flash VLM / Google AI Studio)                     │
 │        │                                                                                         │
 │        ├─► Success ──────────────────────────────────────────► Structured Markdown Extraction    │
 │        │                                                                                         │
-│        └─► HTTP 429 / RateLimitExhaustedError                                                    │
+│        └─► HTTP 429 / RateLimitExhaustedError / Quota Exhausted                                  │
 │                 │                                                                                │
 │                 ▼                                                                                │
-│            [Dual-Key Cooldown Tracker]                                                           │
+│            [Quota & Rate-Limit Cooldown Tracker]                                                 │
 │                 │                                                                                │
-│                 ├─► Secondary Key Active ────────────────────► Retry on Key 2                    │
+│                 ├─► Candidate Model Failover ────────────────► Transparent Fallback Model        │
+│                 │   (gemini-2.5-flash ➔ gemini-2.5-pro ➔ gemini-2.0-flash)                       │
 │                 │                                                                                │
-│                 └─► All Keys Depleted                                                            │
+│                 └─► All Cloud Model Candidates Exhausted                                         │
 │                           │                                                                      │
 │                           ▼                                                                      │
 │                      [Trip Circuit Breaker] (60s – 120s cooldown)                                │
@@ -518,9 +519,9 @@ Vision-Language Models during broadsheet ingestion encounter intermittent cloud 
 │                           ▼                                                                      │
 │                      [Secondary Fallback Provider]                                               │
 │                           │                                                                      │
+│                           ├─► `google_cloud_vision` (Cloud OCR) ───► High-Fidelity OCR Matrix    │
 │                           ├─► `ollama_qwen3vl` (Local Sovereign) ──► Local VLM Inference        │
-│                           ├─► `ollama_vlm` (Local Fallback)                                      │
-│                           ├─► `gemini_vision` (Cloud Direct)                                     │
+│                           ├─► `openrouter_vlm` (Multi-Gateway)                                   │
 │                           │                                                                      │
 │                           └─► All Providers Unavailable / Down                                  │
 │                                     │                                                            │
@@ -530,12 +531,12 @@ Vision-Language Models during broadsheet ingestion encounter intermittent cloud 
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-##### 1. Dual-Key Cooldown Management
-In multi-key setups, provider instances track API key health using per-key cooldown timers:
-* When a primary key receives `HTTP 429`, the provider records:
+##### 1. Quota & Rate-Limit Cooldown Management
+Provider instances track API health and quota limits using automatic cooldown timers:
+* When an upstream provider returns `HTTP 429` or quota exhaustion, the provider records:
   $$\text{cooldown\_until} = \text{now}() + \text{retry\_after\_seconds}$$
-* Traffic immediately pivots to `OPENROUTER_API_KEY_SECONDARY`.
-* If all configured keys enter cooldown (`provider.are_all_keys_rate_limited() == True`), the pipeline signals the visual extractor.
+* For Google Gemini Cloud, the engine first transparently tests secondary candidates in its model pool (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash`).
+* If all cloud candidates or keys enter cooldown (`provider.are_all_keys_rate_limited() == True`), the pipeline signals the visual extractor.
 
 ##### 2. Dynamic Circuit Breaker (`VisualDataExtractor.trip_circuit_breaker`)
 When `RateLimitExhaustedError` is caught, the extractor trips the circuit breaker:
@@ -549,19 +550,19 @@ While `is_circuit_open() == True`:
   ```json
   {
     "level": "WARNING",
-    "message": "VisualDataExtractor circuit breaker TRIPPED for 60.0s (Reason: All OpenRouter keys currently in cooldown (HTTP 429)). Subsequent assets will immediately use deterministic OCR spatial matrix and heuristic fallback."
+    "message": "VisualDataExtractor circuit breaker TRIPPED for 60.0s (Reason: Cloud VLM currently in cooldown (HTTP 429 / Quota)). Subsequent assets will immediately use secondary VLM or deterministic OCR spatial matrix."
   }
   ```
 * Once the timer elapses, subsequent requests smoothly probe the primary provider and automatically restore standard routing.
 
 ##### 3. Secondary Vision Provider Escalation
-The extractor attempts to engage a healthy local sovereign or alternative cloud vision provider via [`visual_extractor.py:_get_secondary_fallback_provider()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/visual_extractor.py#L280-L308):
-1. `ollama_qwen3vl` (Local `qwen3-vl:latest` / `qwen2.5vl:7b` via Ollama)
-2. `ollama_vlm`
-3. `gemini_vision` (`gemini-2.5-flash`)
+The extractor attempts to engage a healthy alternative vision provider via [`visual_extractor.py:_get_secondary_fallback_provider()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/visual_extractor.py#L280-L308):
+1. `google_cloud_vision` (Google Cloud Vision API OCR)
+2. `ollama_qwen3vl` (Local Sovereign `qwen3-vl:latest` / `qwen2.5vl:7b` via Ollama)
+3. `openrouter_vlm` (Multi-provider gateway fallback)
 4. `layout_analysis`
 
-If available, the local vision model processes the infographic crop, ensuring high-quality narrative synthesis even during external cloud API outages.
+If available, the secondary vision model processes the infographic crop, ensuring high-quality narrative synthesis even during external cloud API outages.
 
 ##### 4. Deterministic 2D Spatial OCR Matrix Engine (`extract_table_via_spatial_ocr`)
 If all vision providers are offline, rate-limited, or unconfigured, the system triggers the deterministic spatial OCR matrix engine ([`visual_extractor.py:extract_table_via_spatial_ocr()`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/visual_extractor.py#L446-L615)):
@@ -984,27 +985,27 @@ flowchart TD
 
 ### 3.8 Dynamic Model Provider Registry & Runtime Model Swapping (`model_config.yaml`)
 
-NewsLens-AI decouples cognitive reasoning and vision tasks from hardcoded LLM vendors via a **Unified Model Provider Registry** ([`backend/app/models/registry.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/models/registry.py)). The platform supports dynamic runtime reconfiguration across three distinct architectural tiers:
+NewsLens-AI decouples cognitive reasoning and vision tasks from hardcoded LLM vendors via a **Unified Model Provider Registry** ([`backend/app/providers/registry.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/registry.py)). The platform supports dynamic runtime reconfiguration across three distinct architectural tiers:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                             3-TIER MODEL PROVIDER REGISTRY                                       │
 │                                                                                                  │
 │   Logical Tasks                    Dynamic Binding Registry               Architectural Tiers    │
-│  ┌─────────────────┐              ┌──────────────────────┐              ┌──────────────────────┐ │
-│  │ planner         │ ───────────> │ `task_bindings`      │ ───────────> │ 1. Local Sovereign   │ │
-│  │ synthesizer     │              │ (Stored in Memory    │              │    Ollama / BGE-M3   │ │
-│  │ fast_condenser  │              │  & model_config.yaml)│              │    Air-gapped / Local│ │
-│  │ visual_extract  │              └──────────┬───────────┘              └──────────────────────┘ │
-│  │ layout_analysis │                         │                          ┌──────────────────────┐ │
-│  │ embedding       │                         ├────────────────────────> │ 2. Cloud Dual-Key    │ │
-│  └─────────────────┘                         │                          │    OpenRouter Pri/Sec│ │
-│                                              │                          │    Auto 429 Failover │ │
-│                                              │                          └──────────────────────┘ │
-│                                              │                          ┌──────────────────────┐ │
-│                                              └────────────────────────> │ 3. Cloud Direct      │ │
-│                                                                         │    Gemini / Claude   │ │
-│                                                                         │    DeepSeek R1       │ │
+│  ┌─────────────────────┐          ┌──────────────────────┐              ┌──────────────────────┐ │
+│  │ query_planner       │ ───────> │ `task_bindings`      │ ───────────> │ 1. Local Sovereign   │ │
+│  │ answerer            │          │ (Stored in Memory    │              │    Ollama / BGE-M3   │ │
+│  │ answer_verifier     │          │  & model_config.yaml)│              │    Air-gapped / Local│ │
+│  │ visual_extraction   │          └──────────┬───────────┘              └──────────────────────┘ │
+│  │ layout_analysis     │                     │                          ┌──────────────────────┐ │
+│  │ embedding           │                     ├────────────────────────> │ 2. Google Gemini     │ │
+│  │ classification      │                     │                          │    Google AI Studio  │ │
+│  │ metadata_extraction │                     │                          │    2.5 Flash / Pro   │ │
+│  │ article_segmentation│                     │                          └──────────────────────┘ │
+│  └─────────────────────┘                     │                          ┌──────────────────────┐ │
+│                                              └────────────────────────> │ 3. Multi-Gateways    │ │
+│                                                                         │    OpenAI / Groq     │ │
+│                                                                         │    OpenRouter        │ │
 │                                                                         └──────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1012,16 +1013,16 @@ NewsLens-AI decouples cognitive reasoning and vision tasks from hardcoded LLM ve
 #### A. The Three Architectural Model Tiers
 
 1. **Local Sovereign Tier (Air-Gapped Privacy)**:
-   - Built on local Ollama daemon instances (`ollama_chat: qwen2.5:7b`, `ollama_fast: qwen2.5:3b`, `ollama_qwen3vl: qwen3-vl:latest` / `qwen2.5vl:7b`, `ollama_embedding: bge-m3:latest`).
+   - Built on local Ollama daemon instances (`ollama_llama3: llama3.1:8b`, `ollama_deepseek: deepseek-r1:14b`, `ollama_qwen3vl: qwen3-vl:latest` / `qwen2.5vl:7b`, `local_embed_bge: BAAI/bge-m3`).
    - Zero outbound cloud network egress. Broadsheet texts, investigative queries, and visual crops remain strictly on-premises.
 
-2. **Cloud Dual-Key Tier (Load-Balanced Resilience)**:
-   - Utilizes OpenRouter endpoints with automatic dual-key load-balancing (`OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_SECONDARY`).
-   - Each key maintains independent HTTP 429 rate-limit cooldown timers. If Key 1 triggers rate-limiting, traffic instantly redirects to Key 2.
+2. **Google Gemini Cloud Tier (Google AI Studio Primary)**:
+   - Powered by official Google AI Studio endpoints: `gemini_flash` (`gemini-2.5-flash`), `gemini_pro` (`gemini-2.5-pro`), and `gemini_flash_lite` (`gemini-2.5-flash-lite`).
+   - Serves as the primary cloud workhorse for VLM visual extraction, cognitive query planning, broadsheet synthesis, and answer verification. Includes automatic transparent multi-candidate model failover.
 
-3. **Cloud Direct Tier (Ultra-High Capability)**:
-   - Direct vendor API access to Google Gemini (`gemini_chat: gemini-2.5-flash`, `gemini-2.5-pro`), Anthropic Claude (`claude-3-5-sonnet`), and DeepSeek R1 (`deepseek/deepseek-r1`).
-   - Leveraged for complex multi-page synthesis and cross-newspaper comparative audits.
+3. **Multi-Provider Gateways & Commercial Fallbacks**:
+   - Secondary vendor access to OpenAI (`gpt-4o`, `gpt-4o-mini`), Groq, and OpenRouter (`gemma-4`, `nemotron-3.5`).
+   - Backed by dynamic HTTP 429 circuit breakers with cooldown timers.
 
 ---
 
@@ -1035,51 +1036,63 @@ Returns current task bindings, provider capability schemas (`supports_vision`, `
 ```json
 {
   "task_bindings": {
-    "planner": "openrouter_chat",
-    "synthesizer": "openrouter_chat",
-    "fast_condenser": "openrouter_condenser",
-    "visual_extraction": "ollama_qwen3vl",
-    "layout_analysis": "openrouter_vlm",
-    "embedding": "bge_m3_local"
+    "query_planner": "gemini_flash",
+    "answerer": "gemini_flash",
+    "answer_verifier": "gemini_flash",
+    "visual_extraction": "gemini_vision",
+    "layout_analysis": "gemini_flash",
+    "embedding": "local_embed_bge",
+    "classification": "gemini_flash",
+    "metadata_extraction": "gemini_flash",
+    "article_segmentation": "gemini_flash"
   },
   "configured_providers": [
     {
-      "id": "openrouter_chat",
-      "provider": "openrouter",
-      "model": "anthropic/claude-3.5-sonnet",
-      "context_window": 200000,
-      "supports_vision": false,
+      "id": "gemini_flash",
+      "provider": "gemini",
+      "model": "gemini-2.5-flash",
+      "context_window": 1048576,
+      "supports_vision": true,
       "supports_tool_use": true
     },
     {
-      "id": "ollama_qwen3vl",
-      "provider": "ollama",
-      "model": "qwen3-vl:latest",
-      "base_url": "http://localhost:11434",
-      "context_window": 32768,
+      "id": "gemini_pro",
+      "provider": "gemini",
+      "model": "gemini-2.5-pro",
+      "context_window": 1048576,
       "supports_vision": true,
-      "supports_tool_use": false
+      "supports_tool_use": true
+    },
+    {
+      "id": "ollama_llama3",
+      "provider": "ollama",
+      "model": "llama3.1:8b",
+      "base_url": "http://localhost:11434",
+      "context_window": 131072,
+      "supports_vision": false,
+      "supports_tool_use": true
     }
   ],
   "provider_reachability": {
-    "openrouter_chat": true,
-    "ollama_qwen3vl": true,
-    "bge_m3_local": true
+    "gemini_flash": true,
+    "gemini_pro": true,
+    "ollama_llama3": true,
+    "local_embed_bge": true
   }
 }
 ```
 
 ##### 2. Rebind Task Provider at Runtime (`PUT /api/settings/model-bindings`)
-Allows instant reassignment of task roles. The endpoint validates provider IDs, writes the new mappings directly to `backend/app/models/model_config.yaml` on disk, and invokes `registry.invalidate_all()` to clear cached instances:
+Allows instant reassignment of task roles. The endpoint validates provider IDs, writes the new mappings directly to `model_config.yaml` on disk, and invokes `registry.invalidate_all()` to clear cached instances:
 
 ```bash
 curl -X PUT "http://127.0.0.1:8000/api/settings/model-bindings" \
   -H "Content-Type: application/json" \
   -d '{
     "task_bindings": {
-      "planner": "gemini_chat",
-      "synthesizer": "openrouter_chat",
-      "visual_extraction": "ollama_qwen3vl"
+      "query_planner": "gemini_flash",
+      "answerer": "gemini_pro",
+      "visual_extraction": "gemini_vision"
     }
   }'
 ```
@@ -1090,12 +1103,15 @@ curl -X PUT "http://127.0.0.1:8000/api/settings/model-bindings" \
   "status": "updated",
   "saved_to_disk": true,
   "task_bindings": {
-    "planner": "gemini_chat",
-    "synthesizer": "openrouter_chat",
-    "fast_condenser": "openrouter_condenser",
-    "visual_extraction": "ollama_qwen3vl",
-    "layout_analysis": "openrouter_vlm",
-    "embedding": "bge_m3_local"
+    "query_planner": "gemini_flash",
+    "answerer": "gemini_pro",
+    "answer_verifier": "gemini_flash",
+    "visual_extraction": "gemini_vision",
+    "layout_analysis": "gemini_flash",
+    "embedding": "local_embed_bge",
+    "classification": "gemini_flash",
+    "metadata_extraction": "gemini_flash",
+    "article_segmentation": "gemini_flash"
   }
 }
 ```

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import contextlib
-import re
 import time
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.answer_verifier import AnswerVerifier
 from app.agent.archive_context import get_archive_and_schema_context
 from app.agent.condenser import (
     CLEAN_SESSION_CLARIFICATION_MESSAGE,
@@ -18,21 +18,20 @@ from app.agent.condenser import (
     is_in_context_meta_query,
     needs_condensation,
 )
-from app.retrieval import resolve_conversation_working_context
-from app.agent.extractor import extract_parameters_from_query
 from app.agent.evaluator import EvidenceEvaluator
 from app.agent.executor import ToolExecutor
-from app.agent.sql_dispatcher import SQLAnalyticsDispatcher
+from app.agent.extractor import extract_parameters_from_query
 from app.agent.planner import QueryPlanner
-from app.agent.state import AgentState, ToolExecutionRecord
-from app.agent.answer_verifier import AnswerVerifier
-from app.agent.synthesizer import AnswerSynthesizer
 from app.agent.sandbox import ASTSafetyScanner, SandboxedExecutor
+from app.agent.sql_dispatcher import SQLAnalyticsDispatcher
+from app.agent.state import AgentState, ToolExecutionRecord
+from app.agent.synthesizer import AnswerSynthesizer
 from app.agent.tool_maker import ToolMaker
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics import record_agent_query
 from app.models.query import QueryLog
+from app.retrieval import resolve_conversation_working_context
 from app.retrieval.coverage_analyzer import CoverageAnalyzer
 from app.retrieval.entity_filter import EntitySearchEngine
 from app.retrieval.hybrid_search import HybridSearchEngine
@@ -576,6 +575,11 @@ class AgentWorkflow:
             )
             if res.refined_answer:
                 updates["synthesized_answer"] = res.refined_answer
+            elif res.has_contradiction or res.has_hallucination:
+                err_summary = "; ".join(res.factual_errors) if res.factual_errors else res.critique
+                updates["synthesized_answer"] = (
+                    f"Based on the verified archive evidence, no supporting records were found for the queried claims ({err_summary})."
+                )
             if res.evidence_gap_detected and res.dynamic_tool_hint:
                 updates["gap_diagnosis"] = res.dynamic_tool_hint
 

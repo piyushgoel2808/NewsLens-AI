@@ -7,6 +7,8 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Any
+
 from app.agent.archive_context import STATIC_BROADSHEET_SCHEMA
 from app.agent.sandbox import ASTSafetyScanner, SandboxedExecutor, ScanResult
 from app.agent.tool_critic import EvaluationScorecard, ToolCritic
@@ -24,7 +26,7 @@ _TOOL_MAKER_HEADER = """You are an expert Python data analyst and software engin
 Your task is to write an asynchronous Python function `analyze(db, query, context)` that executes SQL queries against the newspaper archive and computes custom statistical or analytical findings to directly answer the user's question.
 """
 
-_TOOL_MAKER_BODY = """### CONTRACT & FUNCTION SIGNATURE
+_TOOL_MAKER_BODY = r"""### CONTRACT & FUNCTION SIGNATURE
 You MUST write a function with this exact signature:
 
 ```python
@@ -61,7 +63,7 @@ async def analyze(db, query: str, context: dict) -> dict:
     - These values are ALREADY valid strings for SQL queries (e.g. `'2026-09-10'`). Do NOT parse them with `datetime.strptime()`.
     - If a date parameter is not provided in context, it will be `None`. Always check `if target_date:` before filtering on it in SQL.
 15. **Zero-Division & Strict No-NaN Safety**: NEVER return `NaN`, `nan`, or `null` in your summary or metadata! Before calculating `.mean()`, `.std()`, correlations, or averages, verify that rows exist (`if not rows:` or `if df.empty:`). If 0 rows match, explicitly return `{'summary': 'No matching records found in the archive...', 'data': [], 'metadata': {'count': 0}}`. Never output `nan` or `NaN` for any metric.
-16. **Pandas Filtering Safety**: SQL `WHERE` clauses already filter by date and newspaper. NEVER do `df['newspaper_name'] == np_pattern` in pandas if `np_pattern` contains SQL wildcards (`%`) like `'%Goan%'`, as literal equality will evaluate to False and filter out all rows. If doing optional post-filtering in pandas, use `.str.contains(clean_np, case=False, na=False)` without SQL wildcards.
+16. **Pandas Filtering & Type Safety**: SQL `WHERE` clauses already filter by date and newspaper. DO NOT re-filter `df['issue_date'] == target_dt` in pandas if SQL already filtered on date, because MySQL dates can cause type mismatch with strings. If you must compare dates in pandas, convert first with `df['issue_date'].astype(str) == str(target_dt)`. NEVER do `df['newspaper_name'] == np_pattern` in pandas if `np_pattern` contains SQL wildcards (`%`) like `'%Goan%'`; use `.str.contains(clean_np, case=False, na=False)` without wildcards.
 
 ### FEW-SHOT EXAMPLES
 
@@ -322,6 +324,7 @@ class ToolMakerResult:
 def normalize_dynamic_output(
     output: dict[str, Any],
     query: str,
+    context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Convert raw dynamic tool output dictionary into standard NewsLens evidence items."""
     evidence_items: list[dict[str, Any]] = []
@@ -340,13 +343,22 @@ def normalize_dynamic_output(
 
     # 1. Primary Structural Evidence Item (Summary)
     if summary_text:
-        target_np = str(clean_metadata.get("newspaper_name") or "Archive Analytics")
+        target_np = str(
+            clean_metadata.get("newspaper_name")
+            or (context.get("newspaper_name") if context else "")
+            or "Archive Analytics"
+        )
+        target_dt = str(
+            clean_metadata.get("issue_date")
+            or (context.get("target_date") if context else "")
+            or ""
+        )
         evidence_items.append({
             "article_id": 0,
             "issue_id": 0,
             "headline": f"Analytical Computation: {query[:60]}",
             "newspaper_name": target_np,
-            "issue_date": str(clean_metadata.get("issue_date") or ""),
+            "issue_date": target_dt,
             "page_number": 0,
             "pages": [],
             "snippet": summary_text,
@@ -456,20 +468,27 @@ class ToolMaker:
         # Strip <think> tags if present
         cleaned = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
 
-        # Match ```python ... ```
-        m = re.search(r"```(?:python)?\s*\n(.*?)\n```", cleaned, re.DOTALL)
+        # Match ```python ... ``` (or unclosed trailing fence)
+        m = re.search(r"```(?:python)?\s*\n(.*?)(?:\n```|$)", cleaned, re.DOTALL)
         if m:
-            return m.group(1).strip()
-
-        # Fallback: scan for async def analyze or import
-        if "async def analyze" in cleaned:
+            code = m.group(1)
+        elif "async def analyze" in cleaned:
             idx = cleaned.find("async def analyze")
             # See if there are imports before async def analyze
             import_idx = cleaned.find("import ")
             start = import_idx if 0 <= import_idx < idx else idx
-            return cleaned[start:].strip()
+            code = cleaned[start:]
+        else:
+            code = cleaned
 
-        return cleaned
+        # Clean trailing whitespace and line continuation characters (e.g. "\\   \\n" -> "\\\\n")
+        cleaned_lines = []
+        for line in code.splitlines():
+            cl = re.sub(r"\\\s+$", "\\\\", line)
+            if not cl.endswith("\\"):
+                cl = cl.rstrip()
+            cleaned_lines.append(cl)
+        return "\n".join(cleaned_lines).strip()
 
     def _resolve_provider(self, model_override: str | None = None) -> Any:
         """Resolve LLM provider for tool code generation."""
@@ -495,14 +514,24 @@ class ToolMaker:
         provider = self._resolve_provider(model_override)
         ctx = context or {}
 
+        target_date = ctx.get("target_date") or ctx.get("issue_date") or ctx.get("date")
+        if target_date:
+            ctx["target_date"] = str(target_date)
+            ctx["issue_date"] = str(target_date)
+
         # 1. Initial Prompt Construction
         prompt_parts = [
-            f"Write an asynchronous Python tool to answer the following broadsheet research query:\n"
-            f"Query: \"{query}\"\n\n"
-            f"ARCHIVE CONTEXT:\n"
-            f"Available Newspapers: {ctx.get('available_newspapers', [])}\n"
-            f"Available Dates: {ctx.get('available_dates', [])[:10]}\n"
-            f"Available Categories: {ctx.get('categories', [])}\n"
+            "Write an asynchronous Python tool to answer the following broadsheet research query:\n",
+            f"Query: \"{query}\"\n\n",
+            "ARCHIVE CONTEXT:\n",
+            f"Available Newspapers: {ctx.get('available_newspapers', [])}\n",
+            f"Available Dates: {ctx.get('available_dates', [])[:10]}\n",
+            f"Available Categories: {ctx.get('categories', [])}\n",
+            "\nPRE-EXTRACTED PARAMETERS (Already validated in `context` dictionary):\n",
+            f"- `context.get('target_date')`: {repr(ctx.get('target_date'))}\n",
+            f"- `context.get('newspaper_name')`: {repr(ctx.get('newspaper_name'))}\n",
+            f"- `context.get('category')`: {repr(ctx.get('category'))}\n",
+            "\nCRITICAL CODE PATTERN: Use `target_date = context.get('target_date') or context.get('issue_date')` and `newspaper_name = context.get('newspaper_name')`. Do NOT write custom word.split() loops to parse dates.\n",
         ]
 
         if attempted_tools or gap_diagnosis:
@@ -541,7 +570,7 @@ class ToolMaker:
                 resp = await provider.complete(
                     messages=messages,
                     temperature=0.1,
-                    max_tokens=2048,
+                    max_tokens=4096,
                 )
                 raw_code = self._extract_code(resp.text)
                 raw_code = ensure_standard_imports(raw_code)
@@ -662,7 +691,7 @@ class ToolMaker:
 
                 # Successful execution (or retries exhausted on acceptable output)
                 dur_ms = round((time.monotonic() - t_start) * 1000)
-                evidence_items = normalize_dynamic_output(sandbox_res.output, query)
+                evidence_items = normalize_dynamic_output(sandbox_res.output, query, context=ctx)
                 err_msg = None
                 if not scorecard.is_acceptable:
                     err_msg = scorecard.critique or "Dynamic tool failed diagnostic quality audit."
@@ -681,6 +710,15 @@ class ToolMaker:
             except Exception as e:
                 last_error = str(e)
                 logger.error(f"Error during ToolMaker iteration {attempt}: {e}")
+                if attempt == 0:
+                    try:
+                        reg = get_registry()
+                        curr_name = getattr(provider, "provider_name", "").lower()
+                        fallback_id = "ollama_llama3" if "gemini" in curr_name else "gemini_flash"
+                        provider = reg.get_chat_provider(fallback_id)
+                        logger.info(f"Failing over ToolMaker to fallback provider: {fallback_id}")
+                    except Exception as fb_err:
+                        logger.warning(f"Could not switch provider on failure: {fb_err}")
 
         dur_ms = round((time.monotonic() - t_start) * 1000)
         return ToolMakerResult(

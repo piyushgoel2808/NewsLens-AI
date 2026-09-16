@@ -1,10 +1,11 @@
 """Unit tests for ToolCritic evaluation scorecard and closed-loop self-refinement."""
 
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.agent.sandbox import ASTSafetyScanner, SandboxedExecutor
-from app.agent.tool_critic import EvaluationScorecard, ToolCritic
+from app.agent.tool_critic import ToolCritic
 from app.agent.tool_maker import ToolMaker
 from app.providers.base import ModelResponse
 

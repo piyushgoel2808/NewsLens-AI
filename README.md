@@ -82,49 +82,92 @@
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- **Python 3.12+** and [`uv`](https://docs.astral.sh/uv/) (fast Python package manager)
-- **Node.js 18+** and `npm`
-- **Docker & Docker Compose**
+NewsLens-AI can be deployed in three ways: **Full-Stack Docker Compose** (zero host dependencies), **Makefile Developer Automation** (fastest for active development), or **Manual Setup**.
 
-### 1. Clone & Set Up Infrastructure
+### Prerequisites
+- [Docker & Docker Compose](https://docs.docker.com/get-docker/) (v2.20+)
+- *(Optional for host development)*: Python 3.12+ with [`uv`](https://docs.astral.sh/uv/) and Node.js 20+
+
+---
+
+### Option 1: One-Command Production Boot (Docker Compose — Recommended)
+
+Run the entire application stack in containers with a single command:
+
 ```bash
-# Clone the repository
+# 1. Clone the repository
 git clone https://github.com/piyushgoel2808/NewsLens-AI.git
 cd NewsLens-AI
 
-# Copy environment variables
+# 2. Copy the environment configuration template
 cp .env.example .env
 
-# Spin up local services (MySQL, Qdrant, MinIO, Redis, Ollama)
-docker compose -f docker-compose.local.yml up -d
+# 3. Build images and start all 8 services
+docker compose up -d --build
 ```
 
-### 2. Backend Setup
+#### Running Service Endpoints
+
+| Service | Endpoint | Credentials / Details |
+| :--- | :--- | :--- |
+| **Frontend Web App** | [http://localhost:5173](http://localhost:5173) | Interactive broadsheet viewer, search & chat UI |
+| **Backend API & Swagger** | [http://localhost:8000/api/docs](http://localhost:8000/api/docs) | Interactive OpenAPI / Swagger documentation |
+| **Backend Health Check** | [http://localhost:8000/api/health](http://localhost:8000/api/health) | Live service connectivity status (DB, Qdrant, Redis, MinIO) |
+| **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin` (broadsheet PDF & visual crops storage) |
+| **Qdrant Vector Dashboard** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Broadsheet neural dense vector index |
+| **Ollama Local LLM** | [http://localhost:11434](http://localhost:11434) | Local inference engine |
+| **MySQL 8** | `localhost:3306` | `newslens` / `newslens_pass` (`newslens_db`) |
+| **Redis 7** | `localhost:6379` | Query cache & Celery message broker |
+
+> [!TIP]
+> To follow live logs across all containers:
+> ```bash
+> docker compose logs -f
+> ```
+> To stop all containers and preserve volumes:
+> ```bash
+> docker compose down
+> ```
+
+---
+
+### Option 2: One-Command Developer Boot (Makefile)
+
+If you have `uv` and `npm` installed locally, initialize dependencies, database migrations, and development containers with one command:
+
 ```bash
+# 1. Clone and enter directory
+git clone https://github.com/piyushgoel2808/NewsLens-AI.git
+cd NewsLens-AI
+
+# 2. Initialize environment and start infra containers
+cp .env.example .env
+make setup
+
+# 3. Start backend & frontend in development mode
+make dev
+```
+
+---
+
+### Option 3: Manual Step-by-Step Setup
+
+```bash
+# 1. Start backing infrastructure in Docker
+docker compose up -d mysql qdrant minio redis ollama
+
+# 2. Backend setup with uv
 cd backend
-
-# Install dependencies using uv
 uv sync --all-extras
-
-# Run database migrations
 uv run alembic upgrade head
-
-# Start the FastAPI server
 uv run uvicorn app.api.main:create_app --factory --host 0.0.0.0 --port 8000 --reload
-```
 
-### 3. Frontend Setup
-```bash
-cd ../frontend
-
-# Install dependencies
+# 3. Frontend setup with npm (in a new terminal tab)
+cd frontend
 npm install
-
-# Start the Vite development server
 npm run dev
 ```
-Open **`http://localhost:5173`** in your browser to access the NewsLens-AI platform!
+Open **`http://localhost:5173`** in your browser!
 
 ---
 
@@ -202,3 +245,57 @@ npm run build
 - **[Codebase Architecture & File Reference Guide](docs/codebase_directory_and_file_reference.md)**: Complete directory tree, folder responsibilities, and file-by-file technical reference detailing classes, functions, external tools/frameworks, and LLM/VLM models used.
 - **[Relational Database Schema & Manifest Reference](docs/database_schema.md)**: Deep dive into all 17 MySQL tables, relational invariants, foreign keys, spatial bounding boxes, and manifest queries.
 - **[Engineering & Incident Log](docs/engineering_log.md)**: Chronological engineering log documenting architectural decisions, performance milestones, and bug resolutions (Phases 1 through 18).
+
+---
+
+## 🔧 Troubleshooting & FAQ
+
+### 1. Ollama Models Not Found
+If running with local Ollama models (`llama3.1:8b` or `qwen3-vl:latest`), pull them into the container:
+```bash
+docker exec -it newslens-ollama ollama pull llama3.1:8b
+docker exec -it newslens-ollama ollama pull qwen3-vl:latest
+```
+Alternatively, switch the primary task bindings in `backend/app/core/model_config.yaml` to hosted providers (e.g. Groq, Gemini, OpenRouter, NVIDIA NIM) by setting their respective API keys in your `.env`.
+
+### 2. Database Connection Errors / Migrations
+If the backend cannot connect to MySQL on startup, ensure the MySQL container has reached healthy status:
+```bash
+docker compose ps mysql
+```
+To manually apply migrations:
+```bash
+make migrate
+# Or: cd backend && uv run alembic upgrade head
+```
+
+### 3. MinIO Storage Buckets
+The backend automatically initializes required buckets (`bucket_pages`, `bucket_crops`, `bucket_issues`, `bucket_articles`) on startup. You can access the visual MinIO console at [http://localhost:9001](http://localhost:9001) using credentials `minioadmin` / `minioadmin`.
+
+### 4. Port Conflicts
+If default ports are already bound on your host:
+- MySQL: `3306`
+- Qdrant: `6333`
+- Redis: `6379`
+- MinIO: `9000` (API) / `9001` (Console)
+- Ollama: `11434`
+- Backend: `8000`
+- Frontend: `5173`
+
+Update the corresponding port mappings in `.env` and `docker-compose.yml`.
+
+---
+
+## 🤝 Community & Contributing
+
+We welcome contributions from the community! Whether reporting bugs, proposing new features, or improving broadsheet parsing algorithms:
+
+- 📖 Review the **[Contributing Guidelines](CONTRIBUTING.md)** for local development, code style, and PR processes.
+- 🛡️ Review our **[Security Policy](SECURITY.md)** for responsible vulnerability reporting.
+- 📜 Check out the **[Changelog](CHANGELOG.md)** for recent feature additions and release history.
+
+---
+
+## 📄 License
+
+NewsLens-AI is open-source software licensed under the **[MIT License](LICENSE)**. © 2026 Piyush Goel.

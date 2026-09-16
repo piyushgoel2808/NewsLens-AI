@@ -1,6 +1,5 @@
 """Unit tests for multi-newspaper reconciliation, date drift safety, taxonomy filtering, and date anchoring."""
 
-import pytest
 from app.agent.extractor import extract_parameters_from_query
 from app.agent.prompt_context import build_synthesizer_user_prompt
 from app.agent.tool_factory import reconcile_and_sanitize_arguments

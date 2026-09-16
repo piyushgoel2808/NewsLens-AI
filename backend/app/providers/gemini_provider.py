@@ -150,7 +150,7 @@ def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
     if "definitions" in schema and isinstance(schema["definitions"], dict):
         defs.update(schema["definitions"])
 
-    def _resolve(node: Any) -> Any:
+    def _resolve(node: Any, is_properties_dict: bool = False) -> Any:
         if isinstance(node, list):
             return [_resolve(item) for item in node]
         if not isinstance(node, dict):
@@ -167,8 +167,8 @@ def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
 
         cleaned: dict[str, Any] = {}
         for k, v in node.items():
-            # Strip unsupported metadata keywords
-            if k in (
+            # Strip unsupported metadata keywords only from schema objects, not property maps
+            if not is_properties_dict and k in (
                 "$defs",
                 "definitions",
                 "$ref",
@@ -189,7 +189,7 @@ def _clean_schema_for_gemini(schema: dict[str, Any]) -> dict[str, Any]:
                         cleaned.update(resolved_child)
                     continue
 
-            cleaned[k] = _resolve(v)
+            cleaned[k] = _resolve(v, is_properties_dict=(k == "properties"))
 
         return cleaned
 
@@ -234,11 +234,11 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
 
     def __init__(
         self,
-        model: str = "gemini-3.7-flash",
+        model: str = "gemini-2.5-flash",
         api_key: str | None = None,
         service_account_info: dict[str, Any] | str | None = None,
     ) -> None:
-        self._model = model.replace("models/", "") if model else "gemini-3.7-flash"
+        self._model = model.replace("models/", "") if model else "gemini-2.5-flash"
         self._api_key = api_key
         self._sa_credentials: Any = None
 
@@ -280,6 +280,22 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
             supports_structured_output=True,
             context_window=1000000,
         )
+
+    def _get_model_candidates(self) -> list[str]:
+        """Return prioritized list of model candidates starting with requested model."""
+        candidates = [self._model]
+        lower = self._model.lower()
+        if "pro" in lower:
+            fallbacks = ["gemini-2.5-pro", "gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-2.5-flash", "gemini-3.6-flash"]
+        elif "lite" in lower:
+            fallbacks = ["gemini-2.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.6-flash"]
+        else:
+            fallbacks = ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+
+        for fb in fallbacks:
+            if fb not in candidates:
+                candidates.append(fb)
+        return candidates
 
     def _get_auth_headers_and_params(self) -> tuple[dict[str, str], dict[str, str]]:
         """Return headers and query params for authentication."""
@@ -400,11 +416,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         if tools:
             payload["tools"] = self._to_gemini_tools(tools)
 
-        model_candidates = [self._model]
-        for fb in ["gemini-flash-latest", "gemini-3.7-flash"]:
-            if fb not in model_candidates:
-                model_candidates.append(fb)
-
+        model_candidates = self._get_model_candidates()
         last_error: Exception | None = None
         headers, params = self._get_auth_headers_and_params()
         for m in model_candidates:
@@ -514,11 +526,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         if system_instruction:
             payload["systemInstruction"] = system_instruction
 
-        model_candidates = [self._model]
-        for fb in ["gemini-flash-latest", "gemini-3.7-flash"]:
-            if fb not in model_candidates:
-                model_candidates.append(fb)
-
+        model_candidates = self._get_model_candidates()
         last_error: Exception | None = None
         for m in model_candidates:
             url = f"{GEMINI_API_BASE}/{m}:streamGenerateContent?key={self._api_key}&alt=sse"
@@ -595,39 +603,54 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
             "generationConfig": generation_config,
         }
 
-        url = f"{GEMINI_API_BASE}/{self._model}:generateContent"
+        model_candidates = self._get_model_candidates()
+        last_error: Exception | None = None
         headers, params = self._get_auth_headers_and_params()
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            res = await client.post(
-                url, params=params, json=payload, headers=headers
-            )
+        for m in model_candidates:
+            url = f"{GEMINI_API_BASE}/{m}:generateContent"
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    res = await client.post(
+                        url, params=params, json=payload, headers=headers
+                    )
+                if res.status_code == 200:
+                    data = res.json()
+                    candidates = data.get("candidates", [])
+                    text = ""
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        text = "".join(p.get("text", "") for p in parts if "text" in p)
 
-        if res.status_code != 200:
-            raise ProviderError(f"Gemini vision error ({res.status_code}): {res.text}")
+                    parsed_json = None
+                    if response_schema and text:
+                        with contextlib.suppress(json.JSONDecodeError):
+                            parsed_json = json.loads(text)
 
-        data = res.json()
-        candidates = data.get("candidates", [])
-        text = ""
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            text = "".join(p.get("text", "") for p in parts if "text" in p)
+                    usage = data.get("usageMetadata", {})
+                    return ModelResponse(
+                        text=text,
+                        input_tokens=usage.get("promptTokenCount", 0),
+                        output_tokens=usage.get("candidatesTokenCount", 0),
+                        model=m,
+                        provider=self.provider_name,
+                        parsed=parsed_json,
+                        raw=data,
+                    )
+                err_data = (
+                    res.json()
+                    if res.headers.get("content-type", "").startswith("application/json")
+                    else {}
+                )
+                err_msg = err_data.get("error", {}).get("message", res.text)
+                last_error = ProviderError(f"Gemini vision error ({res.status_code}): {err_msg}")
+                if res.status_code not in (429, 503, 404):
+                    break
+            except Exception as e:
+                last_error = e
+                continue
 
-        parsed_json = None
-        if response_schema and text:
-            with contextlib.suppress(json.JSONDecodeError):
-                parsed_json = json.loads(text)
-
-        usage = data.get("usageMetadata", {})
-        return ModelResponse(
-            text=text,
-            input_tokens=usage.get("promptTokenCount", 0),
-            output_tokens=usage.get("candidatesTokenCount", 0),
-            model=self._model,
-            provider=self.provider_name,
-            parsed=parsed_json,
-            raw=data,
-        )
+        raise last_error or ProviderError("Gemini vision failed across all candidate models")
 
     # ---------------------------------------------------------------------------
     # OCREngine Protocol Implementation

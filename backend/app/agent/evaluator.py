@@ -7,10 +7,12 @@ against over-aggressive lexical pruning, and triggers corrective retrieval fallb
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass, field
 import json
 import re
 import time
+from dataclasses import dataclass, field
+from typing import Any
+
 from app.agent.extractor import (
     _KNOWN_BRANDS_PATTERNS,
     extract_parameters_from_query,
@@ -74,14 +76,13 @@ def _has_quantitative_payload(evidence: list[dict[str, Any]]) -> bool:
     """Verify if retrieved evidence contains structured aggregate numbers, tables, or metric dictionaries."""
     for item in evidence:
         meta = item.get("metadata")
-        if meta and isinstance(meta, dict):
-            if any(
-                isinstance(v, (int, float, dict, list))
-                and bool(v)
-                and not (isinstance(v, float) and (v != v or str(v).lower() == "nan"))
-                for v in meta.values()
-            ):
-                return True
+        if meta and isinstance(meta, dict) and any(
+            isinstance(v, (int, float, dict, list))
+            and bool(v)
+            and not (isinstance(v, float) and (v != v or str(v).lower() == "nan"))
+            for v in meta.values()
+        ):
+            return True
         snip = item.get("snippet") or item.get("summary") or ""
         # Check for Markdown table
         if re.search(r"\|.*\|.*\|\s*\n\|[\s\-:]+\|", snip):
@@ -92,13 +93,13 @@ def _has_quantitative_payload(evidence: list[dict[str, Any]]) -> bool:
             and item.get("article_id") == 0
         ):
             if re.search(
-                r"\b(?:total|count|breakdown|photos?|articles?|advertisements?|ads?|issues?)(?:\s+[a-zA-Z]+)*:\s*\d+\b",
+                r"\b(?:total|count|breakdown|photos?|articles?|advertisements?|ads?|issues?|average|avg|mean|median|length|words?|word\s+count|distribution|ratio|correlation|variance|std)(?:\s+[a-zA-Z]+)*:\s*\d+(?:\.\d+)?\b",
                 snip,
                 re.I,
             ):
                 return True
             if re.search(
-                r"\b\d+\s+(?:articles?|photos?|advertisements?|ads?|issues?)\s+found\b",
+                r"\b\d+(?:\.\d+)?\s*(?:articles?|photos?|advertisements?|ads?|issues?|words?|chars?)\s+(?:found|average|avg|mean|per\s+article|each)\b",
                 snip,
                 re.I,
             ):
@@ -217,11 +218,13 @@ class EvidenceEvaluator:
         web_search: WebSearchEngine,
         tool_maker: ToolMaker | None = None,
         sql_analytics: SQLAnalyticsEngine | None = None,
+        provider: ChatModelProvider | None = None,
     ) -> None:
         self._entity_search = entity_search
         self._web_search = web_search
         self._tool_maker = tool_maker
         self._sql_analytics = sql_analytics
+        self._provider = provider
 
     def filter_evidence(
         self,
@@ -406,8 +409,7 @@ class EvidenceEvaluator:
                 for it in evidence:
                     m = it.get("metadata") or {}
                     if isinstance(m, dict):
-                        for k in ("count", "total_issues", "total_articles", "total_photos", "distinct_newspapers_count"):
-                            v = m.get(k)
+                        for _k, v in m.items():
                             if isinstance(v, (int, float)) and v > 0:
                                 has_positive = True
                                 break
@@ -417,10 +419,13 @@ class EvidenceEvaluator:
                     if re.search(r"\|.*\|.*\|\s*\n\|[\s\-:]+\|", sn):
                         has_positive = True
                         break
-                    if re.search(r"\b(?:total|count|breakdown|photos?|articles?|advertisements?|ads?|issues?)(?:\s+[a-zA-Z]+)*:\s*([1-9]\d*)\b", sn, re.I):
+                    if re.search(r"\b(?:total|count|breakdown|photos?|articles?|advertisements?|ads?|issues?|average|avg|mean|median|length|words?|word\s+count|distribution|ratio|correlation|variance|std)(?:\s+[a-zA-Z]+)*[:\s]+(?:\*\*)?([1-9]\d*(?:\.\d+)?|0\.\d+)\b", sn, re.I):
                         has_positive = True
                         break
-                    if re.search(r"\b([1-9]\d*)\s+(?:articles?|photos?|advertisements?|ads?|issues?)\s+found\b", sn, re.I):
+                    if re.search(r"\b(?:average|avg|mean|median|length|word\s*count|words?|total|count)\b[^\n\d]*\b([1-9]\d*(?:\.\d+)?)\b", sn, re.I):
+                        has_positive = True
+                        break
+                    if re.search(r"\b([1-9]\d*(?:\.\d+)?)\s*(?:articles?|photos?|advertisements?|ads?|issues?|words?|chars?)\b", sn, re.I):
                         has_positive = True
                         break
 
@@ -467,7 +472,6 @@ class EvidenceEvaluator:
                     )
 
             # Archive-wide publication scope audit: query asked for total/distinct newspapers across archive, but evidence narrowed to single publication
-            q_low = query.lower()
             is_archive_np = is_archive_wide_newspaper_query(query)
             named_in_q = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
             if is_archive_np and not named_in_q:
@@ -636,26 +640,29 @@ class EvidenceEvaluator:
         )
 
         candidates: list[ChatModelProvider] = []
-        try:
-            reg = get_registry()
-            if model_override:
+        if self._provider is not None:
+            candidates.append(self._provider)
+        else:
+            try:
+                reg = get_registry()
+                if model_override:
+                    with contextlib.suppress(Exception):
+                        candidates.append(reg.get_chat_provider(model_override))
                 with contextlib.suppress(Exception):
-                    candidates.append(reg.get_chat_provider(model_override))
-            with contextlib.suppress(Exception):
-                p = reg.get_provider("evaluator")
-                if p is not None and hasattr(p, "complete") and p not in candidates:
-                    candidates.append(p)
-            with contextlib.suppress(Exception):
-                p = reg.get_provider("query_planner")
-                if p is not None and hasattr(p, "complete") and p not in candidates:
-                    candidates.append(p)
-            for k in reg.get_chat_failover_candidates():
-                with contextlib.suppress(Exception):
-                    p = reg.get_chat_provider(k)
+                    p = reg.get_provider("evaluator")
                     if p is not None and hasattr(p, "complete") and p not in candidates:
                         candidates.append(p)
-        except Exception as e:
-            logger.warning("Could not resolve candidate models for LLM Judge", extra={"error": str(e)})
+                with contextlib.suppress(Exception):
+                    p = reg.get_provider("query_planner")
+                    if p is not None and hasattr(p, "complete") and p not in candidates:
+                        candidates.append(p)
+                for k in reg.get_chat_failover_candidates():
+                    with contextlib.suppress(Exception):
+                        p = reg.get_chat_provider(k)
+                        if p is not None and hasattr(p, "complete") and p not in candidates:
+                            candidates.append(p)
+            except Exception as e:
+                logger.warning("Could not resolve candidate models for LLM Judge", extra={"error": str(e)})
 
         for prov in candidates:
             try:

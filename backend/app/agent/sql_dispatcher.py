@@ -393,11 +393,6 @@ class SQLAnalyticsDispatcher:
     ) -> tuple[list[dict[str, Any]], int]:
         d_from = args.get("date_from")
         d_to = args.get("date_to")
-        if d_from or d_to:
-            iss_date = None
-        else:
-            iss_date = args.get("issue_date") or args.get("date") or active_issue_date
-
         q_low = str(state.get("query", "")).lower()
         q_arg = str(args.get("query", "")).lower()
         is_archive_wide = bool(
@@ -406,6 +401,12 @@ class SQLAnalyticsDispatcher:
             or re.search(r"\b(?:no|number|count|how many|all|total)\s+(?:of\s+)?newspapers?\b", q_low)
             or any(w in q_low for w in ["all available", "all newspaper", "both newspaper", "across newspaper"])
         )
+        has_date_in_q = bool(re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", f"{q_low} {q_arg}"))
+        if is_archive_wide and not has_date_in_q and not args.get("issue_date") and not d_from and not d_to or d_from or d_to:
+            iss_date = None
+        else:
+            iss_date = args.get("issue_date") or args.get("date") or (active_issue_date if not is_archive_wide else None)
+
         named_in_q = any(pat.search(q_low) or pat.search(q_arg) for pat, _ in _KNOWN_BRANDS_PATTERNS)
         if (is_archive_wide and not named_in_q) or args.get("newspaper_name") == "":
             np_name = None

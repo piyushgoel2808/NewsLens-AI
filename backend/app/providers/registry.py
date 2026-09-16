@@ -355,15 +355,16 @@ class ModelRegistry:
         or cloud-first preference.
         """
         cloud_priority = [
-            "nvidia_nemotron",
-            "openrouter_nemotron",
-            "openrouter_gemma4_26b",
             "gemini_flash",
+            "gemini_vision",
+            "gemini_pro",
+            "nvidia_nemotron",
             "groq_compound",
             "openai_gpt4o_mini",
-            "groq_qwen",
             "openai_gpt4o",
-            "gemini_pro",
+            "groq_qwen",
+            "openrouter_nemotron",
+            "openrouter_gemma4_26b",
         ]
         local_priority = [
             "ollama_llama3",
@@ -427,12 +428,15 @@ class ModelRegistry:
         Returns rich provider metadata with specific names, descriptions, and reachability.
         """
         display_names = {
-            "openrouter_gemma4_26b": "Google Gemma 4 26B (OpenRouter Dual-Key)",
-            "openrouter_nemotron": "NVIDIA Nemotron 3.5 Lightning (OpenRouter Dual-Key)",
+            "gemini_flash": "Google Gemini 2.5 Flash (AI Studio)",
+            "gemini_pro": "Google Gemini 2.5 Pro (AI Studio)",
+            "gemini_flash_lite": "Google Gemini 2.5 Flash-Lite (AI Studio)",
+            "gemini_2_flash": "Google Gemini 2.0 Flash (AI Studio)",
+            "gemini_vision": "Google Gemini 2.5 Flash Vision (VLM)",
+            "openrouter_gemma4_26b": "Google Gemma 4 26B (OpenRouter)",
+            "openrouter_nemotron": "NVIDIA Nemotron 3.5 Lightning (OpenRouter)",
             "google_cloud_vision": "Google Cloud Vision OCR",
             "ollama_qwen3vl": "Qwen 3 VL (Local Vision)",
-            "gemini_flash": "Google Gemini 3.7 Flash (Grounding)",
-            "gemini_pro": "Google Gemini Pro",
             "groq_compound": "Groq Compound AI (Ultra-Fast)",
             "groq_qwen": "Groq Qwen 3.6 27B (Reasoning)",
             "groq_gpt_oss": "Groq OpenAI GPT-OSS 120B",
@@ -490,6 +494,10 @@ class ModelRegistry:
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     r = await client.get(f"{base_url}/api/version")
                     return r.status_code == 200
+            elif provider_type == "gemini":
+                return bool(self._settings.gemini_api_key or self._settings.google_api_key)
+            elif provider_type == "google_cloud_vision":
+                return bool(self._settings.google_application_credentials or self._settings.google_api_key or self._settings.gemini_api_key)
             elif provider_type == "openrouter":
                 return bool(self._settings.get_openrouter_keys())
             elif provider_type == "groq":

@@ -133,9 +133,7 @@ def query_matches_attached_asset(query: str, attached_asset: dict[str, Any] | No
     if p_id and re.search(rf"\b(?:photo|image|picture|chart|figure)?\s*#?{p_id}\b", q_clean, re.I):
         return True
     art_id = attached_asset.get("article_id")
-    if art_id and re.search(rf"\b(?:article|story)?\s*#?{art_id}\b", q_clean, re.I):
-        return True
-    return False
+    return bool(art_id and re.search(rf"\b(?:article|story)?\s*#?{art_id}\b", q_clean, re.I))
 
 
 def needs_condensation(

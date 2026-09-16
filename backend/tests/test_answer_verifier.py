@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.agent.answer_verifier import (
-    AnswerVerificationResult,
     AnswerVerifier,
 )
 from app.providers.base import ModelResponse

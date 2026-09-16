@@ -1,0 +1,46 @@
+name: 🐛 Bug Report
+description: Create a report to help us fix an issue in NewsLens-AI
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating System & Architecture
+      placeholder: e.g. Ubuntu 22.04 / macOS Sonoma 14.5 (Apple Silicon M2)
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python & Node.js versions
+      placeholder: Python 3.12.4, Node 20.15.0
+    validations:
+      required: false
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps explaining how to reproduce the issue.
+      placeholder: |
+        1. Ingest PDF 'xyz.pdf' via UI or API
+        2. Query the agent with '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Error Output
+      description: Please copy and paste any relevant terminal output or traceback.
+      render: shell

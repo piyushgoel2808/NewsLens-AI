@@ -10,10 +10,12 @@ Audits synthesized responses against retrieved evidence ground truth along four 
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass, field
 import json
 import re
 import time
+from dataclasses import dataclass, field
+from typing import Any
+
 from app.agent.archive_context import (
     STATIC_ARCHIVE_DATE_MAX,
     STATIC_ARCHIVE_DATE_MIN,
@@ -78,6 +80,7 @@ Your mission is to rigorously verify a drafted answer against the retrieved evid
    - If the evidence genuinely lacks the required data to answer the query, set `evidence_gap_detected: true`, recommend `fallback_to_dynamic_tool`, and provide a `dynamic_tool_hint` for what database query is needed.
 4. **Refinement**:
    - If the draft has errors or fluff but the evidence contains the necessary facts (e.g. 0 matching issues, verified archive coverage range), provide a clean, faithfully grounded `refined_answer` adhering to the facts.
+   - IMPORTANT: Whenever you set `recommended_action: "refine_answer"` or `has_hallucination: true` or `has_contradiction: true`, you MUST provide a non-empty `refined_answer` string that corrects the response based strictly on the verified facts in evidence. Never leave `refined_answer` as null when errors are detected.
 
 ### OUTPUT FORMAT
 Respond ONLY with a valid JSON object matching this schema:
@@ -165,7 +168,7 @@ class AnswerVerifier:
             is_archive_np = is_archive_wide_newspaper_query(query)
             named_brand_in_query = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
             if is_archive_np and not named_brand_in_query:
-                for pat, brand in _KNOWN_BRANDS_PATTERNS:
+                for _pat, brand in _KNOWN_BRANDS_PATTERNS:
                     if (
                         re.search(rf"\b(?:specifically\s+for|for\s+the\s+publication|only\s+for)\s+{re.escape(brand)}\b", draft_answer, re.I)
                         or re.search(rf"\bNewspaper Availability for {re.escape(brand)}\b", draft_answer, re.I)

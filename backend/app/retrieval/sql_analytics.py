@@ -633,9 +633,10 @@ class SQLAnalyticsEngine:
         limit: int = 30,
     ) -> dict[str, Any]:
         """Return exact article count and matching article records matching filters."""
-        from app.models.newspaper import Newspaper
-        from app.models.article import ArticlePage, ArticleCategory
         from sqlalchemy import or_
+
+        from app.models.article import ArticleCategory, ArticlePage
+        from app.models.newspaper import Newspaper
 
         norm_date = normalize_date_to_iso(issue_date) if issue_date else None
         norm_from = normalize_date_to_iso(date_from) if date_from else None
@@ -745,8 +746,8 @@ class SQLAnalyticsEngine:
         issue_id: int | None = None,
     ) -> dict[str, Any]:
         """Return exact advertisement count and article records matching filters."""
-        from app.models.newspaper import Newspaper
         from app.models.article import ArticlePage
+        from app.models.newspaper import Newspaper
 
         norm_date = normalize_date_to_iso(issue_date) if issue_date else None
         norm_from = normalize_date_to_iso(date_from) if date_from else None
@@ -861,6 +862,24 @@ class SQLAnalyticsEngine:
             archive_newspapers: list[str] = []
 
             if count > 0:
+                stmt_nps = (
+                    select(Newspaper.name)
+                    .distinct()
+                    .join(Issue, Issue.newspaper_id == Newspaper.id)
+                )
+                if newspaper_name:
+                    stmt_nps = stmt_nps.where(Newspaper.name.ilike(f"%{newspaper_name}%"))
+                if norm_date:
+                    stmt_nps = stmt_nps.where(Issue.issue_date == norm_date)
+                else:
+                    if norm_from:
+                        stmt_nps = stmt_nps.where(Issue.issue_date >= norm_from)
+                    if norm_to:
+                        stmt_nps = stmt_nps.where(Issue.issue_date <= norm_to)
+                stmt_nps = stmt_nps.order_by(Newspaper.name)
+                res_nps = await db.execute(stmt_nps)
+                matching_newspapers = [r[0] for r in res_nps.all() if r[0]]
+
                 stmt_detail = (
                     select(Issue.id, Issue.issue_date, Newspaper.name, Issue.total_pages)
                     .join(Newspaper, Issue.newspaper_id == Newspaper.id)
@@ -877,8 +896,6 @@ class SQLAnalyticsEngine:
                 stmt_detail = stmt_detail.order_by(Issue.issue_date.desc(), Newspaper.name).limit(20)
                 res_det = await db.execute(stmt_detail)
                 for r in res_det.all():
-                    if r[2] and r[2] not in matching_newspapers:
-                        matching_newspapers.append(r[2])
                     matching_issues.append({
                         "id": r[0],
                         "issue_date": str(r[1]),

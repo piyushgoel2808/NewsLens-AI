@@ -14,6 +14,8 @@ import ast
 import contextlib
 import re
 from dataclasses import dataclass, field
+from typing import Any
+
 from app.agent.archive_context import (
     ARCHIVE_SCHEMA,
     KNOWN_COLUMN_HALLUCINATIONS,
@@ -123,14 +125,24 @@ class ToolCritic:
         for sql in sql_queries:
             # Check for known column hallucinations
             for bad_col, fix_hint in KNOWN_COLUMN_HALLUCINATIONS.items():
+                # 1. Ignore if bad_col is merely an output alias: AS bad_col
+                sql_check = re.sub(rf"\bAS\s+[`\"']?{re.escape(bad_col)}[`\"']?\b", "", sql, flags=re.IGNORECASE)
+
+                # 2. Ignore if bad_col is DATE() function call
+                if bad_col == "date":
+                    sql_check = re.sub(r"\bDATE\s*\(", "", sql_check, flags=re.IGNORECASE)
+
+                # 3. If bad_col was used as an alias in SELECT, also allow referencing it in GROUP BY, ORDER BY, or HAVING
+                if re.search(rf"\bAS\s+[`\"']?{re.escape(bad_col)}[`\"']?\b", sql, re.IGNORECASE):
+                    sql_check = re.sub(rf"\b(?:GROUP\s+BY|ORDER\s+BY|HAVING)\b[^;]*\b{re.escape(bad_col)}\b", "", sql_check, flags=re.IGNORECASE)
+
                 if bad_col == "category":
                     # Check if 'category' is erroneously referenced directly on articles table
                     # or if category is used as a column without joining article_categories
                     has_direct_col = bool(re.search(r"\b(?:articles|a)\.category\b(?!\s*_id)", sql, re.IGNORECASE))
                     has_unjoined_category = (
-                        bool(re.search(r"\bSELECT\b.*?\bcategory\b(?!\s*(?:id|_id|_categories))\b.*?\bFROM\b", sql, re.IGNORECASE | re.DOTALL))
+                        bool(re.search(r"\bSELECT\b.*?\bcategory\b(?!\s*(?:id|_id|_categories))\b.*?\bFROM\b", sql_check, re.IGNORECASE | re.DOTALL))
                         and not bool(re.search(r"\b(?:JOIN|FROM)\s+article_categories\b", sql, re.IGNORECASE))
-                        and not bool(re.search(r"\bAS\s+category\b", sql, re.IGNORECASE))
                     )
                     if has_direct_col or has_unjoined_category:
                         issues.append(f"SQL queries non-existent column '{bad_col}'.")
@@ -139,7 +151,7 @@ class ToolCritic:
                     continue
 
                 pattern = rf"\b{re.escape(bad_col)}\b"
-                if re.search(pattern, sql, re.IGNORECASE):
+                if re.search(pattern, sql_check, re.IGNORECASE):
                     issues.append(f"SQL queries non-existent column '{bad_col}'.")
                     fixes.append(f"Replace '{bad_col}' with {fix_hint}.")
                     penalties += 0.3
@@ -158,11 +170,15 @@ class ToolCritic:
             has_articles = bool(re.search(r"\bFROM\s+articles\b|\bJOIN\s+articles\b", sql, re.IGNORECASE))
             has_pages = bool(re.search(r"\bJOIN\s+pages\b", sql, re.IGNORECASE))
             has_photos = bool(re.search(r"\bJOIN\s+photos\b", sql, re.IGNORECASE))
-            if has_articles and (has_pages or has_photos):
-                if re.search(r"COUNT\s*\(\s*(?:a\.)?id\s*\)", sql, re.IGNORECASE) and not re.search(r"COUNT\s*\(\s*DISTINCT", sql, re.IGNORECASE):
-                    issues.append("Potential Cartesian product: Counting articles across 1:N join without DISTINCT.")
-                    fixes.append("Use `COUNT(DISTINCT a.id)` when joining `pages` or `photos`.")
-                    penalties += 0.2
+            if (
+                has_articles
+                and (has_pages or has_photos)
+                and re.search(r"COUNT\s*\(\s*(?:a\.)?id\s*\)", sql, re.IGNORECASE)
+                and not re.search(r"COUNT\s*\(\s*DISTINCT", sql, re.IGNORECASE)
+            ):
+                issues.append("Potential Cartesian product: Counting articles across 1:N join without DISTINCT.")
+                fixes.append("Use `COUNT(DISTINCT a.id)` when joining `pages` or `photos`.")
+                penalties += 0.2
 
         score = max(0.0, 1.0 - penalties)
         return score, issues, fixes
@@ -327,12 +343,10 @@ class ToolCritic:
         if not uses_context_np:
             for np in available_newspapers:
                 clean_np = np.lower().replace("the ", "").strip()
-                if clean_np in query.lower():
-                    # Verify if code does exact match with wrong case or missing 'The '
-                    if f"'{clean_np}'" in code or f'"{clean_np}"' in code:
-                        issues.append(f"Newspaper naming mismatch: Searched for '{clean_np}' but database record is '{np}'.")
-                        fixes.append(f"Use `LOWER(n.name) LIKE '%{clean_np}%'` or exact match '{np}'.")
-                        return 0.4, issues, fixes
+                if clean_np in query.lower() and (f"'{clean_np}'" in code or f'"{clean_np}"' in code):
+                    issues.append(f"Newspaper naming mismatch: Searched for '{clean_np}' but database record is '{np}'.")
+                    fixes.append(f"Use `LOWER(n.name) LIKE '%{clean_np}%'` or exact match '{np}'.")
+                    return 0.4, issues, fixes
 
         # If available dates exist and user asked for date out of bounds
         if available_dates:

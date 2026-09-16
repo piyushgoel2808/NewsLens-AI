@@ -17,15 +17,15 @@ from app.agent.condenser import (
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
 )
-from app.retrieval import (
-    resolve_attached_asset_context,
-    resolve_conversation_working_context,
-)
 from app.agent.graph import AgentWorkflow
 from app.agent.planner import QueryPlanner
 from app.agent.synthesizer import parse_thought_and_answer
 from app.models.base import get_db, get_session_factory
 from app.models.query import QueryLog
+from app.retrieval import (
+    resolve_attached_asset_context,
+    resolve_conversation_working_context,
+)
 from app.retrieval.timeline_builder import NarrativeTrajectoryResponse, TimelineBuilder
 
 REASONING_START_REGEX = re.compile(
