@@ -4,10 +4,10 @@ import { Cpu, Cloud, Laptop, Sparkles, ShieldCheck } from 'lucide-react';
 // Hardcoded reference models for clean display labels
 const CORE_MODELS = {
   gemini_cloud: [
-    { id: 'gemini_flash', label: 'Gemini 2.5 Flash (Google Cloud)', hint: 'Vision + Fast Reasoning' },
-    { id: 'gemini_pro', label: 'Gemini 2.5 Pro (Google Cloud)', hint: 'Frontier Reasoning' },
-    { id: 'gemini_flash_lite', label: 'Gemini 2.5 Flash-Lite', hint: 'High-Volume / Low-Cost' },
-    { id: 'gemini_2_flash', label: 'Gemini 2.0 Flash', hint: 'Previous Gen Fallback' },
+    { id: 'gemini_flash', label: 'Gemini 3.8 Flash (Google Cloud)', hint: 'Vision + Fast Reasoning (Canonical)' },
+    { id: 'gemini_pro', label: 'Gemini 3.8 Flash (Deep Synthesis)', hint: 'Frontier Broadsheet Synthesis' },
+    { id: 'gemini_flash_lite', label: 'Gemini 3.8 Flash (Condenser)', hint: 'Conversational Coreference' },
+    { id: 'gemini_live', label: 'Gemini 3.8 Live', hint: 'Real-time Audio Streaming' },
   ],
   cloud_direct: [
     { id: 'groq_compound', label: 'Groq Compound AI', hint: 'Ultra-Fast' },

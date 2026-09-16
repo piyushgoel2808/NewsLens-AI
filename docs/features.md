@@ -478,9 +478,9 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 ## 23. Google Gemini Full Cloud Architecture & Production Containerization
 
 * **Unified Google AI Studio Foundation**:
-  * Leverages official Google Gemini API keys (`GEMINI_API_KEY` or `GOOGLE_API_KEY`) with full support for `gemini-2.5-flash` (workhorse for visual extraction, query planning, and grounded answering), `gemini-2.5-pro` (complex multi-newspaper synthesis and editorial audits), `gemini-2.5-flash-lite` (conversational query condensation), and `gemini-2.0-flash` (backward-compatible fallback).
+  * Leverages official Google Gemini API keys (`GEMINI_API_KEY` or `GOOGLE_API_KEY`) with full support for `gemini-3.8-flash` (canonical workhorse for visual extraction, query planning, and grounded answering), `gemini-3.8-live` (real-time voice/audio streaming), `gemini-3.5-flash` (high-speed fallback), and `gemini-3.1-pro-preview` / `gemini-3.1-flash-lite`.
 * **Transparent Multi-Candidate Failover (`GeminiProvider._get_model_candidates`)**:
-  * Transparently cycles through model candidates if an upstream Google AI Studio endpoint returns 404/deprecation errors on newly provisioned API keys, preventing request drops.
+  * Transparently cycles through model candidates (`[gemini-3.8-flash, gemini-3.5-flash, gemini-3.6-flash, gemini-3.7-flash]`) if an upstream Google AI Studio endpoint returns 429/503/404 errors, preventing request drops.
 * **Recursive Pydantic Schema Sanitization**:
   * Automatically strips disallowed JSON schema attributes (`title`, `description`, `$defs`) before submitting structured output schemas to Google AI Studio, guaranteeing zero OpenAPI validation rejections.
 * **Full Production Container Stack (8 Microservices)**:

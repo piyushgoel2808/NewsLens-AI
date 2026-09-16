@@ -53,12 +53,12 @@ const PRESET_PROFILES = [
       btn: 'bg-sky-600 hover:bg-sky-500 text-white',
     },
     pipelineHighlights: {
-      reasoning: 'Google Gemini 2.5 Flash (1M ctx)',
-      vision: 'Gemini 2.5 Flash VLM (Native OCR & Layout)',
+      reasoning: 'Google Gemini 3.8 Flash (1M ctx)',
+      vision: 'Gemini 3.8 Flash VLM (Native OCR & Layout)',
       indexing: 'BAAI BGE-M3 (1024d)',
     },
     description:
-      'Routes all LLM reasoning, article segmentation, visual extraction, and layout analysis through Google Gemini 2.5 Flash via Google AI Studio.',
+      'Routes all LLM reasoning, article segmentation, visual extraction, and layout analysis through Google Gemini 3.8 Flash via Google AI Studio.',
     bindings: {
       query_planner: 'gemini_flash',
       answerer: 'gemini_flash',

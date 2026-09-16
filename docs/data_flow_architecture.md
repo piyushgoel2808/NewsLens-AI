@@ -98,19 +98,20 @@ NewsLens-AI decouples application pipelines from hardcoded AI vendors using a **
 
 ### Granular Pipeline Task Bindings
 1. **Stage 1 — Agentic Reasoning & Synthesis**:
-   - `query_planner`: Autonomous tool sequence planner & sub-query generator (`gemini-2.5-flash` / `ollama_llama3`).
-   - `answerer`: Multi-newspaper factual synthesizer & citation linker (`gemini-2.5-flash` / `gemini-2.5-pro` / `ollama_llama3`).
-   - `answer_verifier`: Reflective fact-checking critic and fluff eliminator (`gemini-2.5-flash` / `ollama_llama3`).
+   - `query_planner`: Autonomous tool sequence planner & sub-query generator (`gemini-3.8-flash` / `ollama_llama3`).
+   - `answerer`: Multi-newspaper factual synthesizer & citation linker (`gemini-3.8-flash` / `ollama_llama3`).
+   - `answer_verifier`: Reflective fact-checking critic and fluff eliminator (`gemini-3.8-flash` / `ollama_llama3`).
+   - `query_condenser`: Coreference and pronoun resolution (`gemini-3.8-flash` / `ollama_llama3`).
 2. **Stage 2 — Vision & Broadsheet Ingestion**:
-   - `visual_extraction`: Multimodal chart, table, and scene extractor (`gemini-2.5-flash` / `ollama_qwen3vl`).
-   - `layout_analysis`: 2D spatial layout and column parsing (`gemini-2.5-flash` / `docling_parser`).
+   - `visual_extraction`: Multimodal chart, table, and scene extractor (`gemini-3.8-flash` / `ollama_qwen3vl`).
+   - `layout_analysis`: 2D spatial layout and column parsing (`gemini-3.8-flash` / `docling_parser`).
    - `document_parser`: Broadsheet hierarchy structure extractor (`docling_parser`).
    - `ocr`: Character transcription engine (`rapidocr` / `docling`).
 3. **Stage 3 — Classification & Indexing**:
    - `embedding`: 1024-dimensional dense vector generator (`local_embed_bge` - BAAI/bge-m3).
-   - `article_segmentation`: Complex multi-column jump-line stitcher (`gemini-2.5-flash` / `ollama_deepseek`).
-   - `classification`: 12-domain probabilistic categorization (`gemini-2.5-flash` / `ollama_llama3`).
-   - `metadata_extraction`: Publication, edition, and date extractor (`gemini-2.5-flash` / `ollama_llama3`).
+   - `article_segmentation`: Complex multi-column jump-line stitcher (`gemini-3.8-flash` / `ollama_deepseek`).
+   - `classification`: 12-domain probabilistic categorization (`gemini-3.8-flash` / `ollama_llama3`).
+   - `metadata_extraction`: Publication, edition, and date extractor (`gemini-3.8-flash` / `ollama_llama3`).
 
 ---
 

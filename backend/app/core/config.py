@@ -128,16 +128,16 @@ class RedisSettings(BaseModel):
 DEFAULT_PROVIDERS = {
     "gemini_vision": ProviderConfig(
         provider="gemini",
-        model="gemini-3.7-flash",
-        context_window=1000000,
+        model="gemini-3.8-flash",
+        context_window=1048576,
         supports_vision=True,
         supports_tool_use=True,
     ),
     "gemini_flash": ProviderConfig(
         provider="gemini",
-        model="gemini-3.7-flash",
-        context_window=1000000,
-        supports_vision=False,
+        model="gemini-3.8-flash",
+        context_window=1048576,
+        supports_vision=True,
         supports_tool_use=True,
     ),
     "google_cloud_vision": ProviderConfig(

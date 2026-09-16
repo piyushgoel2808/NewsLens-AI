@@ -509,7 +509,7 @@ Vision-Language Models during broadsheet ingestion encounter intermittent cloud 
 │            [Quota & Rate-Limit Cooldown Tracker]                                                 │
 │                 │                                                                                │
 │                 ├─► Candidate Model Failover ────────────────► Transparent Fallback Model        │
-│                 │   (gemini-2.5-flash ➔ gemini-2.5-pro ➔ gemini-2.0-flash)                       │
+│                 │   (gemini-3.8-flash ➔ gemini-3.5-flash ➔ gemini-3.6-flash)                     │
 │                 │                                                                                │
 │                 └─► All Cloud Model Candidates Exhausted                                         │
 │                           │                                                                      │
@@ -535,7 +535,7 @@ Vision-Language Models during broadsheet ingestion encounter intermittent cloud 
 Provider instances track API health and quota limits using automatic cooldown timers:
 * When an upstream provider returns `HTTP 429` or quota exhaustion, the provider records:
   $$\text{cooldown\_until} = \text{now}() + \text{retry\_after\_seconds}$$
-* For Google Gemini Cloud, the engine first transparently tests secondary candidates in its model pool (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash`).
+* For Google Gemini Cloud, the engine first transparently tests secondary candidates in its model pool (`gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.6-flash`).
 * If all cloud candidates or keys enter cooldown (`provider.are_all_keys_rate_limited() == True`), the pipeline signals the visual extractor.
 
 ##### 2. Dynamic Circuit Breaker (`VisualDataExtractor.trip_circuit_breaker`)
@@ -1017,7 +1017,7 @@ NewsLens-AI decouples cognitive reasoning and vision tasks from hardcoded LLM ve
    - Zero outbound cloud network egress. Broadsheet texts, investigative queries, and visual crops remain strictly on-premises.
 
 2. **Google Gemini Cloud Tier (Google AI Studio Primary)**:
-   - Powered by official Google AI Studio endpoints: `gemini_flash` (`gemini-2.5-flash`), `gemini_pro` (`gemini-2.5-pro`), and `gemini_flash_lite` (`gemini-2.5-flash-lite`).
+   - Powered by official Google AI Studio endpoints: `gemini_flash` (`gemini-3.8-flash`), `gemini_live` (`gemini-3.8-live`), and `gemini-3.5-flash` fallback.
    - Serves as the primary cloud workhorse for VLM visual extraction, cognitive query planning, broadsheet synthesis, and answer verification. Includes automatic transparent multi-candidate model failover.
 
 3. **Multi-Provider Gateways & Commercial Fallbacks**:
@@ -1050,7 +1050,7 @@ Returns current task bindings, provider capability schemas (`supports_vision`, `
     {
       "id": "gemini_flash",
       "provider": "gemini",
-      "model": "gemini-2.5-flash",
+      "model": "gemini-3.8-flash",
       "context_window": 1048576,
       "supports_vision": true,
       "supports_tool_use": true
@@ -1058,7 +1058,7 @@ Returns current task bindings, provider capability schemas (`supports_vision`, `
     {
       "id": "gemini_pro",
       "provider": "gemini",
-      "model": "gemini-2.5-pro",
+      "model": "gemini-3.8-flash",
       "context_window": 1048576,
       "supports_vision": true,
       "supports_tool_use": true

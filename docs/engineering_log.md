@@ -3967,7 +3967,7 @@ When users interacted with broadsheet articles containing companion infographics
 1. **Aggregator Fragility & Dual-Key Maintenance Overhead**:
    - The platform previously promoted an OpenRouter "Dual-Key" pooling strategy with complex round-robin cooldown tracking to avoid free-tier HTTP 429 rate limits. This introduced unnecessary connection latency, periodic token starvation, and complex multi-key rotation bookkeeping for cloud reasoning.
 2. **First-Party Google AI Studio Enterprise Foundation**:
-   - The user activated Google AI Studio billing with dedicated Google Gemini API keys. The cognitive and visual pipelines required migration to native first-party Google Gemini Cloud models (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-2.0-flash`).
+   - The user activated Google AI Studio billing with dedicated Google Gemini API keys. The cognitive and visual pipelines required migration to native first-party Google Gemini Cloud models (`gemini-3.8-flash`, `gemini-3.8-live`, `gemini-3.5-flash`).
 3. **Pydantic Schema Validation Rejections in Google API**:
    - When passing structured Pydantic schemas for structured JSON output to the Google GenAI SDK, Google AI Studio rejected schemas containing OpenAPI attributes like `title`, `description`, and `$defs` (`400 Invalid argument: Schema contains unsupported keywords`).
 4. **Lack of Zero-Friction One-Command Deployment**:
@@ -3977,13 +3977,13 @@ When users interacted with broadsheet articles containing companion infographics
 
 1. **Google Gemini Full Cloud Provider Foundation (`backend/app/providers/gemini_provider.py`)**:
    - **Recursive Pydantic Schema Sanitizer (`_clean_schema_for_gemini`)**: Recursively purges unsupported keywords (`title`, `description`, `$defs`, `additionalProperties`) from Pydantic JSON schemas, guaranteeing 100% compliance with Google AI Studio structured output requirements.
-   - **Transparent Candidate Failover (`_get_model_candidates`)**: Automatically discovers fallback model identifiers (e.g. `gemini-2.5-flash` ➔ `gemini-2.5-pro` ➔ `gemini-2.0-flash`), gracefully preventing 404 or deprecation errors on newly provisioned API keys.
+   - **Transparent Candidate Failover (`_get_model_candidates`)**: Automatically discovers fallback model identifiers (`gemini-3.8-flash` ➔ `gemini-3.5-flash` ➔ `gemini-3.6-flash`), gracefully preventing 404 or deprecation errors on newly provisioned API keys.
    - **Native Multimodal Vision & Grounded Answering**: Full support for native high-resolution broadsheet crop analysis, 1M+ token context windows, and real-time token streaming.
 
 2. **Model Registry & Pipeline Task Realignment (`model_config.yaml`)**:
-   - Promoted `gemini_flash` (`gemini-2.5-flash`) as the primary cloud workhorse across all major tasks: `query_planner`, `answerer`, `answer_verifier`, `visual_extraction`, `layout_analysis`, `metadata_extraction`, `classification`, and `article_segmentation`.
+   - Promoted `gemini_flash` (`gemini-3.8-flash`) as the primary cloud workhorse across all major tasks: `query_planner`, `answerer`, `answer_verifier`, `visual_extraction`, `layout_analysis`, `metadata_extraction`, `classification`, `article_segmentation`, and `query_condenser`.
    - Relegated OpenRouter from "Tier 2 Dual-Key" to an optional Tier 3 gateway provider alongside OpenAI and Groq.
-   - Updated frontend default presets in `frontend/src/components/ModelSelector.jsx`, `ActiveHighlightContext.jsx`, and `ModelSettingsStudio.jsx` to default to Google Gemini Cloud.
+   - Updated frontend default presets in `frontend/src/components/ModelSelector.jsx`, `ActiveHighlightContext.jsx`, and `ModelSettingsStudio.jsx` to default to Google Gemini Cloud (`gemini-3.8-flash`).
 
 3. **Complete Production Containerization Stack (`docker-compose.yml`)**:
    - Engineered production-ready 8-microservice Docker Compose configuration:

@@ -7,10 +7,11 @@ Implements:
 - DocumentLayoutProvider (parse_page_image, parse_pdf_document)
 
 Supported models:
-- gemini-3.7-flash (default, high-speed multimodal)
-- gemini-3.5-flash
+- gemini-3.8-flash (canonical multimodal workhorse)
+- gemini-3.8-live (real-time voice/audio)
+- gemini-3.5-flash (high-speed fallback)
 - gemini-3.1-pro-preview
-- gemini-flash-latest
+- gemini-3.1-flash-lite
 """
 
 from __future__ import annotations
@@ -234,11 +235,11 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
 
     def __init__(
         self,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.8-flash",
         api_key: str | None = None,
         service_account_info: dict[str, Any] | str | None = None,
     ) -> None:
-        self._model = model.replace("models/", "") if model else "gemini-2.5-flash"
+        self._model = model.replace("models/", "") if model else "gemini-3.8-flash"
         self._api_key = api_key
         self._sa_credentials: Any = None
 
@@ -286,11 +287,35 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         candidates = [self._model]
         lower = self._model.lower()
         if "pro" in lower:
-            fallbacks = ["gemini-2.5-pro", "gemini-3.1-pro-preview", "gemini-pro-latest", "gemini-2.5-flash", "gemini-3.6-flash"]
+            fallbacks = [
+                "gemini-3.8-flash",
+                "gemini-3.1-pro-preview",
+                "gemini-pro-latest",
+                "gemini-3.5-flash",
+            ]
         elif "lite" in lower:
-            fallbacks = ["gemini-2.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.6-flash"]
+            fallbacks = [
+                "gemini-3.8-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+                "gemini-3.5-flash",
+                "gemini-flash-lite-latest",
+            ]
+        elif "live" in lower:
+            fallbacks = [
+                "gemini-3.8-live",
+                "gemini-3.5-transcribe-live",
+                "gemini-2.5-flash-native-audio-latest",
+            ]
         else:
-            fallbacks = ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+            fallbacks = [
+                "gemini-3.8-flash",
+                "gemini-3.5-flash",
+                "gemini-3.1-flash-lite",
+                "gemini-3.6-flash",
+                "gemini-3.7-flash",
+                "gemini-flash-latest",
+            ]
 
         for fb in fallbacks:
             if fb not in candidates:
@@ -573,12 +598,17 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
 
     async def analyze_image(
         self,
-        image_bytes: bytes,
+        image_bytes: bytes | Image.Image,
         prompt: str,
         response_schema: dict[str, Any] | None = None,
         max_tokens: int = 4096,
     ) -> ModelResponse:
         """Analyze an image using multimodal Gemini vision."""
+        if hasattr(image_bytes, "save"):
+            buf = io.BytesIO()
+            image_bytes.save(buf, format="PNG")
+            image_bytes = buf.getvalue()
+
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
         contents: list[dict[str, Any]] = [
             {
