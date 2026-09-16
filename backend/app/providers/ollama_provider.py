@@ -75,6 +75,10 @@ class OllamaProvider:
     def provider_name(self) -> str:
         return "ollama"
 
+    @property
+    def model_name(self) -> str:
+        return self._model
+
     def _to_ollama_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for m in messages:
@@ -147,6 +151,11 @@ class OllamaProvider:
             and any(isinstance(c, dict) and c.get("type") == "image" for c in m.content)
             for m in messages
         )
+        if has_images:
+            kwargs["options"]["repeat_penalty"] = 1.15
+            if kwargs["options"].get("num_predict", 0) < 1536:
+                kwargs["options"]["num_predict"] = 1536
+
         if response_schema:
             if not has_images and isinstance(response_schema, dict) and len(response_schema) > 1:
                 kwargs["format"] = response_schema
@@ -157,9 +166,8 @@ class OllamaProvider:
 
         try:
             response = await self._client.chat(**kwargs)
-        except ollama.ResponseError as e:
-            # If Ollama server rejects complex schema dictionary, fallback to format="json"
-            if response_schema and "format" in kwargs and kwargs["format"] != "json":
+        except Exception as e:
+            if "format" in kwargs and kwargs["format"] != "json":
                 try:
                     kwargs["format"] = "json"
                     response = await self._client.chat(**kwargs)
@@ -167,15 +175,6 @@ class OllamaProvider:
                     raise ProviderError(f"Ollama API error: {e}") from e
             else:
                 raise ProviderError(f"Ollama API error: {e}") from e
-        except Exception as e:
-            if response_schema and "format" in kwargs and kwargs["format"] != "json":
-                try:
-                    kwargs["format"] = "json"
-                    response = await self._client.chat(**kwargs)
-                except Exception:
-                    raise ProviderError(f"Ollama request failed: {e}") from e
-            else:
-                raise ProviderError(f"Ollama request failed: {e}") from e
 
         latency_ms = round((time.monotonic() - t0) * 1000)
         raw_text: str = response.message.content or ""
@@ -184,11 +183,11 @@ class OllamaProvider:
         # Fallback to extracting response from thinking tokens if content was starved
         if not raw_text.strip() and thinking_text.strip():
             match = re.search(
-                r"(\{[^{}]*\"(?:summary|markdown_table|visual_type|key_metrics)\"[^}]*\}|\{.*\})",
+                r"(\{[^{}]*\"(?:summary|markdown_table|visual_type|key_metrics|regions)\"[^}]*\}|\{.*\})",
                 thinking_text,
                 re.DOTALL,
             )
-            raw_text = match.group(1) if match else thinking_text
+            raw_text = match.group(1) if match else ("" if response_schema else thinking_text)
 
         # Strip reasoning / thinking tokens (e.g. <thought>...</thought>, <think>...</think>)
         cleaned_text = re.sub(r"<(thought|think)>.*?</\1>", "", raw_text, flags=re.DOTALL).strip()
@@ -200,17 +199,48 @@ class OllamaProvider:
             try:
                 parsed = json.loads(text.strip())
             except json.JSONDecodeError:
-                # Attempt regex recovery if direct json.loads fails
-                match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
+                # 1. Attempt regex recovery for outer [...] or {...}
+                match = re.search(r"(\[.*\]|\{.*\})", text, re.DOTALL)
                 if match:
                     with contextlib.suppress(Exception):
                         parsed = json.loads(match.group(1))
+
+                # 2. Attempt comma-separated objects wrapped as a list
+                if not parsed:
+                    with contextlib.suppress(Exception):
+                        parsed = json.loads(f"[{text.strip().rstrip(',')}]")
+
+                # 3. Stream JSONDecoder.raw_decode recovery across the text
+                if not parsed:
+                    decoder = json.JSONDecoder()
+                    idx = 0
+                    objs: list[Any] = []
+                    while idx < len(text):
+                        start = text.find("{", idx)
+                        if start == -1:
+                            break
+                        try:
+                            obj, end = decoder.raw_decode(text, idx=start)
+                            objs.append(obj)
+                            idx = end
+                        except json.JSONDecodeError:
+                            idx = start + 1
+                    if objs:
+                        if len(objs) == 1 and isinstance(objs[0], dict) and "regions" in objs[0]:
+                            parsed = objs[0]
+                        else:
+                            parsed = objs
+
+                # 4. Attempt recovery from thinking tokens if not yet parsed
                 if not parsed and thinking_text:
-                    # Attempt recovery from thinking tokens
-                    match_think = re.search(r"(\{.*\}|\[.*\])", thinking_text, re.DOTALL)
+                    match_think = re.search(r"(\[.*\]|\{.*\})", thinking_text, re.DOTALL)
                     if match_think:
                         with contextlib.suppress(Exception):
                             parsed = json.loads(match_think.group(1))
+                    if not parsed:
+                        with contextlib.suppress(Exception):
+                            parsed = json.loads(f"[{thinking_text.strip().rstrip(',')}]")
+
                 if not parsed:
                     logger.warning(
                         "Failed to parse structured JSON from Ollama response",

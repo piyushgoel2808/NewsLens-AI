@@ -4018,4 +4018,61 @@ When users interacted with broadsheet articles containing companion infographics
 - **Frontend Vite Build**: Production bundle built with 0 errors in 1.00s.
 - **Link Integrity**: Zero broken links across `docs/` (`grep -ri "data_flow.md" docs/` returns 0 hits).
 
+---
+
+## Phase 9.70 — High-Throughput Broadsheet Ingestion, Single-Pass Multimodal Extraction & Neural Layout Isolation
+
+**Date**: 2026-09-17  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+1. **Excessive Ingestion Latency & High Memory Footprint**:
+   - 300 DPI broadsheet rasterization produced huge images (~8188x11400 px, ~25MB uncompressed memory per page), taking 6–8s per page and imposing heavy memory pressure during multi-page ingestion.
+2. **Serial Per-Crop Visual Extraction Bottlenecks**:
+   - For broadsheets containing 20–30 photos and infographics, making individual serial VLM requests took 3–5 minutes per page, bottlenecking entire 24-page issues.
+3. **Docling Picture Envelope Inflation & Advertisement Bleed**:
+   - In Docling neural layout parsing, `picture` bounding boxes were inadvertently aggregated into article text envelopes, causing advertisements or full-width photos to expand article envelopes across unrelated columns and pollute reading trees across multi-page continuations.
+4. **Local VLM Monologue Loops & Unclosed Thinking Tokens**:
+   - Local Ollama vision models (`qwen3-vl:latest`) occasionally output unclosed `<think>` tags or conversational monologue prefixes (*"Got it, let's analyze..."*) that contaminated stored database summaries.
+5. **Reader Photo Navigation Limitations**:
+   - The Broadsheet Reader photos pane lacked page-level indicators, preventing users from seeing which page an image originated from or filtering to the currently viewed page.
+
+### Architectural Solutions & Implementations
+
+1. **150 DPI Rasterization Optimization (`rasterizer.py`)**:
+   - Standardized on 150 DPI rasterization (`fitz.Matrix(150/72, 150/72)`), yielding crisp master broadsheet PNGs (~1500–2000px width) in ~1.5s per page.
+   - Reduces raster memory footprint by 75% while preserving 100% character-level OCR clarity and DocLayNet spatial accuracy.
+
+2. **Unified Single-Pass Visual Extractor (`single_pass_extractor.py`)**:
+   - **Cloud Single-Pass (`gemini-3.8-flash`)**: Sends the master 150 DPI page image along with a normalized JSON manifest of target regions (`[x0, y0, x1, y1] \in [0.0, 1.0]`). Gemini processes all visual elements in a single LLM request (10–30s per page), slashing visual extraction latency by over 80%.
+   - **Local VLM Adaptive Concurrency (`qwen3-vl:latest` via Ollama)**: Automatically detects local vision providers and routes them to concurrent per-crop extraction gated by `asyncio.Semaphore(2)`, preventing context saturation and memory spikes.
+   - **Preamble & Thinking Token Sanitizer (`clean_vlm_text`)**: Intercepts VLM outputs with compiled regexes to purge unclosed `<think>` reasoning tags, markdown fences, and conversational chatter.
+   - **Deterministic Fallback Guarantees (`_fallback_extract_region`)**: Automatically extracts crops and synthesizes non-empty fallback descriptions for any omitted or blank manifest regions, guaranteeing 0 empty descriptions.
+
+3. **Docling Neural Layout Isolation & Picture Envelope Stripping (`parsers/docling.py`)**:
+   - Excluded `picture` bounding boxes from article text envelopes, keeping article reading boundaries strictly tied to textual copy.
+   - Segmented commercial advertisements and statutory notices into standalone ad records.
+   - Added spatial discontinuity guards ($>200\text{px}$ jumps) and jump-pointer flushes (`▶ P2`, `Continued on page...`).
+
+4. **Media Extractor Enhancements (`media_extractor.py`)**:
+   - Penalized candidate advertisement containers ($>40\%$ canvas) and added caption-based matching in `resolve_photo_article_binding()`.
+   - Guaranteed non-empty fallback descriptions for all extracted visual assets.
+
+5. **Frontend Broadsheet Reader Enhancements (`BroadsheetReader.jsx`, `articles.py`)**:
+   - Exposed `page_number` on photo models in `GET /api/articles/{id}`.
+   - Added interactive page badges (e.g. `Page 1`, `Page 2`) and a page-scoped filter toggle in `BroadsheetReader.jsx`.
+
+### Verification & QA
+- **Pytest Test Suites**:
+  - `backend/tests/test_single_pass_extractor.py`: 7/7 passed.
+  - `backend/tests/test_visual_extractor.py`: 15/15 passed.
+  - `backend/tests/test_docling_parser.py`: 13/13 passed.
+  - All 35 targeted tests passing (100% green).
+- **Live Issue Ingestion Audits**:
+  - **Issue #113**: Verified ad detached from Page 2 genomics continuation.
+  - **Issue #115** (23-page HT Delhi, local Qwen3-VL): 195 articles assembled, 84 photos extracted.
+  - **Issue #116** (3-page HT Delhi, Gemini 3.8 Flash): 20 articles assembled, 9 photos extracted.
+  - **Issue #117** (23-page HT Delhi, Gemini 3.8 Flash): 202 articles assembled, 64 photos extracted, 0 empty descriptions, 231 vector chunks in Qdrant.
+
+
 

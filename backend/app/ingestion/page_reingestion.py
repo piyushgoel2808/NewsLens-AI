@@ -280,50 +280,44 @@ class PageReingestionService:
         digital_analysis = detector.analyze_document_bytes(single_pdf_bytes)
         single_analysis = digital_analysis[0] if digital_analysis else None
 
+        # 5. Extract Layout & Articles using DoclingLayoutParser
         page_segmented_articles: list[SegmentedArticle] = []
         page_media_items: list[ExtractedPhotoData] = []
-        requires_image_ocr = (
-            single_analysis is not None
-            and (single_analysis.page_type == PageType.SCANNED or single_analysis.requires_ocr)
-        )
+        parsed_doc_items: list[Any] = []
+        try:
+            docling_parser = DoclingLayoutParser()
+            parsed_doc_items = await asyncio.get_running_loop().run_in_executor(
+                None,
+                docling_parser.parse_docling_document,
+                single_pdf_bytes,
+                page_number,
+                width_px,
+                height_px,
+            )
 
-        if not requires_image_ocr:
-            try:
-                docling_parser = DoclingLayoutParser()
-                parsed_doc_items = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    docling_parser.parse_docling_document,
-                    single_pdf_bytes,
-                    page_number,
-                    width_px,
-                    height_px,
-                )
+            docling_articles = docling_parser.assemble_articles(
+                page_number=page_number,
+                items=parsed_doc_items,
+                width_px=width_px,
+                height_px=height_px,
+                is_advertisement_page=page.is_advertisement_page,
+            )
 
-                docling_articles = docling_parser.assemble_articles(
-                    page_number=page_number,
-                    items=parsed_doc_items,
-                    width_px=width_px,
-                    height_px=height_px,
-                    is_advertisement_page=page.is_advertisement_page,
-                )
+            page_segmented_articles = list(docling_articles)
+            page_media_items = docling_parser.extract_page_media_items(parsed_doc_items)
+        except CorruptedPdfTextLayerError as font_err:
+            logger.warning(
+                "Docling failed due to corrupted PDF font layer, escalating to image OCR fallback",
+                extra={"page_number": page_number, "error": str(font_err)},
+            )
+        except Exception as docling_err:
+            logger.warning(
+                "DoclingLayoutParser encountered error, checking image OCR fallback",
+                extra={"page_number": page_number, "error": str(docling_err)},
+            )
 
-                page_segmented_articles = list(docling_articles)
-                page_media_items = docling_parser.extract_page_media_items(parsed_doc_items)
-            except CorruptedPdfTextLayerError as font_err:
-                logger.warning(
-                    "Docling failed due to corrupted PDF font layer, escalating to image OCR fallback",
-                    extra={"page_number": page_number, "error": str(font_err)},
-                )
-                requires_image_ocr = True
-            except Exception as docling_err:
-                logger.warning(
-                    "DoclingLayoutParser encountered error, checking image OCR fallback",
-                    extra={"page_number": page_number, "error": str(docling_err)},
-                )
-                requires_image_ocr = True
-
-        # Fallback to Pure Image OCR (Google Cloud Vision / LayoutAnalyzer) if required or 0 articles extracted
-        if requires_image_ocr or not page_segmented_articles:
+        # Fallback to Pure Image OCR (Google Cloud Vision / LayoutAnalyzer) if 0 articles extracted
+        if not page_segmented_articles:
             logger.info(
                 "Running Pure Image OCR fallback for page",
                 extra={"page_number": page_number, "width_px": width_px, "height_px": height_px},
@@ -414,7 +408,7 @@ class PageReingestionService:
         embedder = ArticleEmbedder(db=self._db, qdrant=self._qdrant)
 
         persisted_articles: list[tuple[Article, Any]] = []
-        article_envelopes: list[tuple[int, tuple[float, float, float, float], str]] = []
+        article_envelopes: list[Any] = []
 
         for assembled in assembled_articles:
             class_res = classifier.classify_and_score(
@@ -492,83 +486,59 @@ class PageReingestionService:
                 full_text=assembled.full_text,
             )
 
-            # Record spatial envelope for photo binding (filter out full-page canvas background items)
-            page_area = float(width_px * height_px)
-            real_bboxes = [
-                b for b in assembled.pages_mapping[0].bbox_list
-                if (max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])) < (0.50 * page_area)
-            ] if assembled.pages_mapping[0].bbox_list else []
-
-            if real_bboxes:
-                env = (
-                    min(b[0] for b in real_bboxes),
-                    min(b[1] for b in real_bboxes),
-                    max(b[2] for b in real_bboxes),
-                    max(b[3] for b in real_bboxes),
-                )
-            elif assembled.pages_mapping[0].bbox_list:
-                bboxes = assembled.pages_mapping[0].bbox_list
-                env = (
-                    min(b[0] for b in bboxes),
-                    min(b[1] for b in bboxes),
-                    max(b[2] for b in bboxes),
-                    max(b[3] for b in bboxes),
-                )
+            # Record spatial envelope for photo binding
+            art_bboxes = assembled.pages_mapping[0].bbox_list if assembled.pages_mapping else []
+            if art_bboxes:
+                env_x0 = min(b[0] for b in art_bboxes)
+                env_y0 = min(b[1] for b in art_bboxes)
+                env_x1 = max(b[2] for b in art_bboxes)
+                env_y1 = max(b[3] for b in art_bboxes)
+                env = (env_x0, env_y0, env_x1, env_y1)
             else:
                 env = (0.0, 0.0, float(width_px), float(height_px))
 
-            article_envelopes.append((article_record.id, env, article_record.headline or ""))
+            article_envelopes.append((article_record.id, env, article_record.headline or "", art_bboxes))
             persisted_articles.append((article_record, assembled))
 
         await self._db.flush()
 
         # 7. Extract Photos & Visual Intelligence
         media_extractor = MediaExtractor(minio=self._minio, db=self._db)
-        all_media_boxes: list[tuple[tuple[float, float, float, float], str]] = [
-            (m.bbox, m.caption or "") for m in page_media_items if m.bbox
-        ]
-
+        media_list = list(page_media_items)
         if single_analysis:
             for ibox in single_analysis.image_boxes:
                 if not any(
-                    abs(ibox[0] - mb[0][0]) < 30 and abs(ibox[1] - mb[0][1]) < 30
-                    for mb in all_media_boxes
+                    abs(ibox[0] - m.bbox[0]) < 30 and abs(ibox[1] - m.bbox[1]) < 30
+                    for m in media_list
+                    if m.bbox
                 ):
-                    all_media_boxes.append((ibox, ""))
+                    media_list.append(ExtractedPhotoData(bbox=ibox, caption=""))
 
         article_photos_map: dict[int, list[Photo]] = {}
         has_large_canvas = False
-        img_idx = 1
-        for m_box, m_cap in all_media_boxes:
-            b_area = max(0.0, m_box[2] - m_box[0]) * max(0.0, m_box[3] - m_box[1])
-            if (b_area / max(1.0, float(width_px * height_px))) >= 0.75:
-                has_large_canvas = True
+        for m in media_list:
+            if m.bbox:
+                b_area = max(0.0, m.bbox[2] - m.bbox[0]) * max(0.0, m.bbox[3] - m.bbox[1])
+                if (b_area / max(1.0, float(width_px * height_px))) >= 0.75:
+                    has_large_canvas = True
 
-            bound_art_id = media_extractor.resolve_photo_article_binding(
-                photo_bbox=m_box,
-                article_envelopes=article_envelopes,
-                caption=m_cap,
-            )
-            try:
-                photo_rec = await media_extractor.extract_and_store_photo(
-                    page_image_bytes=page_image_bytes,
-                    page_id=page.id,
-                    article_id=bound_art_id,
-                    bbox=m_box,
-                    caption=m_cap,
-                    photo_index=img_idx,
-                )
-                if photo_rec:
-                    if bound_art_id:
-                        if bound_art_id not in article_photos_map:
-                            article_photos_map[bound_art_id] = []
-                        article_photos_map[bound_art_id].append(photo_rec)
-                    img_idx += 1
-            except Exception as p_err:
-                logger.warning(
-                    "Photo extraction failed on page",
-                    extra={"page_number": page_number, "error": str(p_err)},
-                )
+        raw_items = parsed_doc_items if "parsed_doc_items" in locals() else []
+        stored_pairs = await media_extractor.extract_and_store_all_photos_single_pass(
+            page_image_bytes=page_image_bytes,
+            page_id=page.id,
+            article_envelopes=article_envelopes,
+            media_items=media_list,
+            all_docling_items=raw_items,
+            page_width_px=width_px,
+            page_height_px=height_px,
+            start_photo_index=1,
+        )
+
+        for bound_art_id, photo_rec in stored_pairs:
+            if bound_art_id:
+                if bound_art_id not in article_photos_map:
+                    article_photos_map[bound_art_id] = []
+                article_photos_map[bound_art_id].append(photo_rec)
 
         # Fallback: if page yielded 0 discrete photos AND has a large canvas (>= 75%), run VLM Grounding Sweep
         if not article_photos_map and has_large_canvas:
@@ -582,14 +552,13 @@ class PageReingestionService:
                 article_envelopes=article_envelopes,
                 width_px=width_px,
                 height_px=height_px,
-                start_photo_index=img_idx,
+                start_photo_index=len(stored_pairs) + 1,
             )
             for bound_art_id, photo_rec in grounded_subphotos:
                 if bound_art_id:
                     if bound_art_id not in article_photos_map:
                         article_photos_map[bound_art_id] = []
                     article_photos_map[bound_art_id].append(photo_rec)
-                img_idx += 1
 
         # 8. Chunking, Dense Vector Embeddings, and Qdrant Indexing
         total_chunks_created = 0

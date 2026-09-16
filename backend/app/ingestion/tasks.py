@@ -212,6 +212,7 @@ async def run_ingestion_pipeline(
         media_extractor = MediaExtractor(minio=store, db=db)
         all_pages_articles: dict[int, list[SegmentedArticle]] = {}
         page_media_items: dict[int, list[ExtractedPhotoData]] = {}
+        parsed_doc_items_by_page: dict[int, list[Any]] = {}
         page_extractions: list[dict[str, Any]] = []
 
         last_known_folio: int | None = None
@@ -284,6 +285,7 @@ async def run_ingestion_pipeline(
                         is_advertisement_page=page_record.is_advertisement_page if page_record else False,
                     )
                     page_media_items[page_num] = docling_parser.extract_page_media_items(parsed_doc_items)
+                    parsed_doc_items_by_page[page_num] = parsed_doc_items
                     if docling_articles:
                         page_segmented_articles.extend(docling_articles)
                 except Exception as docling_err:
@@ -489,7 +491,7 @@ async def run_ingestion_pipeline(
 
         # Step 7a: First Pass - Persist Articles to obtain article IDs
         persisted_articles: list[tuple[Article, AssembledArticle, Any]] = []
-        article_envelopes_by_page: dict[int, list[tuple[int, tuple[float, float, float, float], str]]] = {}
+        article_envelopes_by_page: dict[int, list[Any]] = {}
 
         for assembled in assembled_articles:
             class_res = classifier.classify_and_score(
@@ -597,91 +599,69 @@ async def run_ingestion_pipeline(
                     if p_map.page_number not in article_envelopes_by_page:
                         article_envelopes_by_page[p_map.page_number] = []
                     article_envelopes_by_page[p_map.page_number].append(
-                        (article_record.id, envelope, article_record.headline or "")
+                        (
+                            article_record.id,
+                            envelope,
+                            article_record.headline or "",
+                            p_map.bbox_list or [],
+                        )
                     )
             await db.flush()
 
-        # Step 7b: Extract & Store 100% Photos / Graphic Regions for each page
+        # Step 7b: Extract & Store Visual Regions for each page (Single-Pass 1 Call Per Page)
         article_photos_map: dict[int, list[Photo]] = {}
-        for rendered, analysis in zip(rendered_pages, analysis_results, strict=False):
+
+        # Concurrency semaphore for single-pass visual extraction (capped at 2 to protect TPM limits)
+        visual_semaphore = asyncio.Semaphore(2)
+
+        async def _process_page_visuals(rendered: RasterizedPage, analysis: Any) -> list[tuple[int | None, Photo]]:
             p_num = rendered.page_number
             p_id = page_id_map.get(p_num)
             if not p_id:
-                continue
+                return []
 
             page_envs = article_envelopes_by_page.get(p_num, [])
 
-            # Harvest photos from Docling media items and PDF image boxes
-            media_list = page_media_items.get(p_num, [])
-            all_media_boxes: list[tuple[tuple[float, float, float, float], str]] = [
-                (m.bbox, m.caption or "") for m in media_list if m.bbox
-            ]
+            # Harvest media items from Docling
+            media_list = list(page_media_items.get(p_num, []))
 
-            # Also incorporate any PyMuPDF xrefs not already covered
+            # Also incorporate any PyMuPDF image_boxes not covered by Docling
             for ibox in analysis.image_boxes:
-                # Check if already covered by Docling
                 if not any(
-                    abs(ibox[0] - mb[0][0]) < 30 and abs(ibox[1] - mb[0][1]) < 30
-                    for mb in all_media_boxes
+                    abs(ibox[0] - m.bbox[0]) < 30 and abs(ibox[1] - m.bbox[1]) < 30
+                    for m in media_list
+                    if m.bbox
                 ):
-                    all_media_boxes.append((ibox, ""))
+                    media_list.append(ExtractedPhotoData(bbox=ibox, caption=""))
 
-            has_large_canvas = False
-            img_idx = 1
-            for m_box, m_cap in all_media_boxes:
-                b_area = max(0.0, m_box[2] - m_box[0]) * max(0.0, m_box[3] - m_box[1])
-                if (b_area / max(1.0, float(rendered.width_px * rendered.height_px))) >= 0.75:
-                    has_large_canvas = True
+            if not media_list:
+                return []
 
-                # Resolve spatial binding to article
-                bound_art_id = media_extractor.resolve_photo_article_binding(
-                    photo_bbox=m_box,
-                    article_envelopes=page_envs,
-                    caption=m_cap,
-                )
-                try:
-                    photo_rec = await media_extractor.extract_and_store_photo(
-                        page_image_bytes=rendered.image_bytes,
-                        page_id=p_id,
-                        article_id=bound_art_id,
-                        bbox=m_box,
-                        caption=m_cap,
-                        photo_index=img_idx,
-                    )
-                    if photo_rec:
-                        if bound_art_id:
-                            if bound_art_id not in article_photos_map:
-                                article_photos_map[bound_art_id] = []
-                            article_photos_map[bound_art_id].append(photo_rec)
-                        img_idx += 1
-                except Exception as ex:
-                    logger.warning("Photo extraction failed for box", extra={"page_number": p_num, "bbox": m_box, "error": str(ex)})
-
-            # Fallback: if page yielded 0 discrete photos AND has a large canvas (>= 75%), run VLM Grounding Sweep
-            page_art_photos = [
-                p for art_id, p_list in article_photos_map.items()
-                if art_id in [a.id for a, _, _ in persisted_articles if a.primary_page_id == p_id]
-                for p in p_list
-            ]
-            if not page_art_photos and has_large_canvas:
-                logger.info(
-                    "Triggering VLM Grounding Sweep fallback on large visual canvas",
-                    extra={"page_number": p_num, "page_id": p_id},
-                )
-                grounded_subphotos = await media_extractor.extract_subphotos_vlm_fallback(
+            async with visual_semaphore:
+                return await media_extractor.extract_and_store_all_photos_single_pass(
                     page_image_bytes=rendered.image_bytes,
                     page_id=p_id,
                     article_envelopes=page_envs,
-                    width_px=rendered.width_px,
-                    height_px=rendered.height_px,
-                    start_photo_index=img_idx,
+                    media_items=media_list,
+                    all_docling_items=parsed_doc_items_by_page.get(p_num, []),
+                    page_width_px=rendered.width_px,
+                    page_height_px=rendered.height_px,
+                    start_photo_index=1,
                 )
-                for bound_art_id, photo_rec in grounded_subphotos:
-                    if bound_art_id:
-                        if bound_art_id not in article_photos_map:
-                            article_photos_map[bound_art_id] = []
-                        article_photos_map[bound_art_id].append(photo_rec)
-                    img_idx += 1
+
+        # Execute single-pass visual extraction across pages with Semaphore(2)
+        visual_tasks = [
+            _process_page_visuals(rendered, analysis)
+            for rendered, analysis in zip(rendered_pages, analysis_results, strict=False)
+        ]
+        page_visual_results = await asyncio.gather(*visual_tasks)
+
+        for pairs in page_visual_results:
+            for bound_art_id, photo_rec in pairs:
+                if bound_art_id:
+                    if bound_art_id not in article_photos_map:
+                        article_photos_map[bound_art_id] = []
+                    article_photos_map[bound_art_id].append(photo_rec)
 
         # Step 7c: Chunking, Visual Tag Markup, and Vector Indexing
         for article_record, assembled, _class_res in persisted_articles:
@@ -742,7 +722,8 @@ async def run_ingestion_pipeline(
                             printed_pages=[page_folio_map.get(pm.page_number, str(pm.page_number)) for pm in assembled.pages_mapping],
                             chunk_index=p_idx,
                         )
-                        visual_chunks.append((v_chunk, photo.visual_type))
+                        photo_bbox = photo.bbox_json.get("bbox", []) if photo.bbox_json else []
+                        visual_chunks.append((v_chunk, photo.visual_type, photo_bbox, photo.vlm_description))
 
                 # Index text chunks
                 if chunks:
@@ -766,8 +747,8 @@ async def run_ingestion_pipeline(
                     )
                     total_chunks_created += len(chunks)
 
-                # Index dedicated visual chunks
-                for v_chunk, v_type in visual_chunks:
+                # Index dedicated visual chunks with bbox and photo_description payload
+                for v_chunk, v_type, p_bbox, p_desc in visual_chunks:
                     await embedder.embed_and_index_chunks(
                         article_id=article_record.id,
                         issue_id=issue_id,
@@ -787,6 +768,8 @@ async def run_ingestion_pipeline(
                         chunk_type="visual",
                         has_visual_data=True,
                         visual_type=v_type,
+                        bbox=p_bbox,
+                        photo_description=p_desc,
                     )
                     total_chunks_created += 1
 

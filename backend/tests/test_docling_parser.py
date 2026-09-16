@@ -324,3 +324,49 @@ class TestDoclingLayoutParser:
         assert articles[0].byline_author == "THE GOAN I NETWORK"
         assert "PANAJI" in articles[0].body_text
         assert "Sattari Taluka" in articles[0].body_text
+
+    def test_assemble_articles_isolates_teaser_from_subsequent_advertisement(self) -> None:
+        """Verify that a front-page teaser at the bottom of the page is not polluted by a large advertisement."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="title",
+                text="In Gujarat, a parallel genomics push: Help elite athletes, tribals",
+                bbox=(21.0, 1434.0, 539.0, 1480.0),
+                page_number=1,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="Gujarat has begun collecting DNA samples from athletes for a sports genomics project. FULL STORY: ▶ P2",
+                bbox=(21.0, 1490.0, 539.0, 1670.0),
+                page_number=1,
+            ),
+            DoclingParsedItem(
+                label="picture",
+                text="",
+                bbox=(544.0, 277.0, 1058.0, 1674.0),
+                page_number=1,
+            ),
+            DoclingParsedItem(
+                label="text",
+                text="A Mega Show of Construction & Mining Machinery bauma CONEXPO INDIA 15 Sep - 18 Sep 2026 CALL TO REGISTER 86554 37930",
+                bbox=(588.0, 380.0, 1007.0, 600.0),
+                page_number=1,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=1, items=items, width_px=1100, height_px=1700)
+        assert len(articles) == 2
+
+        teaser = articles[0]
+        assert "genomics" in teaser.headline.lower()
+        assert "conexpo" not in teaser.body_text.lower()
+        assert "machinery" not in teaser.body_text.lower()
+        # Ensure teaser bboxes never include the advertisement coordinates (x >= 544 or y < 1400)
+        for b in teaser.bbox_list:
+            assert b[0] < 540.0
+            assert b[1] >= 1400.0
+
+        ad = articles[1]
+        assert ad.headline.startswith("[Advertisement]")
+        assert ad.section == "Advertisement"
+        assert "bauma" in ad.body_text.lower() or "machinery" in ad.body_text.lower()

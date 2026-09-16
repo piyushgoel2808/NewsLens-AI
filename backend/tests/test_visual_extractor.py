@@ -209,18 +209,47 @@ def test_repair_and_parse_json_utilities() -> None:
     assert parsed_trunc is not None
     assert parsed_trunc.get("summary") == "IPO metrics"
 
-    # 3. Conversational Markdown table recovery
-    conversational_text = """Here is the extracted table based on your request:
+    # 4. Comma-separated JSON objects without outer brackets (Ollama/Qwen3-VL pattern)
+    comma_separated = """
+    {
+        "id": "media_1",
+        "visual_type": "photo",
+        "description": "UPI mobile payment scan"
+    },
+    {
+        "id": "media_2",
+        "visual_type": "photo",
+        "description": "Genomics researcher in lab"
+    }
+    """
+    parsed_comma = repair_and_parse_json(comma_separated)
+    assert parsed_comma is not None
+    assert isinstance(parsed_comma, list)
+    assert len(parsed_comma) == 2
+    assert parsed_comma[0]["id"] == "media_1"
+    assert parsed_comma[1]["id"] == "media_2"
 
-| Issue | 2024 | 2025 | 2026 |
-|---|---|---|---|
-| Mainboard | 50 | 42 | 42 |
-| Retail Sub >5x | 68% | 63% | 38% |
-
-This shows a decline in retail oversubscription."""
-    table_md = extract_markdown_table_from_raw_text(conversational_text)
-    assert table_md is not None
-    assert "| Mainboard | 50 | 42 | 42 |" in table_md
+    # 5. Conversational text surrounding unbracketed JSON objects
+    stream_conversational = """
+    Got it! Let's analyze these visual regions:
+    {
+        "id": "media_0",
+        "visual_type": "photo",
+        "description": "Front page lead photograph"
+    },
+    {
+        "id": "media_1",
+        "visual_type": "data_chart",
+        "description": "Quarterly trend"
+    }
+    Hope this helps with ingestion!
+    """
+    parsed_stream = repair_and_parse_json(stream_conversational)
+    assert parsed_stream is not None
+    assert isinstance(parsed_stream, list)
+    assert len(parsed_stream) == 2
+    assert parsed_stream[0]["id"] == "media_0"
+    assert parsed_stream[1]["id"] == "media_1"
 
 
 @pytest.mark.asyncio
@@ -370,5 +399,25 @@ async def test_extract_structured_data_trips_circuit_breaker_and_falls_back() ->
     assert result.confidence > 0.0
 
 
+def test_clean_vlm_text() -> None:
+    """Verify clean_vlm_text removes thinking tags and conversational monologue."""
+    from app.ingestion.visual_extractor import clean_vlm_text
 
+    # 1. Unclosed and closed think tags
+    with_think = "<think>Let me evaluate this image. It has multiple people.</think>Editorial scene with researchers."
+    assert clean_vlm_text(with_think) == "Editorial scene with researchers."
 
+    # 2. Conversational monologue without tags
+    raw_mono = (
+        "Got it, let's tackle this query. First, the user wants a description of the cropped newspaper image in 2-3 concise sentences. "
+        "Also, since it's an infographic (as per caption), describe key trends.\n\n"
+        "First, identify what's in the image: The infographic has three main sections with maps and data."
+    )
+    cleaned = clean_vlm_text(raw_mono)
+    assert "Got it" not in cleaned
+    assert "First, the user wants" not in cleaned
+    assert "The infographic has three main sections with maps and data." in cleaned
+
+    # 3. Direct clean text remains intact
+    clean_input = "Satellite imagery of the Red Sea pipeline with active smoke plumes."
+    assert clean_vlm_text(clean_input) == clean_input

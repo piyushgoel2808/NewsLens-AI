@@ -718,7 +718,13 @@ export default function BroadsheetReader() {
                       </span>
                     </div>
                     <div className="grid grid-cols-1 gap-3.5">
-                      {articleDetails.photos.map((ph, idx) => {
+                      {[...articleDetails.photos]
+                        .sort((a, b) => {
+                          const aCur = a.page_number === selectedPageNumber ? 0 : 1;
+                          const bCur = b.page_number === selectedPageNumber ? 0 : 1;
+                          return aCur - bCur;
+                        })
+                        .map((ph, idx) => {
                         const isAnalyzing = Boolean(analyzingPhotoIds[ph.id]);
                         return (
                           <div key={ph.id || idx} className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-xs overflow-hidden flex flex-col gap-3 shadow-lg shadow-black/20">
@@ -740,6 +746,15 @@ export default function BroadsheetReader() {
                                 <span className="text-[10px] text-purple-400 font-mono font-bold bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">
                                   Asset #{ph.id}
                                 </span>
+                                {ph.page_number && (
+                                  <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                                    ph.page_number === selectedPageNumber
+                                      ? 'text-emerald-400 bg-emerald-950/60 border-emerald-800/40'
+                                      : 'text-slate-400 bg-slate-900 border-slate-700'
+                                  }`}>
+                                    Page {ph.page_number}
+                                  </span>
+                                )}
                                 {ph.visual_type && (
                                   <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-800/50">
                                     {ph.visual_type === 'data_chart' ? '📊 Data Chart' :

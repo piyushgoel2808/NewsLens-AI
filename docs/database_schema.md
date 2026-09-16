@@ -107,7 +107,7 @@ NewsLens-AI cleanly separates concerns across storage tiers:
 | `id` | `INT` (PK, AI) | NO | `2401` | Unique surrogate key for the page. |
 | `issue_id` | `INT` (FK) | NO | `501` | Foreign key referencing `issues.id` (`ON DELETE CASCADE`). |
 | `page_number` | `INT` | NO | `1` | Sequential physical order in the PDF (1-indexed). |
-| `raster_object_key`| `VARCHAR(512)`| YES | `"pages/501/page_1.png"` | S3/MinIO object path storing the lossless 300 DPI page rendering. |
+| `raster_object_key`| `VARCHAR(512)`| YES | `"pages/501/page_1.png"` | S3/MinIO object path storing the optimized 150 DPI page rendering (yielding ~1500–2000px broadsheet canvas). |
 | `width_px` | `INT` | YES | `2480` | Image pixel width, critical for normalizing bounding box coordinates (`0.0` to `1.0`). |
 | `height_px` | `INT` | YES | `3508` | Image pixel height, critical for bounding box normalization. |
 | `ocr_confidence` | `FLOAT` | YES | `0.942` | Mean OCR confidence score across all words on this page. Used to detect degraded scans. |

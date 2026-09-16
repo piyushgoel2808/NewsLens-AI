@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 # Robust JSON Parsing & Markdown Recovery Utilities
 # ---------------------------------------------------------------------------
 
-def repair_and_parse_json(raw_text: str) -> dict[str, Any] | None:
+def repair_and_parse_json(raw_text: str) -> dict[str, Any] | list[Any] | None:
     """Robust multi-layer JSON parser with regex recovery for truncated/malformed VLM responses."""
     if not raw_text or not raw_text.strip():
         return None
@@ -52,16 +52,49 @@ def repair_and_parse_json(raw_text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         pass
 
-    # 4. Regex substring search for outermost JSON object {...}
-    match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
-    if match:
-        candidate = match.group(1).strip()
+    # 4. Regex substring search for outermost JSON array [...] or object {...}
+    match_arr = re.search(r"(\[.*\])", cleaned, re.DOTALL)
+    if match_arr:
+        try:
+            return json.loads(match_arr.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    match_obj = re.search(r"(\{.*\})", cleaned, re.DOTALL)
+    if match_obj:
+        candidate = match_obj.group(1).strip()
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:
             pass
 
-    # 5. Recovery for truncated JSON (e.g. hitting max_tokens mid-string/object)
+    # 5. Check if comma-separated JSON objects without outer array brackets
+    try:
+        candidate_arr = f"[{cleaned.rstrip(',').strip()}]"
+        return json.loads(candidate_arr)
+    except json.JSONDecodeError:
+        pass
+
+    # 6. Stream JSONDecoder.raw_decode recovery across the string
+    decoder = json.JSONDecoder()
+    idx = 0
+    objs: list[Any] = []
+    while idx < len(cleaned):
+        start = cleaned.find("{", idx)
+        if start == -1:
+            break
+        try:
+            obj, end = decoder.raw_decode(cleaned, idx=start)
+            objs.append(obj)
+            idx = end
+        except json.JSONDecodeError:
+            idx = start + 1
+    if objs:
+        if len(objs) == 1 and isinstance(objs[0], dict) and "regions" in objs[0]:
+            return objs[0]
+        return objs
+
+    # 7. Recovery for truncated JSON (e.g. hitting max_tokens mid-string/object)
     start_idx = cleaned.find("{")
     if start_idx != -1:
         truncated = cleaned[start_idx:]
@@ -95,6 +128,39 @@ def extract_markdown_table_from_raw_text(raw_text: str) -> str | None:
     if match:
         return match.group(1).strip()
     return None
+
+
+def clean_vlm_text(text: str) -> str:
+    """Clean conversational preamble, unclosed thinking tags, and meta-commentary from VLM output."""
+    if not text:
+        return ""
+
+    # 1. Strip <think>...</think> and unclosed <think>...
+    t = re.sub(r"<(thought|think)>.*?</\1>", "", text, flags=re.DOTALL)
+    t = re.sub(r"<(thought|think)>.*", "", t, flags=re.DOTALL)
+
+    # 2. Strip conversational / meta-prompting intros from local models
+    meta_patterns = [
+        r"^(?:Got it|Okay|Sure|Alright)[^.\n]*[.\n]+",
+        r"^(?:Let\'s|Here is|Here\'s|Below is)[^.\n]*[.\n]+",
+        r"^(?:First,?\s+the\s+user\s+wants)[^.\n]*[.\n]+",
+        r"^(?:Also,?(?:\s+since\s+it\'s|\s+describe\s+key|\s+as\s+per))[^.\n]*[.\n]+",
+        r"^(?:The user wants|I need to|This is a description of)[^.\n]*[.\n]+",
+    ]
+    prev = None
+    cleaned = t.strip()
+    while prev != cleaned:
+        prev = cleaned
+        for pat in meta_patterns:
+            cleaned = re.sub(pat, "", cleaned, count=1, flags=re.I).strip()
+
+    cleaned = re.sub(
+        r"^(?:Visible subjects:|First,?\s*identify\s*(?:the\s+subject|what\'s\s+in\s+the\s+image):?)\s*",
+        "",
+        cleaned,
+        flags=re.I,
+    ).strip()
+    return cleaned if cleaned else text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -788,6 +854,22 @@ class VisualDataExtractor:
                     confidence=float(parsed.get("confidence", 0.9)),
                     visual_type="photo",
                 )
+            if raw and not raw.startswith("{"):
+                cleaned_raw = clean_vlm_text(raw)
+                clean_desc = re.sub(
+                    r"^(This image shows|In this photograph,|The photo depicts|Here is a description:)\s*",
+                    "",
+                    cleaned_raw,
+                    flags=re.I,
+                ).strip()
+                if len(clean_desc.split()) >= 4:
+                    return VisualExtractionResult(
+                        summary=clean_desc,
+                        markdown_table="",
+                        key_metrics=[f"Caption: {caption}"] if caption else [],
+                        confidence=0.85,
+                        visual_type="photo",
+                    )
             return None
 
         try:
@@ -875,5 +957,6 @@ __all__ = [
     "VisualDataExtractor",
     "VisualExtractionResult",
     "repair_and_parse_json",
+    "clean_vlm_text",
 ]
 

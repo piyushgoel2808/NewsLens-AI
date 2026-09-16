@@ -9,7 +9,7 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** purpose-bui
 ```
                                  ┌──────────────────────────────────────────────────────────┐
                                  │                 React 18 + Vite SPA Client               │
-                                 │  • Newspaper Scan Reader with 300 DPI Bounding-Box Overlay│
+                                 │  • Newspaper Scan Reader with 150 DPI Bounding-Box Overlay│
                                  │  • Interactive Visual Asset Inspector (Photos/Infographics│
                                  │  • Real-Time Agentic Assistant with Reasoning Trace (SSE)│
                                  │  • Interactive Multi-Hop Entity Knowledge Graph UI       │
@@ -42,7 +42,7 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** purpose-bui
 | **Task Queue** | **Celery + Redis** | Celery+RabbitMQ, RQ, Dramatiq | Distributed background processing for multi-page broadsheet OCR and VLM extraction with Redis serving dual roles (Celery broker and query cache). |
 | **System of Record** | **MySQL 8** (`aiomysql` + `pymysql`) | PostgreSQL / pgvector | Strict relational schema, battle-tested `FULLTEXT` indexing on broadsheet text, native JSON payload columns, and high-throughput async connections via `aiomysql`. |
 | **Vector Database** | **Qdrant** | Pinecone, Milvus, Chroma, Weaviate | Self-hostable, rust-powered vector search with rich payload filtering (newspaper, issue_date, section, article_type, prominence), cosine similarity, and low memory footprint. |
-| **Object Store** | **MinIO** (S3-compatible) | Local Filesystem, AWS S3 only | Local S3-compliant distributed object storage for 300 DPI page scans and high-res image crops, allowing seamless transition to AWS S3/GCS without code changes. |
+| **Object Store** | **MinIO** (S3-compatible) | Local Filesystem, AWS S3 only | Local S3-compliant distributed object storage for 150 DPI page scans and high-res image crops, allowing seamless transition to AWS S3/GCS without code changes. |
 | **PDF Extraction & Layout** | **PyMuPDF + Docling** | PDFMiner, Poppler, naive OCR | PyMuPDF provides ultra-fast digital text/font extraction and high-res rasterization; IBM Docling (DocLayNet) provides 2D spatial layout and reading-order tree analysis. |
 | **OCR Engines** | **Tesseract + RapidOCR** | Tesseract alone, Cloud Vision only | RapidOCR (ONNX) and Tesseract provide high-speed local character transcription, token coordinate bounding boxes, and multi-language support (English + Indic scripts). |
 | **Frontend Framework** | **React 18 + Vite** | Next.js, Nuxt, Angular | Lightweight client-side Single Page Application (SPA), instant HMR development with Vite, zero unnecessary server-rendering overhead for desktop analytical tools. |
@@ -89,9 +89,9 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │          PyMuPDF Lossless Intake & 300 DPI Raster           │
+   │          PyMuPDF Lossless Intake & 150 DPI Raster           │
    │  • Extracts embedded digital text, font sizes & bbox boxes  │
-   │  • Rasterizes high-res page image to MinIO Storage          │
+   │  • Rasterizes high-res page image (150 DPI) to MinIO Storage│
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
@@ -114,10 +114,10 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
          │                                                 │
          ▼                                                 ▼
 ┌──────────────────────────────────┐      ┌──────────────────────────────────┐
-│ Article Linearization & Debundle │      │ Visual Asset Harvest & Matrix    │
-│ • Column de-bundling (Shorts)    │      │ • Crops photos, charts & tables  │
-│ • Kicker extraction & bylines    │      │ • Spatial photo-article binding  │
-│ • Cross-page jump-line stitching │      │ • Dual VLM + Spatial OCR Matrix  │
+│ Article Linearization & Debundle │      │ Single-Pass Visual Intelligence  │
+│ • Column de-bundling (Shorts)    │      │ • Normalized region manifest     │
+│ • Kicker extraction & bylines    │      │ • Gemini-3.8-Flash single pass   │
+│ • Cross-page jump-line stitching │      │ • Qwen3-VL Semaphore(2) per-crop │
 └────────────────┬─────────────────┘      └────────────────┬─────────────────┘
                  │                                         │
                  └────────────────────────┬────────────────┘
@@ -145,26 +145,31 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
 > - **`metadata.py`**: Consolidated Folio detection, RapidOCR masthead verification, and multi-page majority voting on issue date and brand consensus.
 > - **`storage.py`**: Consolidated PDF stream deflation, 3-tier cascade hard deletion across storage tiers, and diagnostic debug artifact exports.
 > - **`layout/` Subpackage**: Broadsheet spatial geometry, column slicing, reading order (`analyzer.py`), multi-page jump stitching (`segmenter.py`), and shared agency/dateline heuristics (`slugs.py`).
-> - **`parsers/` Subpackage**: Extraction schemas (`schemas.py`), DocLayNet 2D neural parsing (`docling.py`), single-pass multimodal VLM (`vlm.py`), and OCR orchestrator (`ocr.py`).
+> - **`parsers/` Subpackage**: Extraction schemas (`schemas.py`), DocLayNet 2D neural parsing (`docling.py`), single-pass multimodal VLM (`single_pass_extractor.py`), and OCR orchestrator (`ocr.py`).
 
 ---
 
-### B. Dual-Engine Visual Infographic & Table Intelligence (`visual_extractor.py`)
+### B. High-Throughput Visual Intelligence & Single-Pass Extractor (`single_pass_extractor.py`, `visual_extractor.py`)
 
-Visual elements in broadsheets contain high-value quantitative data (e.g. IPO subscription matrices, stock indices, budget allocations). NewsLens-AI handles these via a 3-stage visual intelligence pipeline:
+Visual elements in broadsheets contain high-value quantitative and journalistic data (e.g. corporate financial charts, stock matrices, infographics, editorial photojournalism). NewsLens-AI employs an adaptive visual extraction pipeline engineered for both enterprise throughput and zero hallucination:
 
-1. **Stage 1: Triage Classification**:
-   - Fast evaluation via lightweight VLM / OCR numerical token density heuristic.
-   - Categorizes crops into `data_chart`, `table`, `infographic`, `photo`, or `decorative`.
-2. **Stage 2: Structured Extraction & Spatial OCR Matrix**:
+1. **Adaptive Dual-Execution Strategy**:
+   - **Cloud Vision (`gemini-3.8-flash`) — Unified Single-Pass**: Instead of making 30 separate sequential network calls for individual image crops, `SinglePassVisualExtractor` passes the entire master 150 DPI page image along with a normalized JSON manifest of target regions (`[x0, y0, x1, y1]` in float coordinates $0.0 \dots 1.0$). Gemini processes all visual elements concurrently in a single LLM turn (10–30s per page), returning an indexed JSON array of structured analyses.
+   - **Local VLMs (`qwen3-vl:latest` via Ollama) — Concurrent Per-Crop**: Because local models can experience context saturation or monologue loops when fed multi-element broadsheet manifests, the pipeline automatically routes local models to concurrent per-crop extraction gated by `asyncio.Semaphore(2)` to balance CPU/GPU load while keeping memory consumption bounded.
+2. **Deterministic Fallback & Zero Empty Description Guarantee**:
+   - Every candidate region from the Docling layout harvest is tracked by `region_id`.
+   - If the VLM response omits an item or returns a blank description, `_fallback_extract_region()` triggers automated PIL/OCR heuristics to populate guaranteed non-empty descriptions (`[News Visual Asset: Page X, Region Y]`).
+3. **Preamble & Thinking Token Sanitization (`clean_vlm_text`)**:
+   - Unclosed `<think>` reasoning tags, conversational preambles (*"Got it, let's analyze..."*), and extraneous markdown fences are purged using regex patterns before persisting descriptions to MySQL or Qdrant.
+4. **Stage 2 Structured Extraction & Spatial OCR Matrix**:
    - **Primary**: Multimodal VLM structured prompt returning JSON containing `summary`, `markdown_table`, `key_metrics`, and `confidence`.
    - **Deterministic Fallback**: If VLM returns empty or errors, `extract_table_via_spatial_ocr()` executes:
      - Clusters OCR tokens into horizontal rows by vertical coordinate proximity.
      - Detects column centers and horizontal alignment lanes.
      - Transcribes clean GitHub-flavored Markdown tables and computes key metrics.
-3. **Stage 3: Numerical Cross-Validation**:
+5. **Stage 3: Numerical Cross-Validation**:
    - Validates numerical tokens in the table against OCR ground truth to adjust final confidence scores.
-4. **Stage 4: On-Demand VLM Extraction During Agent Query Execution**:
+6. **Stage 4: On-Demand VLM Extraction During Agent Query Execution**:
    - Visual assets ingested with placeholder descriptions (or fast-path crops) are enriched lazily during conversational query execution when `inspect_visual_asset` targets them.
    - The tool fetches raw crop bytes directly from MinIO `bucket_pages`, passes them to `VisualDataExtractor.process_image_crop()`, transcribes rich markdown metrics and summaries, and dynamically persists the synthesized extraction back into MySQL `article_photos.vlm_description`.
    - Guarantees zero cold-start latency during bulk PDF ingestion while delivering high-fidelity quantitative grounding whenever an agent or reader inspects a chart or infographic.
@@ -186,14 +191,28 @@ Broadsheet language is heavily idiomatic. Financial and political articles frequ
 
 ---
 
-### D. Geometric Advertisement Barrier Isolation (`layout/analyzer.py`, `layout/segmenter.py`)
+### D. Geometric Advertisement Barrier Isolation & Neural Layout Guards (`parsers/docling.py`, `layout/analyzer.py`, `layout/segmenter.py`)
 
-Statutory and commercial disclosures (*QIP announcements, IPO prospectus summaries, tender notices*) often lack standard news headlines and occupy multi-column rectangular zones.
+Statutory, commercial disclosures (*QIP announcements, IPO prospectus summaries, tender notices*), and full-page advertisements often lack standard news headlines and occupy multi-column or whole-page zones that can corrupt editorial reading order.
 
-1. **Envelope Detection**: Detects clusters of statutory keywords (`QUALIFIED INSTITUTIONS PLACEMENT`, `BOOK RUNNING LEAD MANAGERS`, `ISSUE PRICE`, `REGISTRAR TO THE ISSUE`) and constructs convex bounding envelopes.
-2. **Synthetic Boundary Injection**: Injects synthetic barrier headline elements (`[Advertisement] <Ad Title>`) at the top of the envelope.
-3. **Reading Order Isolation**: `ArticleSegmenter` isolates the advertisement into a dedicated `[Advertisement]` article, preventing adjacent editorial news columns from absorbing the advertisement copy.
-4. **Marketing Slogan Byline Suppression**: `MARKETING_SLOGAN_REGEX` rejects commercial taglines (*"By Innovation I Built For The Future"*, *"Backed by Trust"*) from being parsed as journalist bylines.
+1. **Picture Bounding Box Stripping from Article Envelopes**:
+   - In `parsers/docling.py`, elements labeled as `picture` or visual containers are strictly excluded when computing article text bounding envelopes (`[x0, y0, x1, y1]`).
+   - Prevents embedded or adjacent advertisements and full-width photos from artificially inflating article text envelopes across unrelated columns.
+2. **Docling Neural Ad Container Isolation**:
+   - Neural layout analysis inspects cluster tokens, keywords (`ADVERTISEMENT`, `PUBLIC NOTICE`, `TENDER NOTICE`, `TENDER`), and spatial bounding ratios.
+   - Isolated advertisement blocks are detached from editorial article reading trees and segregated into discrete advertisement containers.
+3. **Spatial Discontinuity & Column Boundary Guards**:
+   - If consecutive text lines exhibit an abnormal vertical jump ($>200\text{px}$) or crossing of physical column gutters without continuation indicators, segmenters treat the break as a hard boundary.
+   - Jump-pointer patterns (`▶ P2`, `Continued on Page...`) trigger clean continuation state tracking rather than inline column bleed.
+4. **Envelope Detection & Synthetic Boundary Injection**:
+   - Detects clusters of statutory keywords (`QUALIFIED INSTITUTIONS PLACEMENT`, `BOOK RUNNING LEAD MANAGERS`, `ISSUE PRICE`, `REGISTRAR TO THE ISSUE`) and constructs convex bounding envelopes.
+   - Injects synthetic barrier headline elements (`[Advertisement] <Ad Title>`) at the top of the envelope.
+5. **Reading Order Isolation**:
+   - `ArticleSegmenter` isolates the advertisement into a dedicated `[Advertisement]` article, preventing adjacent editorial news columns from absorbing the advertisement copy.
+6. **Marketing Slogan Byline Suppression**:
+   - `MARKETING_SLOGAN_REGEX` rejects commercial taglines (*"By Innovation I Built For The Future"*, *"Backed by Trust"*) from being parsed as journalist bylines.
+7. **Photo-Article Spatial Binding & Ad Penalty**:
+   - In `media_extractor.py`, photos are bound to parent articles using convex spatial envelope containment and Euclidean proximity, but candidate articles marked as `[Advertisement]` or possessing giant envelopes ($>40\%$ canvas) are penalized so editorial photos attach to valid editorial articles.
 
 ---
 
@@ -679,6 +698,7 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 20: Retrieval Engine Modularization & Clean Separation of Concerns** | Monolithic `executor.py` conflated tool dispatch, visual inspection cascades, database asset reconciliation, and presentation formatting in 3,000+ lines. | Extracted `visual_inspector.py` (`VisualInspectionEngine` with Strategies A-E and MinIO crop enrichment), `asset_resolver.py` (ground truth database asset lookup and conflict analysis), and `formatters.py` (manifest and coverage matrix snippets). |
 | **Phase 21: Softly-Decoupled Broadsheet Schema & In-Memory Archive Context** | Planner depended on live MySQL database connections for archive metadata; database connection delays stalled agent planning. | Engineered `archive_context.py` providing `STATIC_BROADSHEET_SCHEMA`, in-memory TTL caching with fallback defaults (`get_archive_and_schema_context`), eliminating hard database dependencies during planning. |
 | **Phase 23: Google Gemini Full Cloud Architecture & Production Containerization** | OpenRouter dual-key rate limits and legacy model deprecations created operational friction; onboarding required manual multi-service orchestration without container guarantees. | Transitioned primary cloud engine to Google AI Studio Gemini (`gemini-3.8-flash`, `gemini-3.8-live`, `gemini-3.5-flash`); engineered multi-candidate failover cascade (`GeminiProvider._get_model_candidates`) and Pydantic schema title cleaner; built 8-service Docker Compose specification (`docker-compose.yml`), multi-stage Dockerfiles (`backend/Dockerfile`, `frontend/Dockerfile`, `frontend/nginx.conf` with SSE reverse proxy), unified developer `Makefile`, and open-source governance standard (`LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`). |
+| **Phase 24: High-Throughput Ingestion & Single-Pass Multimodal Extraction** | Monolithic 300 DPI broadsheet rasters incurred heavy memory pressure and slow rendering (6–8s/page); serial per-crop visual extraction led to 30+ network trips per page; embedded advertisements and photo bounding boxes contaminated article text envelopes and continuation reading trees. | Standardized on 150 DPI rasterization ($4\times$ memory reduction, ~1.5s/page); engineered `SinglePassVisualExtractor` supporting unified single-pass for cloud vision (`gemini-3.8-flash` with normalized coordinate manifests) and concurrent per-crop execution (`qwen3-vl:latest` via `asyncio.Semaphore(2)`); stripped `picture` bboxes from Docling article text envelopes; added ad container isolation & spatial discontinuity guards ($>200\text{px}$ jumps); built `clean_vlm_text` token sanitizer; added page-aware photo filtering and page badges to `BroadsheetReader.jsx`. |
 
 ---
 

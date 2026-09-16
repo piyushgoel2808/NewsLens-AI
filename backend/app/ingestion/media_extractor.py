@@ -12,12 +12,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.ingestion.single_pass_extractor import (
+    SinglePassVisualExtractor,
+    VisualRegion,
+    VisualRegionResult,
+)
 from app.ingestion.visual_extractor import (
     VisualDataExtractor,
     VisualExtractionResult,
     repair_and_parse_json,
 )
 from app.models.article import ArticleTable, Photo
+from app.providers.base import ExtractedPhotoData
 from app.storage.minio_store import MinioStore
 
 logger = get_logger(__name__)
@@ -199,21 +205,27 @@ class MediaExtractor:
         db: AsyncSession,
         minio: MinioStore | None = None,
         visual_extractor: VisualDataExtractor | None = None,
+        single_pass_extractor: SinglePassVisualExtractor | None = None,
     ) -> None:
         self._db = db
         self._settings = get_settings()
         self._minio = minio or MinioStore(self._settings.minio)
         self._visual_extractor = visual_extractor or VisualDataExtractor()
+        self._single_pass_extractor = single_pass_extractor or SinglePassVisualExtractor(
+            fallback_extractor=self._visual_extractor
+        )
 
     def resolve_photo_article_binding(
         self,
         photo_bbox: tuple[float, float, float, float],
-        article_envelopes: list[tuple[int, tuple[float, float, float, float], str]],
+        article_envelopes: list[Any],
         caption: str = "",
+        page_width_px: float = 0.0,
+        page_height_px: float = 0.0,
     ) -> int | None:
-        """Resolve which article owns a photo using convex envelope overlap & ambiguity tie-breaking.
+        """Resolve which article owns a photo using constituent bbox proximity, envelope analysis, and caption matching.
 
-        article_envelopes: list of (article_id, (ax0, ay0, ax1, ay1), headline)
+        article_envelopes: list of (article_id, (ax0, ay0, ax1, ay1), headline[, bboxes])
         """
         if not article_envelopes:
             return None
@@ -221,51 +233,101 @@ class MediaExtractor:
         # Caption keyword heuristics for high-accuracy binding
         if caption:
             cap_lower = caption.lower()
+            if any(k in cap_lower for k in ["advertisement", "commercial feature", "promotional feature"]):
+                for item in article_envelopes:
+                    aid, ahl = item[0], item[2]
+                    if ahl.lower().startswith("[advertisement]") or "advertisement" in ahl.lower():
+                        return aid
             if any(k in cap_lower for k in ["indigo", "plane", "airplane", "jet", "flight", "aircraft", "airline"]):
-                for aid, _, ahl in article_envelopes:
+                for item in article_envelopes:
+                    aid, ahl = item[0], item[2]
                     if any(k in ahl.lower() for k in ["indigo", "plane", "flight", "airline"]):
                         return aid
             if any(k in cap_lower for k in ["pill", "capsule", "drug", "medicine", "pharma", "bottle"]):
-                for aid, _, ahl in article_envelopes:
+                for item in article_envelopes:
+                    aid, ahl = item[0], item[2]
                     if any(k in ahl.lower() for k in ["drug", "china", "pharma", "fret"]):
                         return aid
-            if any(k in cap_lower for k in ["car", "steel", "tower", "turbine", "solar", "vehicle", "chassis", "building", "cathedral", "excavator"]):
-                for aid, _, ahl in article_envelopes:
+            if any(k in cap_lower for k in ["car", "steel", "tower", "turbine", "solar", "vehicle", "chassis", "building", "cathedral", "excavator", "machinery", "conexpo", "bauma"]):
+                for item in article_envelopes:
+                    aid, ahl = item[0], item[2]
                     if any(k in ahl.lower() for k in ["advertisement", "steel", "planet"]):
                         return aid
 
         px0, py0, px1, py1 = photo_bbox
         pw = max(px1 - px0, 1.0)
+        px_center = (px0 + px1) / 2.0
+        py_center = (py0 + py1) / 2.0
+
+        stopwords = {
+            "the", "this", "that", "with", "from", "into", "over", "after", "before",
+            "about", "above", "under", "where", "there", "their", "which", "would",
+            "could", "should", "shall", "will", "what", "when", "more", "most", "some",
+            "such", "than", "then", "them", "these", "those", "have", "been", "were",
+            "also", "only", "other", "many", "much", "even", "help", "push", "page",
+            "editorial", "photo", "photograph", "image", "showing", "shows", "seen"
+        }
+        caption_words = set(re.findall(r"\w+", caption.lower())) - stopwords if caption else set()
 
         candidate_scores: list[tuple[int, float, str]] = []
 
-        for art_id, (ax0, ay0, ax1, ay1), headline in article_envelopes:
-            px_center = (px0 + px1) / 2.0
-            py_center = (py0 + py1) / 2.0
+        for item in article_envelopes:
+            art_id = item[0]
+            ax0, ay0, ax1, ay1 = item[1]
+            headline = item[2]
+            bboxes: list[tuple[float, float, float, float]] = (
+                item[3] if len(item) > 3 and item[3] else [item[1]]
+            )
+
+            env_w = max(0.0, ax1 - ax0)
+            env_h = max(0.0, ay1 - ay0)
+            # Flag giant envelopes (e.g. advertisements or multi-column wraps covering > 40% of page)
+            is_giant = False
+            if page_width_px > 0 and page_height_px > 0:
+                is_giant = ((env_w * env_h) / (page_width_px * page_height_px)) > 0.40
+            else:
+                is_giant = (env_w > 900 and env_h > 900)
+
+            # Check containment against specific constituent blocks
+            in_specific_block = any(
+                bx0 <= px_center <= bx1 and by0 <= py_center <= by1
+                for bx0, by0, bx1, by1 in bboxes
+            )
             in_envelope = (ax0 <= px_center <= ax1 and ay0 <= py_center <= ay1)
 
-            # 1. Check Horizontal Column Overlap
-            h_overlap = max(0.0, min(px1, ax1) - max(px0, ax0))
-            h_overlap_ratio = h_overlap / pw
-
-            # 2. Check Vertical Edge Proximity
-            # Photo inside envelope
-            if py0 >= ay0 and py1 <= ay1:
-                v_dist = 0.0
-            elif py1 < ay0:
-                v_dist = ay0 - py1  # photo above article
+            # Containment bonus: giant envelopes ONLY get bonus if photo is inside an actual text/column block
+            if is_giant:
+                containment_bonus = 0.5 if in_specific_block else 0.0
             else:
-                v_dist = py0 - ay1  # photo below article
+                containment_bonus = 0.5 if (in_specific_block or in_envelope) else 0.0
 
-            norm_v_dist = max(0.0, v_dist / max(ay1 - ay0, 100.0))
+            # 1. Check Horizontal Column Overlap against constituent blocks
+            best_h_overlap = max(
+                (max(0.0, min(px1, b[2]) - max(px0, b[0])) / pw)
+                for b in bboxes
+            )
 
-            # Proximity Score (higher is better)
-            containment_bonus = 0.5 if in_envelope else 0.0
-            score = (h_overlap_ratio * 0.5) + (max(0.0, 1.0 - norm_v_dist) * 0.3) + containment_bonus
+            # 2. Check Distance to Closest Constituent Block
+            def _block_dist(b: tuple[float, float, float, float]) -> float:
+                dx = max(0.0, max(b[0] - px1, px0 - b[2]))
+                dy = max(0.0, max(b[1] - py1, py0 - b[3]))
+                return (dx**2 + dy**2) ** 0.5
+
+            min_dist = min(_block_dist(b) for b in bboxes)
+            norm_dist_score = max(0.0, 1.0 - (min_dist / 600.0))
+
+            score = (best_h_overlap * 0.4) + (norm_dist_score * 0.4) + containment_bonus
+
+            # 3. Caption & Headline Semantic Keyword Match
+            if caption_words and headline:
+                hl_words = set(re.findall(r"\w+", headline.lower())) - stopwords
+                overlap = [w for w in hl_words if len(w) >= 4 and w in caption_words]
+                if overlap:
+                    score += min(0.6, len(overlap) * 0.25)
+
             candidate_scores.append((art_id, score, headline))
 
         if not candidate_scores:
-            # Fallback to closest article envelope on the page
             def _center_dist(env: tuple[float, float, float, float]) -> float:
                 cx, cy = (px0 + px1) / 2.0, (py0 + py1) / 2.0
                 ecx, ecy = (env[0] + env[2]) / 2.0, (env[1] + env[3]) / 2.0
@@ -278,14 +340,12 @@ class MediaExtractor:
         top_art_id, top_score, top_hl = candidate_scores[0]
 
         if top_score < 0.20:
-            # Fallback to nearest candidate
             return top_art_id
 
         # Check Ambiguity: if second best is within 10% score margin
         if len(candidate_scores) > 1:
             second_art_id, second_score, second_hl = candidate_scores[1]
             if (top_score - second_score) / max(top_score, 0.01) < 0.10 and caption:
-                # Tie-breaker 1: Caption keyword / entity match
                 cap_lower = caption.lower()
                 top_match = any(w.lower() in cap_lower for w in top_hl.split() if len(w) > 4)
                 sec_match = any(w.lower() in cap_lower for w in second_hl.split() if len(w) > 4)
@@ -421,6 +481,174 @@ class MediaExtractor:
         self._db.add(table_record)
         await self._db.flush()
         return table_record
+
+    async def extract_and_store_all_photos_single_pass(
+        self,
+        page_image_bytes: bytes,
+        page_id: int,
+        article_envelopes: list[tuple[int, tuple[float, float, float, float], str]],
+        media_items: list[ExtractedPhotoData],
+        all_docling_items: list[Any] | None = None,
+        page_width_px: int = 0,
+        page_height_px: int = 0,
+        start_photo_index: int = 1,
+    ) -> list[tuple[int | None, Photo]]:
+        """Extract and store all visual media items on a page using a single Gemini 3.8 Flash call."""
+        if not media_items:
+            return []
+
+        # Determine canvas dimensions if not provided
+        if not page_width_px or not page_height_px:
+            img_temp = Image.open(io.BytesIO(page_image_bytes))
+            page_width_px, page_height_px = img_temp.size
+
+        # 1. Build VisualRegion objects with caption hints
+        visual_regions: list[VisualRegion] = []
+        for idx, m_item in enumerate(media_items):
+            r_id = f"media_{idx}"
+            cap_hint = (m_item.caption or "").strip()
+
+            # If caption is missing/short, attempt to harvest nearby text from all_docling_items
+            if (not cap_hint or len(cap_hint.split()) < 4) and all_docling_items:
+                px0, py0, px1, py1 = m_item.bbox
+                pw = max(px1 - px0, 1.0)
+                best_hint = ""
+                best_dist = 120.0  # max 120px proximity
+
+                for d_item in all_docling_items:
+                    d_bbox = getattr(d_item, "bbox", None)
+                    d_text = (getattr(d_item, "text", "") or "").strip()
+                    if not d_bbox or not d_text or len(d_text.split()) > 35:
+                        continue
+                    dx0, dy0, dx1, dy1 = d_bbox
+                    # Check horizontal overlap
+                    h_overlap = max(0.0, min(px1, dx1) - max(px0, dx0))
+                    if (h_overlap / pw) >= 0.3:
+                        # Check vertical distance directly underneath or above
+                        v_dist = min(abs(dy0 - py1), abs(py0 - dy1))
+                        if v_dist < best_dist:
+                            best_dist = v_dist
+                            best_hint = " ".join(d_text.split()[:25])
+                if best_hint:
+                    cap_hint = f"{cap_hint} {best_hint}".strip() if cap_hint else best_hint
+
+            visual_regions.append(
+                VisualRegion(
+                    region_id=r_id,
+                    bbox=m_item.bbox,
+                    caption_hint=cap_hint,
+                )
+            )
+
+        # 2. Execute Single-Pass Visual Extractor (1 API call per page)
+        extracted_results = await self._single_pass_extractor.extract_all_regions(
+            page_image_bytes=page_image_bytes,
+            regions=visual_regions,
+            page_width_px=page_width_px,
+            page_height_px=page_height_px,
+            page_number=page_id,
+        )
+
+        results_map = {r.region_id: r for r in extracted_results}
+
+        # 3. Crop, upload to MinIO, and persist Photo / ArticleTable models
+        persisted_photos: list[tuple[int | None, Photo]] = []
+        image = Image.open(io.BytesIO(page_image_bytes))
+        width, height = image.size
+
+        current_photo_idx = start_photo_index
+
+        for reg, m_item in zip(visual_regions, media_items, strict=False):
+            res = results_map.get(reg.region_id)
+            if not res:
+                continue
+
+            # Drop purely decorative or trivial items if empty
+            if res.visual_type in {"decorative", "logo"} and not res.description.strip():
+                continue
+
+            # Resolve article binding
+            binding_caption = res.description or reg.caption_hint
+            bound_art_id = self.resolve_photo_article_binding(
+                photo_bbox=reg.bbox,
+                article_envelopes=article_envelopes,
+                caption=binding_caption,
+                page_width_px=float(width),
+                page_height_px=float(height),
+            )
+
+            # Crop sub-image
+            x0 = max(0, min(int(reg.bbox[0]), width - 1))
+            y0 = max(0, min(int(reg.bbox[1]), height - 1))
+            x1 = max(x0 + 1, min(int(reg.bbox[2]), width))
+            y1 = max(y0 + 1, min(int(reg.bbox[3]), height))
+
+            cropped = image.crop((x0, y0, x1, y1))
+            crop_bytes_io = io.BytesIO()
+            cropped.save(crop_bytes_io, format="PNG")
+            crop_bytes = crop_bytes_io.getvalue()
+
+            object_key = f"photos/{page_id}/photo_{current_photo_idx}.png"
+
+            # Upload to MinIO
+            await self._minio.put(
+                bucket=self._settings.minio.bucket_pages,
+                key=object_key,
+                data=crop_bytes,
+                content_type="image/png",
+            )
+
+            # Build comprehensive vlm_description
+            vlm_desc = (res.description or "").strip()
+            if not vlm_desc:
+                if reg.caption_hint:
+                    vlm_desc = f"Editorial news photograph. {reg.caption_hint}".strip()
+                elif m_item.caption:
+                    vlm_desc = f"Editorial news photograph. {m_item.caption}".strip()
+                else:
+                    vlm_desc = "Editorial news photograph."
+            if res.key_metrics and res.visual_type in {"table", "data_chart", "infographic"}:
+                vlm_desc = f"{vlm_desc}\n\nKey Metrics:\n• " + "\n• ".join(res.key_metrics)
+
+            photo_record = Photo(
+                article_id=bound_art_id,
+                page_id=page_id,
+                bbox_json={"bbox": [x0, y0, x1, y1]},
+                caption=reg.caption_hint or (m_item.caption or ""),
+                vlm_description=vlm_desc,
+                visual_type=res.visual_type,
+                object_key=object_key,
+            )
+            self._db.add(photo_record)
+            await self._db.flush()
+
+            # If table or data chart, also record in ArticleTable
+            if res.visual_type in {"table", "data_chart", "infographic"} and ("|" in res.description or res.key_metrics):
+                await self.store_table_metadata(
+                    page_id=page_id,
+                    article_id=bound_art_id,
+                    bbox=reg.bbox,
+                    table_data={
+                        "summary": res.description[:300] if len(res.description) > 300 else res.description,
+                        "markdown": res.description,
+                        "metrics": res.key_metrics,
+                        "confidence": res.confidence,
+                    },
+                    table_index=current_photo_idx,
+                )
+
+            persisted_photos.append((bound_art_id, photo_record))
+            current_photo_idx += 1
+
+        logger.info(
+            "Persisted single-pass visual intelligence assets",
+            extra={
+                "page_id": page_id,
+                "regions_detected": len(media_items),
+                "photos_persisted": len(persisted_photos),
+            },
+        )
+        return persisted_photos
 
     async def detect_subphotos_via_vlm_grounding(
         self,

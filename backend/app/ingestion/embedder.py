@@ -62,6 +62,8 @@ class ArticleEmbedder:
         chunk_type: str = "text",
         has_visual_data: bool = False,
         visual_type: str | None = None,
+        bbox: list[float] | None = None,
+        photo_description: str | None = None,
     ) -> list[str]:
         """Embed a batch of document chunks, upsert to Qdrant, and persist ArticleChunk records."""
         if not chunks:
@@ -101,6 +103,8 @@ class ArticleEmbedder:
                 "topics": topics,
                 "chunk_text": chunk.text,
                 "raw_text": chunk.raw_text,
+                "bbox": bbox or [],
+                "photo_description": photo_description or "",
             }
 
             qdrant_points.append(

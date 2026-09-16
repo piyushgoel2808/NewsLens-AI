@@ -67,6 +67,29 @@ _DATELINE_PATTERN = re.compile(
     r"Chandigarh|Patna|Bhopal|Srinagar|Jammu|Washington|London|Beijing|Moscow|Tokyo)\s*:",
     re.IGNORECASE,
 )
+_AD_KEYWORDS = {
+    "bauma", "conexpo", "call to register", "scan to register", "ready to welcome",
+    "mega show", "exhibition", "toll free", "rera", "advertorial", "commercial feature",
+    "promotional feature", "public notice", "tender notice", "limited period offer",
+    "viksit bharat", "construction & mining machinery", "participants from 100+ countries",
+    "admissions open", "book now", "discount", "special offer", "festive offer",
+}
+
+
+def _is_ad_content(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    return any(k in t for k in _AD_KEYWORDS)
+
+
+def _is_large_ad_box(bbox: tuple[float, float, float, float], page_w: int, page_h: int) -> bool:
+    w = max(0.0, bbox[2] - bbox[0])
+    h = max(0.0, bbox[3] - bbox[1])
+    area = w * h
+    page_area = max(1.0, float(page_w * page_h))
+    return (area / page_area >= 0.15) or (w >= page_w * 0.35 and h >= page_h * 0.35)
+
 
 
 @dataclass
@@ -399,7 +422,8 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             full_text = f"{final_h}\n\n{body_str}".strip() if final_h != body_str else body_str
             w_count = len(full_text.split())
 
-            if w_count >= 10:
+            is_ad_article = final_h.startswith("[Advertisement]") or active_page_section == "Advertisement"
+            if w_count >= 10 or (is_ad_article and w_count >= 3):
                 art_counter += 1
                 articles.append(
                     SegmentedArticle(
@@ -410,8 +434,8 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                         body_text=body_str or final_h,
                         word_count=w_count,
                         bbox_list=list(current_bboxes),
-                        section=active_page_section,
-                        printed_section=active_page_section,
+                        section="Advertisement" if is_ad_article else active_page_section,
+                        printed_section="Advertisement" if is_ad_article else active_page_section,
                     )
                 )
 
@@ -428,15 +452,60 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             txt = item.text.strip()
             bbox = item.bbox
 
-            if not txt and lbl not in ("picture", "table"):
+            # Pictures are media assets; do NOT append their bboxes to text articles.
+            # If a picture is a large display ad, flush the current article.
+            if lbl == "picture":
+                if _is_large_ad_box(bbox, width_px, height_px):
+                    _flush_current_article()
                 continue
 
-            # Teaser strip boundary check:
-            # If previous items are from a top teaser strip (containing page pointers) and there is a large vertical gap, flush them.
+            if not txt and lbl != "table":
+                continue
+
+            # Advertisement detection: if text contains prominent ad keywords
+            if _is_ad_content(txt):
+                if current_headline and not current_headline.startswith("[Advertisement]"):
+                    _flush_current_article()
+                if not current_headline:
+                    first_line = txt.split("\n")[0].strip()
+                    current_headline = f"[Advertisement] {first_line[:80]}"
+                    active_page_section = "Advertisement"
+                    current_bboxes.append(bbox)
+                    continue
+                else:
+                    current_body_parts.append(txt)
+                    current_bboxes.append(bbox)
+                    continue
+
+            # Active Advertisement Container: if current article is an advertisement,
+            # consume subordinate items until an explicit spatial jump or non-ad headline occurs.
+            if current_headline.startswith("[Advertisement]"):
+                if current_bboxes and bbox[0] >= current_bboxes[0][0] - 50 and bbox[2] <= current_bboxes[0][2] + 50:
+                    current_body_parts.append(txt)
+                    current_bboxes.append(bbox)
+                    continue
+                else:
+                    _flush_current_article()
+
+            # Spatial Discontinuity Guard:
+            # If the reading order jumps vertically upward by > 200px above the top of the current article,
+            # this is a new column/section or disconnected advertisement block.
+            if current_bboxes:
+                article_top_y = min(b[1] for b in current_bboxes)
+                if bbox[1] < article_top_y - 200:
+                    _flush_current_article()
+
+            # Teaser strip / jump continuation guard:
+            # If previous items are from a teaser strip (containing page pointers e.g. "P2", "-> P2"),
+            # any subsequent item that jumps vertically or horizontally finishes the teaser.
             if (
                 current_bboxes
-                and (bbox[1] - current_bboxes[-1][3] > height_px * 0.07)
-                and any(re.search(r"(?:▶|►|>|->)?\s*P\d{1,2}\b", p) for p in current_body_parts)
+                and any(re.search(r"(?:▶|►|>|->)?\s*P\d{1,2}\b", p, re.IGNORECASE) for p in current_body_parts)
+                and (
+                    (bbox[1] - current_bboxes[-1][3] > height_px * 0.05)
+                    or (bbox[1] < min(b[1] for b in current_bboxes) - 50)
+                    or (abs(bbox[0] - current_bboxes[-1][0]) > 200)
+                )
             ):
                 _flush_current_article()
 
@@ -605,15 +674,22 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                     current_body_parts.append(f"[Table / Data]:\n{txt}")
                     current_bboxes.append(bbox)
 
-            # 5. Captions & Pictures
-            elif lbl == "picture":
-                current_bboxes.append(bbox)
-
-
+            # 5. Captions
             elif lbl == "caption":
-                if txt:
-                    current_body_parts.append(f"[Photo Caption]: {txt}")
-                    current_bboxes.append(bbox)
+                if txt and current_headline:
+                    # Only attach caption if spatially near current article blocks
+                    if current_bboxes:
+                        min_d = min(
+                            max(0.0, max(b[0] - bbox[2], bbox[0] - b[2])) ** 2
+                            + max(0.0, max(b[1] - bbox[3], bbox[1] - b[3])) ** 2
+                            for b in current_bboxes
+                        ) ** 0.5
+                        if min_d <= 300.0:
+                            current_body_parts.append(f"[Photo Caption]: {txt}")
+                            current_bboxes.append(bbox)
+                    else:
+                        current_body_parts.append(f"[Photo Caption]: {txt}")
+                        current_bboxes.append(bbox)
 
         _flush_current_article()
         return articles

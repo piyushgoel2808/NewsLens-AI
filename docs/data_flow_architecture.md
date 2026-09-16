@@ -9,7 +9,7 @@ This document serves as the master technical specification for the entire **News
 ```mermaid
 flowchart TD
     subgraph CLIENT ["1. Presentation Layer (React 18 + Vite SPA)"]
-        UI_Reader["Broadsheet Reader<br/>(300 DPI Canvas + Overlay BBoxes)"]
+        UI_Reader["Broadsheet Reader<br/>(150 DPI Canvas + Overlay BBoxes)"]
         UI_Visual["Visual Asset Inspector<br/>(Charts, Photos, Tables)"]
         UI_Agent["Agentic Assistant<br/>(SSE Streaming Reasoning & Citations)"]
         UI_Studio["Model Settings Studio<br/>(Auto-Save, Hot-Swapping, Health Pings)"]
@@ -22,7 +22,7 @@ flowchart TD
         SHA --> MinIO_Orig[("MinIO: newslens-originals")]
         SHA --> Masthead["Visual Masthead Verifier<br/>(Top 22% Page 1 RapidOCR)"]
         Masthead --> Consensus["Multi-Page Folio Consensus<br/>(5x Header-Weighted Voting across P1-15)"]
-        Consensus --> Rasterizer["PyMuPDF Rasterizer<br/>(300 DPI High-Res Rendering)"]
+        Consensus --> Rasterizer["PyMuPDF Rasterizer<br/>(150 DPI High-Res Rendering)"]
         Rasterizer --> MinIO_Pages[("MinIO: newslens-pages")]
         Rasterizer --> LayoutParser{"Layout Parser Engine<br/>(Registry Resolved)"}
         LayoutParser -->|Primary Local| Docling["Docling 2D Neural Parser<br/>(DocLayNet + RapidOCR)"]
@@ -142,8 +142,8 @@ The ingestion pipeline processes complex 2D newspaper broadsheet scans through s
                                    │
                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Phase 3: 300 DPI High-Res Rasterization & Digital Triage               │
-│ • PyMuPDF renders 300 DPI high-resolution PNGs (fitz.Matrix(300/72))   │
+│ Phase 3: 150 DPI High-Res Rasterization & Digital Triage               │
+│ • PyMuPDF renders 150 DPI high-resolution PNGs (fitz.Matrix(150/72))   │
 │ • Upload page rasters to MinIO bucket `newslens-pages`                 │
 │ • PDF Page Detector evaluates text density, vector lines, scanned print│
 └──────────────────────────────────┬─────────────────────────────────────┘
@@ -185,41 +185,39 @@ The ingestion pipeline processes complex 2D newspaper broadsheet scans through s
 
 ---
 
-## 4. Visual Asset Intelligence, Multimodal VLM & Failover Data Flow
+## 4. Visual Asset Intelligence, Multimodal VLM & Single-Pass Data Flow
 
-Broadsheets embed crucial quantitative intelligence inside tables, stock charts, and infographics. NewsLens-AI handles visual data through a resilient 3-stage pipeline with active circuit breaking:
+Broadsheets embed crucial quantitative intelligence inside tables, stock charts, and infographics. NewsLens-AI handles visual data through an adaptive visual intelligence pipeline (`single_pass_extractor.py` and `visual_extractor.py`):
 
 ```mermaid
 flowchart TD
-    AssetCrop["Raw Visual Asset Crop<br/>(from 300 DPI Broadsheet Page)"] --> Stage1{"Stage 1: Fast Visual Triage Gate<br/>(PIL Heuristics + Number Density)"}
+    MasterPage["Master Broadsheet Page<br/>(150 DPI Lossless PNG)"] --> Harvest["Docling Layout Harvest<br/>(Pictures, Tables, Infographics)"]
+    Harvest --> Manifest["Normalized JSON Manifest<br/>([x0,y0,x1,y1] in 0.0 - 1.0)"]
+
+    Manifest --> EngineRouter{"Vision Provider Check<br/>(Is Cloud Gemini vs Local Ollama?)"}
+
+    EngineRouter -->|Cloud Vision: gemini-3.8-flash| SinglePass["Single-Pass Extraction<br/>(Master Page + JSON Manifest in 1 LLM Turn)"]
+    EngineRouter -->|Local VLM: qwen3-vl:latest| ConcurrentCrops["Concurrent Per-Crop Extraction<br/>(asyncio.Semaphore(2) Gated)"]
+
+    SinglePass --> ParseResponse["JSON Response Parsing<br/>(Structured analyses by region_id)"]
+    ConcurrentCrops --> ParseResponse
+
+    ParseResponse --> CleanText["Token Sanitizer: clean_vlm_text()<br/>(Strips unclosed think tags & preambles)"]
+    CleanText --> FallbackCheck{"Missing / Blank Description?"}
     
-    Stage1 -->|"Dim < 80px or Aspect > 10:1"| Decorative["Filter as Decorative Divider / Icon"]
-    Stage1 -->|Data Density / Chart Features| DataCandidate["Data-Bearing Candidate<br/>(data_chart, table, infographic)"]
-    Stage1 -->|Photographic Texture| PhotoCandidate["Editorial Photo Candidate<br/>(scene, portrait, ceremony)"]
+    FallbackCheck -->|Yes| DeterministicFallback["_fallback_extract_region()<br/>(PIL / OCR Heuristic Fallback)"]
+    FallbackCheck -->|No| CrossValidate["Numerical Cross-Validation<br/>(Table Numbers vs OCR Tokens)"]
+    DeterministicFallback --> CrossValidate
 
-    DataCandidate --> VLM_Dispatch{"Resolve Vision Provider<br/>(_get_provider)"}
-    PhotoCandidate --> VLM_Photo_Dispatch{"Resolve Vision Provider<br/>(_get_provider)"}
-
-    VLM_Dispatch -->|Circuit Breaker Open| SecondaryVLM["Secondary Fallback VLM<br/>(Priority: Google Cloud Vision / Ollama Qwen 3 VL)"]
-    VLM_Dispatch -->|Healthy Primary| PrimaryVLM["Primary VLM Provider<br/>(Google Gemini 2.5 Flash / Pro)"]
-
-    PrimaryVLM -->|HTTP 429 / RateLimitExhausted| TripBreaker["Trip Circuit Breaker (60s Cooldown)<br/>Immediate Secondary Failover"]
-    TripBreaker --> SecondaryVLM
-
-    PrimaryVLM & SecondaryVLM -->|JSON Markdown Table Returned| Stage3["Stage 3: Numerical Cross-Validation<br/>(VLM Numbers vs OCR Spatial Tokens)"]
-    PrimaryVLM & SecondaryVLM -->|Conversational Text| RegexRecovery["Regex Markdown Table Recovery"]
-    RegexRecovery --> Stage3
-
-    PrimaryVLM & SecondaryVLM -->|Failure / Timeout / Offline| SpatialOCR["Deterministic Spatial OCR Matrix Engine<br/>(PyTesseract Token BBoxes ➔ Markdown Table)"]
-    SpatialOCR --> Stage3
-
-    Stage3 --> VisualChunk["Create Dedicated Visual ArticleChunk<br/>chunk_type='visual', has_visual_data=True"]
+    CrossValidate --> VisualChunk["Create Dedicated Visual ArticleChunk<br/>chunk_type='visual', has_visual_data=True"]
     VisualChunk --> QdrantIndex[("Qdrant Vector DB<br/>Embedded via BAAI/bge-m3")]
     VisualChunk --> MySQLIndex[("MySQL 8 `photos` & `tables`<br/>vlm_description, markdown_table")]
 ```
 
-### On-Demand Agent Trigger vs. Ingestion Extraction
-- **Ingestion Time**: High-priority data charts and tables receive initial transcription.
+### Unified Single-Pass vs. Concurrent Per-Crop Routing
+- **Cloud Models (`gemini-3.8-flash`)**: Sends the entire 150 DPI page image and normalized region coordinates in a single call. Eliminates 30+ separate network roundtrips, completing full-page visual extraction in 10–30 seconds.
+- **Local Models (`qwen3-vl:latest` via Ollama)**: Processes image crops concurrently with `asyncio.Semaphore(2)` concurrency limit, avoiding Ollama VLM context saturation and monologue loops while preventing memory spikes.
+- **Preamble & Thinking Token Sanitizer (`clean_vlm_text`)**: Strips unclosed `<think>` tags, system reasoning chatter, and monologue greetings before database persistence.
 - **On-Demand Query Time (`inspect_visual_asset`)**: When an agent query or attached asset (`attached_photo_id`) targets a photo where `vlm_description` is a placeholder, the system streams raw crop bytes from MinIO, executes on-demand VLM transcription, and caches the result back into MySQL.
 
 ---
@@ -264,7 +262,7 @@ graph LR
 |---|---|---|---|---|
 | **System of Record** | Relational Database | **MySQL 8** (`aiomysql` / SQLAlchemy 2) | • `newspapers`, `issues`, `pages`<br/>• `articles`, `article_pages`<br/>• `photos`, `tables`<br/>• `entities`, `article_entities`<br/>• `topics`, `article_topics`<br/>• `query_log`, `ingestion_jobs` | • Foreign keys & relational joins<br/>• `FULLTEXT(headline, full_text)`<br/>• B-tree indexes on `(newspaper_id, issue_date)`<br/>• Sub-5ms metadata queries |
 | **Vector Store** | Dense Vector DB | **Qdrant** (`qdrant-client`) | • Collection: `article_chunks`<br/>• 1024-dim dense vectors (`BAAI/bge-m3`)<br/>• Payload: `article_id`, `issue_id`, `newspaper_name`, `issue_date`, `page_number`, `headline`, `section`, `has_visual_data`, `bboxes` | • Cosine similarity search (HNSW index)<br/>• Payload pre-filtering on `newspaper_name`, `issue_date`, `section`<br/>• Sub-15ms vector retrieval |
-| **Object Store** | S3-Compatible Blob Store | **MinIO** (`minio-py`) | • Bucket `newslens-originals`: Raw source PDFs<br/>• Bucket `newslens-pages`: 300 DPI high-res page rasters<br/>• Cropped visual assets & chart PNGs | • High-throughput binary streaming<br/>• Public thumbnail HTTP endpoints (`/api/photos/{id}/image`)<br/>• Immutable asset storage |
+| **Object Store** | S3-Compatible Blob Store | **MinIO** (`minio-py`) | • Bucket `newslens-originals`: Raw source PDFs<br/>• Bucket `newslens-pages`: 150 DPI high-res page rasters<br/>• Cropped visual assets & chart PNGs | • High-throughput binary streaming<br/>• Public thumbnail HTTP endpoints (`/api/photos/{id}/image`)<br/>• Immutable asset storage |
 | **In-Memory Cache** | Key-Value & Queue | **Redis 7** (`redis-py`) | • Celery background worker task queue<br/>• Query response cache (TTL: 1h)<br/>• Condensed query hash cache<br/>• Timeline trajectory cache<br/>• SSE Pub/Sub channels | • In-memory sub-millisecond lookups<br/>• Distributed task locks (`redis-lock`)<br/>• Automatic TTL expiration (1h to 24h) |
 
 ---

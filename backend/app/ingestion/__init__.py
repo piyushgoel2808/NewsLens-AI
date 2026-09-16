@@ -37,7 +37,13 @@ from app.ingestion.parsers import (
     OCRService,
     UnifiedExtractor,
 )
-from app.ingestion.rasterizer import PDFRasterizer, RasterizedPage
+from app.ingestion.single_pass_extractor import (
+    PageVisualAnalysis,
+    RegionAnalysis,
+    SinglePassVisualExtractor,
+    VisualRegion,
+    VisualRegionResult,
+)
 from app.ingestion.storage import (
     DebugArtifactsExporter,
     DeletionService,
@@ -63,9 +69,14 @@ __all__ = [
     "OCRService",
     "PDFPageDetector",
     "PDFRasterizer",
+    "PageVisualAnalysis",
     "RasterizedPage",
     "ReadingOrderResolver",
+    "RegionAnalysis",
+    "SinglePassVisualExtractor",
     "UnifiedExtractor",
+    "VisualRegion",
+    "VisualRegionResult",
     "compress_pdf",
     "compress_pdf_bytes",
     "extract_newspaper_and_date_consensus",

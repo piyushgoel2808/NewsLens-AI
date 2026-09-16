@@ -50,6 +50,8 @@ async def get_article_details(
         for c in sorted(article.chunks, key=lambda x: x.chunk_index)
     ]
 
+    page_id_to_num = {ap.page_id: ap.page_number for ap in article.article_pages}
+
     return {
         "id": article.id,
         "issue_id": article.issue_id,
@@ -86,6 +88,8 @@ async def get_article_details(
                 "visual_type": ph.visual_type,
                 "object_key": ph.object_key,
                 "bbox_json": ph.bbox_json,
+                "page_id": ph.page_id,
+                "page_number": page_id_to_num.get(ph.page_id),
                 "image_url": f"/api/photos/{ph.id}/image",
             }
             for ph in article.photos
