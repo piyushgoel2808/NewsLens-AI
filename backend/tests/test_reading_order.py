@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.ingestion.reading_order import (
+from app.ingestion.layout import (
     BlockType,
     LayoutElement,
     ReadingOrderResolver,

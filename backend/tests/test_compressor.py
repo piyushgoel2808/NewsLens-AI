@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pymupdf
 
-from app.ingestion.compressor import compress_pdf, compress_pdf_bytes
+from app.ingestion.storage import compress_pdf, compress_pdf_bytes
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

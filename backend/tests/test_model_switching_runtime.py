@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.main import create_app
 from app.core.config import Settings
-from app.ingestion.ocr_service import OCRService
+from app.ingestion.parsers.ocr import OCRService
 from app.providers.ollama_provider import OllamaProvider
 from app.providers.registry import ModelRegistry, get_registry
 

@@ -21,16 +21,14 @@ from docling_core.types.doc import CoordOrigin
 
 from app.core.logging import get_logger
 from app.ingestion.detector import is_text_gibberish
-from app.ingestion.layout_analyzer import (
-    clean_ocr_text_artifacts,
-    is_syndication_or_agency_slug,
-)
-from app.ingestion.segmenter import (
+from app.ingestion.layout import (
     DATELINE_CITIES,
     SECTION_HEADER_BLACKLIST,
     WIRE_AGENCIES,
     SegmentedArticle,
+    clean_ocr_text_artifacts,
     extract_kicker_and_clean_headline,
+    is_syndication_or_agency_slug,
     is_valid_headline_candidate,
 )
 from app.providers.base import (

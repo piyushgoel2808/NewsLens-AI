@@ -29,7 +29,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
-from app.ingestion.detector import PageType, PDFPageDetector, check_is_advertisement_text
+from app.ingestion.detector import PDFPageDetector, check_is_advertisement_text
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.layout import (
     ArticleSegmenter,
@@ -357,7 +357,7 @@ class PageReingestionService:
         # Ultimate fallback if still 0 articles detected
         if not page_segmented_articles:
             full_page_txt = ""
-            if single_analysis and single_analysis.full_text.strip() and not requires_image_ocr:
+            if single_analysis and single_analysis.full_text.strip():
                 full_page_txt = single_analysis.full_text.strip()
 
             is_ad_page = (page.is_advertisement_page) or bool(

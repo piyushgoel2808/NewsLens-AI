@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from app.ingestion.debug_exporter import DebugArtifactsExporter
+from app.ingestion.storage import DebugArtifactsExporter
 
 
 class TestDebugArtifactsExporter:

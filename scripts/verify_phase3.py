@@ -31,9 +31,8 @@ except ImportError:
 
 from app.api.main import create_app
 from app.core.config import get_settings
-from app.ingestion.cross_page_assembler import CrossPageAssembler
 from app.ingestion.intake import IntakeService
-from app.ingestion.segmenter import SegmentedArticle
+from app.ingestion.layout import CrossPageAssembler, SegmentedArticle
 from app.ingestion.tasks import run_ingestion_pipeline
 from app.models.article import Article, ArticlePage
 from app.storage.minio_store import MinioStore

@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.ingestion.detector import DigitalTextBlock
-from app.ingestion.layout_analyzer import LayoutAnalyzer
-from app.ingestion.reading_order import BlockType
+from app.ingestion.layout import BlockType, LayoutAnalyzer
 from app.providers.base import ModelResponse, ProviderCapability
 
 
@@ -605,7 +604,7 @@ class TestLayoutAnalyzer:
         assert "BMW offers severance packages to employees to cut 8,000 jobs" in headlines
         assert "France accuses Telegram CEO Pavel Durov in broad probe" in headlines
 
-        from app.ingestion.segmenter import ArticleSegmenter
+        from app.ingestion.layout import ArticleSegmenter
         segmenter = ArticleSegmenter()
         articles = segmenter.segment_page(page_number=10, ordered_blocks=res.reading_order)
         assert len(articles) == 2

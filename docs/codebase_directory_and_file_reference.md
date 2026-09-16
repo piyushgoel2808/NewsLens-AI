@@ -632,7 +632,7 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 - **`layout/` Subpackage**: Spatial column analysis, reading order resolution, and cross-page article continuation assembly.
 - **`parsers/` Subpackage**: Specialized document extraction engines (Docling 2D neural layout, multimodal VLM, and OCR).
 - **Core Pipeline Services**: Master Celery workflow (`tasks.py`), single-page re-ingestion (`page_reingestion.py`), intake validation (`intake.py`), rasterization (`rasterizer.py`), visual extraction (`visual_extractor.py`), classification (`classifier.py`), chunking (`chunker.py`), and embedding (`embedder.py`).
-- **Backward-Compatible Proxy Shims**: Lightweight re-export forwarders for all legacy module paths.
+- **Streamlined Architecture**: All 14 legacy re-export shims have been retired and deleted; all callers import directly from canonical modules and subpackages.
 
 ---
 
@@ -875,22 +875,12 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 
 ---
 
-#### Backward-Compatibility Re-Export Shims:
-To maintain zero breakage across external tools, legacy endpoints, and all 411 tests, the following files serve as transparent re-export forwarding shims:
-- [`backend/app/ingestion/folio_detector.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/folio_detector.py) $\to$ Forwarded to `metadata.py`
-- [`backend/app/ingestion/masthead_verifier.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/masthead_verifier.py) $\to$ Forwarded to `metadata.py`
-- [`backend/app/ingestion/consensus_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/consensus_extractor.py) $\to$ Forwarded to `metadata.py`
-- [`backend/app/ingestion/compressor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/compressor.py) $\to$ Forwarded to `storage.py`
-- [`backend/app/ingestion/deletion_service.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/deletion_service.py) $\to$ Forwarded to `storage.py`
-- [`backend/app/ingestion/debug_exporter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/debug_exporter.py) $\to$ Forwarded to `storage.py`
-- [`backend/app/ingestion/extraction_schemas.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/extraction_schemas.py) $\to$ Forwarded to `parsers.schemas`
-- [`backend/app/ingestion/docling_parser.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/docling_parser.py) $\to$ Forwarded to `parsers.docling`
-- [`backend/app/ingestion/unified_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/unified_extractor.py) $\to$ Forwarded to `parsers.vlm`
-- [`backend/app/ingestion/ocr_service.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/ocr_service.py) $\to$ Forwarded to `parsers.ocr`
-- [`backend/app/ingestion/reading_order.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/reading_order.py) $\to$ Forwarded to `layout.analyzer`
-- [`backend/app/ingestion/cross_page_assembler.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/cross_page_assembler.py) $\to$ Forwarded to `layout.segmenter`
-- [`backend/app/ingestion/layout_analyzer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/layout_analyzer.py) $\to$ Forwarded to `layout.analyzer`
-- [`backend/app/ingestion/segmenter.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/segmenter.py) $\to$ Forwarded to `layout.segmenter`
+#### Streamlined Directory Structure & Canonical Import Paths:
+All 14 legacy backward-compatibility re-export shims have been retired and removed from `backend/app/ingestion/`. All internal services, Celery tasks, test suites, and scripts import directly from their canonical module or subpackage locations:
+- **`app.ingestion.metadata`**: Header, folio detection, masthead verification, and publication date consensus (`FolioDetector`, `MastheadVerifier`, `ConsensusExtractor`, `extract_newspaper_and_date_consensus`).
+- **`app.ingestion.storage`**: Pre-ingestion compression, 3-tier cascade deletion service, and debug artifacts exporter (`compress_pdf`, `compress_pdf_bytes`, `DeletionService`, `DebugArtifactsExporter`).
+- **`app.ingestion.layout`**: Layout analysis, column geometry, reading order resolution, article boundary segmentation, and cross-page continuation assembly (`LayoutAnalyzer`, `ReadingOrderResolver`, `ArticleSegmenter`, `CrossPageAssembler`, `AssembledArticle`, `SegmentedArticle`).
+- **`app.ingestion.parsers`**: Docling 2D neural layout parser (`parsers.docling`), Multimodal VLM extraction (`parsers.vlm`), RapidOCR orchestration (`parsers.ocr`), and Pydantic schemas (`parsers.schemas`).
 
 ---
 

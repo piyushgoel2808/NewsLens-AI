@@ -129,7 +129,7 @@ class ModelRegistry:
         elif provider_type == "local_sentence_transformers":
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
         elif provider_type in ("docling", "docling_parser"):
-            from app.ingestion.docling_parser import DoclingLayoutParser
+            from app.ingestion.parsers.docling import DoclingLayoutParser
 
             return DoclingLayoutParser()
         else:

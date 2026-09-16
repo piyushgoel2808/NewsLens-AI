@@ -15,7 +15,6 @@ from app.core.logging import get_logger
 from app.ingestion.single_pass_extractor import (
     SinglePassVisualExtractor,
     VisualRegion,
-    VisualRegionResult,
 )
 from app.ingestion.visual_extractor import (
     VisualDataExtractor,

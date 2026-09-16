@@ -29,10 +29,9 @@ except ImportError:
 from app.core.config import get_settings
 from app.ingestion.detector import PDFPageDetector
 from app.ingestion.intake import IntakeService
-from app.ingestion.layout_analyzer import LayoutAnalyzer
-from app.ingestion.ocr_service import OCRService
+from app.ingestion.layout import BlockType, LayoutAnalyzer
+from app.ingestion.parsers import OCRService
 from app.ingestion.rasterizer import PDFRasterizer
-from app.ingestion.reading_order import BlockType
 from app.ingestion.tasks import run_ingestion_pipeline
 from app.models.newspaper import Page
 from app.storage.minio_store import MinioStore

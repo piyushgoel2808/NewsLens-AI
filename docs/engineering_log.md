@@ -4074,5 +4074,44 @@ When users interacted with broadsheet articles containing companion infographics
   - **Issue #116** (3-page HT Delhi, Gemini 3.8 Flash): 20 articles assembled, 9 photos extracted.
   - **Issue #117** (23-page HT Delhi, Gemini 3.8 Flash): 202 articles assembled, 64 photos extracted, 0 empty descriptions, 231 vector chunks in Qdrant.
 
+---
+
+## Phase 9.71 — Ingestion Directory Streamlining & Legacy Shim Elimination
+
+**Date**: 2026-09-17  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+1. **Redundant Backward-Compatibility Re-Export Shims**:
+   - `backend/app/ingestion/` contained 14 legacy backward-compatibility shims (`compressor.py`, `consensus_extractor.py`, `cross_page_assembler.py`, `debug_exporter.py`, `deletion_service.py`, `docling_parser.py`, `extraction_schemas.py`, `folio_detector.py`, `layout_analyzer.py`, `masthead_verifier.py`, `ocr_service.py`, `reading_order.py`, `segmenter.py`, `unified_extractor.py`).
+   - These files only re-exported symbols that had been migrated into `app.ingestion.metadata`, `app.ingestion.storage`, `app.ingestion.layout`, and `app.ingestion.parsers`, causing directory clutter, developer confusion, and potential circular import paths.
+2. **Scattered Import References in Tests and Scripts**:
+   - Multiple unit test files in `backend/tests/` and utility scripts in `scripts/` still imported from these legacy shim paths instead of the canonical modules and subpackages.
+
+### Architectural Solutions & Implementations
+
+1. **Clean Re-Export Architecture in Canonical Modules**:
+   - Verified that `app.ingestion.layout` cleanly exports `LayoutAnalyzer`, `BlockType`, `ReadingOrderResolver`, `ArticleSegmenter`, `CrossPageAssembler`, `AssembledArticle`, `SegmentedArticle`, `OrderedReadingBlock`, `PageBBoxMapping`, and all layout slugs/heuristics.
+   - Verified that `app.ingestion.parsers` cleanly exports `DoclingLayoutParser`, `UnifiedExtractor`, `OCRService`, `PageLayoutExtraction`, `ArticleSkeleton`, `ArticleEnrichment`, etc.
+   - Updated `backend/app/ingestion/__init__.py` to expose all primary pipeline components: `IntakeService`, `PDFRasterizer`, `RasterizedPage`, `LayoutAnalyzer`, `ArticleSegmenter`, `DoclingLayoutParser`, `UnifiedExtractor`, `OCRService`, `MediaExtractor`, `MetadataExtractor`, `VisualDataExtractor`, `ArticleClassifier`, `NewspaperChunker`, `ArticleEmbedder`, `DeletionService`, and `run_ingestion_pipeline`.
+
+2. **Caller Import Migration**:
+   - Updated application code (`app/providers/registry.py`, `app/ingestion/parsers/docling.py`).
+   - Updated maintenance and verification scripts (`scripts/verify_phase2.py`, `scripts/verify_phase3.py`, `scripts/reclassify_articles.py`).
+   - Updated 14 unit test suites (`test_compressor.py`, `test_consensus_extractor.py`, `test_cross_page.py`, `test_debug_exporter.py`, `test_deletion_service.py`, `test_docling_parser.py`, `test_drop_cap.py`, `test_folio_detector.py`, `test_gemini_ocr.py`, `test_layout_analyzer.py`, `test_masthead_verifier.py`, `test_model_switching_runtime.py`, `test_ocr_service.py`, `test_reading_order.py`, `test_segmenter.py`, `test_classifier.py`, `test_unified_extractor.py`).
+
+3. **Complete Elimination of 14 Legacy Shims**:
+   - Safely deleted all 14 shim files from `backend/app/ingestion/`.
+   - Every file in `backend/app/ingestion/` now represents an active, functional pipeline engine with zero dead code or deprecated wrappers.
+
+4. **Documentation & Reference Updates**:
+   - Updated `docs/codebase_directory_and_file_reference.md` to remove the re-export shims section and document the streamlined directory structure and canonical import paths.
+
+### Verification & QA
+- Zero references to legacy shims remaining in the repository.
+- Full pytest test suite passing with all updated test suites verified.
+- Clean directory layout in `backend/app/ingestion/`.
+
+
 
 

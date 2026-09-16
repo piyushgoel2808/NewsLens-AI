@@ -26,16 +26,22 @@ from app.ingestion.layout import (
     LayoutAnalyzer,
     ReadingOrderResolver,
 )
+from app.ingestion.media_extractor import MediaExtractor
 from app.ingestion.metadata import (
     ConsensusExtractor,
     FolioDetector,
     MastheadVerifier,
     extract_newspaper_and_date_consensus,
 )
+from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.parsers import (
     DoclingLayoutParser,
     OCRService,
     UnifiedExtractor,
+)
+from app.ingestion.rasterizer import (
+    PDFRasterizer,
+    RasterizedPage,
 )
 from app.ingestion.single_pass_extractor import (
     PageVisualAnalysis,
@@ -51,6 +57,7 @@ from app.ingestion.storage import (
     compress_pdf_bytes,
 )
 from app.ingestion.tasks import run_ingestion_pipeline
+from app.ingestion.visual_extractor import VisualDataExtractor
 
 __all__ = [
     "ArticleClassifier",
@@ -65,6 +72,8 @@ __all__ = [
     "IntakeService",
     "LayoutAnalyzer",
     "MastheadVerifier",
+    "MediaExtractor",
+    "MetadataExtractor",
     "NewspaperChunker",
     "OCRService",
     "PDFPageDetector",
@@ -75,6 +84,7 @@ __all__ = [
     "RegionAnalysis",
     "SinglePassVisualExtractor",
     "UnifiedExtractor",
+    "VisualDataExtractor",
     "VisualRegion",
     "VisualRegionResult",
     "compress_pdf",

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from app.ingestion.detector import DigitalTextBlock, reattach_drop_caps
-from app.ingestion.layout_analyzer import LayoutAnalyzer
-from app.ingestion.reading_order import BlockType, LayoutElement
+from app.ingestion.layout import BlockType, LayoutAnalyzer, LayoutElement
 
 
 class TestDropCapReattachment:

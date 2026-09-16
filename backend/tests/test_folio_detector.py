@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.ingestion.detector import DigitalTextBlock
-from app.ingestion.folio_detector import FolioDetector
+from app.ingestion.metadata import FolioDetector
 from app.providers.base import OCRBlock
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.ingestion.classifier import ArticleClassifier
-from app.ingestion.cross_page_assembler import AssembledArticle, PageBBoxMapping
+from app.ingestion.layout import AssembledArticle, PageBBoxMapping
 
 
 class TestArticleClassifier:

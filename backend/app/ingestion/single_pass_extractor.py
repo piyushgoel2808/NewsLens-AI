@@ -442,6 +442,7 @@ class SinglePassVisualExtractor:
     ) -> VisualRegionResult:
         """High-fidelity crop extraction with VLM analysis and OCR spatial table support."""
         from io import BytesIO
+
         from PIL import Image
 
         try:

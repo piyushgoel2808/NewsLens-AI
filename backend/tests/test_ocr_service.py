@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.ocr_service import OCRService
+from app.ingestion.parsers.ocr import OCRService
 from app.models.newspaper import Page
 from app.providers.base import OCRBlock, OCRResult
 

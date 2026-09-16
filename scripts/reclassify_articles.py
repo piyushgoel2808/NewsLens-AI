@@ -23,17 +23,16 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR / "backend"))
 sys.path.insert(0, str(ROOT_DIR))
 
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
-
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.ingestion.classifier import ArticleClassifier
-from app.ingestion.cross_page_assembler import AssembledArticle
+from app.ingestion.layout import AssembledArticle
 from app.models.article import Article, ArticleCategory
 from app.models.base import get_session_factory, init_db
 from app.models.entity import ArticleTopic, Topic
-from app.models.newspaper import Issue, Page
+from app.models.newspaper import Page
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 setup_logging("INFO")
 logger = get_logger("reclassify_articles")

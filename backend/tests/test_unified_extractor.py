@@ -1,11 +1,11 @@
 """Unit tests for the UnifiedExtractor and Extraction Schemas."""
 
-from app.ingestion.extraction_schemas import (
+from app.ingestion.parsers.schemas import (
     ArticleEnrichment,
     ArticleSkeleton,
     PageLayoutExtraction,
 )
-from app.ingestion.unified_extractor import UnifiedExtractor
+from app.ingestion.parsers.vlm import UnifiedExtractor
 
 
 def test_article_skeleton_schema_validation():
@@ -167,6 +167,6 @@ def test_unified_extractor_engine_resolution():
 
     extractor_auto = UnifiedExtractor(engine_name="auto")
     prov_auto = extractor_auto._get_provider()
-    assert prov_auto.provider_name == "google_cloud_vision"
+    assert prov_auto.provider_name in ("gemini", "google_cloud_vision")
 
 

@@ -170,7 +170,7 @@ class TestGeminiOCRAndLayout:
 
     def test_clean_schema_for_gemini(self) -> None:
         """Verify _clean_schema_for_gemini dereferences $defs and removes invalid keywords."""
-        from app.ingestion.extraction_schemas import PageLayoutExtraction
+        from app.ingestion.parsers.schemas import PageLayoutExtraction
         from app.providers.gemini_provider import _clean_schema_for_gemini
 
         raw_schema = PageLayoutExtraction.model_json_schema()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.ingestion.docling_parser import (
+from app.ingestion.parsers.docling import (
     _AUTHOR_NAME_PATTERN,
     _DATELINE_PATTERN,
     DoclingLayoutParser,

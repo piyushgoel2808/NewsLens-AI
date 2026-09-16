@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pymupdf
 
-from app.ingestion.consensus_extractor import (
+from app.ingestion.metadata import (
     _parse_extracted_date,
     extract_newspaper_and_date_consensus,
 )

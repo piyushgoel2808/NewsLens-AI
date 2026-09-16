@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from app.ingestion.masthead_verifier import (
+from app.ingestion.metadata import (
     _MASTHEAD_RULES,
     MastheadVerifier,
     _parse_date_groups,

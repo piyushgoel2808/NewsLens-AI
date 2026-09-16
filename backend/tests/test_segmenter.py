@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from app.ingestion.reading_order import BlockType, OrderedReadingBlock
-from app.ingestion.segmenter import ArticleSegmenter
+from app.ingestion.layout import ArticleSegmenter, BlockType, OrderedReadingBlock
 
 
 class TestArticleSegmenter:
@@ -641,8 +640,7 @@ class TestArticleSegmenter:
 
     def test_toc_index_block_isolated_and_severed(self) -> None:
         """Verify Table of Contents / Index teasers are isolated and severed from news articles."""
-        from app.ingestion.layout_analyzer import is_toc_index_block
-        from app.ingestion.segmenter import is_valid_headline_candidate
+        from app.ingestion.layout import is_toc_index_block, is_valid_headline_candidate
 
         toc_text = "Global | Trump approves tariff roadmap... >P14\nMoney | Markets rise... >P8"
         assert is_toc_index_block(toc_text) is True
@@ -685,8 +683,7 @@ class TestArticleSegmenter:
 
     def test_pullquote_author_attribution_rejected_as_headline(self) -> None:
         """Verify ALL CAPS pullquote author designations are rejected as article headlines."""
-        from app.ingestion.layout_analyzer import is_pullquote_author_block
-        from app.ingestion.segmenter import is_valid_headline_candidate
+        from app.ingestion.layout import is_pullquote_author_block, is_valid_headline_candidate
 
         attr_text = "PENNYWONG AUSTRALIANFOREIGN MINISTER"
         assert is_pullquote_author_block(attr_text) is True

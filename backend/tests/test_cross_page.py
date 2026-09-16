@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from app.ingestion.cross_page_assembler import CrossPageAssembler
-from app.ingestion.segmenter import SegmentedArticle
+from app.ingestion.layout import CrossPageAssembler, SegmentedArticle
 
 
 class TestCrossPageAssembler:
