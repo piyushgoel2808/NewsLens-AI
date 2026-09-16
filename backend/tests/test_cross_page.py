@@ -233,3 +233,38 @@ class TestCrossPageAssembler:
         assert len(assembled) == 1
         assert assembled[0].headline == "UNION BUDGET ANNOUNCES MAJOR INFRASTRUCTURE OUTLAY"
         assert "SpaceX launches" in assembled[0].full_text
+
+    def test_assemble_continuation_with_slug_suffix(self) -> None:
+        """Verify shortened continuation headline with '... FROM PAGE X' stitches correctly."""
+        assembler = CrossPageAssembler()
+
+        # Page 1 Teaser
+        p1_teaser = SegmentedArticle(
+            article_temp_id="p1_inflation",
+            headline="Inflation drops sharply to 3.6% in August",
+            body_text="Food prices cooled significantly across urban and rural markets.\nTurn to Page 6",
+            jump_to_page=6,
+            is_teaser=True,
+            word_count=18,
+            bbox_list=[(50.0, 100.0, 400.0, 300.0)],
+        )
+
+        # Page 6 Continuation with slug suffix
+        p6_cont = SegmentedArticle(
+            article_temp_id="p6_inflation",
+            headline="INFLATION... FROM PAGE 1",
+            body_text="Vegetable prices fell by 14% month-on-month, leading the disinflation trend.",
+            jump_from_page=1,
+            word_count=13,
+            bbox_list=[(50.0, 100.0, 400.0, 500.0)],
+        )
+
+        assembled = assembler.assemble_issue_articles({1: [p1_teaser], 6: [p6_cont]})
+        assert len(assembled) == 1
+        art = assembled[0]
+        assert art.primary_page_number == 1
+        assert "Inflation drops sharply" in art.headline
+        assert "Vegetable prices fell" in art.full_text
+        assert len(art.pages_mapping) == 2
+        assert "p1_inflation" in art.merged_article_temp_ids
+        assert "p6_inflation" in art.merged_article_temp_ids

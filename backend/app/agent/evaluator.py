@@ -419,10 +419,10 @@ class EvidenceEvaluator:
                     if re.search(r"\|.*\|.*\|\s*\n\|[\s\-:]+\|", sn):
                         has_positive = True
                         break
-                    if re.search(r"\b(?:total|count|breakdown|photos?|articles?|advertisements?|ads?|issues?|average|avg|mean|median|length|words?|word\s+count|distribution|ratio|correlation|variance|std)(?:\s+[a-zA-Z]+)*[:\s]+(?:\*\*)?([1-9]\d*(?:\.\d+)?|0\.\d+)\b", sn, re.I):
+                    if re.search(r"\b(?:total|count|breakdown|photos?|articles?|advertisements?|ads?|issues?|average|avg|mean|median|length|words?|word\s+count|distribution|ratio|correlation|variance|std)(?:\s+[a-zA-Z]+){0,2}\s*[:=]\s*(?:\*\*)?([1-9]\d*(?:\.\d+)?|0\.\d+)\b", sn, re.I):
                         has_positive = True
                         break
-                    if re.search(r"\b(?:average|avg|mean|median|length|word\s*count|words?|total|count)\b[^\n\d]*\b([1-9]\d*(?:\.\d+)?)\b", sn, re.I):
+                    if re.search(r"\b(?:average|avg|mean|median|length|word\s*count|words?|total|count)\s*[:=]\s*(?:\*\*)?([1-9]\d*(?:\.\d+)?)\b", sn, re.I):
                         has_positive = True
                         break
                     if re.search(r"\b([1-9]\d*(?:\.\d+)?)\s*(?:articles?|photos?|advertisements?|ads?|issues?|words?|chars?)\b", sn, re.I):

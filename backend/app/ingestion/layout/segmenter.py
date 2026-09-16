@@ -752,12 +752,31 @@ class AssembledArticle:
     pages_mapping: list[PageBBoxMapping] = field(default_factory=list)
     section: str | None = None
     printed_section: str | None = None
+    merged_article_temp_ids: list[str] = field(default_factory=list)
 
 
-def _headline_overlap_metrics(h1: str, h2: str) -> tuple[float, float, int]:
-    """Calculate token overlap metrics (Jaccard, asymmetric containment, min token length)."""
-    tokens1 = set(re.findall(r"\w+", h1.lower()))
-    tokens2 = set(re.findall(r"\w+", h2.lower()))
+def _clean_continuation_slug(headline: str) -> str:
+    """Strip cross-page suffixes like '... FROM PAGE 1' before token comparison."""
+    cleaned = re.sub(
+        r"[\.\…]+\s*(?:from\s+page\s+\d+|cont['’]?d?|continued\s+from\s+p(?:age)?\s*\d*).*$",
+        "",
+        headline,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned or headline
+
+
+def _significant_tokens(text: str, ignore: set[str]) -> set[str]:
+    """Extract significant tokens (>= 4 chars, not stopwords)."""
+    return {w for w in re.findall(r"\w+", text.lower()) if len(w) >= 4 and w not in ignore}
+
+
+def _headline_overlap_metrics(h1: str, h2: str) -> tuple[float, float, int, int]:
+    """Calculate token overlap metrics (Jaccard, asymmetric containment, min token length, entity overlap)."""
+    h1_clean = _clean_continuation_slug(h1)
+    h2_clean = _clean_continuation_slug(h2)
+    tokens1 = set(re.findall(r"\w+", h1_clean.lower()))
+    tokens2 = set(re.findall(r"\w+", h2_clean.lower()))
     ignore = {
         "continued", "from", "page", "cont", "see", "to", "the", "a", "an",
         "in", "on", "of", "and", "or", "for", "with", "at", "by", "as", "is",
@@ -765,12 +784,17 @@ def _headline_overlap_metrics(h1: str, h2: str) -> tuple[float, float, int]:
     t1 = tokens1 - ignore
     t2 = tokens2 - ignore
     if not t1 or not t2:
-        return 0.0, 0.0, 0
+        return 0.0, 0.0, 0, 0
     intersection = len(t1 & t2)
     jaccard = intersection / len(t1 | t2)
     min_len = min(len(t1), len(t2))
     containment = intersection / min_len if min_len > 0 else 0.0
-    return jaccard, containment, min_len
+
+    sig1 = _significant_tokens(h1_clean, ignore)
+    sig2 = _significant_tokens(h2_clean, ignore)
+    entity_overlap = len(sig1 & sig2) if (sig1 and sig2) else 0
+
+    return jaccard, containment, min_len, entity_overlap
 
 
 def _has_continuation_marker(cand: SegmentedArticle) -> bool:
@@ -828,6 +852,7 @@ class CrossPageAssembler:
                     ],
                     section=art.section,
                     printed_section=art.printed_section,
+                    merged_article_temp_ids=[art.article_temp_id],
                 )
 
                 target_page = art.jump_to_page
@@ -842,20 +867,27 @@ class CrossPageAssembler:
                         if cand.article_temp_id in absorbed_ids:
                             continue
 
-                        jaccard, containment, min_len = _headline_overlap_metrics(
+                        jaccard, containment, min_len, entity_overlap = _headline_overlap_metrics(
                             current.headline, cand.headline
                         )
 
                         is_teaser_target = bool(art.is_teaser and target_page == next_page)
+                        explicit_page_link = cand.jump_from_page == current_source_page
+
                         if (target_page == next_page or is_teaser_target) and (
-                            cand.jump_from_page == current_source_page
+                            explicit_page_link
                             or containment >= 0.30
                             or jaccard >= 0.20
+                            or (entity_overlap >= 1 and _has_continuation_marker(cand))
                         ):
                             matched_continuation = cand
                             break
 
-                        if containment >= 0.80 or jaccard >= 0.60:
+                        if (
+                            containment >= 0.80
+                            or jaccard >= 0.60
+                            or (entity_overlap >= 2 and _has_continuation_marker(cand))
+                        ):
                             if min_len < 4:
                                 byline_match = bool(
                                     current.byline_author
@@ -878,6 +910,7 @@ class CrossPageAssembler:
 
                     if matched_continuation:
                         absorbed_ids.add(matched_continuation.article_temp_id)
+                        current.merged_article_temp_ids.append(matched_continuation.article_temp_id)
                         if len(matched_continuation.headline) > len(current.headline):
                             current.headline = matched_continuation.headline
                         if matched_continuation.byline_author and not current.byline_author:
@@ -907,6 +940,7 @@ class CrossPageAssembler:
                         prev_art.full_text += f"\n\n{current.full_text}"
                         prev_art.word_count = len(prev_art.full_text.split())
                         prev_art.pages_mapping[0].bbox_list.extend(art.bbox_list)
+                        prev_art.merged_article_temp_ids.extend(current.merged_article_temp_ids)
                     continue
 
                 assembled.append(current)

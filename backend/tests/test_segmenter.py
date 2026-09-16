@@ -800,3 +800,27 @@ class TestArticleSegmenter:
 
         assert ad_art.headline.startswith("[Advertisement]")
         assert "QUALIFIED INSTITUTIONS PLACEMENT" in ad_art.body_text
+
+    def test_valid_headline_candidate_punctuation_and_length(self) -> None:
+        """Verify headlines with ?, !, and short valid lengths are correctly accepted."""
+        from app.ingestion.layout import is_valid_headline_candidate
+
+        # Questions in headlines (common in editorials/columns)
+        assert is_valid_headline_candidate("Will RBI Cut Rates in October?") is True
+        assert is_valid_headline_candidate("Who Wins the Semiconductor War?") is True
+        assert is_valid_headline_candidate("Can AI Replace Analysts?") is True
+
+        # Exclamations in headlines
+        assert is_valid_headline_candidate("India Wins World Cup!") is True
+        assert is_valid_headline_candidate("Sensex Hits Record High!") is True
+
+        # Short punchy 2-word headlines
+        assert is_valid_headline_candidate("AI Wins?") is True
+        assert is_valid_headline_candidate("Growth Soars!") is True
+
+        # Multi-sentence body paragraph ending with exclamation (>20 words) should be rejected
+        long_paragraph = (
+            "The committee reviewed all proposals and decided to approve the largest expansion "
+            "plan ever seen in the history of state-run enterprises across all regional branches!"
+        )
+        assert is_valid_headline_candidate(long_paragraph) is False

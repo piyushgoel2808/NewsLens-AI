@@ -379,7 +379,10 @@ def is_valid_headline_candidate(text: str) -> bool:
     """Ensure a block text is substantial enough to define an article headline."""
     cleaned = re.sub(r"[^\w\s]", "", text).strip()
     words = cleaned.split()
-    if not words or len(words) < 2 or len(cleaned) < 8:
+    if not words or len(words) < 2:
+        return False
+    # Use original text length as fallback when punctuation was stripped
+    if len(cleaned) < 6 and len(text.strip()) < 8:
         return False
     # Single words are never valid article headlines
     if len(words) == 1:
@@ -413,7 +416,9 @@ def is_valid_headline_candidate(text: str) -> bool:
     stat_matches = NUMERIC_STAT_PATTERN.findall(text)
     if len(stat_matches) >= 3 or (len(stat_matches) >= 2 and len(words) <= 6):
         return False
-    # Multi-sentence paragraphs ending in period are not headlines
+    # Multi-sentence paragraphs ending in period, semicolon, or exclamation (>20 words) are not headlines
+    if len(words) > 20 and text.rstrip().endswith((".", ";", "!")):
+        return False
     return not (len(words) > 15 and text.rstrip().endswith((".", ";")))
 
 

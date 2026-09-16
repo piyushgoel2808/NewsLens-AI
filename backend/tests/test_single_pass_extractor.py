@@ -346,3 +346,51 @@ def test_resolve_photo_article_binding_prevents_giant_envelope_theft() -> None:
     # Must bind to genomics article (43560)
     assert bound_genomics == 43560
 
+
+def test_resolve_photo_article_binding_generic_token_matching() -> None:
+    """Verify that photo binding uses generic 4-character significant token matching without hardcoded company lists."""
+    from unittest.mock import MagicMock
+    from app.ingestion.media_extractor import MediaExtractor
+
+    extractor = MediaExtractor(db=MagicMock())
+
+    # Two distinct articles with non-hardcoded terms
+    art1 = (
+        1001,
+        (50.0, 50.0, 500.0, 600.0),
+        "Semiconductor Fabrication Facility Breaks Ground in Dholera",
+        [(50.0, 50.0, 500.0, 600.0)],
+    )
+    art2 = (
+        1002,
+        (550.0, 50.0, 1000.0, 600.0),
+        "Renewable Battery Storage Plant Inaugurated Near Khavda",
+        [(550.0, 50.0, 1000.0, 600.0)],
+    )
+    envelopes = [art1, art2]
+
+    # Photo positioned centrally between the two columns
+    central_bbox = (480.0, 200.0, 580.0, 400.0)
+
+    # Caption matching article 1 via significant tokens ("semiconductor", "fabrication")
+    caption1 = "Engineers inspect semiconductor fabrication machinery at the site"
+    bound1 = extractor.resolve_photo_article_binding(
+        photo_bbox=central_bbox,
+        article_envelopes=envelopes,
+        caption=caption1,
+        page_width_px=1200.0,
+        page_height_px=1800.0,
+    )
+    assert bound1 == 1001
+
+    # Caption matching article 2 via significant tokens ("renewable", "battery", "storage")
+    caption2 = "Technicians test the renewable battery storage cells"
+    bound2 = extractor.resolve_photo_article_binding(
+        photo_bbox=central_bbox,
+        article_envelopes=envelopes,
+        caption=caption2,
+        page_width_px=1200.0,
+        page_height_px=1800.0,
+    )
+    assert bound2 == 1002
+

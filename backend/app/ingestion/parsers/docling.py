@@ -73,6 +73,10 @@ _AD_KEYWORDS = {
     "admissions open", "book now", "discount", "special offer", "festive offer",
 }
 
+VERTICAL_JUMP_FRAC = 0.12  # 12% of page height = column-break vertical jump threshold
+AD_ALIGN_TOL_FRAC = 0.03   # 3% of page width = ad container alignment tolerance
+TEASER_HORIZ_TOL_FRAC = 0.15  # 15% of page width = teaser horizontal jump tolerance
+
 
 def _is_ad_content(text: str) -> bool:
     if not text:
@@ -478,7 +482,8 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             # Active Advertisement Container: if current article is an advertisement,
             # consume subordinate items until an explicit spatial jump or non-ad headline occurs.
             if current_headline.startswith("[Advertisement]"):
-                if current_bboxes and bbox[0] >= current_bboxes[0][0] - 50 and bbox[2] <= current_bboxes[0][2] + 50:
+                ad_tol_x = width_px * AD_ALIGN_TOL_FRAC
+                if current_bboxes and bbox[0] >= current_bboxes[0][0] - ad_tol_x and bbox[2] <= current_bboxes[0][2] + ad_tol_x:
                     current_body_parts.append(txt)
                     current_bboxes.append(bbox)
                     continue
@@ -486,23 +491,24 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                     _flush_current_article()
 
             # Spatial Discontinuity Guard:
-            # If the reading order jumps vertically upward by > 200px above the top of the current article,
-            # this is a new column/section or disconnected advertisement block.
+            # If the reading order jumps vertically upward by > VERTICAL_JUMP_FRAC of page height
+            # above the top of the current article, this is a new column/section or disconnected advertisement block.
             if current_bboxes:
                 article_top_y = min(b[1] for b in current_bboxes)
-                if bbox[1] < article_top_y - 200:
+                if bbox[1] < article_top_y - (height_px * VERTICAL_JUMP_FRAC):
                     _flush_current_article()
 
             # Teaser strip / jump continuation guard:
-            # If previous items are from a teaser strip (containing page pointers e.g. "P2", "-> P2"),
+            # If recent items are from a teaser strip (containing page pointers e.g. "P2", "-> P2"),
             # any subsequent item that jumps vertically or horizontally finishes the teaser.
+            recent_body = current_body_parts[-2:] if len(current_body_parts) >= 2 else current_body_parts
             if (
                 current_bboxes
-                and any(re.search(r"(?:▶|►|>|->)?\s*P\d{1,2}\b", p, re.IGNORECASE) for p in current_body_parts)
+                and any(re.search(r"(?:▶|►|>|->)?\s*P\d{1,2}\b", p, re.IGNORECASE) for p in recent_body)
                 and (
                     (bbox[1] - current_bboxes[-1][3] > height_px * 0.05)
-                    or (bbox[1] < min(b[1] for b in current_bboxes) - 50)
-                    or (abs(bbox[0] - current_bboxes[-1][0]) > 200)
+                    or (bbox[1] < min(b[1] for b in current_bboxes) - (height_px * 0.03))
+                    or (abs(bbox[0] - current_bboxes[-1][0]) > width_px * TEASER_HORIZ_TOL_FRAC)
                 )
             ):
                 _flush_current_article()

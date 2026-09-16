@@ -28,6 +28,16 @@ from app.storage.minio_store import MinioStore
 logger = get_logger(__name__)
 
 
+_BINDING_STOPWORDS = {
+    "the", "this", "that", "with", "from", "into", "over", "after", "before",
+    "about", "above", "under", "where", "there", "their", "which", "would",
+    "could", "should", "shall", "will", "what", "when", "more", "most", "some",
+    "such", "than", "then", "them", "these", "those", "have", "been", "were",
+    "also", "only", "other", "many", "much", "even", "help", "push", "page",
+    "editorial", "photo", "photograph", "image", "showing", "shows", "seen"
+}
+
+
 def extract_grounded_boxes_from_thinking(
     thinking_text: str,
     width_px: int,
@@ -86,7 +96,8 @@ def extract_grounded_boxes_from_thinking(
         area_ratio = box_area / max(page_area, 1.0)
         if area_ratio < 0.005 or area_ratio > 0.60:
             continue
-        if (x1 - x0) < 40 or (y1 - y0) < 40:
+        min_dim_px = max(20.0, min(width_px, height_px) * 0.02)
+        if (x1 - x0) < min_dim_px or (y1 - y0) < min_dim_px:
             continue
 
         results.append(((x0, y0, x1, y1), label))
@@ -173,10 +184,11 @@ def parse_grounded_boxes(
         # Filters:
         # 1. Skip tiny noise (< 0.5% of page canvas)
         # 2. Skip full-page background (> 60% of page canvas)
-        # 3. Minimum width/height 40px
+        # 3. Minimum width/height relative to page size
         if area_ratio < 0.005 or area_ratio > 0.60:
             continue
-        if (x1 - x0) < 40 or (y1 - y0) < 40:
+        min_dim_px = max(20.0, min(width_px, height_px) * 0.02)
+        if (x1 - x0) < min_dim_px or (y1 - y0) < min_dim_px:
             continue
 
         results.append(((x0, y0, x1, y1), label))
@@ -229,7 +241,7 @@ class MediaExtractor:
         if not article_envelopes:
             return None
 
-        # Caption keyword heuristics for high-accuracy binding
+        # Layout category heuristic: Advertisement binding
         if caption:
             cap_lower = caption.lower()
             if any(k in cap_lower for k in ["advertisement", "commercial feature", "promotional feature"]):
@@ -237,36 +249,34 @@ class MediaExtractor:
                     aid, ahl = item[0], item[2]
                     if ahl.lower().startswith("[advertisement]") or "advertisement" in ahl.lower():
                         return aid
-            if any(k in cap_lower for k in ["indigo", "plane", "airplane", "jet", "flight", "aircraft", "airline"]):
+
+            # Generic significant token matching (>=4 chars, non-stopwords)
+            cap_sig = {
+                w for w in re.findall(r"\w+", cap_lower)
+                if len(w) >= 4 and w not in _BINDING_STOPWORDS
+            }
+            if cap_sig:
+                best_sig_aid = None
+                best_sig_count = 0
                 for item in article_envelopes:
                     aid, ahl = item[0], item[2]
-                    if any(k in ahl.lower() for k in ["indigo", "plane", "flight", "airline"]):
-                        return aid
-            if any(k in cap_lower for k in ["pill", "capsule", "drug", "medicine", "pharma", "bottle"]):
-                for item in article_envelopes:
-                    aid, ahl = item[0], item[2]
-                    if any(k in ahl.lower() for k in ["drug", "china", "pharma", "fret"]):
-                        return aid
-            if any(k in cap_lower for k in ["car", "steel", "tower", "turbine", "solar", "vehicle", "chassis", "building", "cathedral", "excavator", "machinery", "conexpo", "bauma"]):
-                for item in article_envelopes:
-                    aid, ahl = item[0], item[2]
-                    if any(k in ahl.lower() for k in ["advertisement", "steel", "planet"]):
-                        return aid
+                    hl_sig = {
+                        w for w in re.findall(r"\w+", ahl.lower())
+                        if len(w) >= 4 and w not in _BINDING_STOPWORDS
+                    }
+                    shared = len(cap_sig & hl_sig)
+                    if shared > best_sig_count:
+                        best_sig_count = shared
+                        best_sig_aid = aid
+                if best_sig_count >= 2:
+                    return best_sig_aid
 
         px0, py0, px1, py1 = photo_bbox
         pw = max(px1 - px0, 1.0)
         px_center = (px0 + px1) / 2.0
         py_center = (py0 + py1) / 2.0
 
-        stopwords = {
-            "the", "this", "that", "with", "from", "into", "over", "after", "before",
-            "about", "above", "under", "where", "there", "their", "which", "would",
-            "could", "should", "shall", "will", "what", "when", "more", "most", "some",
-            "such", "than", "then", "them", "these", "those", "have", "been", "were",
-            "also", "only", "other", "many", "much", "even", "help", "push", "page",
-            "editorial", "photo", "photograph", "image", "showing", "shows", "seen"
-        }
-        caption_words = set(re.findall(r"\w+", caption.lower())) - stopwords if caption else set()
+        caption_words = set(re.findall(r"\w+", caption.lower())) - _BINDING_STOPWORDS if caption else set()
 
         candidate_scores: list[tuple[int, float, str]] = []
 
@@ -319,7 +329,7 @@ class MediaExtractor:
 
             # 3. Caption & Headline Semantic Keyword Match
             if caption_words and headline:
-                hl_words = set(re.findall(r"\w+", headline.lower())) - stopwords
+                hl_words = set(re.findall(r"\w+", headline.lower())) - _BINDING_STOPWORDS
                 overlap = [w for w in hl_words if len(w) >= 4 and w in caption_words]
                 if overlap:
                     score += min(0.6, len(overlap) * 0.25)
