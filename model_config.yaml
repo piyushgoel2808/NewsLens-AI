@@ -138,8 +138,8 @@ providers:
 task_bindings:
   query_planner: gemini_flash
   answerer: gemini_flash
-  visual_extraction: gemini_vision
-  layout_analysis: docling_parser
+  visual_extraction: gemini_flash
+  layout_analysis: gemini_flash
   metadata_extraction: gemini_flash
   classification: gemini_flash
   article_segmentation: gemini_flash
