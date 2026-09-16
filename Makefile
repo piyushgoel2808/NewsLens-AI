@@ -5,7 +5,7 @@
 # Run 'make help' to see all available commands.
 # =============================================================================
 
-.PHONY: help setup up down logs migrate migrate-down test test-cov lint lint-fix \
+.PHONY: help setup dev up down logs migrate migrate-down test test-cov lint lint-fix \
         install frontend-install frontend-dev frontend-build prod-up prod-down \
         prod-logs verify pull-models shell-mysql shell-redis secrets-check
 
@@ -37,6 +37,12 @@ setup: ## One-command project setup (checks .env, starts services, installs depe
 	@echo ""
 	@echo "=== 2. Starting Infrastructure Services (MySQL, Qdrant, MinIO, Redis, Ollama) ==="
 	$(COMPOSE) up -d
+	@echo "Waiting for MySQL to accept connections..."
+	@until docker exec newslens-mysql mysqladmin ping -h localhost -u root --password=newslens_root --silent > /dev/null 2>&1; do \
+		echo " Waiting for MySQL database..."; \
+		sleep 2; \
+	done
+	@echo " MySQL is ready."
 	@echo ""
 	@echo "=== 3. Installing Python Backend Dependencies ==="
 	$(BACKEND) uv sync --all-extras
@@ -49,11 +55,17 @@ setup: ## One-command project setup (checks .env, starts services, installs depe
 	@echo ""
 	@echo "=================================================================="
 	@echo " Setup complete!"
-	@echo "   To start backend:  make serve"
-	@echo "   To start frontend: make frontend-dev"
-	@echo "   To start worker:   make worker"
+	@echo "   To start in dev mode: make dev"
+	@echo "   Or run individual services:"
+	@echo "     make serve        (FastAPI backend on port 8000)"
+	@echo "     make frontend-dev (Vite frontend on port 5173)"
+	@echo "     make worker       (Celery ingestion worker)"
 	@echo "   Or run full-stack containerized: make prod-up"
 	@echo "=================================================================="
+
+dev: ## Start backend and frontend development servers concurrently
+	@echo "Starting NewsLens-AI backend (port 8000) and frontend (port 5173)..."
+	@make -j2 serve frontend-dev
 
 # --- Local Infrastructure (Docker) ---
 
@@ -76,7 +88,7 @@ prod-up: ## Start the entire stack in containers (backend, frontend, worker, db,
 	$(COMPOSE_PROD) up -d --build
 	@echo ""
 	@echo "Full stack running!"
-	@echo "Frontend: http://localhost:80"
+	@echo "Frontend: http://localhost:3000 (or configured FRONTEND_PORT)"
 	@echo "Backend API: http://localhost:8000"
 	@echo "MinIO console: http://localhost:9001"
 

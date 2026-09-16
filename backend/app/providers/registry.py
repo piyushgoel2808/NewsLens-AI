@@ -363,8 +363,6 @@ class ModelRegistry:
             "openai_gpt4o_mini",
             "openai_gpt4o",
             "groq_qwen",
-            "openrouter_nemotron",
-            "openrouter_gemma4_26b",
         ]
         local_priority = [
             "ollama_llama3",
@@ -379,8 +377,8 @@ class ModelRegistry:
         # Only return provider IDs that are actually configured in model_config
         candidates: list[str] = [k for k in ordered_keys if k in self._model_config.providers]
 
-        # Append any other configured chat-capable providers not in standard list
-        chat_types = {"ollama", "groq", "gemini", "openrouter", "nvidia", "openai", "anthropic"}
+        # Append any other configured chat-capable providers not in standard list (excluding openrouter)
+        chat_types = {"ollama", "groq", "gemini", "nvidia", "openai", "anthropic"}
         for pid, cfg in self._model_config.providers.items():
             if cfg.provider in chat_types and pid not in candidates:
                 candidates.append(pid)

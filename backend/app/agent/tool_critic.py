@@ -398,6 +398,21 @@ class ToolCritic:
                     "Pass them directly into SQL parameters without calling datetime.strptime(). "
                     "If parsing optional dates from text, always guard with `if date_str:`."
                 )
+            elif "KeyError" in error:
+                m_key = re.search(r"KeyError:\s*['\"]?([^'\"]+)['\"]?", error)
+                bad_k = m_key.group(1) if m_key else "the key"
+                all_fixes.append(
+                    f"KeyError on '{bad_k}': You accessed '{bad_k}' in a dictionary or DataFrame, but it was not present. "
+                    f"Make sure you explicitly SELECT this column in your SQL query (e.g. `SELECT c.name AS {bad_k}...` or `SELECT a.{bad_k}...`), "
+                    f"and verify that your pandas column names or dictionary accesses match your SQL SELECT aliases exactly."
+                )
+            elif "StatementError" in error or "bind parameter" in error:
+                m_param = re.search(r"bind parameter '([^']+)'", error)
+                p_name = m_param.group(1) if m_param else "parameter"
+                all_fixes.append(
+                    f"Missing bind parameter '{p_name}': Your SQL query contains `:{p_name}`, but '{p_name}' was not in the parameters dictionary passed to `db.execute()`. "
+                    f"Ensure every `:{p_name}` placeholder in your `text(...)` query has an exact matching key in the dictionary: `db.execute(stmt, {{'{p_name}': ...}})`."
+                )
             else:
                 all_fixes.append("Fix uncaught exception, type error, or missing await.")
 

@@ -429,8 +429,8 @@ class AnswerSynthesizer:
 
         is_cloud_request = bool(
             primary
-            and getattr(primary, "provider_name", "") in {"openrouter", "gemini", "groq", "openai", "nvidia"}
-        ) or (model_override and any(p in model_override for p in ["openrouter", "gemini", "groq", "openai", "nvidia"]))
+            and getattr(primary, "provider_name", "") in {"gemini", "groq", "openai", "nvidia"}
+        ) or (model_override and any(p in model_override for p in ["gemini", "groq", "openai", "nvidia"]))
 
         try:
             registry = get_registry()

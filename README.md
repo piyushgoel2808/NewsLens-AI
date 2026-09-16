@@ -110,13 +110,14 @@ docker compose up -d --build
 
 | Service | Endpoint | Credentials / Details |
 | :--- | :--- | :--- |
-| **Frontend Web App** | [http://localhost:5173](http://localhost:5173) | Interactive broadsheet viewer, search & chat UI |
+| **Frontend (Docker Stack)** | [http://localhost:3000](http://localhost:3000) | Production Nginx SPA with real-time SSE streaming |
+| **Frontend (Vite Dev)** | [http://localhost:5173](http://localhost:5173) | Development server with instant HMR (`make frontend-dev`) |
 | **Backend API & Swagger** | [http://localhost:8000/api/docs](http://localhost:8000/api/docs) | Interactive OpenAPI / Swagger documentation |
 | **Backend Health Check** | [http://localhost:8000/api/health](http://localhost:8000/api/health) | Live service connectivity status (DB, Qdrant, Redis, MinIO) |
-| **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin` (broadsheet PDF & visual crops storage) |
+| **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin123` (broadsheet PDF & visual crops storage) |
 | **Qdrant Vector Dashboard** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Broadsheet neural dense vector index |
 | **Ollama Local LLM** | [http://localhost:11434](http://localhost:11434) | Local inference engine |
-| **MySQL 8** | `localhost:3306` | `newslens` / `newslens_pass` (`newslens_db`) |
+| **MySQL 8** | `localhost:3306` | `newslens` / `newslens_pass` (`newslens`) |
 | **Redis 7** | `localhost:6379` | Query cache & Celery message broker |
 
 > [!TIP]
