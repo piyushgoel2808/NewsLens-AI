@@ -1,6 +1,6 @@
 """PDF Rasterization service for NewsLens-AI.
 
-Renders vector and scanned PDF pages to high-resolution PNG images (300 DPI)
+Renders vector and scanned PDF pages to high-resolution PNG images (150 DPI)
 using PyMuPDF (fitz). Uploads rasterized pages to MinIO `newslens-pages`
 bucket and synchronizes page metadata (dimensions, object key, status) in MySQL.
 """
@@ -20,7 +20,7 @@ from app.storage.minio_store import MinioStore
 
 logger = get_logger(__name__)
 
-DEFAULT_DPI = 300
+DEFAULT_DPI = 150
 THUMBNAIL_DPI = 100
 
 

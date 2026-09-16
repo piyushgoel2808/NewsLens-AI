@@ -224,7 +224,7 @@ export default function InspectionViewer() {
 
                   <div style={{ marginTop: '8px' }}>
                     <a href={p.image_url} target="_blank" rel="noreferrer" style={{ fontSize: '12px', color: '#0066cc' }}>
-                      View 300 DPI Scan PNG ↗
+                      View Scan PNG ↗
                     </a>
                   </div>
                 </div>

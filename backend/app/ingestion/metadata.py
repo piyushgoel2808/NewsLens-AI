@@ -369,13 +369,23 @@ class FolioDetector:
         # Auto-detect coordinate scale (DPI Sync)
         max_y = max(b[0][3] for b in valid_blocks)
         given_h = max(float(height_px), 1.0)
+        given_w = max(float(width_px), 1.0)
 
         if max_y <= 1.05 and given_h > 10.0:
             # Normalized (0.0 .. 1.0) coordinate space
             effective_height = 1.0
-        elif given_h >= 2000.0 and max_y <= 1200.0:
-            # height_px was passed at 300 DPI raster while blocks are in 72 DPI PDF points
+        elif max_y <= 1200.0 and given_h >= 2800.0:
+            # height_px was passed at 300 DPI raster while blocks are in 72 DPI PDF points (A4/tabloid)
             effective_height = given_h / (300.0 / 72.0)
+        elif max_y <= 1200.0 and 1700.0 <= given_h < 2800.0:
+            # height_px was passed at 150 DPI raster while blocks are in 72 DPI PDF points (A4/tabloid)
+            effective_height = given_h / (150.0 / 72.0)
+        elif max_y <= 1800.0 and given_h >= 5000.0:
+            # Broadsheet at 300 DPI raster while blocks are in 72 DPI PDF points
+            effective_height = given_h / (300.0 / 72.0)
+        elif max_y <= 1800.0 and 3000.0 <= given_h < 5000.0 and given_w < 3000.0:
+            # Broadsheet at 150 DPI raster while blocks are in 72 DPI PDF points
+            effective_height = given_h / (150.0 / 72.0)
         else:
             effective_height = given_h
 

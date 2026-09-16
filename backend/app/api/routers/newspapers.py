@@ -210,7 +210,7 @@ async def get_issue_details(
     }
 
 
-@router.get("/api/pages/{page_id}/image", summary="Stream original 300 DPI page scan image")
+@router.get("/api/pages/{page_id}/image", summary="Stream broadsheet page scan image")
 async def get_page_image(
     page_id: int,
     db: AsyncSession = Depends(get_db),

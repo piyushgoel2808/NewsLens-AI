@@ -332,6 +332,33 @@ class TestFolioDetector:
         )
         assert folio == "12"
 
+    def test_dpi_150_mismatch_auto_scale_sync(self) -> None:
+        """Verify detector syncs when 72 DPI PDF blocks are passed with 150 DPI height."""
+        detector = FolioDetector()
+        digital_blocks = [
+            DigitalTextBlock(
+                block_id=0,
+                text="DELHI | MONDAY, JULY 7, 2026 | PAGE 12",
+                bbox=(50.0, 20.0, 550.0, 45.0),
+            ),
+            # Body block at y0=300, y1=400 (which would be in header zone if unscaled against 1754px)
+            DigitalTextBlock(
+                block_id=1,
+                text="Body article mentioning 181 and 182",
+                bbox=(50.0, 300.0, 550.0, 400.0),
+            ),
+        ]
+
+        # Height passed as 1754 (150 DPI rasterized pixels) while blocks are at ~842 points
+        folio = detector.extract_folio(
+            blocks=digital_blocks,
+            height_px=1754.0,
+            width_px=1240.0,
+            page_number=12,
+        )
+        assert folio == "12"
+
+
     def test_missing_bbox_coordinates_fallback_gracefully(self) -> None:
         """Verify blocks missing bbox coordinates fall back gracefully without scanning body."""
         detector = FolioDetector()

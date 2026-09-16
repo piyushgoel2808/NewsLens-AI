@@ -2,7 +2,7 @@
 
 Provides end-to-end processing pipeline for printed broadsheet newspapers:
 - Intake and pre-compression of PDF/ZIP archives (storage.py)
-- PyMuPDF 300 DPI page rasterization (rasterizer.py)
+- PyMuPDF 150 DPI page rasterization (rasterizer.py)
 - Digital text layer detection & gibberish classification (detector.py)
 - Multi-column layout analysis, reading order resolution & ad envelopes (layout/)
 - RapidOCR masthead verification, consensus extraction & printed folio detection (metadata.py)

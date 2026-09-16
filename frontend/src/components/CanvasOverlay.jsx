@@ -42,7 +42,7 @@ export default function CanvasOverlay({
 }) {
   const [tooltip, setTooltip] = useState(null);
 
-  // Auto-detect coordinate domain: scale viewBox if bboxes are in PDF points (72 DPI) vs 300 DPI raster
+  // Auto-detect coordinate domain: scale viewBox if bboxes are in PDF points (72 DPI) vs raster (150/300 DPI)
   const { vbWidth, vbHeight } = useMemo(() => {
     let maxBx = 0;
     let maxBy = 0;
@@ -60,10 +60,12 @@ export default function CanvasOverlay({
       if (b[3] > maxBy) maxBy = b[3];
     });
 
-    // If coordinates are in 72 DPI PDF point space (< 1500) but raster is 300 DPI (> 1800)
-    if (maxBx > 0 && maxBx < pageWidth * 0.65 && pageWidth > 1500) {
-      const ptWidth = (pageWidth * 72) / 300;
-      const ptHeight = (pageHeight * 72) / 300;
+    // If coordinates are in 72 DPI PDF point space (< 1500) but raster is higher resolution (150 or 300 DPI)
+    if (maxBx > 0 && maxBx < pageWidth * 0.65 && pageWidth > 800) {
+      const estimatedRatio = pageWidth / maxBx;
+      const detectedDpi = estimatedRatio > 3.0 ? 300 : 150;
+      const ptWidth = (pageWidth * 72) / detectedDpi;
+      const ptHeight = (pageHeight * 72) / detectedDpi;
       return {
         vbWidth: ptWidth > maxBx ? ptWidth : maxBx * 1.05,
         vbHeight: ptHeight > maxBy ? ptHeight : maxBy * 1.05,

@@ -615,6 +615,7 @@ class PDFPageDetector:
         self,
         doc: pymupdf.Document,
         page_index: int,
+        dpi: int = 150,
     ) -> PageAnalysisResult:
         """Analyze and extract structured text from a 0-indexed page in an open PyMuPDF document."""
         page = doc.load_page(page_index)
@@ -633,18 +634,19 @@ class PDFPageDetector:
         image_count = len(images)
 
         # Harvest exact image bounding boxes (photos, figures, infographics)
-        # Scaled to 300 DPI raster pixel coordinates to match rendered page images
+        # Scaled to raster pixel coordinates (dpi) to match rendered page images
         image_boxes: list[tuple[float, float, float, float]] = []
-        page_w_300 = float(page_width) * (300.0 / 72.0)
-        page_h_300 = float(page_height) * (300.0 / 72.0)
+        scale = float(dpi) / 72.0
+        page_w_scaled = float(page_width) * scale
+        page_h_scaled = float(page_height) * scale
 
         def _is_valid_photo_box(x0: float, y0: float, x1: float, y1: float) -> bool:
             w, h = x1 - x0, y1 - y0
-            if w < 40.0 or h < 40.0:
+            min_dim = 20.0 if dpi <= 150 else 40.0
+            if w < min_dim or h < min_dim:
                 return False
             # Filter out full-page background/scanned canvas rasters
-            return not (w >= page_w_300 * 0.90 and h >= page_h_300 * 0.90)
-
+            return not (w >= page_w_scaled * 0.90 and h >= page_h_scaled * 0.90)
 
         # 1. Harvest from get_image_info (fastest & most accurate in PyMuPDF)
         try:
@@ -652,10 +654,10 @@ class PDFPageDetector:
             for info in img_infos:
                 bbox = info.get("bbox")
                 if bbox and len(bbox) == 4:
-                    rx0 = float(bbox[0]) * (300.0 / 72.0)
-                    ry0 = float(bbox[1]) * (300.0 / 72.0)
-                    rx1 = float(bbox[2]) * (300.0 / 72.0)
-                    ry1 = float(bbox[3]) * (300.0 / 72.0)
+                    rx0 = float(bbox[0]) * scale
+                    ry0 = float(bbox[1]) * scale
+                    rx1 = float(bbox[2]) * scale
+                    ry1 = float(bbox[3]) * scale
                     if _is_valid_photo_box(rx0, ry0, rx1, ry1):
                         image_boxes.append((rx0, ry0, rx1, ry1))
         except Exception:
@@ -668,10 +670,10 @@ class PDFPageDetector:
                 try:
                     rects = page.get_image_rects(xref)
                     for r in rects:
-                        rx0 = float(r.x0) * (300.0 / 72.0)
-                        ry0 = float(r.y0) * (300.0 / 72.0)
-                        rx1 = float(r.x1) * (300.0 / 72.0)
-                        ry1 = float(r.y1) * (300.0 / 72.0)
+                        rx0 = float(r.x0) * scale
+                        ry0 = float(r.y0) * scale
+                        rx1 = float(r.x1) * scale
+                        ry1 = float(r.y1) * scale
                         if _is_valid_photo_box(rx0, ry0, rx1, ry1) and not any(
                             abs(rx0 - ex[0]) < 10 and abs(ry0 - ex[1]) < 10
                             for ex in image_boxes
@@ -685,10 +687,10 @@ class PDFPageDetector:
             if b.get("type") == 1:  # Image block in PyMuPDF
                 bbox = b.get("bbox")
                 if bbox and len(bbox) == 4:
-                    bx0 = float(bbox[0]) * (300.0 / 72.0)
-                    by0 = float(bbox[1]) * (300.0 / 72.0)
-                    bx1 = float(bbox[2]) * (300.0 / 72.0)
-                    by1 = float(bbox[3]) * (300.0 / 72.0)
+                    bx0 = float(bbox[0]) * scale
+                    by0 = float(bbox[1]) * scale
+                    bx1 = float(bbox[2]) * scale
+                    by1 = float(bbox[3]) * scale
                     if _is_valid_photo_box(bx0, by0, bx1, by1) and not any(
                         abs(bx0 - ex[0]) < 10 and abs(by0 - ex[1]) < 10
                         for ex in image_boxes
@@ -879,11 +881,11 @@ class PDFPageDetector:
             image_boxes=image_boxes,
         )
 
-    def analyze_document_bytes(self, pdf_bytes: bytes) -> list[PageAnalysisResult]:
+    def analyze_document_bytes(self, pdf_bytes: bytes, dpi: int = 150) -> list[PageAnalysisResult]:
         """Analyze all pages of a PDF from raw byte buffer."""
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
         results: list[PageAnalysisResult] = []
         for i in range(len(doc)):
-            results.append(self.analyze_page(doc, i))
+            results.append(self.analyze_page(doc, i, dpi=dpi))
         doc.close()
         return results

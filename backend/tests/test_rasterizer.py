@@ -134,3 +134,36 @@ class TestPDFRasterizer:
         assert rendered.object_key == "pages/1/1929-10-24/morning/page_1.png"
         assert mock_minio.put.called
 
+    @pytest.mark.asyncio
+    async def test_rasterize_default_150_dpi(self) -> None:
+        pdf_path = FIXTURES_DIR / "sample_digital_frontpage.pdf"
+        pdf_bytes = pdf_path.read_bytes()
+
+        mock_db = AsyncMock(spec=AsyncSession)
+        mock_minio = AsyncMock()
+
+        mock_issue = Issue(
+            id=3,
+            newspaper_id=1,
+            issue_date=date(1929, 10, 26),
+            edition="morning",
+            total_pages=None,
+        )
+        mock_issue_res = MagicMock()
+        mock_issue_res.scalar_one_or_none.return_value = mock_issue
+
+        mock_page_res = MagicMock()
+        mock_page_res.scalar_one_or_none.return_value = None
+
+        mock_db.execute.side_effect = [mock_issue_res, mock_page_res]
+
+        rasterizer = PDFRasterizer(db=mock_db, minio=mock_minio)
+        pages = await rasterizer.rasterize_pdf_bytes(pdf_bytes=pdf_bytes, issue_id=3)
+
+        assert len(pages) == 1
+        page = pages[0]
+        assert page.dpi == 150
+        assert 1000 < page.width_px < 1500  # At 150 DPI, A4 width is ~1240 px
+        assert 1500 < page.height_px < 2000  # At 150 DPI, A4 height is ~1754 px
+
+

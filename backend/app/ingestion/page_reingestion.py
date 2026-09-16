@@ -45,7 +45,7 @@ from app.ingestion.parsers import (
     DoclingLayoutParser,
     ExtractedPhotoData,
 )
-from app.ingestion.rasterizer import PDFRasterizer
+from app.ingestion.rasterizer import DEFAULT_DPI, PDFRasterizer
 from app.models.article import (
     Article,
     ArticleCategory,
@@ -186,7 +186,7 @@ class PageReingestionService:
                 pdf_bytes=single_pdf_bytes,
                 issue_id=issue_id,
                 page_number=page_number,
-                dpi=300,
+                dpi=DEFAULT_DPI,
             )
             page_image_bytes = rendered.image_bytes
             page.raster_object_key = rendered.object_key

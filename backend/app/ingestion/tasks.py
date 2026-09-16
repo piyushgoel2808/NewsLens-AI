@@ -99,7 +99,7 @@ def detect_masthead_and_date(blocks: Sequence[Any], height_px: float) -> tuple[s
 async def run_ingestion_pipeline(
     issue_id: int,
     pdf_bytes: bytes,
-    dpi: int = 300,
+    dpi: int = 150,
     parser_engine: str = "auto",
     minio: MinioStore | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
@@ -125,7 +125,7 @@ async def run_ingestion_pipeline(
 
         # Step 2: Digital text extraction (PyMuPDF)
         detector = PDFPageDetector()
-        analysis_results = detector.analyze_document_bytes(pdf_bytes)
+        analysis_results = detector.analyze_document_bytes(pdf_bytes, dpi=dpi)
 
         # Fetch Issue record
         issue_stmt = (
@@ -836,7 +836,7 @@ async def run_ingestion_pipeline(
     retry_backoff_max=300,
     retry_jitter=True,
 )
-def process_issue_ingestion_task(self, issue_id: int, pdf_bytes: bytes, dpi: int = 300) -> dict[str, Any]:
+def process_issue_ingestion_task(self, issue_id: int, pdf_bytes: bytes, dpi: int = 150) -> dict[str, Any]:
     """Synchronous entry point for Celery worker with exponential backoff on total rate limit exhaustion."""
     try:
         return asyncio.run(run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=pdf_bytes, dpi=dpi))
