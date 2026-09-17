@@ -4112,6 +4112,95 @@ When users interacted with broadsheet articles containing companion infographics
 - Full pytest test suite passing with all updated test suites verified.
 - Clean directory layout in `backend/app/ingestion/`.
 
+---
+
+## Phase 25 — Serverless Cloud Migration to GCP & Resilient Production Architecture
+
+**Date**: 2026-09-18  
+**Status**: Completed ✅
+
+### Problems Addressed & Motivations
+
+1. **Local VM / Single-Host Compute Bottlenecks & Lack of High-Availability Persistence**:
+   - Running the entire 8-microservice stack on developer workstations or monolithic single-host VMs created memory saturation during heavy 24-page broadsheet ingestion.
+   - Self-hosted ephemeral containers risked total loss of uploaded newspaper PDFs, rasterized page scans, and vector embeddings upon container restart or host failure.
+2. **Cloud Run Celery Worker CPU Starvation & Port Binding Failure**:
+   - Standard Cloud Run services are designed for request-driven HTTP workloads; without active incoming HTTP requests, Cloud Run throttles CPU allocation to near-zero, stalling Celery consumers and dropping background ingestion tasks.
+   - Cloud Run mandates that all deployed containers listen on `$PORT` (default 8080) and pass HTTP health check probes within timeout limits. Standard `celery worker` runs a long-lived AMQP/Redis polling loop without binding an HTTP socket, causing deployment rollouts to fail with container startup errors.
+3. **Self-Hosted Vector Store Volatility on Serverless Infrastructure**:
+   - Running self-hosted Qdrant on ephemeral serverless containers risked wiping all 1024-dim BGE-M3 article chunk embeddings whenever containers scaled to zero or recycled.
+4. **Object Storage Portability (MinIO vs. Google Cloud Storage)**:
+   - Hardcoded MinIO S3 SDK calls (`miniopy_async`) prevented native, managed, multi-region Google Cloud Storage integration in GCP production deployments.
+5. **Upstash Redis TLS Enforcement & Client SSL Protocol Conflicts**:
+   - Upstash Managed Redis enforces TLS on port 6379, requiring the `rediss://` scheme.
+   - Celery's Redis broker transport requires `?ssl_cert_reqs=required` (or `CERT_REQUIRED`), while `redis-py` specifically requires lowercase `required`. Missing query parameters caused SSL handshake rejection (`WRONG_VERSION_NUMBER` or certificate validation failure).
+6. **Zero-Downtime Database Migration Coordination**:
+   - Running Alembic schema migrations directly inside application container startup scripts created race conditions and potential database deadlocks when multiple backend replicas scaled up simultaneously.
+7. **Elimination of Static Service Account Credentials (Zero-Trust Security)**:
+   - Embedding static Google Cloud service account JSON keys into GitHub Secrets or deployment pipelines posed severe credential leak risks.
+
+### Architectural Solutions & Implementations
+
+1. **Google Cloud Platform Serverless Architecture (`asia-south1`)**:
+   - Deployed 3 dedicated Cloud Run services in the Mumbai (`asia-south1`) region:
+     - `newslens-frontend`: Nginx 1.27 Alpine serving compiled React 18 assets with unbuffered SSE streaming reverse proxy (`proxy_buffering off;`).
+     - `newslens-backend`: FastAPI Python 3.12 application container connecting directly to Cloud SQL MySQL via high-performance Unix Domain Socket.
+     - `newslens-worker`: Background broadsheet ingestion consumer deployed with `--no-cpu-throttling`, `--min-instances=1`, and 6Gi RAM / 2 vCPU.
+2. **Cloud Run Celery Worker Daemon & Health Server (`backend/app/run_worker.py`)**:
+   - Built a dedicated worker entrypoint script that launches a daemon HTTP server on `$PORT` using Python's built-in `http.server`.
+   - Responds `200 OK` with `{"status":"up","service":"celery-worker"}` to `/`, `/health`, `/ready`, and `/live` probes while running `celery -A app.ingestion.celery_app worker` in the foreground.
+   - Forwards signals and propagates child process exit codes to ensure Cloud Run container recycling operates correctly on unexpected worker termination.
+3. **Dynamic Polymorphic Object Storage (`GoogleCloudStorageStore` & `get_object_store()`)**:
+   - Created `backend/app/storage/gcs_store.py` implementing the `ObjectStore` protocol backed by `google-cloud-storage`.
+   - Offloaded synchronous SDK calls to default threadpool executors via `asyncio.get_event_loop().run_in_executor` to guarantee 100% non-blocking async execution.
+   - Built `backend/app/storage/factory.py` (`get_object_store`) to dynamically resolve `GoogleCloudStorageStore` when `STORAGE_BACKEND=gcs` and `MinioStore` when `STORAGE_BACKEND=minio`.
+   - Auto-initializes production buckets `gs://newslens-ai-prod-pages` and `gs://newslens-ai-prod-originals` in `asia-south1` during application startup.
+4. **Cloud SQL for MySQL 8.0 & Dedicated Migration Job (`newslens-migrate`)**:
+   - Provisioned managed Cloud SQL for MySQL 8.0 instance (`newslens-mysql-prod`) with `utf8mb4_unicode_ci` encoding and FULLTEXT indexing.
+   - Created Cloud Run Job `newslens-migrate` executing `alembic upgrade head` over the Cloud SQL Unix socket (`/cloudsql/newslens-ai-prod:asia-south1:newslens-mysql-prod`).
+   - Integrated the migration job as an automated prerequisite step in CI/CD before rolling out new backend or worker revisions.
+5. **Managed Qdrant Cloud Vector Cluster**:
+   - Connected to high-availability Qdrant Cloud cluster on GCP (`australia-southeast1-0.gcp.cloud.qdrant.io:6333`) with TLS and API key authentication.
+   - Verified automated collection initialization and 1024-dim Cosine vector similarity retrieval.
+6. **Upstash Redis TLS Integration**:
+   - Configured Upstash Managed Redis with TLS scheme `rediss://...ssl_cert_reqs=required`, satisfying both native `redis.asyncio` clients and Celery's AMQP/Redis transport broker simultaneously.
+7. **Keyless CI/CD via Workload Identity Federation (`.github/workflows/deploy-gcp.yml`)**:
+   - Established Google Cloud Workload Identity Federation (WIF) with GitHub Actions OIDC tokens, exchanging ephemeral cryptographic assertions for short-lived Google Cloud access tokens.
+   - Completely eliminated static service account keys from GitHub repository secrets.
+   - Pipeline orchestrates: dependency resolution via `uv`, ephemeral MySQL migration and test validation, multi-stage Docker builds to Google Artifact Registry, execution of the `newslens-migrate` Cloud Run Job, and automated traffic rollout to Cloud Run services.
+8. **Centralized Secret Management**:
+   - Provisioned 11 secrets in Google Secret Manager (`newslens-db-password`, `newslens-redis-url`, `newslens-qdrant-api-key`, `newslens-gemini-api-key`, etc.), dynamically mounted as environment variables in Cloud Run.
+
+### Verification & Live Production Health
+
+- **Cloud Run Backend Health Check (`GET /health`)**:
+  ```json
+  {
+    "status": "healthy",
+    "version": "1.0.0",
+    "database": "connected",
+    "vector_store": "connected",
+    "object_store": "connected",
+    "cache": "connected",
+    "components": {
+      "mysql": "ok",
+      "qdrant": "ok",
+      "object_storage": "ok",
+      "redis": "ok"
+    }
+  }
+  ```
+  All 5 core production dependencies verified **UP & Healthy** on live Cloud Run (`https://newslens-backend-679327043786.asia-south1.run.app/health`).
+- **Cloud Run Frontend & Reverse Proxy**:
+  - Live at `https://newslens-frontend-679327043786.asia-south1.run.app`.
+  - Frontend proxy routes `/api/health` successfully to backend with 0 latency overhead and full unbuffered SSE streaming.
+- **Celery Worker Active on Cloud Run**:
+  - `newslens-worker` deployed with `--no-cpu-throttling` maintaining continuous connection to Upstash Redis TLS broker.
+  - Active worker node registered and verified with `celery inspect ping`.
+- **Test Suite Integrity**:
+  - 574 unit and integration tests passing across 55 test suites (100% green).
+
+
 
 
 

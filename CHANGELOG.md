@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-09-18
+
+### Added
+- **Production Serverless Deployment on Google Cloud Platform (`asia-south1`)**:
+  - Live deployment of `newslens-frontend` (Nginx 1.27 Alpine SPA reverse proxy) and `newslens-backend` (FastAPI) to Google Cloud Run.
+  - Live deployment of `newslens-worker` Celery background ingestion consumer configured with `--no-cpu-throttling` and `--min-instances=1` to guarantee uninterrupted background processing.
+  - Dedicated worker entrypoint (`backend/app/run_worker.py`) with embedded background HTTP server on `$PORT` to satisfy Cloud Run liveness and readiness health probes while running Celery in the foreground.
+  - Dedicated Cloud Run Job `newslens-migrate` executing Alembic migrations (`alembic upgrade head`) over the Cloud SQL Unix socket before container revision rollouts.
+- **Polymorphic Cloud Storage Abstraction**:
+  - `GoogleCloudStorageStore` (`backend/app/storage/gcs_store.py`) implementing the `ObjectStore` protocol with threadpool executor offloading for non-blocking async execution.
+  - Dynamic storage factory `get_object_store()` (`backend/app/storage/factory.py`) supporting seamless switching between Google Cloud Storage (`STORAGE_BACKEND=gcs`) and MinIO S3 (`STORAGE_BACKEND=minio`).
+  - Automated bucket initialization for `gs://newslens-ai-prod-pages` and `gs://newslens-ai-prod-originals`.
+- **Managed Production Databases & Broker**:
+  - Managed Cloud SQL for MySQL 8.0 with Unix Domain Socket connectivity (`/cloudsql/...`), utf8mb4 encoding, and FULLTEXT search indexes.
+  - Managed Qdrant Cloud vector cluster on GCP with TLS encryption and API key authentication for 1024-dim BGE-M3 embeddings.
+  - Upstash Managed Redis with TLS support (`rediss://...ssl_cert_reqs=required`) powering Celery task queues and sub-millisecond query caching.
+- **Enterprise Keyless CI/CD Automation**:
+  - GitHub Actions deployment pipeline (`.github/workflows/deploy-gcp.yml`) leveraging Google Cloud Workload Identity Federation (WIF) with OIDC authentication, eliminating all static JSON service account keys.
+  - Automated quality gate running linting, type-checking, ephemeral MySQL migrations, and the full 574-test suite before builds.
+  - Automated multi-arch container image builds pushed to Google Artifact Registry.
+- **Production Model Configuration**:
+  - `model_config.prod.yaml` binding Google Gemini Flash (`gemini-3.8-flash` with multi-candidate failover) across all core agentic reasoning, VLM, and extraction pipelines.
+  - Centralized Google Secret Manager integration managing 11 production secrets.
+
+---
+
 ## [0.1.0] - 2026-09-16
 
 ### Added

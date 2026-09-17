@@ -501,4 +501,26 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Open-Source Repository Governance**:
   * Enterprise repository standards including Apache 2.0 License (`LICENSE`), Contributor Guide (`CONTRIBUTING.md`), Security Vulnerability Reporting Policy (`SECURITY.md`), and Semantic Versioning Release Notes (`CHANGELOG.md`).
 
+---
+
+## 24. Serverless Cloud Infrastructure on Google Cloud Platform (GCP)
+
+* **Serverless Compute Tier (Cloud Run in `asia-south1`)**:
+  * `newslens-frontend`: Nginx Alpine reverse proxy serving compiled React 18 SPA assets with unbuffered SSE streaming support (`proxy_buffering off;`).
+  * `newslens-backend`: FastAPI Python 3.12 application container connected to Cloud SQL MySQL via high-performance Unix Domain Socket.
+  * `newslens-worker`: Persistent Celery broadsheet ingestion consumer deployed with `--no-cpu-throttling`, `--min-instances=1`, and 6Gi RAM / 2 vCPU.
+  * `backend/app/run_worker.py`: Dedicated worker entrypoint launching a daemon HTTP server on `$PORT` to satisfy Cloud Run liveness/readiness probes while Celery runs in the foreground.
+  * `newslens-migrate`: Dedicated Cloud Run Job running `alembic upgrade head` before container revision deployments.
+* **Polymorphic Object Storage (Google Cloud Storage & MinIO)**:
+  * Abstract `ObjectStore` interface (`GoogleCloudStorageStore` & `MinioStore`) resolved dynamically via `get_object_store()`.
+  * Non-blocking async threadpool execution for all GCS blob operations (`put`, `get`, `delete_prefix`, `presign_url`).
+  * Automatically provisions `gs://newslens-ai-prod-pages` and `gs://newslens-ai-prod-originals` at startup.
+* **Managed Cloud Databases & Messaging**:
+  * **Google Cloud SQL for MySQL 8.0**: Relational system of record connected via `/cloudsql/...` Unix socket with utf8mb4 encoding and FULLTEXT indexing.
+  * **Managed Qdrant Cloud Cluster**: High-availability vector database on GCP (`australia-southeast1-0.gcp.cloud.qdrant.io:6333`) with TLS and API key security.
+  * **Upstash Managed Redis TLS**: Distributed task broker and sub-millisecond query cache with `rediss://...ssl_cert_reqs=required`.
+* **Zero-Trust CI/CD Automation**:
+  * GitHub Actions deployment workflow (`.github/workflows/deploy-gcp.yml`) authenticated via Google Cloud Workload Identity Federation (WIF) with OIDC, eliminating static JSON service account credentials.
+  * Centralized secret injection via Google Secret Manager across 11 production configuration keys.
+
 

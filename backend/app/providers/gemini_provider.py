@@ -51,7 +51,9 @@ from app.providers.base import (
 
 logger = get_logger(__name__)
 
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+AI_STUDIO_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+VERTEX_AI_EXPRESS_BASE = "https://aiplatform.googleapis.com/v1/publishers/google/models"
+GEMINI_API_BASE = AI_STUDIO_BASE  # Backward compatibility alias
 
 LAYOUT_SYSTEM_INSTRUCTION = (
     "You are an expert broadsheet newspaper layout analyzer and OCR transcription engine.\n"
@@ -238,6 +240,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         model: str = "gemini-3.8-flash",
         api_key: str | None = None,
         service_account_info: dict[str, Any] | str | None = None,
+        base_url: str | None = None,
     ) -> None:
         self._model = model.replace("models/", "") if model else "gemini-3.8-flash"
         self._api_key = api_key
@@ -274,6 +277,13 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
                 "Set GOOGLE_API_KEY, GEMINI_API_KEY, or GCP_SERVICE_ACCOUNT_KEY in your .env file."
             )
 
+        if base_url:
+            self._base_url = base_url.rstrip("/")
+        elif self.is_express_mode or self._sa_credentials:
+            self._base_url = VERTEX_AI_EXPRESS_BASE
+        else:
+            self._base_url = AI_STUDIO_BASE
+
         self._capability = ProviderCapability(
             supports_vision=True,
             supports_tool_use=True,
@@ -281,6 +291,11 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
             supports_structured_output=True,
             context_window=1000000,
         )
+
+    @property
+    def is_express_mode(self) -> bool:
+        """Return True if using Google Cloud Vertex AI / Agent Platform Express Mode API key."""
+        return bool(self._api_key and self._api_key.startswith("AQ."))
 
     def _get_model_candidates(self) -> list[str]:
         """Return prioritized list of model candidates starting with requested model."""
@@ -309,6 +324,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
             ]
         else:
             fallbacks = [
+                "gemini-2.5-flash",
                 "gemini-3.8-flash",
                 "gemini-3.5-flash",
                 "gemini-3.1-flash-lite",
@@ -333,7 +349,10 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
             self._sa_credentials.refresh(request)
             headers["Authorization"] = f"Bearer {self._sa_credentials.token}"
         elif self._api_key:
-            params["key"] = self._api_key
+            if self.is_express_mode:
+                headers["x-goog-api-key"] = self._api_key
+            else:
+                params["key"] = self._api_key
 
         return headers, params
 
@@ -454,7 +473,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         last_error: Exception | None = None
         headers, params = self._get_auth_headers_and_params()
         for m in model_candidates:
-            url = f"{GEMINI_API_BASE}/{m}:generateContent"
+            url = f"{self._base_url}/{m}:generateContent"
             async with httpx.AsyncClient(timeout=60.0) as client:
                 try:
                     res = await client.post(
@@ -579,16 +598,20 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
 
         model_candidates = self._get_model_candidates()
         last_error: Exception | None = None
+        headers, base_params = self._get_auth_headers_and_params()
         for m in model_candidates:
-            url = f"{GEMINI_API_BASE}/{m}:streamGenerateContent?key={self._api_key}&alt=sse"
+            url = f"{self._base_url}/{m}:streamGenerateContent"
+            stream_params = dict(base_params)
+            stream_params["alt"] = "sse"
             try:
                 async with (
                     httpx.AsyncClient(timeout=90.0) as client,
                     client.stream(
                         "POST",
                         url,
+                        params=stream_params,
                         json=payload,
-                        headers={"Content-Type": "application/json"},
+                        headers=headers,
                     ) as response,
                 ):
                     if response.status_code != 200:
@@ -664,7 +687,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         headers, params = self._get_auth_headers_and_params()
 
         for m in model_candidates:
-            url = f"{GEMINI_API_BASE}/{m}:generateContent"
+            url = f"{self._base_url}/{m}:generateContent"
             try:
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     res = await client.post(

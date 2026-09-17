@@ -80,9 +80,10 @@
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start & Deployment Options
 
-NewsLens-AI can be deployed in three ways: **Full-Stack Docker Compose** (zero host dependencies), **Makefile Developer Automation** (fastest for active development), or **Manual Setup**.
+NewsLens-AI supports four deployment modes: **Google Cloud Platform (Production Serverless)**, **Full-Stack Docker Compose** (local containerized), **Makefile Developer Automation** (fastest for active development), or **Manual Host Setup**.
+
 
 ### Prerequisites
 - [Docker & Docker Compose](https://docs.docker.com/get-docker/) (v2.20+)
@@ -172,6 +173,37 @@ Open **`http://localhost:5173`** in your browser!
 
 ---
 
+### Option 4: Production Cloud Deployment (Google Cloud Platform)
+
+NewsLens-AI runs natively in production on **Google Cloud Platform (GCP)** in region `asia-south1` (Mumbai) across serverless Cloud Run services, Cloud SQL, Google Cloud Storage, Qdrant Cloud, and Upstash Redis.
+
+#### Live Production Endpoints
+
+| Component | Status | Production URL / Identifier |
+| :--- | :--- | :--- |
+| **Frontend UI** | **LIVE (200 OK)** | [https://newslens-frontend-679327043786.asia-south1.run.app](https://newslens-frontend-679327043786.asia-south1.run.app) |
+| **Backend API** | **LIVE (200 OK)** | [https://newslens-backend-679327043786.asia-south1.run.app](https://newslens-backend-679327043786.asia-south1.run.app) |
+| **Health Check** | **HEALTHY** | [https://newslens-backend-679327043786.asia-south1.run.app/health](https://newslens-backend-679327043786.asia-south1.run.app/health) |
+| **Celery Worker** | **CONNECTED** | `newslens-worker` on Cloud Run (`--no-cpu-throttling`, 6Gi RAM, 2 vCPU) |
+| **Cloud SQL MySQL 8.0** | **MANAGED** | `newslens-ai-prod:asia-south1:newslens-mysql` |
+| **Vector DB (Qdrant Cloud)** | **MANAGED** | `australia-southeast1-0.gcp.cloud.qdrant.io:6333` |
+| **Object Storage (GCS)** | **ACTIVE** | `gs://newslens-ai-prod-pages` & `gs://newslens-ai-prod-originals` |
+| **Redis & Message Broker** | **MANAGED** | Upstash Redis TLS (`rediss://...`) |
+| **CI/CD Pipeline** | **AUTOMATED** | GitHub Actions with Workload Identity Federation (Zero permanent keys) |
+
+#### GCP Architecture Highlights
+1. **Cloud Run Serverless Services**:
+   - `newslens-frontend`: Lightweight Nginx 1.27 Alpine reverse proxy container serving the React SPA bundle, dynamic runtime environment substitution (`$PORT`), and proxying `/api/*` to the backend with unbuffered SSE streaming.
+   - `newslens-backend`: FastAPI running under Python 3.12 with Gunicorn/Uvicorn workers, Cloud SQL Unix domain socket connectivity, and automatic Google Cloud Storage credential resolution.
+   - `newslens-worker`: Background Celery task consumer configured with `--no-cpu-throttling`, 6Gi RAM, and an embedded HTTP health server on `$PORT` to satisfy Cloud Run service liveness probes while processing ingestion queues 24/7.
+   - `newslens-migrate`: Cloud Run Job running Alembic database migrations (`alembic upgrade head`) before revisions are deployed.
+2. **Dynamic Object Storage Abstraction**:
+   - Production uses native `google-cloud-storage` (`GoogleCloudStorageStore`) against GCS buckets, while local development seamlessly uses MinIO (`MinioStore`) via `get_object_store()`.
+3. **Automated CI/CD**:
+   - Every push to `main` triggers `.github/workflows/deploy-gcp.yml`, which executes the 574-test suite against an ephemeral MySQL 8 service container, authenticates to GCP via Workload Identity Federation, builds and pushes multi-arch images to Google Artifact Registry, runs database migrations, and updates Cloud Run revisions with zero downtime.
+
+---
+
 ## ⚙️ Model Provider Configuration (`model_config.yaml`)
 
 NewsLens-AI supports declarative provider bindings without changing application code:
@@ -226,8 +258,9 @@ cd backend
 uv run ruff check .
 uv run mypy app/
 
-# Run complete test suite (512 unit & integration tests — 100% passing)
+# Run complete test suite (574 unit & integration tests — 100% passing)
 uv run pytest tests/ -v
+
 
 # Verify frontend production build
 cd ../frontend

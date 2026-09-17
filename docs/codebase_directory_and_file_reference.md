@@ -21,6 +21,7 @@
    - [4.7 `backend/app/providers/` — Dynamic Model Provider Tier](#47-backendappproviders--dynamic-model-provider-tier)
    - [4.8 `backend/app/retrieval/` — Multi-Tool Search, Reranking & Auditing](#48-backendappretrieval--multi-tool-search-reranking--auditing)
    - [4.9 `backend/app/storage/` — Multi-Tier Persistence Clients](#49-backendappstorage--multi-tier-persistence-clients)
+   - [4.10 `backend/app/run_worker.py` — Cloud Run Worker Entrypoint & Health Server](#410-backendapprun_workerpy--cloud-run-worker-entrypoint--health-server)
 5. [Backend Test Suite (`backend/tests/`)](#5-backend-test-suite-backendtests)
 6. [Frontend Client Application (`frontend/`)](#6-frontend-client-application-frontend)
    - [6.1 Frontend Root & Build Tooling](#61-frontend-root--build-tooling)
@@ -28,6 +29,7 @@
    - [6.3 `frontend/src/components/` — Workspaces, Readers & Modals](#63-frontendsrccomponents--workspaces-readers--modals)
 7. [Operations & Diagnostic Scripts (`scripts/`)](#7-operations--diagnostic-scripts-scripts)
 8. [Documentation Suite (`docs/`)](#8-documentation-suite-docs)
+9. [Continuous Integration & Cloud Deployment (`.github/workflows/`)](#9-continuous-integration--cloud-deployment-githubworkflows)
 
 ---
 
@@ -35,10 +37,18 @@
 
 ```text
 NewsLens-AI/
+├── .github/                         # GitHub repository configuration, templates, and CI/CD pipelines
+│   ├── ISSUE_TEMPLATE/              # Structured bug and feature templates
+│   ├── pull_request_template.md     # Standardized PR review checklist
+│   └── workflows/                   # Automated GitHub Actions workflows
+│       ├── ci.yml                   # Lint, type-check, pytest and frontend build
+│       ├── deploy-gcp.yml           # Automated WIF-authenticated GCP Cloud Run deployment
+│       └── docker-build.yml         # Container image build verification
 ├── docker-compose.yml               # Production 8-service container stack (backend, frontend, worker, mysql, qdrant, minio, redis, ollama)
 ├── docker-compose.local.yml         # Local infrastructure container stack (MySQL 8.4 LTS, Qdrant, MinIO, Redis, Celery)
 ├── Makefile                         # Developer & operator workflow automation (setup, up, down, test, health)
 ├── model_config.yaml                # Unified LLM/VLM model provider registry and dynamic task bindings
+├── model_config.prod.yaml           # Production-hardened Google Gemini Cloud task bindings
 ├── service-account.json             # Google Cloud Vision API credentials for document OCR
 ├── README.md                        # Master repository overview, setup guide, and documentation links
 ├── LICENSE                          # Apache 2.0 Open-Source License
@@ -65,9 +75,10 @@ NewsLens-AI/
 │   │   ├── models/                  # SQLAlchemy 2.0 async relational schemas and ORM entities
 │   │   ├── providers/               # Abstract model providers (Gemini, Ollama, Groq, OpenAI, NVIDIA NIM, GCV)
 │   │   ├── retrieval/               # Multi-tool retrieval engines (hybrid search, visual inspection, asset resolution, SQL analytics, reranking)
-│   │   └── storage/                 # Persistence clients (MySQL FULLTEXT, Qdrant, MinIO S3, Redis Cache)
+│   │   ├── storage/                 # Persistence clients (MySQL FULLTEXT, Qdrant, MinIO S3, GCS, Redis Cache)
+│   │   └── run_worker.py            # Cloud Run Celery worker entrypoint with embedded HTTP health server
 │   │
-│   └── tests/                       # Complete pytest test suites (unit, integration, and regression tests)
+│   └── tests/                       # Complete pytest test suites (574 unit, integration, and regression tests)
 │
 ├── frontend/                        # Modern Single Page Application (React 18, Vite, Tailwind CSS)
 │   ├── Dockerfile                   # Multi-stage production build (Node 22 build -> Nginx Alpine runtime)
@@ -131,6 +142,12 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Work It Is Doing**: Decouples application code from specific vendors or model names. When the application requests the `"query_planner"`, the registry reads this file to dynamically invoke `ollama_gemma4_12b` (or whichever model is bound). Enables hot-reloading model changes at runtime.
 * **Important Tools / Frameworks**: YAML 1.2, PyYAML parser.
 * **LLM / VLM / Embedding Models**: Configures `gemma4:12b`, `qwen3-vl:latest`, `nemotron-3.5-lightning`, `llama3.1:8b`, `deepseek-r1:14b`, `BAAI/bge-m3`, `gemini-3.7-flash`, `gpt-4o`, `text-embedding-3-large`.
+
+##### [`model_config.prod.yaml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/model_config.prod.yaml)
+* **What It Has**: Production-hardened Google Gemini Cloud provider definitions (`gemini_flash` with `gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.6-flash` failover candidates; `gemini_vision`, `gemini_pro`) and primary cloud task bindings.
+* **Work It Is Doing**: Serves as the authoritative model configuration in live GCP production deployments (Cloud Run backend and worker). Binds all core agentic tasks (`query_planner`, `answerer`, `answer_verifier`, `visual_extraction`, `layout_analysis`, `metadata_extraction`, `classification`) directly to Google Gemini Flash for sub-second responses and high concurrency without requiring local GPU infrastructure.
+* **Important Tools / Frameworks**: YAML 1.2, Google GenAI SDK (`google-genai`).
+* **LLM / VLM / Embedding Models**: `gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-2.5-pro`, `BAAI/bge-m3`.
 
 ##### [`docker-compose.yml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docker-compose.yml)
 * **What It Has**: Production-grade orchestration for all 8 microservices: `mysql`, `qdrant`, `minio`, `redis`, `backend`, `frontend`, `worker`, and optional `ollama`.
@@ -1101,48 +1118,68 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 ---
 
 ### 4.9 `backend/app/storage/` — Multi-Tier Persistence Clients
-* **Purpose / Reason**: Unified data access layer encapsulating interactions with MySQL, Qdrant, MinIO, and Redis.
-* **Work It Is Doing**: Manages connection pooling, index creation, vector similarity search, object storage uploads/downloads, and query cache keys.
+* **Purpose / Reason**: Unified data access layer encapsulating interactions with MySQL, Qdrant, MinIO, Google Cloud Storage, and Redis.
+* **Work It Is Doing**: Manages connection pooling, index creation, vector similarity search, polymorphic object storage uploads/downloads (supporting local MinIO and production GCS), and query cache keys.
 
 #### Files in `backend/app/storage/`:
 
 ##### [`backend/app/storage/__init__.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/__init__.py)
-* **What It Has**: Package initialization, re-exports for `QdrantStore`, `MinioStore`, `CacheStore`, `MySQLFullTextSearch`.
+* **What It Has**: Package initialization, re-exports for `QdrantStore`, `MinioStore`, `GoogleCloudStorageStore`, `get_object_store`, `CacheStore`, `MySQLFullTextSearch`.
 
 ##### [`backend/app/storage/base.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/base.py)
 * **What It Has**: `VectorPoint`, `VectorSearchResult`, `FullTextSearchResult`, `VectorStore`, `ObjectStore` abstract protocols.
-* **Work It Is Doing**: Defines interfaces for vector stores and object storage.
+* **Work It Is Doing**: Defines interfaces for vector stores and object storage implementations (`put`, `get`, `delete`, `delete_prefix`, `list_objects`, `presign_url`, `exists`, `ping`, `startup`).
+
+##### [`backend/app/storage/factory.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/factory.py)
+* **What It Has**: `get_object_store()` factory function.
+* **Work It Is Doing**: Inspects `Settings.storage_backend`. When configured to `"gcs"` (production Google Cloud Platform), dynamically instantiates `GoogleCloudStorageStore`. When configured to `"minio"` (local developer containers), instantiates `MinioStore`. Decouples all ingestion, visual inspection, and asset streaming pipelines from underlying cloud storage implementations.
+* **Important Tools / Frameworks**: Python polymorphic factory pattern, Pydantic settings.
+* **LLM / VLM / Embedding Models**: None.
+
+##### [`backend/app/storage/gcs_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/gcs_store.py)
+* **What It Has**: `GoogleCloudStorageStore` class implementing the `ObjectStore` protocol.
+* **Work It Is Doing**: Manages broadsheet asset persistence in Google Cloud Storage (`gs://newslens-ai-prod-pages` and `gs://newslens-ai-prod-originals`). Offloads synchronous `google-cloud-storage` Python SDK calls to default thread pool executors via `asyncio.get_event_loop().run_in_executor` to prevent blocking the async FastAPI and Celery event loops. Generates V4 signed URLs with direct fallback to public Google Cloud Storage URLs, implements prefix batch deletions (`delete_prefix`), and auto-provisions required buckets at startup in region `asia-south1`.
+* **Important Tools / Frameworks**: `google-cloud-storage` Python Client, `asyncio` threadpool executor.
+* **LLM / VLM / Embedding Models**: None.
+
+##### [`backend/app/storage/minio_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/minio_store.py)
+* **What It Has**: `MinioStore` class implementing the `ObjectStore` protocol.
+* **Work It Is Doing**: Stores and retrieves raw newspaper PDFs, high-resolution 150 DPI page PNG renders, and cropped photo image assets in S3-compatible MinIO buckets for local developer environments.
+* **Important Tools / Frameworks**: `miniopy_async` / MinIO Python Client.
+* **LLM / VLM / Embedding Models**: None.
 
 ##### [`backend/app/storage/qdrant_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/qdrant_store.py)
 * **What It Has**: `QdrantStore` class.
-* **Work It Is Doing**: Manages the `newslens_articles` Qdrant collection with 1024-dimension Cosine distance vectors. Executes filtered similarity queries matching publication, date, section, and entity filters.
+* **Work It Is Doing**: Manages the `newslens_articles` Qdrant collection with 1024-dimension Cosine distance vectors. Executes filtered similarity queries matching publication, date, section, and entity filters against local Qdrant containers or managed Qdrant Cloud clusters (`australia-southeast1-0.gcp.cloud.qdrant.io`) with TLS and API key authentication.
 * **Important Tools / Frameworks**: `qdrant_client.AsyncQdrantClient`.
 * **LLM / VLM / Embedding Models**: None.
 
 ##### [`backend/app/storage/mysql_fulltext.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/mysql_fulltext.py)
 * **What It Has**: `MySQLFullTextSearch` class.
-* **Work It Is Doing**: Executes boolean mode FULLTEXT search on MySQL `articles` table using `MATCH(headline, full_text) AGAINST(:query IN BOOLEAN MODE)`.
+* **Work It Is Doing**: Executes boolean mode FULLTEXT search on MySQL `articles` table using `MATCH(headline, full_text) AGAINST(:query IN BOOLEAN MODE)`. Connects seamlessly via TCP port 3306 in local development and via Cloud SQL Unix Domain Socket (`/cloudsql/...`) in production Cloud Run.
 * **Important Tools / Frameworks**: SQLAlchemy AsyncSession, MySQL FULLTEXT index.
-* **LLM / VLM / Embedding Models**: None.
-
-##### [`backend/app/storage/minio_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/minio_store.py)
-* **What It Has**: `MinioStore` class.
-* **Work It Is Doing**: Stores and retrieves raw newspaper PDFs, high-resolution 150 DPI page PNG renders, and cropped photo image assets in S3-compatible MinIO buckets.
-* **Important Tools / Frameworks**: `miniopy_async` / MinIO Python Client.
 * **LLM / VLM / Embedding Models**: None.
 
 ##### [`backend/app/storage/cache_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/cache_store.py)
 * **What It Has**: `CacheStore` class, `compute_query_cache_key()`, `compute_embedding_cache_key()`.
-* **Work It Is Doing**: Caches embeddings and identical query responses in Redis with configurable TTLs to eliminate redundant computation.
-* **Important Tools / Frameworks**: `redis.asyncio`.
+* **Work It Is Doing**: Caches embeddings and identical query responses in Redis with configurable TTLs to eliminate redundant computation. Connects to local Redis 7 or Upstash Managed Redis with TLS (`rediss://...ssl_cert_reqs=required`).
+* **Important Tools / Frameworks**: `redis.asyncio` with TLS support.
 * **LLM / VLM / Embedding Models**: None.
+
+---
+
+### 4.10 `backend/app/run_worker.py` — Cloud Run Worker Entrypoint & Health Server
+* **Purpose / Reason**: Resolves Cloud Run serverless runtime constraints for persistent Celery consumers.
+* **Work It Is Doing**: Cloud Run services mandate binding to `$PORT` (default 8080) and passing HTTP health check probes, while standard `celery worker` runs a long-lived AMQP/Redis polling loop without exposing an HTTP port. `run_worker.py` spawns a lightweight background daemon HTTP server on `$PORT` responding `200 OK` to `/`, `/health`, `/live`, and `/ready` probes while executing the Celery worker process in the foreground with `--concurrency=2`, `--max-tasks-per-child=10`, and graceful exit code propagation.
+* **Important Tools / Frameworks**: Python `http.server`, `threading`, `subprocess`, Celery.
+* **LLM / VLM / Embedding Models**: None (Runtime Infrastructure).
 
 ---
 
 ## 5. Backend Test Suite (`backend/tests/`)
 
 * **Purpose / Reason**: Guarantees system correctness, data integrity, anti-hallucination guardrails, and deterministic tool execution across releases.
-* **Work It Is Doing**: Executes over 55 comprehensive pytest suites covering every subsystem.
+* **Work It Is Doing**: Executes 574 unit, integration, and regression tests across 55 comprehensive pytest suites covering every subsystem with a 100% pass rate.
 
 #### Key Test Suites in `backend/tests/`:
 - [`conftest.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/conftest.py): Pytest fixtures for async database sessions, mock model providers, and temporary test storage.
@@ -1293,4 +1330,35 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 - [`docs/codebase_directory_and_file_reference.md`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docs/codebase_directory_and_file_reference.md): THIS FILE — Master codebase directory, file, framework, and model reference.
 
 ---
+
+## 9. Continuous Integration & Cloud Deployment (`.github/workflows/`)
+
+* **Purpose / Reason**: Enterprise-grade continuous integration and continuous deployment automation.
+* **Work It Is Doing**: Enforces zero-regression code quality gates and automates serverless production deployments to Google Cloud Platform using passwordless, keyless OIDC authentication.
+
+#### Files in `.github/workflows/`:
+
+##### [`deploy-gcp.yml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/.github/workflows/deploy-gcp.yml)
+* **What It Has**: Complete continuous deployment pipeline targeting Google Cloud Platform (`asia-south1`).
+* **Work It Is Doing**:
+  - **Workload Identity Federation (WIF)**: Uses `google-github-actions/auth` to authenticate GitHub Actions runners with GCP via OpenID Connect (OIDC) through the Workload Identity Pool `github-pool` and Provider `github-provider`, assuming service account `newslens-runner@newslens-ai-prod.iam.gserviceaccount.com` without any static JSON private keys.
+  - **Pre-Deployment CI Quality Gate**: Sets up Python 3.12, installs dependencies via `uv`, spins up an ephemeral MySQL 8.4 service container, executes `alembic upgrade head`, and runs the full test suite with 100% passing threshold.
+  - **Container Build & Registry Push**: Builds multi-stage production Docker images for `newslens-backend` and `newslens-frontend`, tagging with the commit SHA and pushing to Google Artifact Registry (`asia-south1-docker.pkg.dev/newslens-ai-prod/newslens-repo/`).
+  - **Cloud Run Schema Migration**: Executes the `newslens-migrate` Cloud Run Job to run database migrations against Cloud SQL before rolling out container revisions.
+  - **Cloud Run Deployment**: Rolls out zero-downtime container revisions for `newslens-backend` (with Cloud SQL Unix socket and Secret Manager env bindings), `newslens-frontend` (Nginx SSE reverse proxy), and `newslens-worker` (with `--no-cpu-throttling` and 6Gi RAM).
+* **Important Tools / Frameworks**: GitHub Actions, Google Cloud Workload Identity Federation, Google Cloud Artifact Registry, Cloud Run, Cloud Run Jobs.
+* **LLM / VLM / Embedding Models**: None (DevOps / CI/CD).
+
+##### [`ci.yml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/.github/workflows/ci.yml)
+* **What It Has**: Continuous integration pipeline running on every pull request and push to `main`.
+* **Work It Is Doing**: Executes Ruff linting, MyPy static type checking, backend pytest suites against an ephemeral MySQL test database, and frontend production Vite build checks.
+* **Important Tools / Frameworks**: GitHub Actions, Ruff, MyPy, Pytest, Vite.
+
+##### [`docker-build.yml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/.github/workflows/docker-build.yml)
+* **What It Has**: Automated multi-stage Docker build validation.
+* **Work It Is Doing**: Ensures both `backend/Dockerfile` and `frontend/Dockerfile` build cleanly without cache corruption or broken dependency resolution.
+* **Important Tools / Frameworks**: Docker Buildx, GitHub Actions.
+
+---
 *End of NewsLens-AI Codebase Architecture & File Reference Guide.*
+

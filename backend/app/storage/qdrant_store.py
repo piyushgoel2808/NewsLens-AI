@@ -6,6 +6,7 @@ Creates the collection on startup if it doesn't exist.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC
 from typing import Any
 
@@ -52,7 +53,7 @@ class QdrantStore:
             )
 
     async def _ensure_collection(self) -> None:
-        """Create the Qdrant collection if it does not exist."""
+        """Create the Qdrant collection if it does not exist, and ensure payload indexes."""
         try:
             existing = await self._client.get_collections()
             names = [c.name for c in existing.collections]
@@ -71,6 +72,24 @@ class QdrantStore:
                         "dim": self._embedding_dim,
                     },
                 )
+
+            # Ensure payload indexes for search filters
+            indexed_fields: dict[str, qmodels.PayloadSchemaType] = {
+                "page_numbers": qmodels.PayloadSchemaType.INTEGER,
+                "newspaper_name": qmodels.PayloadSchemaType.KEYWORD,
+                "issue_date": qmodels.PayloadSchemaType.KEYWORD,
+                "has_photo": qmodels.PayloadSchemaType.BOOL,
+                "has_table": qmodels.PayloadSchemaType.BOOL,
+                "article_id": qmodels.PayloadSchemaType.INTEGER,
+                "issue_id": qmodels.PayloadSchemaType.INTEGER,
+            }
+            for field, schema_type in indexed_fields.items():
+                with contextlib.suppress(Exception):
+                    await self._client.create_payload_index(
+                        collection_name=self._collection,
+                        field_name=field,
+                        field_schema=schema_type,
+                    )
         except Exception as e:
             logger.error("Failed to ensure Qdrant collection", extra={"error": str(e)})
             raise

@@ -19,11 +19,12 @@ flowchart TD
     subgraph INTAKE ["2. Document Intake & Computer Vision Pipeline"]
         PDF["Broadsheet PDF / ZIP Archive"] --> Compressor["Pre-Ingestion Compressor<br/>(fitz.deflate / Ghostscript)"]
         Compressor --> SHA["SHA-256 Idempotency Check"]
-        SHA --> MinIO_Orig[("MinIO: newslens-originals")]
+        SHA --> Store_Orig[("Object Store: Originals<br/>(GCS gs://... or MinIO)")]
         SHA --> Masthead["Visual Masthead Verifier<br/>(Top 22% Page 1 RapidOCR)"]
-        Masthead --> Consensus["Multi-Page Folio Consensus<br/>(5x Header-Weighted Voting across P1-15)"]
+        Consensus["Multi-Page Folio Consensus<br/>(5x Header-Weighted Voting across P1-15)"]
+        Masthead --> Consensus
         Consensus --> Rasterizer["PyMuPDF Rasterizer<br/>(150 DPI High-Res Rendering)"]
-        Rasterizer --> MinIO_Pages[("MinIO: newslens-pages")]
+        Rasterizer --> Store_Pages[("Object Store: Pages<br/>(GCS gs://... or MinIO)")]
         Rasterizer --> LayoutParser{"Layout Parser Engine<br/>(Registry Resolved)"}
         LayoutParser -->|Primary Local| Docling["Docling 2D Neural Parser<br/>(DocLayNet + RapidOCR)"]
         LayoutParser -->|Cloud VLM / Direct| CloudLayout["Google Cloud Vision / Gemini / Gemma"]
@@ -32,13 +33,13 @@ flowchart TD
     end
 
     subgraph STORAGE ["3. Multi-Tier Persistence & Knowledge Layer"]
-        LayoutEngine --> MySQL[("MySQL 8 (System of Record)<br/>Articles, FULLTEXT, Entities, Photos")]
+        LayoutEngine --> MySQL[("Relational Database (System of Record)<br/>Cloud SQL MySQL 8.0 / MySQL 8.4 LTS")]
         VisualExtractor --> MySQL
         LayoutEngine --> Chunker["Contextual Broadsheet Chunker<br/>(400-500 Tok + Context Headers)"]
         VisualExtractor --> Chunker
         Chunker --> Embedder["Embedding Provider<br/>(BAAI/bge-m3 1024-dim Dense)"]
-        Embedder --> Qdrant[("Qdrant Vector DB<br/>article_chunks Collection")]
-        MySQL -.-> Redis[("Redis 7 Cache<br/>Query Results, Celery Broker, Trajectories")]
+        Embedder --> Qdrant[("Qdrant Vector DB<br/>Managed Qdrant Cloud / Local Container")]
+        MySQL -.-> Redis[("Redis Cache & Task Broker<br/>Upstash Redis TLS / Redis 7 Alpine")]
     end
 
     subgraph AGENTIC ["4. Agentic RAG & LangGraph State Machine"]
@@ -127,7 +128,7 @@ The ingestion pipeline processes complex 2D newspaper broadsheet scans through s
 │ Phase 1: Intake, Compression & SHA-256 Idempotency                     │
 │ • Compress raw PDF with Ghostscript / fitz.deflate                     │
 │ • Calculate SHA-256 hash; verify against `issues` table                │
-│ • Upload raw PDF to MinIO bucket `newslens-originals`                  │
+│ • Upload raw PDF via ObjectStore (`gs://...originals` or MinIO)        │
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
                                    ▼
@@ -144,7 +145,7 @@ The ingestion pipeline processes complex 2D newspaper broadsheet scans through s
 ┌────────────────────────────────────────────────────────────────────────┐
 │ Phase 3: 150 DPI High-Res Rasterization & Digital Triage               │
 │ • PyMuPDF renders 150 DPI high-resolution PNGs (fitz.Matrix(150/72))   │
-│ • Upload page rasters to MinIO bucket `newslens-pages`                 │
+│ • Upload page rasters via ObjectStore (`gs://...pages` or MinIO)       │
 │ • PDF Page Detector evaluates text density, vector lines, scanned print│
 └──────────────────────────────────┬─────────────────────────────────────┘
                                    │
@@ -260,10 +261,10 @@ graph LR
 
 | Layer | Component | Engine / Driver | Stored Data & Schema | Access Patterns & Indexing |
 |---|---|---|---|---|
-| **System of Record** | Relational Database | **MySQL 8** (`aiomysql` / SQLAlchemy 2) | • `newspapers`, `issues`, `pages`<br/>• `articles`, `article_pages`<br/>• `photos`, `tables`<br/>• `entities`, `article_entities`<br/>• `topics`, `article_topics`<br/>• `query_log`, `ingestion_jobs` | • Foreign keys & relational joins<br/>• `FULLTEXT(headline, full_text)`<br/>• B-tree indexes on `(newspaper_id, issue_date)`<br/>• Sub-5ms metadata queries |
-| **Vector Store** | Dense Vector DB | **Qdrant** (`qdrant-client`) | • Collection: `article_chunks`<br/>• 1024-dim dense vectors (`BAAI/bge-m3`)<br/>• Payload: `article_id`, `issue_id`, `newspaper_name`, `issue_date`, `page_number`, `headline`, `section`, `has_visual_data`, `bboxes` | • Cosine similarity search (HNSW index)<br/>• Payload pre-filtering on `newspaper_name`, `issue_date`, `section`<br/>• Sub-15ms vector retrieval |
-| **Object Store** | S3-Compatible Blob Store | **MinIO** (`minio-py`) | • Bucket `newslens-originals`: Raw source PDFs<br/>• Bucket `newslens-pages`: 150 DPI high-res page rasters<br/>• Cropped visual assets & chart PNGs | • High-throughput binary streaming<br/>• Public thumbnail HTTP endpoints (`/api/photos/{id}/image`)<br/>• Immutable asset storage |
-| **In-Memory Cache** | Key-Value & Queue | **Redis 7** (`redis-py`) | • Celery background worker task queue<br/>• Query response cache (TTL: 1h)<br/>• Condensed query hash cache<br/>• Timeline trajectory cache<br/>• SSE Pub/Sub channels | • In-memory sub-millisecond lookups<br/>• Distributed task locks (`redis-lock`)<br/>• Automatic TTL expiration (1h to 24h) |
+| **System of Record** | Relational Database | • **Prod (GCP)**: Cloud SQL MySQL 8.0 (Unix Domain Socket `/cloudsql/...`)<br/>• **Local Dev**: MySQL 8.4 LTS Container (`aiomysql` / SQLAlchemy 2) | • `newspapers`, `issues`, `pages`<br/>• `articles`, `article_pages`<br/>• `photos`, `tables`<br/>• `entities`, `article_entities`<br/>• `topics`, `article_topics`<br/>• `query_log`, `ingestion_jobs` | • Foreign keys & relational joins<br/>• `FULLTEXT(headline, full_text)`<br/>• B-tree indexes on `(newspaper_id, issue_date)`<br/>• Sub-5ms metadata queries |
+| **Vector Store** | Dense Vector DB | • **Prod (GCP)**: Managed Qdrant Cloud Cluster (`australia-southeast1-0.gcp.cloud.qdrant.io:6333`)<br/>• **Local Dev**: Qdrant v1.11.3 Container | • Collection: `article_chunks`<br/>• 1024-dim dense vectors (`BAAI/bge-m3`)<br/>• Payload: `article_id`, `issue_id`, `newspaper_name`, `issue_date`, `page_number`, `headline`, `section`, `has_visual_data`, `bboxes` | • Cosine similarity search (HNSW index)<br/>• Payload pre-filtering on `newspaper_name`, `issue_date`, `section`<br/>• Sub-15ms vector retrieval |
+| **Object Store** | Polymorphic Blob Store (`get_object_store()`) | • **Prod (GCP)**: **Google Cloud Storage** (`GoogleCloudStorageStore` via `google-cloud-storage`)<br/>• **Local Dev**: **MinIO S3** (`MinioStore` via `miniopy_async`) | • Originals bucket (`gs://newslens-ai-prod-originals` or `newslens-originals`): Raw source PDFs<br/>• Pages bucket (`gs://newslens-ai-prod-pages` or `newslens-pages`): 150 DPI page rasters (WebP/PNG)<br/>• Cropped visual assets & chart images | • High-throughput binary streaming<br/>• V4 Signed URLs and public image endpoints (`/api/photos/{id}/image`)<br/>• Threadpool executor wrapping for non-blocking async execution<br/>• Immutable asset storage |
+| **In-Memory Cache & Broker** | Key-Value & Queue | • **Prod (GCP)**: Upstash Managed Redis with TLS (`rediss://...ssl_cert_reqs=required`)<br/>• **Local Dev**: Redis 7 Alpine Container | • Celery background worker task queue (`newslens-worker` on Cloud Run)<br/>• Query response cache (TTL: 1h)<br/>• Condensed query hash cache<br/>• Timeline trajectory cache<br/>• SSE Pub/Sub channels | • In-memory sub-millisecond lookups<br/>• TLS encrypted transport in production<br/>• Distributed task locks (`redis-lock`)<br/>• Automatic TTL expiration (1h to 24h) |
 
 ---
 

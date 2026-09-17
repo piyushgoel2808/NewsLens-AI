@@ -13,9 +13,9 @@ A broadsheet newspaper presents unique data modeling challenges compared to stan
 - **Auditability & Observability**: Long-running asynchronous worker pipelines (rasterization $\to$ OCR $\to$ segmentation $\to$ classification $\to$ indexing) require explicit state machines, progress tracking, and error logging.
 
 NewsLens-AI cleanly separates concerns across storage tiers:
-1. **MinIO**: High-resolution raster images, cropped photo assets, and original PDFs.
-2. **Qdrant**: High-dimensional vector embeddings (`article_chunks`) for semantic similarity search.
-3. **MySQL (The 17 Tables)**: Relational system of record enforcing structural integrity, canonical taxonomies, named entity graphs, FULLTEXT search indexes, and provenance lineage.
+1. **Object Store (Google Cloud Storage / MinIO)**: High-resolution raster images, cropped photo assets, and original PDFs accessed via the polymorphic `ObjectStore` abstraction.
+2. **Qdrant (Managed Cloud / Local Container)**: High-dimensional vector embeddings (`article_chunks`) for semantic similarity search.
+3. **MySQL (Cloud SQL / Local MySQL 8.4 LTS - The 17 Tables)**: Relational system of record enforcing structural integrity, canonical taxonomies, named entity graphs, FULLTEXT search indexes, and provenance lineage.
 
 ---
 

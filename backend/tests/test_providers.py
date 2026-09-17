@@ -341,6 +341,36 @@ class TestGeminiProvider:
             assert response.input_tokens == 15
             assert response.output_tokens == 8
 
+    def test_express_mode_detection_and_headers(self) -> None:
+        from app.providers.gemini_provider import GeminiProvider, VERTEX_AI_EXPRESS_BASE
+
+        provider = GeminiProvider(model="gemini-3.8-flash", api_key="AQ.MockExpressKey1234567890abcdef")
+        assert provider.is_express_mode is True
+        assert provider._base_url == VERTEX_AI_EXPRESS_BASE
+
+        headers, params = provider._get_auth_headers_and_params()
+        assert headers.get("x-goog-api-key") == "AQ.MockExpressKey1234567890abcdef"
+        assert "key" not in params
+
+    def test_ai_studio_detection_and_params(self) -> None:
+        from app.providers.gemini_provider import GeminiProvider, AI_STUDIO_BASE
+
+        provider = GeminiProvider(model="gemini-3.8-flash", api_key="AIzaSyDummyKey12345")
+        assert provider.is_express_mode is False
+        assert provider._base_url == AI_STUDIO_BASE
+
+        headers, params = provider._get_auth_headers_and_params()
+        assert "x-goog-api-key" not in headers
+        assert params.get("key") == "AIzaSyDummyKey12345"
+
+    def test_custom_base_url_override(self) -> None:
+        from app.providers.gemini_provider import GeminiProvider
+
+        custom_url = "https://custom-gateway.local/v1"
+        provider = GeminiProvider(model="gemini-3.8-flash", api_key="AQ.CustomKey", base_url=custom_url)
+        assert provider._base_url == custom_url
+
+
 
 # ---------------------------------------------------------------------------
 # ModelRegistry

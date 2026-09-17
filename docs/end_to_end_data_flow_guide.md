@@ -1,8 +1,8 @@
 # NewsLens-AI End-to-End Data Flow & Data Structure Guide
 *(Cross-Verified Against Real Production Database, Storage Cluster, Model Registry & Live Retrieval Engine)*
 
-> **Document Version**: 3.2.0 (Production Verified)  
-> **Verification Status**: Tested against live MySQL database (`42,250+` articles, `1,200+` pages, `65,000+` chunks), Qdrant cluster (`1,024`-dim BGE-M3 vectors), Model Provider Registry (Tier 1: Local Sovereign, Tier 2: Google Gemini Cloud / Google AI Studio Primary, Tier 3: Multi-Provider Gateways), 3-Stage Visual Pipeline with Google Gemini 2.5 Flash VLM & Deterministic Spatial OCR Matrix, and 4-Tier Journalistic Web Search Grounding.  
+> **Document Version**: 3.3.0 (Production Verified)  
+> **Verification Status**: Tested against live MySQL database (`42,250+` articles, `1,200+` pages, `65,000+` chunks), Qdrant cluster (`1,024`-dim BGE-M3 vectors), Model Provider Registry (Tier 1: Local Sovereign, Tier 2: Google Gemini Cloud / Google AI Studio Primary, Tier 3: Multi-Provider Gateways), 3-Stage Visual Pipeline with Google Gemini Flash VLM & Deterministic Spatial OCR Matrix, 4-Tier Journalistic Web Search Grounding, and live Google Cloud Platform production topology (`newslens-ai-prod`: Cloud Run, Cloud SQL MySQL 8.0, Google Cloud Storage, Qdrant Cloud, Upstash Redis TLS).  
 > **Target Audience**: Core Engineers, AI Researchers, and System Architects.
 
 ---
@@ -166,7 +166,7 @@ We follow a verified, real broadsheet edition present in the database:
    - Submitted via `POST /api/ingest/upload` (single PDF) or `POST /api/ingest/upload-archive` (`.zip` / multi-PDF archives).
    - Executes pre-ingestion stream deflation via `fitz.deflate` or Ghostscript, downsampling oversized print-production raster embeds from ~50MB to ~12MB with zero loss of textual sharpness or OCR character recognition.
    - Calculates **SHA-256** checksum of the incoming stream, verifying against `ingestion_jobs` for idempotency (skips duplicate processing unless `force=True`).
-   - Streams the original PDF into MinIO bucket `newslens-originals` under `originals/{job_id}/{filename}`.
+   - Streams the original PDF through `ObjectStore` into bucket `newslens-originals` (MinIO in local dev) or `gs://newslens-ai-prod-originals` (GCS in production GCP) under `originals/{job_id}/{filename}`.
 
 2. **Visual Masthead Verifier & 5x Header-Weighted Consensus** ([`backend/app/ingestion/metadata.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/metadata.py)):
    - **Page 1 Top 22% Masthead Crop**: PyMuPDF extracts the banner zone and executes `RapidOCR` (ONNX Runtime, `<0.6s`).
@@ -186,7 +186,7 @@ We follow a verified, real broadsheet edition present in the database:
 3. **150 DPI High-Resolution Rasterization** ([`backend/app/ingestion/rasterizer.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/rasterizer.py)):
    - `PyMuPDF` (`fitz`) rasterizes each page at 150 DPI (`fitz.Matrix(150/72, 150/72)`):
      - Yields clean master broadsheet PNGs (~1500–2000px width), cutting image memory consumption by 75% and speeding rasterization to ~1.5s per page while retaining 100% OCR and layout extraction fidelity.
-     - Uploads page PNGs directly to MinIO bucket `newslens-pages` at `pages/1/2026-08-01/Panaji/page_1.png` through `page_14.png`.
+     - Uploads page PNGs directly via `ObjectStore` to bucket `newslens-pages` (MinIO) or `gs://newslens-ai-prod-pages` (GCS) at `pages/1/2026-08-01/Panaji/page_1.png` through `page_14.png`.
    - Populates initial database rows in `newspapers`, `issues`, and `pages`.
 
 #### Exact SQL Rows Created
@@ -1508,9 +1508,9 @@ ORDER BY p.id ASC
 LIMIT 6;
 ```
 
-#### 4. On-Demand MinIO VLM Fallback
+#### 4. On-Demand ObjectStore VLM Fallback (GCS / MinIO)
 If any asset's `vlm_description` in MySQL contains unparsed placeholder text (`"Visual asset: data_chart from broadsheet."`), the tool executes just-in-time transcription:
-1. Streams raw crop PNG bytes directly from MinIO `bucket_pages` (`image_path`).
+1. Streams raw crop PNG/WebP bytes directly from the active `ObjectStore` `bucket_pages` (GCS in prod, MinIO in local dev) using `image_path`.
 2. Dispatches bytes to `VisualDataExtractor.process_image_crop()`.
 3. Runs multimodal inference to transcribe the Markdown table, key metrics, and scene summary.
 4. Dynamically persists the extracted Markdown table back to MySQL `photos.vlm_description`.

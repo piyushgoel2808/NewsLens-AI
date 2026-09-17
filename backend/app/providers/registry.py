@@ -80,9 +80,10 @@ class ModelRegistry:
             "gemini_layout",
         ):
             return GeminiProvider(
-                model=model or "gemini-3.7-flash",
+                model=model or "gemini-3.8-flash",
                 api_key=self._settings.gemini_api_key or self._settings.google_api_key,
                 service_account_info=self._settings.gcp_service_account_json or self._settings.gcp_service_account_key,
+                base_url=cfg.base_url,
             )
         elif provider_type == "anthropic":
             return AnthropicProvider(

@@ -3,6 +3,12 @@ name: Deploy to GCP Production
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
+      - ".gitignore"
+      - ".env.example"
   workflow_dispatch:
 
 permissions:

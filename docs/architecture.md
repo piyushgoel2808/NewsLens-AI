@@ -699,12 +699,107 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 21: Softly-Decoupled Broadsheet Schema & In-Memory Archive Context** | Planner depended on live MySQL database connections for archive metadata; database connection delays stalled agent planning. | Engineered `archive_context.py` providing `STATIC_BROADSHEET_SCHEMA`, in-memory TTL caching with fallback defaults (`get_archive_and_schema_context`), eliminating hard database dependencies during planning. |
 | **Phase 23: Google Gemini Full Cloud Architecture & Production Containerization** | OpenRouter dual-key rate limits and legacy model deprecations created operational friction; onboarding required manual multi-service orchestration without container guarantees. | Transitioned primary cloud engine to Google AI Studio Gemini (`gemini-3.8-flash`, `gemini-3.8-live`, `gemini-3.5-flash`); engineered multi-candidate failover cascade (`GeminiProvider._get_model_candidates`) and Pydantic schema title cleaner; built 8-service Docker Compose specification (`docker-compose.yml`), multi-stage Dockerfiles (`backend/Dockerfile`, `frontend/Dockerfile`, `frontend/nginx.conf` with SSE reverse proxy), unified developer `Makefile`, and open-source governance standard (`LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`). |
 | **Phase 24: High-Throughput Ingestion & Single-Pass Multimodal Extraction** | Monolithic 300 DPI broadsheet rasters incurred heavy memory pressure and slow rendering (6–8s/page); serial per-crop visual extraction led to 30+ network trips per page; embedded advertisements and photo bounding boxes contaminated article text envelopes and continuation reading trees. | Standardized on 150 DPI rasterization ($4\times$ memory reduction, ~1.5s/page); engineered `SinglePassVisualExtractor` supporting unified single-pass for cloud vision (`gemini-3.8-flash` with normalized coordinate manifests) and concurrent per-crop execution (`qwen3-vl:latest` via `asyncio.Semaphore(2)`); stripped `picture` bboxes from Docling article text envelopes; added ad container isolation & spatial discontinuity guards ($>200\text{px}$ jumps); built `clean_vlm_text` token sanitizer; added page-aware photo filtering and page badges to `BroadsheetReader.jsx`. |
+| **Phase 25: Serverless Cloud Migration to GCP & Resilient Production Architecture** | Self-hosted infrastructure on local developer machines or single VMs created compute bottlenecks; ephemeral containers lacked persistence for vectors and broadsheet scans; background Celery workers suffered CPU starvation on standard serverless tiers; permanent cloud credentials posed security risks. | Migrated to Google Cloud Platform (`asia-south1`): deployed `newslens-frontend` (Nginx SPA reverse proxy), `newslens-backend` (FastAPI with Cloud SQL Unix Socket), and `newslens-worker` (`--no-cpu-throttling` + embedded HTTP health server on `$PORT`) to Cloud Run; migrated storage from MinIO to Google Cloud Storage (`gs://newslens-ai-prod-pages`, `gs://newslens-ai-prod-originals`) via polymorphic `ObjectStore` factory (`GoogleCloudStorageStore`); provisioned Cloud SQL MySQL 8.0 with automated migrations via Cloud Run Job `newslens-migrate`; integrated Qdrant Cloud managed vector cluster and Upstash Redis TLS with `ssl_cert_reqs=required`; secured all secrets in Secret Manager and established Workload Identity Federation (WIF) for zero-permanent-credential GitHub Actions CI/CD. |
 
 ---
 
 ## 7. Production Deployment & Containerization Architecture
 
-NewsLens-AI provides an enterprise-ready, containerized deployment infrastructure orchestrated via modern **Docker Compose** (`docker-compose.yml`) and supported by a unified developer `Makefile`.
+NewsLens-AI provides a dual-tier deployment infrastructure: an enterprise-ready **Google Cloud Platform (GCP) Serverless Topology** for live global availability, and an isolated **Docker Compose** stack for local developer agility.
+
+### A. Google Cloud Platform (GCP) Serverless Production Topology
+
+In production, NewsLens-AI runs on Google Cloud Platform in region `asia-south1` (Mumbai), leveraging serverless Cloud Run services, managed databases, object storage, and zero-trust IAM authentication.
+
+```
+                                      ┌──────────────────────────────────────────────────────────┐
+                                      │                      Client Browser                      │
+                                      │  • Newspaper Scan Reader (300/150 DPI WebP Canvas)       │
+                                      │  • Real-Time Agentic Assistant (SSE Streaming)           │
+                                      └────────────────────────────┬─────────────────────────────┘
+                                                                   │ HTTPS (Port 443)
+                                                                   ▼
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                       GOOGLE CLOUD PLATFORM (asia-south1: Mumbai)                                      │
+│                                                                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  │                                             Cloud Run Serverless Compute                                         │  │
+│  │                                                                                                                  │  │
+│  │  ┌─────────────────────────────────────┐      ┌───────────────────────────────────┐                              │  │
+│  │  │ newslens-frontend                   │      │ newslens-backend                  │                              │  │
+│  │  │ • Nginx 1.27 Alpine Container       ├─────►│ • FastAPI (Python 3.12, Uvicorn)  │                              │  │
+│  │  │ • Static React 18 SPA Bundle        │/api/ │ • Cloud SQL Unix Domain Socket    │                              │  │
+│  │  │ • Unbuffered SSE Streaming Proxy    │      │ • Dynamic GCS Storage Factory     │                              │  │
+│  │  └─────────────────────────────────────┘      └─────────────────┬─────────────────┘                              │  │
+│  │                                                                 │                                                │  │
+│  │  ┌─────────────────────────────────────┐                        │ Celery Task RPC                                │  │
+│  │  │ newslens-worker                     │                        │ via Redis TLS                                  │  │
+│  │  │ • Celery Asynchronous Consumer      │◄───────────────────────┤                                                │  │
+│  │  │ • Cloud Run --no-cpu-throttling     │                        │                                                │  │
+│  │  │ • Embedded HTTP Health Check ($PORT)│                        │                                                │  │
+│  │  │ • 6Gi RAM, 2 vCPU, min-instances=1  │                        │                                                │  │
+│  │  └─────────────────────────────────────┘                        │                                                │  │
+│  │                                                                 │                                                │  │
+│  │  ┌─────────────────────────────────────┐                        │                                                │  │
+│  │  │ newslens-migrate (Cloud Run Job)    ├────────────────────────┼────────────────────────────────┐               │  │
+│  │  │ • Alembic Database Migrations       │                        │                                │               │  │
+│  │  └─────────────────────────────────────┘                        │                                │               │  │
+│  └─────────────────────────────────────────────────────────────────┼────────────────────────────────┼───────────────┘  │
+│                                                                    │                                │                  │
+│  ┌───────────────────────────────────────────────────┐             │                                │                  │
+│  │ Google Cloud Storage (GCS)                        │             │                                │                  │
+│  │ • gs://newslens-ai-prod-pages (Rasterized WebP)   │◄────────────┤                                │                  │
+│  │ • gs://newslens-ai-prod-originals (Source PDFs)   │             │                                │                  │
+│  └───────────────────────────────────────────────────┘             │                                │                  │
+│                                                                    │                                │                  │
+│  ┌───────────────────────────────────────────────────┐             │                                │                  │
+│  │ Cloud SQL for MySQL 8.0                           │             │                                │                  │
+│  │ • newslens-ai-prod:asia-south1:newslens-mysql     │◄────────────┴────────────────────────────────┘                  │
+│  │ • Unix Domain Socket: /cloudsql/...               │                                                                 │
+│  │ • FULLTEXT Indexes + utf8mb4_unicode_ci           │                                                                 │
+│  └───────────────────────────────────────────────────┘                                                                 │
+│                                                                                                                        │
+│  ┌───────────────────────────────────────────────────┐   ┌──────────────────────────────────────────────────────────┐  │
+│  │ Google Secret Manager                             │   │ IAM & Workload Identity Federation (WIF)                 │  │
+│  │ • 11 Production Secrets (DB, API Keys, Tokens)    │   │ • Service Account: newslens-runner                       │  │
+│  │ • Dynamic Cloud Run Volume / Env Injections       │   │ • Keyless GitHub Actions Authentication (OIDC Pool)      │  │
+│  └───────────────────────────────────────────────────┘   └──────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────┘
+                                                                     │ External Secure Connectors
+                                                                     ▼
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                               EXTERNAL MANAGED CLOUD SERVICES                                          │
+│                                                                                                                        │
+│  ┌──────────────────────────────────────────────────┐   ┌──────────────────────────────────────────────────────────┐   │
+│  │ Qdrant Cloud (Managed Vector DB)                 │   │ Upstash Redis TLS (Managed Broker & Cache)               │   │
+│  │ • australia-southeast1-0.gcp.cloud.qdrant.io:6333│   │ • hopeful-octopus-283720.upstash.io:6379                 │   │
+│  │ • Collection: article_chunks (1024-dim BGE-M3)   │   │ • TLS Enforced (rediss://...ssl_cert_reqs=required)      │   │
+│  └──────────────────────────────────────────────────┘   └──────────────────────────────────────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────┐   ┌──────────────────────────────────────────────────────────┐   │
+│  │ Google AI Studio (Gemini 3.8 Flash)              │   │ Google Cloud Vision API                                  │   │
+│  │ • Query Planning, Reasoning & Multimodal VLM     │   │ • Pure Broadsheet OCR & Layout Analysis Fallback         │   │
+│  └──────────────────────────────────────────────────┘   └──────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Production Specifications
+1. **Dynamic Storage Factory (`GoogleCloudStorageStore`)**:
+   - Implements the polymorphic `ObjectStore` interface in `backend/app/storage/gcs_store.py` backed by `google-cloud-storage`.
+   - The factory `get_object_store()` dynamically instantiates `GoogleCloudStorageStore` in production (`STORAGE_BACKEND=gcs`) and `MinioStore` in local development (`STORAGE_BACKEND=minio`).
+2. **Cloud Run Celery Worker (`newslens-worker`)**:
+   - Standard Cloud Run services throttle CPU to zero when not handling incoming HTTP requests. `newslens-worker` is deployed with `--no-cpu-throttling` and `--min-instances=1`, ensuring the Celery consumer maintains 100% CPU capacity 24/7.
+   - Embeds a lightweight background HTTP health server (`app/run_worker.py`) on `$PORT` (8080) that responds `200 OK` to Cloud Run startup and liveness probes while running `celery worker` in the foreground.
+3. **Database Migration Job (`newslens-migrate`)**:
+   - Cloud Run Job configured to run `alembic upgrade head` over the Cloud SQL Unix domain socket before updating backend or worker revisions, guaranteeing zero-downtime schema evolution.
+4. **Keyless CI/CD via Workload Identity Federation**:
+   - `.github/workflows/deploy-gcp.yml` uses Google Cloud Workload Identity Federation to exchange GitHub Actions OIDC tokens for short-lived Google Cloud access tokens, completely eliminating static service account JSON keys.
+   - Automatically runs Alembic migrations on ephemeral test MySQL containers, executes the 574-test suite, builds and pushes multi-arch images to Google Artifact Registry, and rolls out updates to Cloud Run.
+
+---
+
+### B. Local Development Containerization (Docker Compose)
+
+For offline development, NewsLens-AI provides a containerized infrastructure orchestrated via **Docker Compose** (`docker-compose.yml`) and supported by a unified developer `Makefile`.
 
 ```
                                   ┌──────────────────────────────────────────────────────────┐
@@ -735,7 +830,7 @@ NewsLens-AI provides an enterprise-ready, containerized deployment infrastructur
 └──────────────────────────────┴───────────────────────────────┴─────────────────────────────┘
 ```
 
-### Production Service Specifications
+### Local Service Specifications
 1. **`frontend` (Nginx + React 18 SPA)**:
    - Multi-stage Docker build (`node:20-alpine` $\to$ `nginx:1.27-alpine`).
    - Custom `nginx.conf` featuring SPA fallback (`try_files $uri $uri/ /index.html`), gzip compression, and reverse-proxy for `/api/` with `proxy_buffering off` and `proxy_read_timeout 300s` for real-time Server-Sent Events (SSE) streaming.
