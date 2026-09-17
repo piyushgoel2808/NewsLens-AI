@@ -24,11 +24,15 @@ def compute_query_cache_key(
     model_id: str = "",
     date_filters: str = "",
     issue_ids: list[int] | None = None,
+    newspaper_name: str = "",
+    chat_history_digest: str = "",
 ) -> str:
     """Compute a deterministic SHA-256 cache key from normalized inputs."""
     norm_query = " ".join(query.strip().lower().split())
     norm_model = (model_id or "").strip().lower()
     norm_dates = (date_filters or "").strip().lower()
+    norm_np = (newspaper_name or "").strip().lower()
+    norm_hist = (chat_history_digest or "").strip().lower()
     sorted_issue_ids = sorted(issue_ids) if issue_ids else []
 
     composite = json.dumps(
@@ -37,6 +41,8 @@ def compute_query_cache_key(
             "m": norm_model,
             "d": norm_dates,
             "i": sorted_issue_ids,
+            "np": norm_np,
+            "h": norm_hist,
         },
         sort_keys=True,
     )
@@ -67,8 +73,8 @@ class CacheStore:
 
                 self._client = aioredis.Redis.from_url(
                     self._redis_url,
-                    socket_connect_timeout=2.0,
-                    socket_timeout=2.0,
+                    socket_connect_timeout=0.5,
+                    socket_timeout=0.5,
                     decode_responses=False,
                 )
             except Exception as e:

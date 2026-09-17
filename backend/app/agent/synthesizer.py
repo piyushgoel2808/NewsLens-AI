@@ -391,6 +391,20 @@ class AnswerSynthesizer:
     _render_front_page_comparison = staticmethod(render_front_page_comparison)
     _render_broadsheet_perspectives = staticmethod(render_broadsheet_perspectives)
     _render_explore_further = staticmethod(render_explore_further)
+    _generate_deterministic_summary = staticmethod(generate_deterministic_summary)
+
+    ARCHETYPE_TOKEN_CAPS: dict[str, int] = {
+        "factual_lookup": 1024,
+        "archive_availability": 768,
+        "conversational_meta_query": 512,
+        "scalar_count": 512,
+        "article_deep_dive": 2048,
+        "thematic_timeline": 3072,
+        "cross_newspaper_comparison": 3072,
+        "quantitative_trend": 2048,
+        "article_catalog": 2048,
+        "_default": 3072,
+    }
 
     def __init__(self, provider: ChatModelProvider | None = None) -> None:
         self._provider = provider
@@ -933,10 +947,11 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
 
         cost_usd = 0.0
         providers = self._get_provider_candidates(model_override=model_override)
+        effective_max_tokens = self.ARCHETYPE_TOKEN_CAPS.get(archetype, self.ARCHETYPE_TOKEN_CAPS["_default"])
 
         for provider in providers:
             try:
-                response = await provider.complete(messages=messages, max_tokens=6144, temperature=0.1)
+                response = await provider.complete(messages=messages, max_tokens=effective_max_tokens, temperature=0.1)
                 th_trace, cleaned_answer = parse_thought_and_answer(response.text)
                 answer_text = cleaned_answer if cleaned_answer else ("" if th_trace else response.text)
                 p_name = getattr(provider, "provider_name", "llm")
@@ -1017,10 +1032,11 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
         messages.append(Message(role="user", content=user_prompt))
 
         providers = self._get_provider_candidates(model_override=model_override)
+        effective_max_tokens = self.ARCHETYPE_TOKEN_CAPS.get(archetype, self.ARCHETYPE_TOKEN_CAPS["_default"])
 
         for provider in providers:
             try:
-                stream_gen = provider.complete_stream(messages=messages, max_tokens=6144, temperature=0.1)
+                stream_gen = provider.complete_stream(messages=messages, max_tokens=effective_max_tokens, temperature=0.1)
                 streamed_any = False
                 async for chunk in stream_gen:
                     streamed_any = True

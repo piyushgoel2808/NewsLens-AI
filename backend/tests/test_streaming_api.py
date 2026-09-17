@@ -14,6 +14,12 @@ from app.api.main import create_app
 from app.retrieval.hybrid_search import HybridSearchResult
 
 
+@pytest.fixture(autouse=True)
+def mock_cache_store():
+    with patch("app.storage.cache_store.CacheStore.get_query", new_callable=AsyncMock, return_value=None):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_stream_query_endpoint() -> None:
     app = create_app()

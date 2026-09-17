@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -17,9 +18,14 @@ from app.agent.condenser import (
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
 )
-from app.agent.graph import AgentWorkflow
+from app.agent.fallback_presenter import EMPTY_EVIDENCE_RESPONSE
+from app.agent.graph import AgentWorkflow, _can_bypass_llm_planner
 from app.agent.planner import QueryPlanner
 from app.agent.synthesizer import parse_thought_and_answer
+from app.core.logging import get_logger
+from app.core.metrics import record_agent_query
+
+logger = get_logger(__name__)
 from app.models.base import get_db, get_session_factory
 from app.models.query import QueryLog
 from app.retrieval import (
@@ -27,6 +33,7 @@ from app.retrieval import (
     resolve_conversation_working_context,
 )
 from app.retrieval.timeline_builder import NarrativeTrajectoryResponse, TimelineBuilder
+from app.storage.cache_store import compute_query_cache_key
 
 REASONING_START_REGEX = re.compile(
     r"^\s*(?:<think>|Here'?s a thinking process:?|Thinking Process:?|Thought:?)",
@@ -108,26 +115,16 @@ async def execute_query(
     factory = get_session_factory()
     workflow = AgentWorkflow(session_factory=factory)
 
-    attached_ctx = await resolve_attached_asset_context(
-        session_factory=factory,
-        attached_photo_id=request.attached_photo_id,
-        attached_article_id=request.attached_article_id,
-        attached_issue_date=request.attached_issue_date,
-        attached_newspaper_name=request.attached_newspaper_name,
-    )
-    res_date = attached_ctx.get("issue_date")
-    res_np = attached_ctx.get("newspaper_name")
-    res_art_id = attached_ctx.get("article_id")
     result = await workflow.run(
         query=request.query,
         chat_history=request.chat_history,
         user_id=request.user_id,
         model_override=request.effective_model,
         enable_web_search=request.enable_web_search,
-        attached_article_id=res_art_id or request.attached_article_id,
+        attached_article_id=request.attached_article_id,
         attached_photo_id=request.attached_photo_id,
-        attached_issue_date=res_date,
-        attached_newspaper_name=res_np,
+        attached_issue_date=request.attached_issue_date,
+        attached_newspaper_name=request.attached_newspaper_name,
     )
 
     citations_list: list[dict[str, Any]] = [dict(c) for c in result.get("citations", [])]
@@ -179,6 +176,55 @@ async def stream_query(
                 }
             )
             yield f"event: done\ndata: {done_payload}\n\n"
+            return
+
+        # 0A. Redis Query Cache Check
+        chat_digest = ""
+        if chat_history:
+            recent_turns = chat_history[-3:]
+            digest_src = "|".join(str(t.get("content", "")) for t in recent_turns)
+            chat_digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()[:16]
+
+        cache_key = compute_query_cache_key(
+            query=f"{query}__web_{request.enable_web_search}__art_{request.attached_article_id}__ph_{request.attached_photo_id}",
+            model_id=effective_model or "",
+            date_filters=request.attached_issue_date or "",
+            newspaper_name=request.attached_newspaper_name or "",
+            chat_history_digest=chat_digest,
+        )
+        cached_result = await workflow._cache.get_query(cache_key)
+        if cached_result:
+            cached_ans = cached_result.get("synthesized_answer") or cached_result.get("answer") or ""
+            cached_citations = cached_result.get("citations") or []
+            cached_archetype = cached_result.get("archetype", "factual_lookup")
+            cached_blueprint = cached_result.get("answer_blueprint")
+            cached_plan = cached_result.get("plan") or []
+
+            yield f"event: stage\ndata: {json.dumps({'stage': 'cache_hit', 'ms': 0})}\n\n"
+            plan_data = json.dumps({
+                "archetype": cached_archetype,
+                "plan": cached_plan,
+                "answer_blueprint": cached_blueprint,
+            })
+            yield f"event: plan\ndata: {plan_data}\n\n"
+            yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
+
+            words = cached_ans.split()
+            chunk_size = 12
+            for i in range(0, len(words), chunk_size):
+                chunk_str = " ".join(words[i:i + chunk_size]) + " "
+                yield f"event: token\ndata: {json.dumps({'delta': chunk_str})}\n\n"
+                await asyncio.sleep(0)
+
+            yield f"event: citations\ndata: {json.dumps({'citations': cached_citations})}\n\n"
+            latency_ms = round((time.monotonic() - t0) * 1000)
+            record_agent_query(
+                archetype=cached_archetype,
+                status="cached",
+                model=effective_model or "default",
+                duration_seconds=latency_ms / 1000.0,
+            )
+            yield f"event: done\ndata: {json.dumps({'latency_ms': latency_ms, 'cost_usd': 0.0, 'cached': True})}\n\n"
             return
 
         # 1. Query Condensation, Coreference Resolution, & In-Context Meta Queries
@@ -239,16 +285,22 @@ async def stream_query(
                 )
 
             blueprint_dict: dict[str, Any] | None = None
-            yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
-            plan_res = await workflow._planner.plan_query_async(
-                query,
-                enable_web_search=request.enable_web_search,
-                model_override=effective_model,
-                active_issue_date=planner_active_date,
-                active_newspapers=planner_active_nps,
-                attached_article_id=eff_attached_article_id,
-                attached_photo_id=eff_attached_photo_id,
-            )
+            if _can_bypass_llm_planner(query, chat_history, has_attached_asset):
+                plan_res = workflow._planner._plan_query_heuristic(
+                    query,
+                    enable_web_search=request.enable_web_search,
+                )
+            else:
+                yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
+                plan_res = await workflow._planner.plan_query_async(
+                    query,
+                    enable_web_search=request.enable_web_search,
+                    model_override=effective_model,
+                    active_issue_date=planner_active_date,
+                    active_newspapers=planner_active_nps,
+                    attached_article_id=eff_attached_article_id,
+                    attached_photo_id=eff_attached_photo_id,
+                )
             effective_archetype = plan_res.archetype
             planned_calls = [
                 {"tool_name": c.tool_name, "arguments": c.arguments, "purpose": c.purpose}
@@ -306,6 +358,25 @@ async def stream_query(
             tool_records = [dict(t) for t in tool_state.get("tool_executions", [])]
             tool_data = json.dumps({"evidence_count": len(evidence), "tools": tool_records})
             yield f"event: tool_results\ndata: {tool_data}\n\n"
+
+            # CRAG Fast-Floor Sufficiency Evaluation
+            crag_verdict = workflow._evaluator.audit_evidence_sufficiency(
+                evidence=evidence,
+                state={
+                    "query": query,
+                    "archetype": effective_archetype,
+                    "active_newspaper_name": active_ctx.get("newspaper_name"),
+                    "active_issue_date": active_ctx.get("issue_date"),
+                },
+            )
+            logger.info(
+                "Streaming CRAG sufficiency evaluation",
+                extra={
+                    "query": query,
+                    "is_sufficient": crag_verdict.is_sufficient,
+                    "quality_score": crag_verdict.quality_score,
+                },
+            )
 
         # 4. Synthesis & Reasoning Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
@@ -455,6 +526,14 @@ async def stream_query(
                 full_answer, query=query, archetype=effective_archetype, evidence_items=evidence
             )
 
+        fast_res = workflow._verifier._fast_groundedness_check(
+            draft_answer=full_answer,
+            evidence_items=evidence,
+            query=query,
+        )
+        if fast_res is not None and not fast_res.is_valid and fast_res.refined_answer:
+            full_answer = fast_res.refined_answer
+
         citations = workflow._synthesizer.extract_citations(full_answer, evidence)
         citations_list = [dict(c) for c in citations]
         yield f"event: citations\ndata: {json.dumps({'citations': citations_list})}\n\n"
@@ -466,7 +545,7 @@ async def stream_query(
             log_record = QueryLog(
                 user_id=request.user_id,
                 query_text=query,
-                query_type=plan_res.archetype,
+                query_type=getattr(plan_res, "archetype", effective_archetype),
                 plan_json={"plan": planned_calls, "answer_blueprint": blueprint_dict},
                 tool_calls_json={"tools": tool_records},
                 answer_text=full_answer,
@@ -476,6 +555,29 @@ async def stream_query(
             )
             db.add(log_record)
             await db.commit()
+
+        # 5. Store in Redis Cache
+        try:
+            cache_payload = {
+                "query": query,
+                "archetype": getattr(plan_res, "archetype", effective_archetype),
+                "synthesized_answer": full_answer,
+                "citations": citations_list,
+                "plan": planned_calls,
+                "answer_blueprint": blueprint_dict,
+                "evidence_count": len(evidence),
+            }
+            await workflow._cache.set_query(cache_key, cache_payload, ttl_seconds=3600)
+        except Exception:
+            pass
+
+        # 6. Record Prometheus Metrics
+        record_agent_query(
+            archetype=getattr(plan_res, "archetype", effective_archetype),
+            status="success",
+            model=effective_model or "default",
+            duration_seconds=latency_ms / 1000.0,
+        )
 
         yield f"event: done\ndata: {json.dumps({'latency_ms': latency_ms, 'cost_usd': 0.0})}\n\n"
 

@@ -40,6 +40,10 @@ class HeuristicReranker:
         """Rerank candidates using token overlap and lexical proximity."""
         if not candidates:
             return []
+        if len(candidates) == 1:
+            cand = dict(candidates[0])
+            cand.setdefault("rerank_score", cand.get("rrf_score", 0.0))
+            return [cand]
 
         query_tokens = set(re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", query.lower()))
         scored: list[tuple[float, dict[str, Any]]] = []
@@ -131,6 +135,10 @@ class CrossEncoderReranker:
         """Rerank top candidates by computing cross-attention interaction scores."""
         if not candidates:
             return []
+        if len(candidates) == 1:
+            cand = dict(candidates[0])
+            cand.setdefault("rerank_score", cand.get("rrf_score", 0.0))
+            return [cand]
 
         model = await self._get_model()
         if model is None:

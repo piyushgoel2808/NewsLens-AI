@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import re
 import time
 from typing import Any
 
@@ -43,15 +45,39 @@ from app.storage.cache_store import CacheStore, compute_query_cache_key
 
 logger = get_logger(__name__)
 
+_FOLLOWUP_PRONOUN_PATTERN = re.compile(
+    r"\b(it|its|this|that|these|those|they|them|their|theirs|he|him|his|she|her|hers|"
+    r"former|latter|previous|above|mentioned|earlier|same|other|another)\b",
+    re.IGNORECASE,
+)
+
+
+def _can_bypass_llm_planner(
+    query: str,
+    chat_history: list[dict[str, Any]],
+    has_attached_asset: bool,
+) -> bool:
+    """Check if query is completely self-contained with no pronoun/follow-up dependencies."""
+    if chat_history or has_attached_asset:
+        return False
+    if _FOLLOWUP_PRONOUN_PATTERN.search(query):
+        return False
+    q_low = query.lower().strip()
+    is_count = bool(re.search(r"\b(how many|count of|total number of)\s+(articles?|issues?|pages?|photos?|advertisements?)\b", q_low))
+    is_date_search = bool(re.search(r"\b(on|dated?)\s+\d{4}-\d{2}-\d{2}\b", q_low)) and not any(w in q_low for w in ["compare", "vs", "versus", "between", "both"])
+    is_timeline = bool(re.search(r"\b(timeline of|chronology of)\b", q_low))
+    return is_count or is_date_search or is_timeline
+
 
 class AgentWorkflow:
     """Compiled LangGraph workflow executing the agentic RAG lifecycle."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+        self._cache = CacheStore()
         self._planner = QueryPlanner()
         self._synthesizer = AnswerSynthesizer()
-        self._hybrid_search = HybridSearchEngine(session_factory=session_factory)
+        self._hybrid_search = HybridSearchEngine(session_factory=session_factory, cache=self._cache)
         self._entity_search = EntitySearchEngine(session_factory=session_factory)
         self._timeline_builder = TimelineBuilder(session_factory=session_factory)
         self._sql_analytics = SQLAnalyticsEngine(session_factory=session_factory)
@@ -61,7 +87,6 @@ class AgentWorkflow:
         )
         self._web_search = WebSearchEngine()
         self._visual_inspector = VisualInspectionEngine(session_factory=session_factory)
-        self._cache = CacheStore()
 
         # Dynamic Tool Maker (LLM-as-Tool-Maker)
         settings = get_settings()
@@ -228,6 +253,34 @@ class AgentWorkflow:
                 "plan": [],
                 "evidence_items": [],
             }
+
+        # Fast-Path Deterministic Pre-Planner for unambiguous standalone queries
+        if _can_bypass_llm_planner(query, chat_history, has_attached):
+            plan_res = self._planner._plan_query_heuristic(
+                query,
+                enable_web_search=state.get("enable_web_search", False),
+            )
+            if plan_res and plan_res.tool_calls:
+                planned_calls = [
+                    {
+                        "tool_name": c.tool_name,
+                        "arguments": c.arguments,
+                        "purpose": c.purpose,
+                    }
+                    for c in plan_res.tool_calls
+                ]
+                blueprint_dict = (
+                    plan_res.answer_blueprint.model_dump()
+                    if hasattr(plan_res.answer_blueprint, "model_dump")
+                    else (plan_res.answer_blueprint if isinstance(plan_res.answer_blueprint, dict) else None)
+                )
+                return {
+                    "query": query,
+                    "original_query": original_query,
+                    "archetype": plan_res.archetype,
+                    "plan": planned_calls,
+                    "answer_blueprint": blueprint_dict,
+                }
 
         # Use working context already initialized in state with current_query grounding
         active_issue_id = state.get("active_issue_id")
@@ -550,14 +603,40 @@ class AgentWorkflow:
                 "verification_attempts": state.get("verification_attempts", 0) + 1,
             }
 
-        res = await self._verifier.verify_answer_async(
-            query=query,
-            draft_answer=draft_answer,
-            evidence_items=evidence,
-            archetype=archetype,
-            model_override=model_override,
-            answer_blueprint=blueprint,
-        )
+        # Check CRAG evaluation verdict from upstream node
+        crag_verdict = state.get("evaluation_verdict") or {}
+        crag_quality = crag_verdict.get("quality_score", 0.0)
+
+        # Fast gate: If CRAG already confirmed evidence sufficiency and high quality (>= 0.85)
+        # and evidence is present, run the deterministic fast check first (0ms)
+        if crag_quality >= 0.85 and evidence:
+            fast_res = self._verifier._fast_groundedness_check(
+                draft_answer=draft_answer,
+                evidence_items=evidence,
+                query=query,
+            )
+            # If fast check found no contradictions/errors, accept immediately (skips LLM!)
+            if fast_res is None or fast_res.is_valid:
+                return {
+                    "answer_verification": {
+                        "is_valid": True,
+                        "quality_score": crag_quality,
+                        "recommended_action": "accept",
+                        "factual_errors": [],
+                        "critique": "Fast-floor deterministic check passed with high-confidence evidence.",
+                    },
+                    "verification_attempts": state.get("verification_attempts", 0) + 1,
+                }
+            res = fast_res
+        else:
+            res = await self._verifier.verify_answer_async(
+                query=query,
+                draft_answer=draft_answer,
+                evidence_items=evidence,
+                archetype=archetype,
+                model_override=model_override,
+                answer_blueprint=blueprint,
+            )
 
         updates: dict[str, Any] = {
             "answer_verification": res.to_dict(),
@@ -624,9 +703,18 @@ class AgentWorkflow:
         history = chat_history or []
 
         # 1. Deterministic Redis Cache Check
+        chat_digest = ""
+        if history:
+            recent_turns = history[-3:]
+            digest_src = "|".join(str(t.get("content", "")) for t in recent_turns)
+            chat_digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()[:16]
+
         cache_key = compute_query_cache_key(
             query=f"{query}__web_{enable_web_search}__art_{attached_article_id}__ph_{attached_photo_id}",
             model_id=model_override or "",
+            date_filters=attached_issue_date or "",
+            newspaper_name=attached_newspaper_name or "",
+            chat_history_digest=chat_digest,
         )
         cached_result = await self._cache.get_query(cache_key)
         if cached_result:
@@ -710,4 +798,5 @@ class AgentWorkflow:
 
 __all__ = [
     "AgentWorkflow",
+    "_can_bypass_llm_planner",
 ]

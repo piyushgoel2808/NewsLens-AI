@@ -8,6 +8,7 @@ with standard smoothing parameter k = 60.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,7 @@ from app.models.newspaper import Issue, Newspaper
 from app.providers.base import EmbeddingProvider
 from app.providers.registry import get_registry
 from app.retrieval.reranker import CrossEncoderReranker
+from app.storage.cache_store import CacheStore
 from app.storage.mysql_fulltext import MySQLFullTextSearch
 from app.storage.qdrant_store import QdrantStore
 
@@ -89,6 +91,7 @@ class HybridSearchEngine:
         qdrant: QdrantStore | None = None,
         embed_provider: EmbeddingProvider | None = None,
         reranker: CrossEncoderReranker | None = None,
+        cache: CacheStore | None = None,
         k: int = 60,
     ) -> None:
         self._session_factory = session_factory
@@ -97,6 +100,7 @@ class HybridSearchEngine:
         self._provider = embed_provider
         self._reranker = reranker or CrossEncoderReranker()
         self._ft_search = MySQLFullTextSearch(session_factory=session_factory)
+        self._cache = cache or CacheStore()
         self._k = k
 
     def _get_embedding_provider(self) -> EmbeddingProvider:
@@ -123,22 +127,35 @@ class HybridSearchEngine:
             return []
 
         search_filters_dict: dict[str, Any] = {}
-        resolved_np_name: str | None = None
+        ft_filters: dict[str, Any] = {}
         if filters:
-            resolved_np_name = filters.newspaper_name
-            if not resolved_np_name and filters.newspaper_id:
+            np_name = filters.newspaper_name
+            np_id = filters.newspaper_id
+
+            if np_id and not np_name:
                 try:
                     async with self._session_factory() as s_res:
-                        np_row = (await s_res.execute(select(Newspaper.name).where(Newspaper.id == filters.newspaper_id))).scalar_one_or_none()
+                        np_row = (await s_res.execute(select(Newspaper.name).where(Newspaper.id == np_id))).scalar_one_or_none()
                         if np_row:
-                            resolved_np_name = np_row
+                            np_name = np_row
+                except Exception:
+                    pass
+            elif np_name and not np_id:
+                try:
+                    async with self._session_factory() as s_res:
+                        id_row = (await s_res.execute(select(Newspaper.id).where(Newspaper.name.ilike(f"%{np_name}%")))).scalar_one_or_none()
+                        if id_row:
+                            np_id = id_row
                 except Exception:
                     pass
 
-            if resolved_np_name:
-                search_filters_dict["newspaper_name"] = resolved_np_name
-            elif filters.newspaper_id:
-                search_filters_dict["newspaper_id"] = filters.newspaper_id
+            if np_name:
+                search_filters_dict["newspaper_name"] = np_name
+            elif np_id:
+                search_filters_dict["newspaper_id"] = np_id
+
+            if np_id:
+                ft_filters["newspaper_id"] = np_id
 
             if filters.page_number:
                 search_filters_dict["page_numbers"] = filters.page_number
@@ -152,46 +169,57 @@ class HybridSearchEngine:
                 date_range: dict[str, str] = {}
                 if filters.date_from:
                     date_range["gte"] = filters.date_from
+                    ft_filters["date_from"] = filters.date_from
                 if filters.date_to:
                     date_range["lte"] = filters.date_to
+                    ft_filters["date_to"] = filters.date_to
                 search_filters_dict["issue_date"] = date_range
 
         # 1. Run Vector Search (Dense)
         if query_vector is None:
             provider = self._get_embedding_provider()
-            query_vector = await provider.embed_one(query)
+            embed_model_name = getattr(provider, "model_name", getattr(provider, "_model", "default"))
+            try:
+                cached_vec = await self._cache.get_embedding(query, model=embed_model_name)
+            except Exception:
+                cached_vec = None
 
-        vector_results = await self._qdrant.search(
+            if cached_vec:
+                query_vector = cached_vec
+            else:
+                query_vector = await provider.embed_one(query)
+                try:
+                    await self._cache.set_embedding(query, query_vector, model=embed_model_name)
+                except Exception:
+                    pass
+
+        # 2. Concurrently execute Vector Search and Sparse FULLTEXT Search
+        fetch_k = top_k * 3
+        vector_task = self._qdrant.search(
             query_vector=query_vector,
-            top_k=top_k * 3,  # Fetch more for reciprocal fusion
+            top_k=fetch_k,
             filters=search_filters_dict if search_filters_dict else None,
             score_threshold=0.30,
         )
-
-        # 2. Run FULLTEXT Search (Sparse)
-        ft_filters: dict[str, Any] = {}
-        if filters:
-            eff_np_id = filters.newspaper_id
-            if not eff_np_id and resolved_np_name:
-                try:
-                    async with self._session_factory() as s_res:
-                        id_row = (await s_res.execute(select(Newspaper.id).where(Newspaper.name.ilike(f"%{resolved_np_name}%")))).scalar_one_or_none()
-                        if id_row:
-                            eff_np_id = id_row
-                except Exception:
-                    pass
-            if eff_np_id:
-                ft_filters["newspaper_id"] = eff_np_id
-            if filters.date_from:
-                ft_filters["date_from"] = filters.date_from
-            if filters.date_to:
-                ft_filters["date_to"] = filters.date_to
-
-        keyword_results = await self._ft_search.search(
+        ft_task = self._ft_search.search(
             query=query,
-            top_k=top_k * 3,
+            top_k=fetch_k,
             filters=ft_filters if ft_filters else None,
         )
+
+        vector_res, ft_res = await asyncio.gather(vector_task, ft_task, return_exceptions=True)
+
+        vector_results: list[Any] = []
+        if isinstance(vector_res, BaseException):
+            logger.warning("Vector search (Qdrant) failed during hybrid search", extra={"error": str(vector_res)})
+        elif isinstance(vector_res, list):
+            vector_results = vector_res
+
+        keyword_results: list[Any] = []
+        if isinstance(ft_res, BaseException):
+            logger.warning("FULLTEXT search (MySQL) failed during hybrid search", extra={"error": str(ft_res)})
+        elif isinstance(ft_res, list):
+            keyword_results = ft_res
 
         # 3. Compute RRF Scores
         # Map: article_id -> {vector_rank, keyword_rank, rrf_score, chunks}
