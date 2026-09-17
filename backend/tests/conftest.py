@@ -17,6 +17,11 @@ os.environ.setdefault("APP_DEBUG", "true")
 os.environ.setdefault("MODEL_CONFIG_PATH", "../model_config.yaml")
 os.environ.setdefault("GEMINI_API_KEY", "mock-test-gemini-key")
 os.environ.setdefault("GOOGLE_API_KEY", "mock-test-google-key")
+os.environ.setdefault("OPENROUTER_API_KEYS", "mock-test-openrouter-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "mock-test-anthropic-key")
+os.environ.setdefault("OPENAI_API_KEY", "mock-test-openai-key")
+os.environ.setdefault("GROQ_API_KEY", "mock-test-groq-key")
+os.environ.setdefault("NVIDIA_API_KEY", "mock-test-nvidia-key")
 
 
 

@@ -77,6 +77,11 @@ jobs:
           TESTING: "true"
           GEMINI_API_KEY: "mock-ci-gemini-key"
           GOOGLE_API_KEY: "mock-ci-google-key"
+          OPENROUTER_API_KEYS: "mock-ci-openrouter-key"
+          ANTHROPIC_API_KEY: "mock-ci-anthropic-key"
+          OPENAI_API_KEY: "mock-ci-openai-key"
+          GROQ_API_KEY: "mock-ci-groq-key"
+          NVIDIA_API_KEY: "mock-ci-nvidia-key"
         run: |
           uv run pytest tests/ -v --tb=short
 
