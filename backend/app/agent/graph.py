@@ -52,6 +52,14 @@ _FOLLOWUP_PRONOUN_PATTERN = re.compile(
 )
 
 
+_BYPASS_EXCLUDED_LISTING_WORDS: frozenset[str] = frozenset({
+    "list", "show", "all articles", "all news", "all stories",
+    "headlines", "headings", "catalog", "manifest", "enumerate",
+    "what articles", "what news", "articles on page", "news on page",
+    "all the", "show me all", "what are all",
+})
+
+
 def _can_bypass_llm_planner(
     query: str,
     chat_history: list[dict[str, Any]],
@@ -64,7 +72,12 @@ def _can_bypass_llm_planner(
         return False
     q_low = query.lower().strip()
     is_count = bool(re.search(r"\b(how many|count of|total number of)\s+(articles?|issues?|pages?|photos?|advertisements?)\b", q_low))
-    is_date_search = bool(re.search(r"\b(on|dated?)\s+\d{4}-\d{2}-\d{2}\b", q_low)) and not any(w in q_low for w in ["compare", "vs", "versus", "between", "both"])
+    has_listing_intent = any(w in q_low for w in _BYPASS_EXCLUDED_LISTING_WORDS)
+    is_date_search = (
+        bool(re.search(r"\b(on|dated?)\s+\d{4}-\d{2}-\d{2}\b", q_low))
+        and not any(w in q_low for w in ["compare", "vs", "versus", "between", "both"])
+        and not has_listing_intent
+    )
     is_timeline = bool(re.search(r"\b(timeline of|chronology of)\b", q_low))
     return is_count or is_date_search or is_timeline
 

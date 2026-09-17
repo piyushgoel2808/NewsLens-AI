@@ -186,13 +186,22 @@ Output: {"thought_process": "User is searching for key news and coverage profile
 Query: "Did The Morning Standard report on power tariff on 2026-08-01?"
 Output: {"thought_process": "Auditing single-newspaper coverage or omission of a specific topic/event on a given date. Schedule coverage_analysis.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "coverage_analysis", "arguments": {"query": "power tariff", "target_date": "2026-08-01", "newspaper_name": "The Morning Standard"}, "purpose": "Audit coverage presence for The Morning Standard regarding power tariff"}]}
 
+Query: "List all news on page 5 of Hindustan Times on 2026-09-03"
+Output: {"thought_process": "User wants a complete catalog of articles on page 5 of Hindustan Times on 2026-09-03. This is an article_catalog query — the user is asking to LIST articles on a specific page. Schedule sql_analytics issue_summary with page_filter=5 to get the relational manifest, then hybrid_search for article text excerpts.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "Hindustan Times", "issue_date": "2026-09-03", "page_filter": "5", "analysis_type": "issue_summary"}, "purpose": "Retrieve relational manifest of all articles on page 5"}, {"tool_name": "hybrid_search", "arguments": {"query": "news articles Hindustan Times 2026-09-03 page 5", "newspaper_name": "Hindustan Times", "date_from": "2026-09-03", "date_to": "2026-09-03", "page_filter": "5", "top_k": 8}, "purpose": "Retrieve article text excerpts for page 5"}], "answer_blueprint": {"user_intent": "page_article_catalog", "overall_tone": "authoritative_journalistic", "sections": [{"title": "### ⚡ Executive Summary: Page 5 Article Catalog", "format_type": "narrative", "content_focus": "Total articles on page 5, publication, date", "target_length": "1 to 2 sentences"}, {"title": "### 📋 Comprehensive Articles Catalog", "format_type": "markdown_table", "content_focus": "Complete table of all page 5 articles with headline, section, author", "target_length": "Full table of all articles"}, {"title": "### 📌 Key Featured Stories", "format_type": "bullet_list", "content_focus": "Top 3 stories with inline citations", "target_length": "3 bullets"}, {"title": "### 🔍 Explore Further", "format_type": "bullet_list", "content_focus": "Follow-up prompts for specific articles on this page", "target_length": "2 prompts"}], "table_columns": ["#", "Page", "Section", "Headline", "Author / Byline"], "prohibited_elements": ["count statistics instead of article table", "narrative summaries instead of catalog rows", "conversational filler"]}}
+
+Query: "What are all the articles and headings on page 6 of The Hindu dated 2026-09-03?"
+Output: {"thought_process": "User wants all article headings/catalog on a specific page. This is a page-scoped article_catalog query. Schedule sql_analytics issue_summary with page_filter=6 to get the relational manifest of page 6 articles.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Hindu", "issue_date": "2026-09-03", "page_filter": "6", "analysis_type": "issue_summary"}, "purpose": "Retrieve complete article manifest for page 6 of The Hindu on 2026-09-03"}]}
+
+Query: "Show me all headlines from Business Standard on 2026-08-15"
+Output: {"thought_process": "User wants a catalog of all headlines from a specific newspaper edition. No page specified — retrieve the complete issue manifest. This is article_catalog not quantitative_trend because the user is asking to LIST articles, not count them.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "Business Standard", "issue_date": "2026-08-15", "analysis_type": "issue_summary"}, "purpose": "Retrieve complete article manifest for Business Standard on 2026-08-15"}, {"tool_name": "hybrid_search", "arguments": {"query": "Business Standard news 2026-08-15", "newspaper_name": "Business Standard", "date_from": "2026-08-15", "date_to": "2026-08-15", "top_k": 8}, "purpose": "Retrieve article text excerpts for synthesis"}]}
+
 ### ⚡ REASONING & OUTPUT INSTRUCTIONS
 - Keep internal chain-of-thought concise (<80 words).
 - CRITICAL DATE RESTRAINT: NEVER invent or hallucinate date ranges (e.g. "2020-01-01" to "2022-12-31") or historical years when the user query does NOT specify any dates! If the query contains no dates, leave `date_from`, `date_to`, `issue_date`, and `target_date` empty or omitted so the retrieval tools search across the entire broadsheet archive.
 - ARCHETYPE SELECTION:
   * For queries citing specific statements, article quotes, headlines, or factual claims without explicit multi-newspaper comparative keywords, choose `factual_lookup` and schedule targeted `hybrid_search`.
   * For counting, frequencies, volume, or metadata questions (e.g. "how many issues", "number of pages", "count of articles", "total editions"), choose `quantitative_trend` or `factual_lookup`. NEVER select `article_catalog` for scalar counts!
-  * Select `article_catalog` ONLY when the user explicitly asks to list, enumerate, or browse multiple distinct articles (e.g. "list all articles", "show catalog of health news").
+  * Select `article_catalog` when the user wants to LIST, ENUMERATE, or BROWSE multiple articles — including page-scoped listing queries like "list all news on page 5", "what articles are on page 6", "show headlines on page 3 of [newspaper]", "show all articles in [newspaper] on [date]". A query asking to LIST articles on a specific page IS article_catalog, not quantitative_trend.
   * Only select `cross_newspaper_comparison` when the user explicitly asks to compare across publications (e.g. "compare newspapers", "across editions", "coverage differences").
 - You MUST respond with a valid JSON object matching the required schema. Return only the JSON object, with no markdown fences or conversational text.
 - DYNAMIC ANSWER BLUEPRINT (OPTIONAL):
@@ -466,7 +475,53 @@ DEFAULT_BLUEPRINTS: dict[str, AnswerBlueprint] = {
         ],
         prohibited_elements=["speculative ungrounded claims", "conversational filler"],
     ),
+    "quantitative_trend": AnswerBlueprint(
+        user_intent="scalar_count_metric",
+        overall_tone="concise_atomic",
+        target_word_count=100,
+        sections=[
+            SectionSpec(
+                title="### ⚡ Direct Finding",
+                format_type="narrative",
+                content_focus="Direct authoritative answer with verified number, publication, and date scope.",
+                target_length="1 to 2 sentences",
+            ),
+            SectionSpec(
+                title="### 📊 Key Computed Metrics",
+                format_type="metric_card",
+                content_focus="Compact metric summary of verified archive counts and active query filters.",
+                target_length="Compact bullet list or metric card",
+            ),
+        ],
+        prohibited_elements=[
+            "empty catalog tables",
+            "fake sector highlights",
+            "artificial explore further questions",
+            "conversational filler",
+        ],
+    ),
+    "analytical_computation": AnswerBlueprint(
+        user_intent="statistical_computation",
+        overall_tone="analytical_comparison",
+        sections=[
+            SectionSpec(
+                title="### ⚡ Computed Result",
+                format_type="narrative",
+                content_focus="Direct computed answer with exact verified number and methodology.",
+                target_length="1 to 2 sentences",
+            ),
+            SectionSpec(
+                title="### 📊 Analytical Breakdown",
+                format_type="metric_card",
+                content_focus="Supporting statistics, breakdowns, or intermediate computed values.",
+                target_length="Compact metric card",
+            ),
+        ],
+        prohibited_elements=["narrative speculation", "conversational filler"],
+    ),
 }
+
+DEFAULT_BLUEPRINTS["macro_summary"] = DEFAULT_BLUEPRINTS["quantitative_trend"]
 
 
 def build_heuristic_answer_blueprint(
@@ -510,7 +565,8 @@ def build_heuristic_answer_blueprint(
     # Scalar / count query
     is_scalar_or_count = bool(re.search(r"\b(how many|no of|number of|count of|total issues|total pages|total articles|count issues|count pages|count advertisements|ad count)\b", q_lower))
     if is_scalar_or_count or (archetype in ("quantitative_trend", "analytical_computation") and not any(w in q_lower for w in ["table", "list all", "catalog"])):
-        bp = DEFAULT_BLUEPRINTS["scalar_count_metric"].model_copy(deep=True)
+        bp_key = archetype if archetype in DEFAULT_BLUEPRINTS else "scalar_count_metric"
+        bp = DEFAULT_BLUEPRINTS[bp_key].model_copy(deep=True)
         bp.target_word_count = target_word_count or 80
         return bp
 
@@ -1184,6 +1240,8 @@ class QueryPlanner:
             else:
                 p_match = re.search(r"\b(?:page|pg|p\.?)\s*(\d{1,3})\b", q_lower)
                 page_filter = p_match.group(1) if p_match else None
+        if page_filter is not None:
+            page_filter = str(page_filter).strip()
 
         # Detect single article reading / summarization intent
         is_target_art = bool(
@@ -1317,9 +1375,9 @@ class QueryPlanner:
                 page_filter and re.search(r"\b(?:1st|first|2nd|second|3rd|third|lead|top|main|head)\s+(?:news|story|article|headline|item)\b", q_lower)
             )
             is_availability = bool(re.search(r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b", q_lower))
-            is_count = is_availability or (any(w in q_lower for w in ["how many", "total articles", "number of articles", "count of articles", "no of", "count of", "number of issues", "total issues", "no of newspaper", "how many issues", "count of pages", "number of pages"]) and not page_filter)
-            is_whole_or_count = is_availability or (bool(page_filter) and not is_ordinal_page) or is_count or any(w in q_lower for w in ["today's paper", "edition", "whole", "entire", "overview", "summarize", "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume"])
-            is_catalog = (not is_availability) and (is_ordinal_page or any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories"]) or bool(category))
+            is_count = is_availability or any(w in q_lower for w in ["how many", "total articles", "number of articles", "count of articles", "no of articles", "count of", "number of issues", "total issues", "no of newspaper", "how many issues", "count of pages", "number of pages"])
+            is_whole_or_count = is_availability or is_count or any(w in q_lower for w in ["today's paper", "edition", "whole", "entire", "overview", "summarize", "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume"])
+            is_catalog = (not is_availability) and (is_ordinal_page or any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories", "headlines", "headings", "what articles", "articles on"]) or bool(category) or (bool(page_filter) and not is_count))
             if is_ordinal_page:
                 archetype = "article_catalog"
             elif is_archive_np and not has_article_words:
@@ -1339,7 +1397,7 @@ class QueryPlanner:
                 atype = "count_photos"
             elif is_availability or (is_archive_np and not has_article_words) or (is_count and ("issue" in q_lower or "newspaper" in q_lower) and not has_article_words):
                 atype = "count_issues"
-            elif is_count:
+            elif is_count and not page_filter:
                 atype = "count_articles"
             else:
                 atype = "issue_summary"

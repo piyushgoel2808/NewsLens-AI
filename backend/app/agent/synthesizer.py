@@ -593,6 +593,7 @@ class AnswerSynthesizer:
         text: str,
         evidence_items: list[dict[str, Any]],
         target_page: int | None = None,
+        archetype: str | None = None,
     ) -> list[AgentCitation]:
         """Extract and structure verified citations mentioned in the text or used from evidence."""
         citations: list[AgentCitation] = []
@@ -628,6 +629,26 @@ class AnswerSynthesizer:
             ]
             if page_filtered:
                 candidate_items = page_filtered
+
+        # Step 1c: Citation harvesting for article_catalog queries
+        # When archetype == "article_catalog", do not depend solely on token overlap inside narrative text;
+        # directly register genuine articles into citations so each catalog row links to its respective card in the UI.
+        if archetype == "article_catalog":
+            for item in candidate_items:
+                if int(item.get("article_id") or 0) > 0:
+                    raw_hl = item.get("headline", "")
+                    sub_hl = item.get("subheadline")
+                    byline = item.get("byline_author")
+                    snip = item.get("snippet") or item.get("summary") or ""
+                    hl, eff_byline = sanitize_headline(raw_hl, subheadline=sub_hl, byline_author=byline, snippet=snip)
+                    photo_id = item.get("photo_id")
+                    if photo_id:
+                        dedup_key = f"visual_{photo_id}"
+                    else:
+                        dedup_key = f"{item.get('newspaper_name')}_{item.get('issue_date')}_{hl}"
+                    if dedup_key not in seen_keys:
+                        seen_keys.add(dedup_key)
+                        citations.append(self._make_citation(item, headline=hl))
 
         # Step 2: Check for references in synthesized text
         for item in candidate_items:
@@ -756,7 +777,7 @@ class AnswerSynthesizer:
                 query.lower(),
             )
             or (
-                archetype in ("quantitative_trend", "factual_lookup", "article_catalog")
+                archetype in ("quantitative_trend", "factual_lookup")
                 and bool(ev_items)
                 and not has_real_articles
             )
@@ -1053,7 +1074,7 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
                     )
                     if was_corrected:
                         logger.warning("Synthesizer fact-checker intercepted ungrounded answer", extra={"diagnosis": diag})
-                    citations = self.extract_citations(answer_text, evidence_items, target_page=target_page)
+                    citations = self.extract_citations(answer_text, evidence_items, target_page=target_page, archetype=archetype)
                     citations = await self.resolve_authoritative_citations(citations, target_page=target_page)
                     return answer_text, citations, cost_usd
                 logger.warning(
@@ -1073,7 +1094,7 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
         )
         if was_corrected:
             logger.warning("Synthesizer fact-checker intercepted ungrounded answer in deterministic summary", extra={"diagnosis": diag})
-        citations = self.extract_citations(answer_text, evidence_items, target_page=target_page)
+        citations = self.extract_citations(answer_text, evidence_items, target_page=target_page, archetype=archetype)
         citations = await self.resolve_authoritative_citations(citations, target_page=target_page)
         return answer_text, citations, cost_usd
 

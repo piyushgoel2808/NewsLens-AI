@@ -76,7 +76,14 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
         target_item = sorted_evidence.pop(matching_idx)
         budgeted_items = [target_item] + sorted_evidence[:2]
     else:
-        budgeted_items = sorted_evidence[:12] if sorted_evidence else []
+        has_manifest_evidence = any(
+            item.get("source_tool", "").startswith("sql_analytics")
+            or "RELATIONAL ARCHIVE MANIFEST" in str(item.get("snippet", ""))
+            or "Issue Manifest:" in str(item.get("headline", ""))
+            for item in sorted_evidence
+        )
+        item_cap = 30 if has_manifest_evidence else 12
+        budgeted_items = sorted_evidence[:item_cap] if sorted_evidence else []
 
     is_visual_query = any(
         w in q_lower

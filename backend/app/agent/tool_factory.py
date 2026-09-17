@@ -192,11 +192,16 @@ def reconcile_and_sanitize_arguments(
     if extracted.get("category_filter") and "category_filter" not in sanitized:
         sanitized["category_filter"] = extracted["category_filter"]
 
+    if extracted.get("page_filter") and "page_filter" not in sanitized:
+        sanitized["page_filter"] = str(extracted["page_filter"]).strip()
+
     if sanitized.get("page_filter") is not None:
         p_val = str(sanitized["page_filter"]).strip()
         is_front_page = p_val == "1" and bool(re.search(r"\b(?:front[\s-]*page|cover[\s-]*page|page\s*(?:1|one))\b", query, re.I))
         if not is_front_page and not re.search(rf"\b(?:page|pg|p\.?)\s*{re.escape(p_val)}\b", query, re.I):
             sanitized.pop("page_filter", None)
+        else:
+            sanitized["page_filter"] = p_val
 
     if extracted.get("issue_id") is not None and "issue_id" not in sanitized:
         sanitized["issue_id"] = extracted["issue_id"]

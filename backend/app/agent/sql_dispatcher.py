@@ -148,7 +148,7 @@ class SQLAnalyticsDispatcher:
         active_newspaper_name: str | None,
         active_issue_date: str | None,
     ) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
-        page_filter = args.get("page_filter")
+        page_filter = str(args["page_filter"]).strip() if args.get("page_filter") is not None else None
         d_from = args.get("date_from")
         d_to = args.get("date_to")
         has_date_range = bool(d_from and d_to)
@@ -184,7 +184,7 @@ class SQLAnalyticsDispatcher:
             if not np_arg and extracted.get("newspaper_name"):
                 np_arg = extracted["newspaper_name"]
             if not page_filter and extracted.get("page_filter"):
-                page_filter = extracted["page_filter"]
+                page_filter = str(extracted["page_filter"]).strip()
             if not iss_d_arg and extracted.get("issue_date"):
                 iss_d_arg = extracted["issue_date"]
 
@@ -247,6 +247,21 @@ class SQLAnalyticsDispatcher:
                             "source_tool": "sql_analytics",
                         }
                     )
+                    for a in summary.get("articles", [])[:30]:
+                        art_id = a.get("id") or a.get("article_id")
+                        if art_id:
+                            items.append(
+                                {
+                                    "article_id": art_id,
+                                    "headline": a.get("headline", ""),
+                                    "newspaper_name": summary.get("newspaper", "Archive"),
+                                    "issue_date": summary.get("issue_date", iss_d_arg),
+                                    "pages": [a.get("page_number", 1)],
+                                    "snippet": f"\"{a.get('headline')}\" published in {summary.get('newspaper', 'Archive')} on Page {a.get('page_number', 1)} ({summary.get('issue_date', iss_d_arg)}). Section: {a.get('section', 'General')}, Word count: {a.get('word_count', 0)}.",
+                                    "prominence_score": 0.85,
+                                    "source_tool": "sql_analytics_manifest",
+                                }
+                            )
             else:
                 items.append(
                     {

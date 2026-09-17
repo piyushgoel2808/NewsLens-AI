@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -534,7 +535,18 @@ async def stream_query(
         if fast_res is not None and not fast_res.is_valid and fast_res.refined_answer:
             full_answer = fast_res.refined_answer
 
-        citations = workflow._synthesizer.extract_citations(full_answer, evidence)
+        target_page_num = None
+        from app.agent.extractor import extract_parameters_from_query
+        p_val = extract_parameters_from_query(query).get("page_filter")
+        if p_val:
+            with contextlib.suppress(ValueError, TypeError):
+                target_page_num = int(p_val)
+
+        eff_arch = getattr(plan_res, "archetype", effective_archetype)
+        citations = workflow._synthesizer.extract_citations(
+            full_answer, evidence, target_page=target_page_num, archetype=eff_arch
+        )
+        citations = await workflow._synthesizer.resolve_authoritative_citations(citations, target_page=target_page_num)
         citations_list = [dict(c) for c in citations]
         yield f"event: citations\ndata: {json.dumps({'citations': citations_list})}\n\n"
 

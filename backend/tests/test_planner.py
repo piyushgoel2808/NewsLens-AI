@@ -117,15 +117,15 @@ class TestQueryPlanner:
     def test_plan_page_specific_article_queries(self) -> None:
         planner = QueryPlanner()
         queries = [
-            ("list no of articles on pg 7", "7"),
-            ("how many articles on page 3", "3"),
-            ("articles on page 10", "10"),
-            ("what articles are on pg 4", "4"),
-            ("List articles on page 5", "5"),
+            ("list no of articles on pg 7", "7", "quantitative_trend"),
+            ("how many articles on page 3", "3", "quantitative_trend"),
+            ("articles on page 10", "10", "article_catalog"),
+            ("what articles are on pg 4", "4", "article_catalog"),
+            ("List articles on page 5", "5", "article_catalog"),
         ]
-        for q, expected_page in queries:
+        for q, expected_page, expected_archetype in queries:
             plan = planner.plan_query(q)
-            assert plan.archetype == "quantitative_trend"
+            assert plan.archetype == expected_archetype
             sql_tool = next((t for t in plan.tool_calls if t.tool_name == "sql_analytics"), None)
             assert sql_tool is not None
             assert sql_tool.arguments.get("analysis_type") == "issue_summary"
