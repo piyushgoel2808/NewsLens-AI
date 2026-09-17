@@ -40,10 +40,7 @@ from app.ingestion.layout import (
     SegmentedArticle,
 )
 from app.ingestion.media_extractor import MediaExtractor
-from app.ingestion.metadata import (
-    ConsensusExtractor,
-    FolioDetector,
-)
+from app.ingestion.metadata import ConsensusExtractor
 from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.parsers import (
     DoclingLayoutParser,
@@ -208,15 +205,11 @@ async def run_ingestion_pipeline(
             phase1_layouts = dict(phase1_results_list)
 
         # Step 5: Convert Skeletons & Run Selective Phase 2 Enrichment
-        folio_detector = FolioDetector()
         media_extractor = MediaExtractor(minio=store, db=db)
         all_pages_articles: dict[int, list[SegmentedArticle]] = {}
         page_media_items: dict[int, list[ExtractedPhotoData]] = {}
         parsed_doc_items_by_page: dict[int, list[Any]] = {}
         page_extractions: list[dict[str, Any]] = []
-
-        last_known_folio: int | None = None
-        last_known_pdf_page: int | None = None
 
         for i, rendered in enumerate(rendered_pages):
             page_num = rendered.page_number
@@ -228,25 +221,9 @@ async def run_ingestion_pipeline(
             res = await db.execute(stmt)
             page_record = res.scalar_one_or_none()
 
-            printed_folio = layout_data.printed_page_number or folio_detector.extract_printed_page_number(
-                page_number=page_num,
-                height_px=float(rendered.height_px),
-                width_px=float(rendered.width_px),
-                blocks=analysis.blocks,
-                is_advertisement_page=layout_data.is_advertisement_page or analysis.is_advertisement,
-                last_known_folio_num=last_known_folio,
-                last_known_pdf_page=last_known_pdf_page,
-                total_issue_pages=len(rendered_pages),
-            )
-
             if page_record:
-                page_record.printed_page_number = printed_folio
                 page_record.is_advertisement_page = layout_data.is_advertisement_page or analysis.is_advertisement
                 page_record.ingestion_status = "layout_done"
-
-            if printed_folio and printed_folio.isdigit():
-                last_known_folio = int(printed_folio)
-                last_known_pdf_page = page_num
 
             # Identify if using pure Google Cloud Vision layout (already has complete OCR blocks for the page)
             is_gcv_engine = "google" in (parser_engine or "").lower() or "vision" in (parser_engine or "").lower()
@@ -447,7 +424,6 @@ async def run_ingestion_pipeline(
 
             page_extractions.append({
                 "page_number": page_num,
-                "printed_page_number": printed_folio,
                 "is_advertisement_page": page_record.is_advertisement_page if page_record else False,
                 "articles_count": len(page_segmented_articles),
             })
@@ -480,11 +456,9 @@ async def run_ingestion_pipeline(
         issue_date_str = str(issue.issue_date) if issue else ""
 
         page_id_map: dict[int, int] = {}
-        page_folio_map: dict[int, str] = {}
         pages_fetch = await db.execute(select(Page).where(Page.issue_id == issue_id))
         for p in pages_fetch.scalars().all():
             page_id_map[p.page_number] = p.id
-            page_folio_map[p.page_number] = p.printed_page_number or str(p.page_number)
 
         articles_manifest: list[dict[str, Any]] = []
         total_chunks_created = 0
@@ -581,7 +555,6 @@ async def run_ingestion_pipeline(
                         article_id=article_record.id,
                         page_id=mapped_pid,
                         page_number=p_map.page_number,
-                        printed_page_number=page_folio_map.get(p_map.page_number, str(p_map.page_number)),
                         bbox_json={"bboxes": [list(b) for b in p_map.bbox_list]},
                         block_order=p_map.block_order,
                     )
@@ -703,7 +676,6 @@ async def run_ingestion_pipeline(
                     headline=assembled.headline,
                     section=article_record.section or "National",
                     pages=[pm.page_number for pm in assembled.pages_mapping],
-                    printed_pages=[page_folio_map.get(pm.page_number, str(pm.page_number)) for pm in assembled.pages_mapping],
                 )
 
                 # 2. Generate dedicated visual chunks for infographics, data charts, and tables
@@ -719,7 +691,6 @@ async def run_ingestion_pipeline(
                             headline=assembled.headline,
                             section=article_record.section or "National",
                             pages=[pm.page_number for pm in assembled.pages_mapping],
-                            printed_pages=[page_folio_map.get(pm.page_number, str(pm.page_number)) for pm in assembled.pages_mapping],
                             chunk_index=p_idx,
                         )
                         photo_bbox = photo.bbox_json.get("bbox", []) if photo.bbox_json else []
@@ -737,7 +708,6 @@ async def run_ingestion_pipeline(
                         article_type=article_record.article_type,
                         prominence_score=article_record.prominence_score,
                         page_numbers=[pm.page_number for pm in assembled.pages_mapping],
-                        printed_pages=[page_folio_map.get(pm.page_number, str(pm.page_number)) for pm in assembled.pages_mapping],
                         entities=[e.name for e in meta_res.entities],
                         topics=[t.name for t in meta_res.topics],
                         chunks=chunks,
@@ -759,7 +729,6 @@ async def run_ingestion_pipeline(
                         article_type=article_record.article_type,
                         prominence_score=article_record.prominence_score,
                         page_numbers=[pm.page_number for pm in assembled.pages_mapping],
-                        printed_pages=[page_folio_map.get(pm.page_number, str(pm.page_number)) for pm in assembled.pages_mapping],
                         entities=[e.name for e in meta_res.entities],
                         topics=[t.name for t in meta_res.topics],
                         chunks=[v_chunk],

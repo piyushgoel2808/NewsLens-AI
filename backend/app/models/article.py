@@ -119,7 +119,6 @@ class ArticlePage(Base):
         Integer, ForeignKey("pages.id", ondelete="CASCADE"), nullable=False, index=True
     )
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    printed_page_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # bboxes on this page for this article
     bbox_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     block_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

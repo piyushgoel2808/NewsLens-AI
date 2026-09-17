@@ -121,7 +121,6 @@ def test_chunker_create_visual_chunk() -> None:
         headline="Tata Power Q1 Results",
         section="Corporate & Industry",
         pages=[1, 4],
-        printed_pages=["1", "4"],
         chunk_index=3,
     )
 

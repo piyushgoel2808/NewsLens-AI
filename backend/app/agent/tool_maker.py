@@ -65,6 +65,16 @@ async def analyze(db, query: str, context: dict) -> dict:
 15. **Zero-Division & Strict No-NaN Safety**: NEVER return `NaN`, `nan`, or `null` in your summary or metadata! Before calculating `.mean()`, `.std()`, correlations, or averages, verify that rows exist (`if not rows:` or `if df.empty:`). If 0 rows match, explicitly return `{'summary': 'No matching records found in the archive...', 'data': [], 'metadata': {'count': 0}}`. Never output `nan` or `NaN` for any metric.
 16. **Pandas Filtering & Type Safety**: SQL `WHERE` clauses already filter by date and newspaper. DO NOT re-filter `df['issue_date'] == target_dt` in pandas if SQL already filtered on date, because MySQL dates can cause type mismatch with strings. If you must compare dates in pandas, convert first with `df['issue_date'].astype(str) == str(target_dt)`. NEVER do `df['newspaper_name'] == np_pattern` in pandas if `np_pattern` contains SQL wildcards (`%`) like `'%Goan%'`; use `.str.contains(clean_np, case=False, na=False)` without wildcards.
 17. **DataFrame & Dict Key Consistency**: Always match column names in pandas EXACTLY to your SQL `SELECT` aliases. If you need to access `df['category']` or `row['category']`, ensure you wrote `SELECT c.name AS category` in your SQL! If you wrote `SELECT c.name AS category_name`, you must access `df['category_name']`. Never access dictionary or DataFrame keys that were not selected in your SQL query.
+18. **Page Number Filtering & Junction Schema**: The `articles` table has NO `page_number` column! Articles link to pages via the `article_pages` junction table. To filter or calculate metrics (like average word count, article counts, or page manifests) for a specific page, ALWAYS join `article_pages`:
+    ```sql
+    SELECT a.id, a.headline, a.word_count, ap.page_number
+    FROM articles a
+    JOIN article_pages ap ON a.id = ap.article_id
+    JOIN issues i ON a.issue_id = i.id
+    JOIN newspapers n ON i.newspaper_id = n.id
+    WHERE ap.page_number = :page_num AND i.issue_date = :issue_date
+    ```
+    NEVER write `articles.page_number`, `a.page_number`, `p.article_id`, or `p.primary_page_id`. Standardize 100% on sequential integer page numbers (`page_number` in `article_pages`), NEVER printed page strings or folios.
 
 ### FEW-SHOT EXAMPLES
 
@@ -289,6 +299,82 @@ async def analyze(db, query: str, context: dict) -> dict:
             "newspaper_name": row[0],
             "issue_date": str(row[1]),
             "total_pages": pages_reported,
+        },
+    }
+```
+
+#### Example 4: Average Word Count and Metrics on a Specific Page
+```python
+import re
+import pandas as pd
+from sqlalchemy import text
+
+
+async def analyze(db, query: str, context: dict) -> dict:
+    if db is None:
+        return {
+            "summary": "Mock database session provided.",
+            "data": [],
+            "metadata": {},
+        }
+
+    # Extract target page number (e.g. page 6)
+    page_match = re.search(r"page\s*(\d+)", query, re.IGNORECASE)
+    target_page = int(page_match.group(1)) if page_match else 6
+
+    # Target date and newspaper from pre-normalized context
+    target_date = context.get("target_date") or context.get("issue_date")
+    newspaper_name = context.get("newspaper_name") or "Hindustan Times"
+
+    stmt = text(\"\"\"
+        SELECT a.id AS article_id, a.headline, a.word_count, ap.page_number, n.name AS newspaper_name, i.issue_date
+        FROM articles a
+        JOIN article_pages ap ON a.id = ap.article_id
+        JOIN issues i ON a.issue_id = i.id
+        JOIN newspapers n ON i.newspaper_id = n.id
+        WHERE ap.page_number = :page_number
+          AND (:target_date IS NULL OR i.issue_date = :target_date)
+          AND (:np_name IS NULL OR LOWER(n.name) LIKE LOWER(:np_name))
+        ORDER BY a.prominence_score DESC
+    \"\"\")
+
+    res = await db.execute(stmt, {
+        "page_number": target_page,
+        "target_date": target_date,
+        "np_name": f"%{newspaper_name}%" if newspaper_name else None,
+    })
+    rows = res.fetchall()
+
+    if not rows:
+        return {
+            "summary": f"No articles found on Page {target_page} for {newspaper_name} on {target_date}.",
+            "data": [],
+            "metadata": {"count": 0, "page_number": target_page},
+        }
+
+    df = pd.DataFrame(rows, columns=["article_id", "headline", "word_count", "page_number", "newspaper_name", "issue_date"])
+    valid_words = df[df["word_count"] > 0]["word_count"]
+    avg_words = float(valid_words.mean()) if not valid_words.empty else 0.0
+    total_words = int(valid_words.sum()) if not valid_words.empty else 0
+
+    summary = (
+        f"### Page {target_page} Article Word Count Analytics\\n\\n"
+        f"- **Newspaper**: {df.iloc[0]['newspaper_name']}\\n"
+        f"- **Date**: {df.iloc[0]['issue_date']}\\n"
+        f"- **Page Number**: {target_page}\\n"
+        f"- **Total Articles Found**: {len(df)}\\n"
+        f"- **Average Word Count**: {avg_words:.1f} words\\n"
+        f"- **Total Words on Page**: {total_words:,} words\\n"
+    )
+
+    return {
+        "summary": summary,
+        "data": df.to_dict(orient="records"),
+        "metadata": {
+            "page_number": target_page,
+            "article_count": len(df),
+            "average_word_count": round(avg_words, 2),
+            "total_words": total_words,
         },
     }
 ```

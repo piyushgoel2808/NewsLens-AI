@@ -204,23 +204,33 @@ class ToolExecutor:
             "date_to",
             "page_filter",
             "page_number",
-            "printed_page",
             "category_filter",
             "category_name",
         )
-        has_filter = any(k in args for k in filter_keys) or (np_id is not None)
-        if has_filter:
-            p_filt = args.get("page_filter") or args.get("printed_page")
-            p_num = args.get("page_number")
-            if p_filt and not p_num and str(p_filt).isdigit():
+        p_filt = args.get("page_filter") or args.get("page_number")
+        if p_filt is None and args.get("query"):
+            from app.agent.extractor import extract_parameters_from_query
+            p_ext = extract_parameters_from_query(args["query"])
+            p_filt = p_ext.get("page_filter")
+            if not np_name and p_ext.get("newspaper_name"):
+                np_name = p_ext["newspaper_name"]
+                np_id = await self._resolve_newspaper_id(np_name)
+
+        p_num: int | None = None
+        if p_filt is not None:
+            try:
                 p_num = int(p_filt)
+            except (ValueError, TypeError):
+                pass
+
+        has_filter = any(k in args for k in filter_keys) or (np_id is not None) or (p_filt is not None)
+        if has_filter:
             filters = SearchFilter(
                 newspaper_id=np_id,
                 newspaper_name=np_name,
                 date_from=args.get("date_from"),
                 date_to=args.get("date_to"),
                 page_number=p_num,
-                printed_page=str(p_filt) if p_filt else None,
                 category_name=args.get("category_filter") or args.get("category_name"),
             )
 
@@ -241,7 +251,6 @@ class ToolExecutor:
                 date_from=filters.date_from,
                 date_to=filters.date_to,
                 page_number=filters.page_number,
-                printed_page=filters.printed_page,
                 category_name=None,
             )
             fallback_results = await self._hybrid_search.search(
@@ -271,9 +280,9 @@ class ToolExecutor:
                     "byline_author": eff_byline or hr.byline_author,
                     "newspaper_name": hr.newspaper_name,
                     "issue_date": hr.issue_date,
+                    "page_number": p_num or (hr.pages[0] if hr.pages else 1),
                     "pages": hr.pages,
                     "bboxes": hr.bboxes,
-                    "printed_pages": hr.printed_pages,
                     "snippet": clean_snip,
                     "prominence_score": hr.prominence_score,
                     "source_tool": "hybrid_search",
@@ -367,15 +376,17 @@ class ToolExecutor:
         if result is not None:
             return result
 
-        # Unsupported or custom analysis type requested by LLM (e.g. count_pages, word_count_by_author)
-        # Delegate directly to ToolMaker dynamic code synthesis.
+        # If sql_dispatcher returned None and tool_maker is enabled, delegate to dynamic analysis
         if self._tool_maker:
             analysis_type = args.get("analysis_type")
-            logger.info(
-                f"Unsupported sql_analytics analysis_type '{analysis_type}'; delegating to dynamic tool synthesis."
-            )
-            dyn_items, dyn_hits = await self._execute_dynamic_analysis(args, state)
-            return dyn_items, dyn_hits, {}
+            from app.agent.planner import is_dynamic_analysis_permitted
+            q_str = str(args.get("query") or state.get("query") or "")
+            if is_dynamic_analysis_permitted(q_str):
+                logger.info(
+                    f"Unsupported sql_analytics analysis_type '{analysis_type}'; delegating to dynamic tool synthesis."
+                )
+                dyn_items, dyn_hits = await self._execute_dynamic_analysis(args, state)
+                return dyn_items, dyn_hits, {}
 
         return [], 0, {}
 

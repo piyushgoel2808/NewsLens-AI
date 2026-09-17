@@ -39,14 +39,19 @@ The archive is stored in a relational MySQL database with the following core tab
    - Purpose: Canonical newsroom taxonomy. Note: The `articles` table has `category_id`, NOT a raw category string.
 
 4. `articles`:
-   - Primary Columns: `id` (INT PK), `issue_id` (INT FK -> issues.id), `category_id` (INT FK -> article_categories.id), `headline` (VARCHAR), `subheadline`, `byline_author` (VARCHAR), `section` (VARCHAR), `printed_section`, `article_type` (ENUM: 'news', 'editorial', 'opinion', 'analysis', 'advertisement', 'sidebar', etc.), `word_count` (INT), `prominence_score` (FLOAT), `page_number` (INT via primary_page_id).
+   - Primary Columns: `id` (INT PK), `issue_id` (INT FK -> issues.id), `category_id` (INT FK -> article_categories.id), `headline` (VARCHAR), `subheadline`, `byline_author` (VARCHAR), `section` (VARCHAR), `printed_section`, `article_type` (ENUM: 'news', 'editorial', 'opinion', 'analysis', 'advertisement', 'sidebar', etc.), `word_count` (INT), `prominence_score` (FLOAT), `primary_page_id` (INT FK -> pages.id).
+   - CRITICAL SCHEMA RULE: The `articles` table has NO `page_number` column. To filter or group articles by `page_number`, ALWAYS JOIN `article_pages` on `article_pages.article_id = articles.id`!
    - Purpose: Individual news stories, editorials, and commercial notices. Full text embeddings are indexed in the vector store for `hybrid_search`.
 
-5. `pages`:
+5. `article_pages`:
+   - Primary Columns: `id` (INT PK), `article_id` (INT FK -> articles.id), `page_id` (INT FK -> pages.id), `page_number` (INT), `block_order` (INT).
+   - Purpose: Maps articles to pages. Crucial: ALWAYS join `article_pages` to filter articles by page number (e.g. `JOIN article_pages ap ON a.id = ap.article_id WHERE ap.page_number = 6`).
+
+6. `pages`:
    - Primary Columns: `id` (INT PK), `issue_id` (INT FK -> issues.id), `page_number` (INT), `is_advertisement_page` (BOOLEAN).
    - Purpose: Broadsheet newspaper pages.
 
-6. `photos`:
+7. `photos`:
    - Primary Columns: `id` (INT PK), `article_id` (INT FK -> articles.id), `issue_id` (INT FK -> issues.id), `page_number` (INT), `visual_type` (VARCHAR: 'photo', 'infographic', 'chart', 'map'), `caption` (TEXT).
    - Purpose: Visual assets and infographics linked to articles and pages."""
 
@@ -66,6 +71,14 @@ ARCHIVE_SCHEMA: dict[str, frozenset[str]] = {
         "summary",
         "full_text",
         "category_id",
+        "primary_page_id",
+    }),
+    "article_pages": frozenset({
+        "id",
+        "article_id",
+        "page_id",
+        "page_number",
+        "block_order",
     }),
     "article_categories": frozenset({"id", "name"}),
     "pages": frozenset({"id", "issue_id", "page_number", "is_advertisement_page"}),
@@ -80,6 +93,9 @@ ARCHIVE_SCHEMA: dict[str, frozenset[str]] = {
 }
 
 KNOWN_COLUMN_HALLUCINATIONS: dict[str, str] = {
+    "page_number": "article_pages.page_number (join `article_pages` on `articles.id = article_pages.article_id` where `article_pages.page_number = :page_num`)",
+    "page": "article_pages.page_number (join `article_pages` on `articles.id = article_pages.article_id`)",
+    "pages": "article_pages.page_number (join `article_pages` on `articles.id = article_pages.article_id`)",
     "published_at": "issues.issue_date (join `issues` on `articles.issue_id = issues.id`)",
     "publish_date": "issues.issue_date (join `issues` on `articles.issue_id = issues.id`)",
     "publication_date": "issues.issue_date (join `issues` on `articles.issue_id = issues.id`)",

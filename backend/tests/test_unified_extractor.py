@@ -37,7 +37,6 @@ def test_page_layout_extraction_schema():
         "page_number": 1,
         "newspaper_brand": "Mint",
         "issue_date": "2026-08-25",
-        "printed_page_number": "1",
         "is_advertisement_page": False,
         "articles": [
             {
@@ -131,7 +130,7 @@ def test_repair_truncated_json_mid_sentence():
     """Verify recovery when LLM abruptly stops generating mid-sentence/mid-array."""
     truncated_raw = (
         '{"page_number": 2, "newspaper_brand": "Business Standard", "issue_date": "2024-07-29", '
-        '"printed_page_number": "2", "is_advertisement_page": true, '
+        '"is_advertisement_page": true, '
         '"articles": ['
         '{"headline": "First Valid Article", "bbox": [10.0, 10.0, 200.0, 300.0], "prominence": "lead"}, '
         '{"headline": "[Advertisement] ODISHA FOOD'

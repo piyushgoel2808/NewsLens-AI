@@ -38,7 +38,6 @@ from app.ingestion.layout import (
     SegmentedArticle,
 )
 from app.ingestion.media_extractor import MediaExtractor
-from app.ingestion.metadata import FolioDetector
 from app.ingestion.metadata_extractor import MetadataExtractor
 from app.ingestion.parsers import (
     CorruptedPdfTextLayerError,
@@ -384,21 +383,6 @@ class PageReingestionService:
                     )
                 )
 
-        # Update folio and ad status
-        folio_detector = FolioDetector()
-        blocks = single_analysis.blocks if single_analysis else []
-        printed_folio = folio_detector.extract_printed_page_number(
-            page_number=page_number,
-            height_px=float(height_px),
-            width_px=float(width_px),
-            blocks=blocks,
-            is_advertisement_page=page.is_advertisement_page,
-            total_issue_pages=issue.total_pages or 1,
-        )
-        if printed_folio:
-            page.printed_page_number = printed_folio
-        final_printed_folio = str(page.printed_page_number or printed_folio or page_number)
-
         # 6. Assemble and Classify Articles
         assembler = CrossPageAssembler()
         assembled_articles = assembler.assemble_issue_articles({page_number: page_segmented_articles})
@@ -473,7 +457,6 @@ class PageReingestionService:
                 article_id=article_record.id,
                 page_id=page.id,
                 page_number=page_number,
-                printed_page_number=page.printed_page_number or str(page_number),
                 bbox_json={"bboxes": [list(b) for b in assembled.pages_mapping[0].bbox_list]},
                 block_order=1,
             )
@@ -588,7 +571,6 @@ class PageReingestionService:
                 headline=article_rec.headline or "",
                 section=article_rec.section or "National",
                 pages=[page_number],
-                printed_pages=[final_printed_folio],
             )
 
             # 2. Dedicated visual chunks for charts and infographics
@@ -604,7 +586,6 @@ class PageReingestionService:
                         headline=article_rec.headline or "",
                         section=article_rec.section or "National",
                         pages=[page_number],
-                        printed_pages=[final_printed_folio],
                         chunk_index=p_num_idx,
                     )
                     visual_chunks.append(v_chunk)
@@ -639,7 +620,6 @@ class PageReingestionService:
                     entities=entity_names,
                     topics=topic_names,
                     chunks=chunks,
-                    printed_pages=[final_printed_folio],
                     has_photo=has_photo,
                     has_table=has_table,
                     chunk_type="text",
@@ -663,7 +643,6 @@ class PageReingestionService:
                     entities=entity_names,
                     topics=topic_names,
                     chunks=[v_chunk],
-                    printed_pages=[final_printed_folio],
                     has_photo=True,
                     has_table=photo.visual_type == "table",
                     chunk_type="visual",
@@ -692,7 +671,6 @@ class PageReingestionService:
             "status": "success",
             "issue_id": issue_id,
             "page_number": page_number,
-            "printed_page_number": final_printed_folio,
             "is_advertisement_page": page.is_advertisement_page,
             "articles_count": len(persisted_articles),
             "photos_count": sum(len(p) for p in article_photos_map.values()),

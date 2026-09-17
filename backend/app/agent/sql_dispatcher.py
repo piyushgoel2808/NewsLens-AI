@@ -51,6 +51,18 @@ class SQLAnalyticsDispatcher:
         Returns (evidence_items, hits_count, context_updates) or None if analysis_type is unhandled.
         """
         analysis_type = args.get("analysis_type")
+        if not analysis_type or str(analysis_type).lower() in ("none", "null", ""):
+            q_text = str(args.get("query") or state.get("query") or "").lower()
+            if any(w in q_text for w in ["advertisement", "ad count", "ads count", "number of ads"]):
+                analysis_type = "count_advertisements"
+            elif any(w in q_text for w in ["photo count", "photos count", "number of photos"]):
+                analysis_type = "count_photos"
+            elif any(w in q_text for w in ["number of issues", "total issues", "availability"]):
+                analysis_type = "count_issues"
+            else:
+                analysis_type = "issue_summary"
+            args["analysis_type"] = analysis_type
+
         items: list[dict[str, Any]] = []
         hits_count = 0
         context_updates: dict[str, Any] = {}
@@ -165,6 +177,16 @@ class SQLAnalyticsDispatcher:
         np_arg = args.get("newspaper_name") or (active_newspaper_name if inherit_history else None)
         iss_d_arg = args.get("issue_date") or (active_issue_date if inherit_history else None)
         iss_id_arg = args.get("issue_id") or (active_issue_id if inherit_history else None)
+
+        if not np_arg or not page_filter or not iss_d_arg:
+            from app.agent.extractor import extract_parameters_from_query
+            extracted = extract_parameters_from_query(args.get("query") or state.get("query") or "")
+            if not np_arg and extracted.get("newspaper_name"):
+                np_arg = extracted["newspaper_name"]
+            if not page_filter and extracted.get("page_filter"):
+                page_filter = extracted["page_filter"]
+            if not iss_d_arg and extracted.get("issue_date"):
+                iss_d_arg = extracted["issue_date"]
 
         is_multi_issue_date = iss_d_arg and not np_arg and not iss_id_arg
 

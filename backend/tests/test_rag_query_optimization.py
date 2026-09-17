@@ -359,3 +359,73 @@ class TestStreamingCacheAndGateways:
             assert "done" in full_sse
             # Ensure planner was NOT invoked on cache hit
             mock_workflow._planner.plan_query_async.assert_not_called()
+
+
+class TestPageNumberStandardizationAndOrdinalRetrieval:
+    """Validate zero printed page logic and ordinal page queries."""
+
+    def test_search_filter_has_no_printed_page_attributes(self) -> None:
+        from app.retrieval.hybrid_search import SearchFilter
+
+        filt = SearchFilter(page_number=6)
+        assert filt.page_number == 6
+        assert not hasattr(filt, "printed_page")
+        assert not hasattr(filt, "exclude_printed_pages")
+
+    def test_planner_routes_ordinal_page_query(self) -> None:
+        from app.agent.planner import QueryPlanner
+
+        planner = QueryPlanner()
+        plan = planner.plan_query("1st news on page 6 of hindustan times on 2026-09-03?")
+        assert plan.archetype == "article_catalog"
+
+        tool_names = [call.tool_name for call in plan.tool_calls]
+        assert "sql_analytics" in tool_names
+        assert "hybrid_search" in tool_names
+
+        sql_call = next(c for c in plan.tool_calls if c.tool_name == "sql_analytics")
+        assert sql_call.arguments.get("analysis_type") == "issue_summary"
+        assert sql_call.arguments.get("page_filter") == "6"
+
+        hs_call = next(c for c in plan.tool_calls if c.tool_name == "hybrid_search")
+        assert hs_call.arguments.get("page_filter") == "6"
+
+    @pytest.mark.asyncio
+    async def test_issue_summary_calculates_page_word_count_metrics(self) -> None:
+        from datetime import date
+        from app.models.article import Article, ArticlePage
+        from app.models.newspaper import Issue, Newspaper, Page
+        from app.retrieval.sql_analytics import SQLAnalyticsEngine
+
+        paper = Newspaper(id=1, name="Hindustan Times", country="India", default_language="en")
+        issue = Issue(id=10, newspaper_id=1, newspaper=paper, issue_date=date(2026, 9, 3))
+        p6 = Page(id=60, issue_id=10, page_number=6)
+        issue.pages = [p6]
+
+        art1 = Article(id=1, issue_id=10, headline="Lead Story Page 6", prominence_score=0.9, word_count=600, primary_page_id=60)
+        art1.article_pages = [ArticlePage(article_id=1, page_id=60, page_number=6)]
+        art2 = Article(id=2, issue_id=10, headline="Secondary Story Page 6", prominence_score=0.5, word_count=400, primary_page_id=60)
+        art2.article_pages = [ArticlePage(article_id=2, page_id=60, page_number=6)]
+
+        mock_db = AsyncMock()
+        mock_res_issue = MagicMock()
+        mock_res_issue.scalars.return_value.first.return_value = issue
+        mock_res_art = MagicMock()
+        mock_res_art.scalars.return_value.all.return_value = [art1, art2]
+        mock_db.execute.side_effect = [mock_res_issue, mock_res_art]
+
+        mock_factory = MagicMock()
+        mock_factory.return_value.__aenter__.return_value = mock_db
+
+        engine = SQLAnalyticsEngine(session_factory=mock_factory)
+        summary = await engine.get_issue_summary(newspaper_name="Hindustan Times", issue_date="2026-09-03", page_filter="6")
+
+        assert summary["total_articles"] == 2
+        assert summary["avg_word_count"] == 500.0
+        assert summary["total_words"] == 1000
+        assert summary["min_word_count"] == 400
+        assert summary["max_word_count"] == 600
+        # Verify 100% absence of printed_page key
+        for a in summary["articles"]:
+            assert "printed_page" not in a
+            assert a["page_number"] == 6

@@ -43,9 +43,7 @@ class SearchFilter:
     category_name: str | None = None
     min_prominence: float | None = None
     page_number: int | None = None
-    printed_page: str | None = None
     exclude_pages: list[int] = field(default_factory=list)
-    exclude_printed_pages: list[str] = field(default_factory=list)
     has_photo: bool | None = None
     has_table: bool | None = None
 
@@ -70,7 +68,6 @@ class HybridSearchResult:
     pages: list[int]
     issue_id: int = 0
     bboxes: list[dict[str, Any]] = field(default_factory=list)
-    printed_pages: list[str] = field(default_factory=list)
     matched_chunks: list[dict[str, Any]] = field(default_factory=list)
     rerank_score: float | None = None
     parent_article_text: str | None = None
@@ -159,8 +156,7 @@ class HybridSearchEngine:
 
             if filters.page_number:
                 search_filters_dict["page_numbers"] = filters.page_number
-            if filters.printed_page:
-                search_filters_dict["printed_pages"] = filters.printed_page
+                ft_filters["page_number"] = filters.page_number
             if filters.has_photo is not None:
                 search_filters_dict["has_photo"] = filters.has_photo
             if filters.has_table is not None:
@@ -259,7 +255,7 @@ class HybridSearchEngine:
 
         # Two-stage retrieval cascade:
         # Fetch adaptive candidates from RRF hybrid search to pass into second-stage Cross-Encoder
-        if filters and (filters.category_name or filters.category_id or filters.page_number or filters.printed_page):
+        if filters and (filters.category_name or filters.category_id or filters.page_number):
             candidate_pool_size = max(50, top_k * 4) if rerank else max(25, top_k * 2)
         else:
             candidate_pool_size = min(40, max(15, top_k * 3)) if rerank else top_k
@@ -331,39 +327,14 @@ class HybridSearchEngine:
                 if article.article_pages
                 else []
             )
-            printed_pages_list = (
-                [
-                    ap.printed_page_number
-                    for ap in sorted(article.article_pages, key=lambda p: p.page_number)
-                    if ap.printed_page_number
-                ]
-                if article.article_pages
-                else []
-            )
 
             # Hard Safety-Net Invariant: Assert no returned article has an excluded page
             if filters and filters.exclude_pages and any(p in filters.exclude_pages for p in pages_list):
                 continue
-            if filters and filters.exclude_printed_pages:
-                excl_clean = {p.strip().lower() for p in filters.exclude_printed_pages}
-                if any(
-                    p.lower() in excl_clean or f"page {p.lower()}" in excl_clean
-                    for p in printed_pages_list
-                ):
-                    continue
 
             # Check positive page filter if specified
             if filters and filters.page_number and filters.page_number not in pages_list:
                 continue
-            if filters and filters.printed_page:
-                p_filter_clean = filters.printed_page.strip().lower()
-                matches_printed = any(
-                    p.lower() == p_filter_clean or f"page {p_filter_clean}" == p.lower()
-                    for p in printed_pages_list
-                )
-                matches_pdf_page = any(str(p) == p_filter_clean for p in pages_list)
-                if not (matches_printed or matches_pdf_page):
-                    continue
 
             # Snippet & Parent-Document (Small-to-Big) Context Strategy:
             # 1. Capture exact matched chunks for citation precision
@@ -454,7 +425,6 @@ class HybridSearchEngine:
                     pages=pages_list,
                     issue_id=article.issue_id,
                     bboxes=bboxes_list,
-                    printed_pages=printed_pages_list,
                     matched_chunks=score_info["chunks"],
                     parent_article_text=parent_full_text,
                     has_visual_data=has_vis,

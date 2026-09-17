@@ -112,7 +112,6 @@ class TestPageReingestAPI:
             "status": "success",
             "issue_id": 91,
             "page_number": 1,
-            "printed_page_number": "1",
             "is_advertisement_page": False,
             "articles_count": 2,
             "photos_count": 1,

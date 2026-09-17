@@ -426,6 +426,7 @@ class SQLAnalyticsEngine:
                 .where(Article.issue_id == issue.id)
                 .options(
                     selectinload(Article.category),
+                    selectinload(Article.article_pages),
                     selectinload(Article.article_topics).selectinload(ArticleTopic.topic),
                 )
                 .order_by(Article.primary_page_id, desc(Article.prominence_score))
@@ -438,9 +439,6 @@ class SQLAnalyticsEngine:
             category_counts: dict[str, int] = {}
             manifest: list[dict[str, Any]] = []
 
-            page_folio_map = {
-                p.id: p.printed_page_number or str(p.page_number) for p in issue.pages
-            }
             page_num_map = {p.id: p.page_number for p in issue.pages}
 
             for a in articles:
@@ -453,10 +451,10 @@ class SQLAnalyticsEngine:
                 art_topics = [at.topic.name for at in (a.article_topics or []) if at.topic]
 
                 p_num = page_num_map.get(a.primary_page_id, 1) if a.primary_page_id else 1
-                folio = (
-                    page_folio_map.get(a.primary_page_id, str(p_num))
-                    if a.primary_page_id
-                    else str(p_num)
+                art_pages = (
+                    sorted({ap.page_number for ap in a.article_pages})
+                    if a.article_pages
+                    else [p_num]
                 )
 
                 clean_hl, clean_byline = sanitize_headline(
@@ -479,7 +477,7 @@ class SQLAnalyticsEngine:
                         "article_type": atype,
                         "byline_author": clean_byline or a.byline_author,
                         "page_number": p_num,
-                        "printed_page": folio,
+                        "pages": art_pages,
                         "word_count": a.word_count,
                         "prominence_score": a.prominence_score,
                     }
@@ -539,7 +537,6 @@ class SQLAnalyticsEngine:
                         if len(kw) >= 3
                     )
 
-                    # Domain noise filter: Discard obvious event listings, ads, court notices, or tax stories from Health manifests
                     if any("health" in tc.lower() for tc in target_canons):
                         has_explicit_health_term = any(
                             h_pat in hl_sub
@@ -549,7 +546,6 @@ class SQLAnalyticsEngine:
                                 "pharma", "clinical", "surgery", "diet", "mental health", "typhoid"
                             ]
                         )
-                        # Exclude conflicting primary categories (e.g. Politics, Entertainment, Crime) unless explicitly about health
                         is_conflicting_primary = any(
                             non_h in m_cat for non_h in ["politics", "entertainment", "crime", "sports"]
                         )
@@ -575,33 +571,36 @@ class SQLAnalyticsEngine:
                 filtered_manifest = matched
 
             # 2. Apply positive page filter if requested
+            target_pnum: int | None = None
             if page_number is not None:
-                filtered_manifest = [m for m in filtered_manifest if m.get("page_number") == page_number]
+                target_pnum = page_number
             elif page_filter is not None:
                 p_raw = str(page_filter).strip().lower()
                 p_target = p_raw.replace("page", "").replace("pg", "").strip()
-                printed_matches = [
-                    m
-                    for m in filtered_manifest
-                    if str(m.get("printed_page", "")).lower() == p_target
-                    or str(m.get("printed_page", "")).lower() == f"page {p_target}"
+                if p_target.isdigit():
+                    target_pnum = int(p_target)
+
+            if target_pnum is not None:
+                filtered_manifest = [
+                    m for m in filtered_manifest
+                    if target_pnum in (m.get("pages") or [m.get("page_number")])
                 ]
-                filtered_manifest = (
-                    printed_matches
-                    if printed_matches
-                    else [m for m in filtered_manifest if str(m.get("page_number")) == p_target]
-                )
 
             # 3. Apply negative page exclusion filter (hard safety net)
             if exclude_page_filter is not None:
                 excl_raw = str(exclude_page_filter).strip().lower()
                 excl_target = excl_raw.replace("page", "").replace("pg", "").strip()
-                filtered_manifest = [
-                    m for m in filtered_manifest
-                    if str(m.get("page_number")) != excl_target
-                    and str(m.get("printed_page", "")).lower() != excl_target
-                    and str(m.get("printed_page", "")).lower() != f"page {excl_target}"
-                ]
+                if excl_target.isdigit():
+                    excl_pnum = int(excl_target)
+                    filtered_manifest = [
+                        m for m in filtered_manifest
+                        if excl_pnum not in (m.get("pages") or [m.get("page_number")])
+                    ]
+
+            # Compute word count analytics on filtered manifest
+            wc_list = [m["word_count"] for m in filtered_manifest if m.get("word_count")]
+            avg_wc = round(sum(wc_list) / len(wc_list), 2) if wc_list else 0.0
+            total_wc = sum(wc_list)
 
             if section is not None or page_number is not None:
                 return filtered_manifest
@@ -616,6 +615,10 @@ class SQLAnalyticsEngine:
                 "total_articles": len(filtered_manifest),
                 "total_issue_articles": len(articles),
                 "total_pages": len(issue.pages),
+                "avg_word_count": avg_wc,
+                "total_words": total_wc,
+                "min_word_count": min(wc_list) if wc_list else 0,
+                "max_word_count": max(wc_list) if wc_list else 0,
                 "section_breakdown": section_counts,
                 "type_breakdown": type_counts,
                 "category_breakdown": category_counts,
@@ -1260,7 +1263,6 @@ class SQLAnalyticsEngine:
                 "id": s_id,
                 "headline": s_hl,
                 "page_number": sa.get("page_number", 1),
-                "printed_page": sa.get("printed_page", "1"),
                 "section": sa.get("section", "General"),
                 "category": sa.get("category", "General"),
                 "snippet": sa.get("summary") or sa.get("snippet", ""),

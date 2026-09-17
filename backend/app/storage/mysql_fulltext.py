@@ -49,11 +49,16 @@ class MySQLFullTextSearch:
         newspaper_id = filters.get("newspaper_id")
         date_from = filters.get("date_from")
         date_to = filters.get("date_to")
+        page_number = filters.get("page_number")
 
         # Build SQL dynamically but safely (parameterised, no f-string injection)
-        joins = (
-            "JOIN issues i ON a.issue_id = i.id" if (newspaper_id or date_from or date_to) else ""
-        )
+        join_clauses: list[str] = []
+        if newspaper_id or date_from or date_to:
+            join_clauses.append("JOIN issues i ON a.issue_id = i.id")
+        if page_number is not None:
+            join_clauses.append("JOIN article_pages ap ON a.id = ap.article_id")
+
+        joins = " ".join(join_clauses)
         conditions = [
             "MATCH(a.headline, a.full_text) AGAINST (:query IN NATURAL LANGUAGE MODE) > 0"
         ]
@@ -68,6 +73,9 @@ class MySQLFullTextSearch:
         if date_to:
             conditions.append("i.issue_date <= :date_to")
             params["date_to"] = date_to
+        if page_number is not None:
+            conditions.append("ap.page_number = :page_number")
+            params["page_number"] = int(page_number)
 
         where_clause = " AND ".join(conditions)
 

@@ -275,7 +275,6 @@ async def inspect_issue_ingestion(
             {
                 "id": p.id,
                 "page_number": p.page_number,
-                "printed_page_number": p.printed_page_number,
                 "is_advertisement_page": p.is_advertisement_page,
                 "width_px": p.width_px,
                 "height_px": p.height_px,
@@ -311,11 +310,6 @@ async def inspect_issue_ingestion(
                 else a.full_text
             ),
             "pages": sorted({ap.page_number for ap in a.article_pages}),
-            "printed_pages": [
-                ap.printed_page_number
-                for ap in sorted(a.article_pages, key=lambda ap: ap.page_number)
-                if ap.printed_page_number
-            ],
             "bboxes": [
                 bbox
                 for ap in a.article_pages

@@ -86,7 +86,6 @@ class Page(Base):
     width_px: Mapped[int | None] = mapped_column(Integer)
     height_px: Mapped[int | None] = mapped_column(Integer)
     ocr_confidence: Mapped[float | None] = mapped_column(Float)
-    printed_page_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     is_advertisement_page: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Status state machine:
     # pending → rasterized → layout_done → ocr_done → segmented →

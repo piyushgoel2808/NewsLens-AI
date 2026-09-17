@@ -33,14 +33,12 @@ async def test_get_issue_summary() -> None:
         id=101,
         issue_id=10,
         page_number=1,
-        printed_page_number="Cover Wrap",
         is_advertisement_page=True,
     )
     p2 = Page(
         id=102,
         issue_id=10,
         page_number=2,
-        printed_page_number="1",
         is_advertisement_page=False,
     )
     issue.pages = [p1, p2]
@@ -97,16 +95,16 @@ async def test_get_issue_summary() -> None:
         a for a in summary["articles"]
         if a["headline"] == "GDP GROWTH HITS 8.2 PERCENT"
     )
-    assert lead_art["printed_page"] == "1"
     assert lead_art["page_number"] == 2
+    assert lead_art["pages"] == [2]
     assert lead_art["byline_author"] == "Staff Reporter"
 
-    # Test with page_filter="1"
+    # Test with page_filter="2" (locates lead_art on page 2)
     mock_db.execute.side_effect = [mock_res_issue, mock_res_art]
     p_summary = await engine.get_issue_summary(
         newspaper_name="Financial Chronicle",
         issue_date="2026-07-07",
-        page_filter="1",
+        page_filter="2",
     )
     assert p_summary["total_articles"] == 1
     assert p_summary["total_issue_articles"] == 2
@@ -328,7 +326,6 @@ async def test_get_newspaper_coverage_difference() -> None:
                 "headline": "Beware! AI-enabled traffic challans go live from today",
                 "section": "Front Page",
                 "page_number": 1,
-                "printed_page": "1",
                 "summary": "Goa traffic police launch AI challans.",
             },
             {
@@ -336,7 +333,6 @@ async def test_get_newspaper_coverage_difference() -> None:
                 "headline": "Modi, Burnham talk better bilateral ties",
                 "section": "National",
                 "page_number": 2,
-                "printed_page": "2",
                 "summary": "Prime Minister holds bilateral discussions.",
             },
         ],
@@ -351,7 +347,6 @@ async def test_get_newspaper_coverage_difference() -> None:
                 "headline": "MODI, BURNHAM TALK BETTER TIES",
                 "section": "Front Page",
                 "page_number": 1,
-                "printed_page": "1",
                 "summary": "Talks on trade and ties.",
             },
             {
@@ -359,7 +354,6 @@ async def test_get_newspaper_coverage_difference() -> None:
                 "headline": "Mega allocation for offshore oil & gas exploration",
                 "section": "National",
                 "page_number": 3,
-                "printed_page": "3",
                 "summary": "Government announces energy investments.",
             },
         ],

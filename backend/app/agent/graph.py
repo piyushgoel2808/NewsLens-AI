@@ -76,7 +76,7 @@ class AgentWorkflow:
         self._session_factory = session_factory
         self._cache = CacheStore()
         self._planner = QueryPlanner()
-        self._synthesizer = AnswerSynthesizer()
+        self._synthesizer = AnswerSynthesizer(session_factory=session_factory)
         self._hybrid_search = HybridSearchEngine(session_factory=session_factory, cache=self._cache)
         self._entity_search = EntitySearchEngine(session_factory=session_factory)
         self._timeline_builder = TimelineBuilder(session_factory=session_factory)
@@ -574,6 +574,15 @@ class AgentWorkflow:
         evidence = state.get("evidence_items", [])
         model_override = state.get("model_override")
 
+        target_page = state.get("active_page_number")
+        if target_page is None:
+            from app.agent.extractor import extract_parameters_from_query
+            extracted = state.get("extracted_params") or extract_parameters_from_query(query)
+            p_val = extracted.get("page_filter")
+            if p_val:
+                with contextlib.suppress(ValueError, TypeError):
+                    target_page = int(p_val)
+
         answer, citations, cost_usd = await self._synthesizer.synthesize(
             query=query,
             archetype=archetype,
@@ -581,6 +590,7 @@ class AgentWorkflow:
             model_override=model_override,
             chat_history=state.get("chat_history", []),
             answer_blueprint=state.get("answer_blueprint"),
+            target_page=target_page,
         )
 
         return {

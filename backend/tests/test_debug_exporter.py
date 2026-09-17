@@ -13,7 +13,6 @@ class TestDebugArtifactsExporter:
         page_extractions = [
             {
                 "page_number": 1,
-                "printed_page_number": "1",
                 "page_type": "scanned",
                 "requires_ocr": True,
                 "ocr_confidence": 0.95,
@@ -53,7 +52,6 @@ class TestDebugArtifactsExporter:
                 "section": "Corporate",
                 "article_type": "news",
                 "pages_spanned": [1],
-                "printed_pages_spanned": ["1"],
                 "word_count": 50,
                 "character_count": 300,
                 "text": "Cognizant posted strong first-quarter numbers...",
@@ -72,7 +70,6 @@ class TestDebugArtifactsExporter:
                 "prominence_score": 0.85,
                 "word_count": 250,
                 "pages_spanned": [1],
-                "printed_pages_spanned": ["1"],
                 "summary": "Cognizant beat Street estimates in Q1.",
                 "entities": ["Cognizant", "India"],
                 "topics": ["IT Services", "Earnings"],
@@ -86,7 +83,6 @@ class TestDebugArtifactsExporter:
                 "headline_or_banner": "JUNIPER GREEN ENERGY IPO",
                 "article_type": "advertisement",
                 "pages_spanned": [1],
-                "printed_pages_spanned": ["1"],
                 "word_count": 35,
                 "text_content": "Initial Public Offer of Equity Shares...",
                 "bboxes": [{"page": 1, "bboxes": [[0.0, 0.0, 1200.0, 1600.0]]}],

@@ -281,7 +281,6 @@ class TestAgentWorkflow:
                     "byline_author": "John Doe",
                     "section": "Finance",
                     "page_number": 1,
-                    "printed_page": "1",
                     "word_count": 250,
                 },
                 {
@@ -289,7 +288,6 @@ class TestAgentWorkflow:
                     "byline_author": None,
                     "section": "Sports",
                     "page_number": 3,
-                    "printed_page": "3",
                     "word_count": 180,
                 },
             ],

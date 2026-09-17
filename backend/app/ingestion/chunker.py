@@ -49,7 +49,7 @@ class NewspaperChunker:
         headline: str,
         section: str | None = None,
         pages: list[int] | None = None,
-        printed_pages: list[str] | None = None,
+        **kwargs: Any,
     ) -> str:
         """Construct the standardized contextual metadata header."""
         parts = [
@@ -62,10 +62,6 @@ class NewspaperChunker:
         if pages:
             pages_str = ", ".join(str(p) for p in sorted(pages))
             parts.append(f"Page(s): {pages_str}")
-        elif printed_pages:
-            clean_pts = [p for p in printed_pages if not p.startswith("Unnumbered") and not p.startswith("PDF p.")]
-            p_str = ", ".join(clean_pts) if clean_pts else ", ".join(printed_pages)
-            parts.append(f"Page(s): {p_str}")
 
         return "[" + " | ".join(parts) + "]"
 
@@ -77,7 +73,7 @@ class NewspaperChunker:
         headline: str = "",
         section: str | None = None,
         pages: list[int] | None = None,
-        printed_pages: list[str] | None = None,
+        **kwargs: Any,
     ) -> list[DocumentChunk]:
         """Split article text into overlapping, header-contextualized chunks."""
         text = sanitize_block_text(full_text).strip()
@@ -92,7 +88,6 @@ class NewspaperChunker:
             headline=headline,
             section=section,
             pages=pages,
-            printed_pages=printed_pages,
         )
 
         paragraphs = [
@@ -175,8 +170,8 @@ class NewspaperChunker:
         headline: str = "",
         section: str | None = None,
         pages: list[int] | None = None,
-        printed_pages: list[str] | None = None,
         chunk_index: int = 0,
+        **kwargs: Any,
     ) -> DocumentChunk:
         """Create a dedicated, unfragmented visual data chunk with contextual header."""
         header = self.create_header_context(
@@ -185,7 +180,6 @@ class NewspaperChunker:
             headline=headline,
             section=section,
             pages=pages,
-            printed_pages=printed_pages,
         )
         type_tag = visual_type.replace("_", " ").title()
         summary_line = f"\n[Visual Summary: {summary}]" if summary else ""

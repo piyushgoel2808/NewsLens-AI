@@ -238,7 +238,6 @@ def test_folio_elimination_clean_page_format():
         newspaper_name="The Goan",
         issue_date="2026-08-02",
         pages=[4],
-        printed_pages=["4"],
     )
     assert "Page(s): 4" in hdr
     assert "(PDF p." not in hdr

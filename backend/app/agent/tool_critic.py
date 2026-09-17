@@ -150,6 +150,29 @@ class ToolCritic:
                         penalties += 0.3
                     continue
 
+                if bad_col in ("page_number", "page", "pages"):
+                    # Check if page_number is referenced directly on articles table,
+                    # or if pages table is joined incorrectly on primary_page_id/article_id
+                    has_direct_col = bool(re.search(r"\b(?:articles|a)\.(?:page_number|page|pages)\b", sql, re.IGNORECASE))
+                    has_unjoined_page = (
+                        bool(re.search(r"\b(?:WHERE|SELECT|GROUP\s+BY|ORDER\s+BY)\b.*?\bpage_number\b", sql_check, re.IGNORECASE | re.DOTALL))
+                        and not bool(re.search(r"\b(?:JOIN|FROM)\s+(?:article_pages|pages)\b", sql, re.IGNORECASE))
+                    )
+                    has_invalid_page_join = bool(re.search(r"\b(?:pages|p)\.(?:article_id|primary_page_id)\b", sql, re.IGNORECASE))
+                    if has_direct_col or has_unjoined_page or has_invalid_page_join:
+                        issues.append("SQL references 'page_number' directly on 'articles' table or invalid page join column.")
+                        fixes.append("The 'articles' table has NO 'page_number' column. Join `article_pages`: `JOIN article_pages ap ON a.id = ap.article_id WHERE ap.page_number = :page_num`.")
+                        penalties += 0.3
+                    continue
+
+                if bad_col == "primary_page_id":
+                    has_invalid_page_col = bool(re.search(r"\b(?:pages|p)\.primary_page_id\b", sql, re.IGNORECASE))
+                    if has_invalid_page_col:
+                        issues.append("SQL references 'primary_page_id' on 'pages' table.")
+                        fixes.append("Join `pages` on `articles.primary_page_id = pages.id` or use `JOIN article_pages ap ON articles.id = ap.article_id`.")
+                        penalties += 0.3
+                    continue
+
                 pattern = rf"\b{re.escape(bad_col)}\b"
                 if re.search(pattern, sql_check, re.IGNORECASE):
                     issues.append(f"SQL queries non-existent column '{bad_col}'.")

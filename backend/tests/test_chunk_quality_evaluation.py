@@ -46,7 +46,6 @@ def test_chunk_context_header_injection(chunker: NewspaperChunker) -> None:
         headline="RBI Holds Repo Rate Steady at 6.5%",
         section="Economy & Policy",
         pages=[1, 4],
-        printed_pages=["1", "4"],
     )
 
     assert len(chunks) >= 1

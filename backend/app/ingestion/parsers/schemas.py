@@ -122,10 +122,6 @@ class PageLayoutExtraction(BaseModel):
         default=None,
         description="Publication date in YYYY-MM-DD format if visible on the page.",
     )
-    printed_page_number: str | None = Field(
-        default=None,
-        description="Printed newspaper page number/folio string (e.g. '1', 'A-3', 'IV').",
-    )
     is_advertisement_page: bool = Field(
         default=False,
         description="True if the entire page is an advertisement wrap or jacket.",

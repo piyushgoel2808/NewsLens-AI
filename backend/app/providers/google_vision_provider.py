@@ -425,7 +425,6 @@ class GoogleCloudVisionOCR(OCREngine, DocumentLayoutProvider, VisionModelProvide
                 page_number=page_number,
                 newspaper_brand=None,
                 issue_date=None,
-                printed_page_number=str(page_number),
                 is_advertisement_page=False,
                 articles=articles,
             )

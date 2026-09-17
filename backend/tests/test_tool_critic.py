@@ -324,4 +324,33 @@ def test_tool_critic_flags_strptime_none_error():
     assert any("ALREADY ISO strings" in fix for fix in scorecard.suggested_fixes)
 
 
+def test_tool_critic_flags_articles_page_number():
+    """Verify ToolCritic catches hallucinated 'a.page_number' and instructs joining 'article_pages'."""
+    critic = ToolCritic()
+    bad_sql = [
+        """
+        SELECT a.id, a.headline, a.word_count
+        FROM articles a
+        WHERE a.page_number = 6
+        """
+    ]
+    score, issues, fixes = critic.audit_sql_schema(bad_sql)
+    assert score < 1.0
+    assert any("page_number" in issue for issue in issues)
+    assert any("article_pages" in fix for fix in fixes)
 
+
+def test_tool_critic_allows_article_pages_join():
+    """Verify ToolCritic accepts valid joins using the article_pages junction table."""
+    critic = ToolCritic()
+    valid_sql = [
+        """
+        SELECT a.id, a.headline, a.word_count, ap.page_number
+        FROM articles a
+        JOIN article_pages ap ON a.id = ap.article_id
+        WHERE ap.page_number = :page_number
+        """
+    ]
+    score, issues, fixes = critic.audit_sql_schema(valid_sql)
+    assert score == 1.0
+    assert len(issues) == 0

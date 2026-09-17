@@ -1239,8 +1239,25 @@ class QueryPlanner:
                     issue_date=issue_date or date_from,
                     purpose="Execute custom analytical computation",
                 ),
-                build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, top_k=4, purpose="Contextual evidence for analytical results"),
             ]
+            # If query is targeting an issue or page metrics, also schedule fast sql_analytics summary
+            # which computes avg_word_count, total_words, etc. in <5ms as robust ground truth
+            if (issue_date or date_from) and (newspaper or page_filter):
+                calls.append(
+                    build_sql_summary_tool(
+                        analysis_type="issue_summary",
+                        newspaper_name=newspaper,
+                        issue_date=issue_date if not has_explicit_range else None,
+                        date_from=date_from if has_explicit_range else None,
+                        date_to=date_to if has_explicit_range else None,
+                        page_filter=page_filter,
+                        query=query,
+                        purpose="Ground-truth broadsheet issue summary and page metrics",
+                    )
+                )
+            calls.append(
+                build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=4, purpose="Contextual evidence for analytical results")
+            )
 
         # 4. Single Newspaper Multi-Issue Comparison
         elif newspaper and not comp_newspaper and len(target_dates) >= 2:
@@ -1285,17 +1302,27 @@ class QueryPlanner:
                 build_hybrid_search_tool(query=topic_clean, newspaper_name=newspaper, date_from=date_from, date_to=date_to, top_k=6, purpose=f"Search candidate articles in {newspaper}"),
             ]
 
-        # 6. Quantitative Trend / Article Catalog / Issue Manifest / Counts / Availability
-        elif (not is_target_art) and (is_archive_np or (page_filter and any(w in q_lower for w in ["article", "story", "stories", "no of", "how many", "list"])) or any(w in q_lower for w in [
-            "how many", "count", "number of", "no of", "frequency", "trend", "distribution", "volume", "statistics", "summarize", "overview", "whole", "entire", "all articles", "list", "manifest", "today's paper", "edition", "what articles", "articles on", "is any newspaper available", "are there any newspapers", "available for dated", "newspaper available", "newspapers available", "paper available", "issues available",
-        ]) or (category and any(w in q_lower for w in ["news", "articles", "stories", "headlines"]))):
+        # 6. Quantitative Trend / Article Catalog / Issue Manifest / Counts / Availability / Ordinal Page Queries
+        elif (not is_target_art) and (
+            is_archive_np
+            or (page_filter and any(w in q_lower for w in ["article", "story", "stories", "no of", "how many", "list", "news", "headline", "headlines", "lead", "top", "main", "1st", "first", "2nd", "second", "3rd", "third"]))
+            or any(w in q_lower for w in [
+                "how many", "count", "number of", "no of", "frequency", "trend", "distribution", "volume", "statistics", "summarize", "overview", "whole", "entire", "all articles", "list", "manifest", "today's paper", "edition", "what articles", "articles on", "is any newspaper available", "are there any newspapers", "available for dated", "newspaper available", "newspapers available", "paper available", "issues available",
+            ])
+            or (category and any(w in q_lower for w in ["news", "articles", "stories", "headlines"]))
+        ):
             q_no_np = re.sub(r"\bnewspapers?\b", "", q_lower)
             has_article_words = bool(re.search(r"\b(articles?|story|stories|news)\b", q_no_np))
+            is_ordinal_page = bool(
+                page_filter and re.search(r"\b(?:1st|first|2nd|second|3rd|third|lead|top|main|head)\s+(?:news|story|article|headline|item)\b", q_lower)
+            )
             is_availability = bool(re.search(r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b", q_lower))
             is_count = is_availability or (any(w in q_lower for w in ["how many", "total articles", "number of articles", "count of articles", "no of", "count of", "number of issues", "total issues", "no of newspaper", "how many issues", "count of pages", "number of pages"]) and not page_filter)
-            is_whole_or_count = is_availability or bool(page_filter) or is_count or any(w in q_lower for w in ["today's paper", "edition", "whole", "entire", "overview", "summarize", "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume"])
-            is_catalog = (not is_availability) and (any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories"]) or bool(category))
-            if is_archive_np and not has_article_words:
+            is_whole_or_count = is_availability or (bool(page_filter) and not is_ordinal_page) or is_count or any(w in q_lower for w in ["today's paper", "edition", "whole", "entire", "overview", "summarize", "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume"])
+            is_catalog = (not is_availability) and (is_ordinal_page or any(w in q_lower for w in ["list", "catalog", "manifest", "all articles", "all news", "all stories"]) or bool(category))
+            if is_ordinal_page:
+                archetype = "article_catalog"
+            elif is_archive_np and not has_article_words:
                 archetype = "quantitative_trend"
             else:
                 archetype = "article_catalog" if is_catalog and not is_whole_or_count else "quantitative_trend"
@@ -1318,7 +1345,7 @@ class QueryPlanner:
                 atype = "issue_summary"
 
             calls = [build_sql_summary_tool(analysis_type=atype, newspaper_name=newspaper, issue_date=issue_date, date_from=date_from, date_to=date_to, issue_id=issue_id, page_filter=page_filter, category_filter=category, query=query)]
-            if page_filter and any(w in q_lower for w in ["list", "articles on", "stories on", "all articles"]):
+            if page_filter and (is_ordinal_page or any(w in q_lower for w in ["list", "articles on", "stories on", "all articles", "news", "lead", "top", "first", "1st"])):
                 calls.append(build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=6, purpose=f"Articles on Page {page_filter}"))
 
         # 7. Factual Lookup (Default)

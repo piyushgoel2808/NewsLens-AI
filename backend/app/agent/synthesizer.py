@@ -250,9 +250,16 @@ COMMON_ANALYTICAL_GUIDELINES = """CRITICAL ANALYTICAL GUIDELINES:
      * If the user query specifically asks for mathematical, numerical, or statistical calculations (such as variance, standard deviation, correlation, averages, ratios, or specific category count breakdowns), and those exact calculated metrics are NOT present in the verified retrieved evidence or tool outputs, you MUST explicitly state that the requested statistical calculation could not be computed or is unavailable in the archive data.
      * You are STRICTLY AND ABSOLUTELY FORBIDDEN from estimating, guessing, fabricating, or synthesizing numerical metrics, variances, standard deviations, or category breakdown tables from intuition or pre-training memory.
      * If a dynamic analytical tool failed or returned 0 results, truthfully report that the statistical computation could not be completed, rather than inventing placeholder numbers.
+   - ORDINAL & LEAD STORY QUERIES:
+     * When the user asks for the "1st news", "lead story", "top article", or ordinal rankings on a specific broadsheet page, inspect the articles for that page in the evidence:
+       - The lead story / 1st news of any newspaper page is the story with the highest `prominence_score` (most prominent headline font, column span, and placement).
+       - Explicitly identify that lead story by headline and summarize its core development.
+       - NEVER claim a page contains only 1 or 2 articles when the page manifest or archive data confirms a full broadsheet layout with multiple stories.
+   - PAGE NUMBERING STANDARDIZATION:
+     * Standardize 100% on sequential integer page numbers (e.g. Page 6). NEVER mention "printed page", "folio", or dual notation (e.g. "Page X (PDF p.Y)"). All citations must use `Page {int}`.
    - EDITORIAL REASONING & INTENT-PROPORTIONAL SIZING:
      * Exercise editorial reasoning: Adapt the format, sections, and length of your response to the user's query intent.
-     * ATOMIC / SCALAR / METADATA QUESTIONS (e.g. "how many issues", "count of pages", "who is X", "what date"):
+     * ATOMIC / SCALAR / METADATA QUESTIONS (e.g. "how many issues", "count of pages", "who is X", "what date", "1st news on page X"):
        Deliver a direct, authoritative, and concise response (1 to 2 paragraphs or compact metric cards).
        NEVER force artificial multi-section structures: DO NOT generate empty or single-row catalog tables, fake sector highlights, or artificial "Explore Further" prompts.
      * CATALOG & MANIFEST TABLES:
@@ -406,8 +413,13 @@ class AnswerSynthesizer:
         "_default": 3072,
     }
 
-    def __init__(self, provider: ChatModelProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: ChatModelProvider | None = None,
+        session_factory: Any | None = None,
+    ) -> None:
         self._provider = provider
+        self._session_factory = session_factory
 
     def _has_valid_evidence(self, evidence_items: list[dict[str, Any]]) -> bool:
         """Check whether evidence contains non-empty grounded content."""
@@ -499,8 +511,9 @@ class AnswerSynthesizer:
                 source_type="web",
                 is_web=True,
             )
-        pages = item.get("pages", [1])
-        page_val = int(pages[0]) if pages and pages[0] else 1
+        p_raw = item.get("page_number")
+        pages = item.get("pages", [])
+        page_val = int(p_raw) if p_raw is not None else (int(pages[0]) if pages and pages[0] else 1)
         return AgentCitation(
             newspaper_name=item.get("newspaper_name", "Daily News"),
             issue_date=item.get("issue_date", ""),
@@ -518,10 +531,68 @@ class AnswerSynthesizer:
             visual_type=item.get("visual_type"),
         )
 
+    async def resolve_authoritative_citations(
+        self,
+        citations: list[AgentCitation],
+        target_page: int | None = None,
+    ) -> list[AgentCitation]:
+        """Resolve and verify authoritative page numbers and metadata directly from MySQL."""
+        if not citations:
+            return []
+
+        art_ids = [
+            int(c["article_id"])
+            for c in citations
+            if c.get("article_id") and int(c.get("article_id", 0)) > 0 and not c.get("is_web")
+        ]
+        if art_ids and self._session_factory:
+            try:
+                from sqlalchemy import select
+                from sqlalchemy.orm import selectinload
+                from app.models.article import Article
+                from app.models.issue import Issue
+                from app.models.newspaper import Newspaper
+
+                async with self._session_factory() as db:
+                    stmt = (
+                        select(Article)
+                        .where(Article.id.in_(art_ids))
+                        .options(
+                            selectinload(Article.issue).selectinload(Issue.newspaper),
+                            selectinload(Article.article_pages),
+                        )
+                    )
+                    res = await db.execute(stmt)
+                    db_articles = {a.id: a for a in res.scalars().all()}
+
+                    for c in citations:
+                        c_art_id = c.get("article_id")
+                        if c_art_id and c_art_id in db_articles:
+                            art = db_articles[c_art_id]
+                            true_pages = sorted({ap.page_number for ap in art.article_pages}) if art.article_pages else []
+                            if true_pages:
+                                c["page_number"] = true_pages[0]
+                            if art.issue:
+                                c["issue_id"] = art.issue.id
+                                if art.issue.issue_date:
+                                    c["issue_date"] = str(art.issue.issue_date)
+                                if art.issue.newspaper and art.issue.newspaper.name:
+                                    c["newspaper_name"] = art.issue.newspaper.name
+            except Exception as e:
+                logger.warning("Failed to resolve authoritative citation metadata from DB", extra={"error": str(e)})
+
+        if target_page is not None and target_page > 0:
+            scoped = [c for c in citations if c.get("is_web") or c.get("page_number") == target_page]
+            if scoped:
+                return scoped
+
+        return citations
+
     def extract_citations(
         self,
         text: str,
         evidence_items: list[dict[str, Any]],
+        target_page: int | None = None,
     ) -> list[AgentCitation]:
         """Extract and structure verified citations mentioned in the text or used from evidence."""
         citations: list[AgentCitation] = []
@@ -546,6 +617,17 @@ class AnswerSynthesizer:
                     ("Issue Manifest:", "Coverage Audit:", "Article Count Analysis:", "Archive Topic", "Frontpage Prominence")
                 )
             ]
+
+        # Step 1b: If target_page is active, prioritize candidate items matching target page (or web)
+        if target_page is not None and target_page > 0:
+            page_filtered = [
+                item for item in candidate_items
+                if item.get("is_web")
+                or item.get("page_number") == target_page
+                or (item.get("pages") and target_page in item.get("pages"))
+            ]
+            if page_filtered:
+                candidate_items = page_filtered
 
         # Step 2: Check for references in synthesized text
         for item in candidate_items:
@@ -917,6 +999,7 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
         model_override: str | None = None,
         chat_history: list[dict[str, Any]] | None = None,
         answer_blueprint: AnswerBlueprint | dict[str, Any] | None = None,
+        target_page: int | None = None,
     ) -> tuple[str, list[AgentCitation], float]:
         """Synthesize answer with citations from evidence and conversation context with failover."""
         has_evidence = self._has_valid_evidence(evidence_items)
@@ -970,7 +1053,8 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
                     )
                     if was_corrected:
                         logger.warning("Synthesizer fact-checker intercepted ungrounded answer", extra={"diagnosis": diag})
-                    citations = self.extract_citations(answer_text, evidence_items)
+                    citations = self.extract_citations(answer_text, evidence_items, target_page=target_page)
+                    citations = await self.resolve_authoritative_citations(citations, target_page=target_page)
                     return answer_text, citations, cost_usd
                 logger.warning(
                     "Provider outputted reasoning without answer section, attempting failover candidate",
@@ -989,7 +1073,8 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
         )
         if was_corrected:
             logger.warning("Synthesizer fact-checker intercepted ungrounded answer in deterministic summary", extra={"diagnosis": diag})
-        citations = self.extract_citations(answer_text, evidence_items)
+        citations = self.extract_citations(answer_text, evidence_items, target_page=target_page)
+        citations = await self.resolve_authoritative_citations(citations, target_page=target_page)
         return answer_text, citations, cost_usd
 
     clean_synthesized_answer = staticmethod(clean_synthesized_answer)

@@ -224,33 +224,39 @@ def parse_inline_citation(text: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 CONDENSER_SYSTEM_PROMPT = (
-    "You are an expert search query reformulator and coreference resolver for a newspaper archive research system.\n"
-    "Given the chat history and latest user query, rewrite the latest query into "
-    "a single, standalone sentence that contains all necessary context (entities, dates, page numbers).\n\n"
-    "DECISION RULES:\n"
-    "1. ATTACHED ASSET REFERENCE / BINDING:\n"
-    "   If a 'CURRENT WORKSPACE ATTACHED ASSET' is provided and the user query refers to it "
-    "(\"this photo\", \"the article\", \"explain this\", \"who is this person\", or quotes/mentions the attached headline):\n"
-    "   - Ground the rewritten query SOLELY in the CURRENT WORKSPACE ATTACHED ASSET (its newspaper, date, headline, photo ID, caption).\n"
-    "   - Keep dates in ISO format (YYYY-MM-DD).\n"
-    "   - DO NOT inherit or contaminate the query with people, entities, dates, or newspapers from prior CONVERSATION HISTORY.\n"
-    "   Example: \"explain this photo\" (Attached: Photo #1042 in Financial Times, 2026-05-10)\n"
-    "   Rewrite: \"Explain photo #1042 in Financial Times dated 2026-05-10\"\n\n"
-    "2. CONVERSATION CONTINUATION:\n"
-    "   If the query continues the discussion from CONVERSATION HISTORY and does NOT refer to an attached asset:\n"
-    "   - Resolve pronouns (\"it\", \"they\", \"he\", \"this newspaper\", \"its\") using the conversation context.\n"
-    "   Example: \"what about on page 4?\" (History discussing: The Indian Express, 2026-06-15)\n"
-    "   Rewrite: \"What articles appeared on page 4 of The Indian Express on 2026-06-15?\"\n\n"
-    "3. INDEPENDENT QUERY / TOPIC SHIFT:\n"
-    "   If the user query introduces an entirely new topic, entity, date, or publication (e.g. \"crime in Panaji\", \"who won the election?\"), "
-    "do NOT inject prior publications, people, or dates. Leave it unconstrained.\n"
-    "   Example: \"show me weather reports\" (History discussing: The Guardian, 2026-04-12)\n"
-    "   Rewrite: \"Show me weather reports\"\n\n"
-    "4. COMPARATIVE CONTINUATION:\n"
-    "   If prior turns involved a cross-newspaper comparison and the user asks a follow-up (e.g. \"list all those articles that are similar\", \"show the common stories\", \"what about the exclusives?\"), "
-    "preserve both newspaper names, the date, and the comparison/shared intent in the rewritten query.\n"
-    "   Example: \"list all those similar stories\" (History comparing: The Indian Express and The Hindu, 2026-05-20)\n"
-    "   Rewrite: \"List all similar and shared articles between The Indian Express and The Hindu dated 2026-05-20\"\n\n"
+    "You are an expert conversational query reformulator and coreference resolver for a newspaper archive research system.\n"
+    "Given the active context, chat history, and latest user query, analyze whether the user is continuing the conversation or shifting topics, "
+    "and rewrite the latest query into a single, standalone sentence containing all necessary context (entities, dates, page numbers).\n\n"
+    "DECISION PRINCIPLES (Analyze and decide what to keep vs. what to drop):\n"
+    "1. CONVERSATION CONTINUATION & PRONOUN RESOLUTION:\n"
+    "   - When the user refers to prior results ('those news', 'list all those news', 'show them', 'the articles', 'it', 'its'):\n"
+    "     The user is continuing the current topic. Inherit the active newspaper, issue date, and page from the active context.\n"
+    "     Example: 'list all those news' (Context: Hindustan Times, 2026-09-03, Page 5)\n"
+    "     Rewrite: 'List all news articles on page 5 of Hindustan Times dated 2026-09-03'\n\n"
+    "2. CONTINUATION WITH NEW OR MODIFIED CONSTRAINTS:\n"
+    "   - When the user asks a follow-up with a new constraint ('what about page 6', 'on page 5', 'in business section', 'calculate its avg word count'):\n"
+    "     Inherit the active newspaper and issue date from the conversation, and apply the newly requested constraint.\n"
+    "     Example: 'list all those news on page 6' (Context: Hindustan Times, 2026-09-03, previously Page 5)\n"
+    "     Rewrite: 'List all news articles on page 6 of Hindustan Times dated 2026-09-03'\n"
+    "     Example: 'calculate its avg word count of articles' (Context: Hindustan Times, 2026-09-03, Page 6)\n"
+    "     Rewrite: 'Calculate the average word count of articles on page 6 of Hindustan Times dated 2026-09-03'\n\n"
+    "3. EXPLICIT CONSTRAINT PRESERVATION:\n"
+    "   - NEVER drop or strip explicit filters provided by the user. If the user explicitly mentions a page number (e.g. 'on page 5'), a date, a section, or an author, that constraint MUST appear in the rewritten query.\n\n"
+    "4. INDEPENDENT QUERY / TOPIC SHIFT:\n"
+    "   - If the user introduces an entirely new subject, entity, date, or publication unrelated to the previous discussion (e.g. 'crime in Panaji', 'who won the election?', 'weather forecast'),\n"
+    "     do NOT carry forward previous newspapers, dates, or pages. Keep the query unconstrained.\n"
+    "     Example: 'show me weather reports' (Context: The Guardian, 2026-04-12)\n"
+    "     Rewrite: 'Show me weather reports'\n\n"
+    "5. ATTACHED ASSET REFERENCE / BINDING:\n"
+    "   - If a 'CURRENT WORKSPACE ATTACHED ASSET' is provided and referenced by the query ('this photo', 'explain this', 'who is this person'):\n"
+    "     Ground the query solely in that attached asset (its newspaper, date, headline, photo ID, caption) and DO NOT inherit or contaminate with prior history.\n"
+    "     Example: 'explain this photo' (Attached: Photo #1042 in Financial Times, 2026-05-10)\n"
+    "     Rewrite: 'Explain photo #1042 in Financial Times dated 2026-05-10'\n\n"
+    "6. COMPARATIVE CONTINUATION:\n"
+    "   - If prior turns compared newspapers and the user asks a follow-up ('list all those similar stories', 'show exclusives'):\n"
+    "     Preserve both newspaper names, the date, and the comparison intent.\n"
+    "     Example: 'list all those similar stories' (Context: The Indian Express and The Hindu, 2026-05-20)\n"
+    "     Rewrite: 'List all similar and shared articles between The Indian Express and The Hindu dated 2026-05-20'\n\n"
     "OUTPUT FORMAT: Output ONLY the plain rewritten query text. Do NOT include quotes, explanations, prefixes, or bullet points."
 )
 
@@ -576,6 +582,21 @@ async def condense_conversational_query(
 
         attached_asset_block = "CURRENT WORKSPACE ATTACHED ASSET:\n" + "\n".join(asset_lines) + "\n\n"
 
+    # Assemble Active Context Block from Conversation (when not bound to attached asset)
+    active_context_block = ""
+    if not attached_asset or has_date_conflict or has_np_conflict:
+        ctx_lines = []
+        if np_name:
+            ctx_lines.append(f"- Active Newspaper: {np_name}")
+        if iss_date:
+            ctx_lines.append(f"- Active Issue Date: {iss_date}")
+        if active_pg:
+            ctx_lines.append(f"- Active Focus Page: {active_pg}")
+        if active_hl:
+            ctx_lines.append(f"- Active Focus Headline: \"{active_hl}\"")
+        if ctx_lines:
+            active_context_block = "ACTIVE CONVERSATION CONTEXT:\n" + "\n".join(ctx_lines) + "\n\n"
+
     # Assemble Conversation History Block
     is_attached_query = bool(attached_asset and (asset_photo_id or asset_art_id or asset_hl))
     if is_attached_query and chat_history and (has_date_conflict or has_np_conflict):
@@ -587,6 +608,7 @@ async def condense_conversational_query(
 
     prompt = (
         f"{attached_asset_block}"
+        f"{active_context_block}"
         f"{history_block}"
         f"LATEST USER QUERY: {query}\n\n"
         "Rewritten Standalone Query:"
