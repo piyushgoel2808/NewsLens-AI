@@ -512,11 +512,11 @@ class VisualInspectionEngine:
                 try:
                     from app.core.config import get_settings
                     from app.ingestion.visual_extractor import VisualDataExtractor
-                    from app.storage.minio_store import MinioStore
+                    from app.storage import get_object_store
 
                     cfg = get_settings()
-                    minio = MinioStore(cfg.minio)
-                    crop_bytes = await minio.get(
+                    store = get_object_store(cfg)
+                    crop_bytes = await store.get(
                         bucket=cfg.minio.bucket_pages,
                         key=target_photo.object_key,
                     )

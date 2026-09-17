@@ -1,0 +1,199 @@
+name: Deploy to GCP Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0.39
+        env:
+          MYSQL_ROOT_PASSWORD: test_root
+          MYSQL_DATABASE: newslens_test
+          MYSQL_USER: newslens
+          MYSQL_PASSWORD: newslens_pass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root --password=test_root"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "backend/pyproject.toml"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync --all-extras
+
+      - name: Run Alembic migrations
+        working-directory: backend
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: newslens
+          MYSQL_PASSWORD: newslens_pass
+          MYSQL_DB: newslens_test
+        run: uv run alembic upgrade head
+
+      - name: Run test suite
+        working-directory: backend
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: newslens
+          MYSQL_PASSWORD: newslens_pass
+          MYSQL_DB: newslens_test
+          TESTING: "true"
+        run: uv run pytest tests/ -v --tb=short
+
+  build-and-deploy:
+    name: Build Images and Deploy to Cloud Run
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker authentication for Artifact Registry
+        run: |
+          gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tags
+        id: meta
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "registry=asia-south1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/newslens" >> $GITHUB_OUTPUT
+
+      - name: Build and push Backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.registry }}/backend:latest
+            ${{ steps.meta.outputs.registry }}/backend:${{ steps.meta.outputs.sha }}
+            ${{ steps.meta.outputs.registry }}/worker:latest
+            ${{ steps.meta.outputs.registry }}/worker:${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend static bundle
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.registry }}/frontend:latest
+            ${{ steps.meta.outputs.registry }}/frontend:${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run database migrations (Cloud Run Job)
+        run: |
+          gcloud run jobs update newslens-migrate \
+            --image=${{ steps.meta.outputs.registry }}/backend:${{ steps.meta.outputs.sha }} \
+            --region=asia-south1 \
+            --project=${{ secrets.GCP_PROJECT_ID }}
+          gcloud run jobs execute newslens-migrate \
+            --region=asia-south1 \
+            --wait \
+            --project=${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy Backend to Cloud Run
+        run: |
+          gcloud run services update newslens-backend \
+            --image=${{ steps.meta.outputs.registry }}/backend:${{ steps.meta.outputs.sha }} \
+            --region=asia-south1 \
+            --project=${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy Worker to Cloud Run
+        run: |
+          if gcloud run services describe newslens-worker --region=asia-south1 --project=${{ secrets.GCP_PROJECT_ID }} >/dev/null 2>&1; then
+            gcloud run services update newslens-worker \
+              --image=${{ steps.meta.outputs.registry }}/worker:${{ steps.meta.outputs.sha }} \
+              --region=asia-south1 \
+              --project=${{ secrets.GCP_PROJECT_ID }}
+          else
+            echo "newslens-worker service not yet provisioned. Skipping worker update."
+          fi
+
+      - name: Deploy Frontend to Cloud Run
+        run: |
+          gcloud run services update newslens-frontend \
+            --image=${{ steps.meta.outputs.registry }}/frontend:${{ steps.meta.outputs.sha }} \
+            --region=asia-south1 \
+            --project=${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Verify Deployment Health
+        run: |
+          BACKEND_URL=$(gcloud run services describe newslens-backend --region=asia-south1 --project=${{ secrets.GCP_PROJECT_ID }} --format="value(status.url)")
+          echo "Checking backend health at ${BACKEND_URL}/health"
+          for i in {1..6}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${BACKEND_URL}/health" || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Health check succeeded with status 200"
+              exit 0
+            fi
+            echo "Waiting for service to become ready (attempt $i, status $STATUS)..."
+            sleep 10
+          done
+          echo "Health check timed out"
+          exit 1

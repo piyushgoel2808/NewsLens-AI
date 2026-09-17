@@ -27,7 +27,8 @@ from app.core.logging import get_logger
 from app.ingestion.storage import compress_pdf_bytes
 from app.models.ingestion import IngestionJob
 from app.models.newspaper import Issue, Newspaper, Page
-from app.storage.minio_store import MinioStore
+from app.storage import get_object_store
+from app.storage.base import ObjectStore
 from app.storage.qdrant_store import QdrantStore
 
 logger = get_logger(__name__)
@@ -73,12 +74,12 @@ class IntakeService:
     def __init__(
         self,
         db: AsyncSession,
-        minio: MinioStore | None = None,
+        minio: ObjectStore | None = None,
         qdrant: QdrantStore | None = None,
     ) -> None:
         self._db = db
         self._settings = get_settings()
-        self._minio = minio or MinioStore(self._settings.minio)
+        self._minio = minio or get_object_store(self._settings)
         self._qdrant = qdrant or QdrantStore(self._settings.qdrant)
 
     async def get_or_create_newspaper(

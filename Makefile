@@ -15,6 +15,7 @@ COMPOSE := docker compose -f docker-compose.local.yml
 COMPOSE_PROD := docker compose -f docker-compose.yml
 BACKEND  := cd backend &&
 FRONTEND := cd frontend &&
+FRONTEND_V2 := cd frontend-v2 &&
 
 help: ## Show this help message
 	@echo ""
@@ -150,6 +151,21 @@ frontend-dev: ## Run Vite frontend development server
 
 frontend-build: ## Build frontend for production
 	$(FRONTEND) npm run build
+
+# --- Frontend V2 (Active Redesign) ---
+
+frontend-v2-install: ## Install frontend-v2 npm dependencies
+	$(FRONTEND_V2) npm install
+
+frontend-v2-dev: ## Run Vite frontend-v2 development server (port 5174)
+	$(FRONTEND_V2) npm run dev
+
+frontend-v2-build: ## Build frontend-v2 for production
+	$(FRONTEND_V2) npm run build
+
+dev-v2: ## Start backend (port 8000) and frontend-v2 (port 5174) concurrently
+	@echo "Starting NewsLens-AI backend (port 8000) and redesigned frontend-v2 (port 5174)..."
+	@make -j2 serve frontend-v2-dev
 
 # --- Ollama Models ---
 

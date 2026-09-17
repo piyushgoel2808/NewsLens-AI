@@ -57,13 +57,14 @@ async def _check_minio() -> dict[str, Any]:
     settings = get_settings()
     t0 = time.monotonic()
     try:
-        from app.storage.minio_store import MinioStore
+        from app.storage import get_object_store
 
-        store = MinioStore(settings.minio)
+        store = get_object_store(settings)
         reachable = await store.ping()
         if reachable:
             return {"status": "up", "latency_ms": round((time.monotonic() - t0) * 1000)}
-        return {"status": "down", "error": "MinIO ping failed"}
+        backend_name = "GCS" if settings.storage_backend == "gcs" else "MinIO"
+        return {"status": "down", "error": f"{backend_name} ping failed"}
     except Exception as e:
         return {"status": "down", "error": str(e)[:200]}
 
@@ -102,6 +103,7 @@ async def _check_celery() -> dict[str, Any]:
 
 
 @router.get("/health", summary="Health check", tags=["health"])
+@router.get("/api/health", summary="Health check (API alias)", tags=["health"])
 async def health_check() -> dict[str, Any]:
     """Check the health of all NewsLens-AI downstream dependencies.
 

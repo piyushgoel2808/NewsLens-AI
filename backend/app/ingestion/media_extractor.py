@@ -23,7 +23,8 @@ from app.ingestion.visual_extractor import (
 )
 from app.models.article import ArticleTable, Photo
 from app.providers.base import ExtractedPhotoData
-from app.storage.minio_store import MinioStore
+from app.storage import get_object_store
+from app.storage.base import ObjectStore
 
 logger = get_logger(__name__)
 
@@ -214,13 +215,13 @@ class MediaExtractor:
     def __init__(
         self,
         db: AsyncSession,
-        minio: MinioStore | None = None,
+        minio: ObjectStore | None = None,
         visual_extractor: VisualDataExtractor | None = None,
         single_pass_extractor: SinglePassVisualExtractor | None = None,
     ) -> None:
         self._db = db
         self._settings = get_settings()
-        self._minio = minio or MinioStore(self._settings.minio)
+        self._minio = minio or get_object_store(self._settings)
         self._visual_extractor = visual_extractor or VisualDataExtractor()
         self._single_pass_extractor = single_pass_extractor or SinglePassVisualExtractor(
             fallback_extractor=self._visual_extractor

@@ -105,6 +105,7 @@ celery_*.pid
 scratch/
 demo/
 Newspaper_RAG/
+frontend-v2/
 *.pdf
 !backend/tests/fixtures/*.pdf
 !backend/tests/fixtures/*.zip

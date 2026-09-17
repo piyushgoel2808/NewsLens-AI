@@ -54,7 +54,8 @@ from app.models.article import Article, ArticleCategory, ArticleChunk, ArticlePa
 from app.models.entity import ArticleEntity, ArticleTopic, Topic
 from app.models.newspaper import Issue, Newspaper, Page
 from app.providers.openrouter_provider import RateLimitExhaustedError
-from app.storage.minio_store import MinioStore
+from app.storage import get_object_store
+from app.storage.base import ObjectStore
 
 logger = get_logger(__name__)
 
@@ -98,12 +99,12 @@ async def run_ingestion_pipeline(
     pdf_bytes: bytes,
     dpi: int = 150,
     parser_engine: str = "auto",
-    minio: MinioStore | None = None,
+    minio: ObjectStore | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict[str, Any]:
     """Execute the end-to-end high-speed single-pass ingestion pipeline for an issue."""
     settings = get_settings()
-    store = minio or MinioStore(settings.minio)
+    store = minio or get_object_store(settings)
 
     if session_factory is None:
         engine = create_async_engine(settings.database.async_url, echo=False)

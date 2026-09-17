@@ -116,7 +116,7 @@ async def get_photo_image(
 
     from app.core.config import get_settings
     from app.models.article import Photo
-    from app.storage.minio_store import MinioStore
+    from app.storage import get_object_store
 
     stmt = select(Photo).where(Photo.id == photo_id)
     res = await db.execute(stmt)
@@ -126,8 +126,8 @@ async def get_photo_image(
         raise HTTPException(status_code=404, detail=f"Photo {photo_id} not found")
 
     settings = get_settings()
-    minio = MinioStore(settings.minio)
-    image_bytes = await minio.get(
+    store = get_object_store(settings)
+    image_bytes = await store.get(
         bucket=settings.minio.bucket_pages,
         key=photo.object_key,
     )
@@ -146,12 +146,12 @@ async def get_photo_image(
 async def analyze_photo_asset(
     photo_id: int,
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
+    ) -> dict[str, Any]:
     """Run on-demand Qwen-VL / VLM visual intelligence analysis on a specific photo asset."""
     from app.core.config import get_settings
     from app.ingestion.visual_extractor import VisualDataExtractor
     from app.models.article import Photo
-    from app.storage.minio_store import MinioStore
+    from app.storage import get_object_store
 
     stmt = select(Photo).where(Photo.id == photo_id)
     res = await db.execute(stmt)
@@ -161,8 +161,8 @@ async def analyze_photo_asset(
         raise HTTPException(status_code=404, detail=f"Photo {photo_id} not found")
 
     settings = get_settings()
-    minio = MinioStore(settings.minio)
-    image_bytes = await minio.get(
+    store = get_object_store(settings)
+    image_bytes = await store.get(
         bucket=settings.minio.bucket_pages,
         key=photo.object_key,
     )

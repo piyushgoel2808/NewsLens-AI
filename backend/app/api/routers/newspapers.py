@@ -15,7 +15,7 @@ from app.core.logging import get_logger
 from app.models.article import Article, ArticleChunk
 from app.models.base import get_db
 from app.models.newspaper import Issue, Newspaper, Page
-from app.storage.minio_store import MinioStore
+from app.storage import get_object_store
 from app.storage.qdrant_store import QdrantStore
 
 logger = get_logger(__name__)
@@ -224,8 +224,8 @@ async def get_page_image(
         raise HTTPException(status_code=404, detail=f"Page {page_id} image scan not found")
 
     settings = get_settings()
-    minio = MinioStore(settings.minio)
-    image_bytes = await minio.get(
+    store = get_object_store(settings)
+    image_bytes = await store.get(
         bucket=settings.minio.bucket_pages,
         key=page.raster_object_key,
     )

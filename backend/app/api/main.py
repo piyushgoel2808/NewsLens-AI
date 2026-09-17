@@ -35,15 +35,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_db(settings.database.async_url)
     logger.info("Database engine initialized")
 
-    # Initialize MinIO (create buckets if missing)
+    # Initialize Object Store (MinIO or GCS, create buckets if missing)
     try:
-        from app.storage.minio_store import MinioStore
+        from app.storage import get_object_store
 
-        minio = MinioStore(settings.minio)
-        await minio.startup()
-        app.state.minio = minio
+        store = get_object_store(settings)
+        await store.startup()
+        app.state.minio = store
     except Exception as e:
-        logger.warning("MinIO startup failed (continuing)", extra={"error": str(e)})
+        logger.warning("Object store startup failed (continuing)", extra={"error": str(e)})
         app.state.minio = None
 
     # Initialize Qdrant (create collection if missing)

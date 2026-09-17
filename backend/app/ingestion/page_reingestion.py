@@ -55,7 +55,8 @@ from app.models.article import (
 )
 from app.models.entity import ArticleEntity, ArticleTopic, Entity, Topic
 from app.models.newspaper import Issue, Page
-from app.storage.minio_store import MinioStore
+from app.storage import get_object_store
+from app.storage.base import ObjectStore
 from app.storage.qdrant_store import QdrantStore
 
 logger = get_logger(__name__)
@@ -67,46 +68,47 @@ class PageReingestionService:
     def __init__(
         self,
         db: AsyncSession,
-        minio: MinioStore | None = None,
+        minio: ObjectStore | None = None,
         qdrant: QdrantStore | None = None,
     ) -> None:
         self._db = db
         self._settings = get_settings()
-        self._minio = minio or MinioStore(self._settings.minio)
+        self._minio = minio or get_object_store(self._settings)
         self._qdrant = qdrant or QdrantStore(self._settings.qdrant)
 
     async def _fetch_original_pdf(self, issue_id: int, job_id: int | None) -> bytes | None:
-        """Locate and download the original PDF for an issue from MinIO."""
-        client = self._minio._client
-        bucket = self._settings.minio.bucket_originals
+        """Locate and download the original PDF for an issue from ObjectStore."""
+        bucket = self._settings.bucket_originals
 
         # 1. Search by job_id prefix
         if job_id:
             try:
-                objects = list(client.list_objects(bucket, prefix=f"originals/{job_id}/"))
-                if objects:
-                    resp = client.get_object(bucket, objects[0].object_name)
-                    return resp.read()
+                keys = await self._minio.list_objects(bucket, prefix=f"originals/{job_id}/")
+                if keys:
+                    data = await self._minio.get(bucket, keys[0])
+                    if data:
+                        return data
             except Exception as ex:
                 logger.debug("Original lookup by job_id failed", extra={"job_id": job_id, "error": str(ex)})
 
         # 2. Search by issue_id prefix
         for pfx in [f"originals/{issue_id}/", f"issues/{issue_id}/"]:
             try:
-                objects = list(client.list_objects(bucket, prefix=pfx))
-                if objects:
-                    resp = client.get_object(bucket, objects[0].object_name)
-                    return resp.read()
+                keys = await self._minio.list_objects(bucket, prefix=pfx)
+                if keys:
+                    data = await self._minio.get(bucket, keys[0])
+                    if data:
+                        return data
             except Exception as ex:
                 logger.debug("Original lookup by issue_id failed", extra={"issue_id": issue_id, "error": str(ex)})
 
         # 3. Fallback: Search all objects in bucket_originals for matching job_id or issue_id
         try:
-            for obj in client.list_objects(bucket, recursive=True):
-                name = obj.object_name or ""
+            for name in await self._minio.list_objects(bucket):
                 if (job_id and f"/{job_id}/" in name) or f"/{issue_id}/" in name:
-                    resp = client.get_object(bucket, name)
-                    return resp.read()
+                    data = await self._minio.get(bucket, name)
+                    if data:
+                        return data
         except Exception as ex:
             logger.warning("Bucket-wide search for original PDF failed", extra={"error": str(ex)})
 

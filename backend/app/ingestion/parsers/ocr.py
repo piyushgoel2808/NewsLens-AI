@@ -9,7 +9,8 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.newspaper import Page
 from app.providers.base import OCREngine, OCRResult, ProviderError
-from app.storage.minio_store import MinioStore
+from app.storage import get_object_store
+from app.storage.base import ObjectStore
 
 logger = get_logger(__name__)
 
@@ -21,7 +22,7 @@ class OCRService:
         self,
         db: AsyncSession,
         ocr_engine: OCREngine | None = None,
-        minio: MinioStore | None = None,
+        minio: ObjectStore | None = None,
     ) -> None:
         self._db = db
         self._settings = get_settings()
@@ -40,7 +41,7 @@ class OCRService:
                     self._ocr = prov_gemini if isinstance(prov_gemini, OCREngine) else None  # type: ignore
             except Exception:
                 self._ocr = None
-        self._minio = minio or MinioStore(self._settings.minio)
+        self._minio = minio or get_object_store(self._settings)
 
     async def process_page_ocr(
         self,

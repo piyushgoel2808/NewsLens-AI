@@ -79,10 +79,17 @@ class DatabaseSettings(BaseModel):
     user: str = "newslens"
     password: str = "newslens_pass"
     db: str = "newslens"
+    socket_path: str | None = None
+    ssl: bool = False
 
     @property
     def async_url(self) -> str:
         """Async SQLAlchemy URL (aiomysql driver)."""
+        if self.socket_path:
+            return (
+                f"mysql+aiomysql://{self.user}:{self.password}"
+                f"@/{self.db}?unix_socket={self.socket_path}&charset=utf8mb4"
+            )
         return (
             f"mysql+aiomysql://{self.user}:{self.password}"
             f"@{self.host}:{self.port}/{self.db}?charset=utf8mb4"
@@ -91,6 +98,11 @@ class DatabaseSettings(BaseModel):
     @property
     def sync_url(self) -> str:
         """Sync SQLAlchemy URL (pymysql driver) — for Alembic migrations."""
+        if self.socket_path:
+            return (
+                f"mysql+pymysql://{self.user}:{self.password}"
+                f"@/{self.db}?unix_socket={self.socket_path}&charset=utf8mb4"
+            )
         return (
             f"mysql+pymysql://{self.user}:{self.password}"
             f"@{self.host}:{self.port}/{self.db}?charset=utf8mb4"
@@ -104,6 +116,7 @@ class QdrantSettings(BaseModel):
     port: int = 6333
     api_key: str | None = None
     collection_name: str = "article_chunks"
+    https: bool = False
 
 
 class MinioSettings(BaseModel):
@@ -284,7 +297,10 @@ class Settings(BaseSettings):
     app_log_level: str = "INFO"
     app_secret_key: str = "change-me-in-production"
     testing: bool = False
-    cors_allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+    cors_allowed_origins: str = (
+        "http://localhost:5173,http://localhost:5174,http://localhost:3000,"
+        "http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:3000"
+    )
 
     # --- Model config file path ---
     model_config_path: str = "model_config.yaml"
@@ -297,6 +313,7 @@ class Settings(BaseSettings):
     mysql_db: str = "newslens"
     mysql_readonly_user: str | None = None
     mysql_readonly_password: str | None = None
+    mysql_socket_path: str | None = None
 
     # --- Dynamic Tool Generation ---
     enable_dynamic_tools: bool = True
@@ -304,11 +321,18 @@ class Settings(BaseSettings):
     dynamic_tool_max_memory_mb: int = 256
     dynamic_tool_max_retries: int = 2
 
+    # --- Storage Backend (minio or gcs) ---
+    storage_backend: str = "minio"
+    gcs_project_id: str | None = None
+    gcs_bucket_pages: str = "newslens-pages"
+    gcs_bucket_originals: str = "newslens-originals"
+
     # --- Qdrant ---
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_api_key: str | None = None
     qdrant_collection_name: str = "article_chunks"
+    qdrant_https: bool = False
 
     # --- MinIO ---
     minio_endpoint: str = "localhost:9000"
@@ -394,6 +418,7 @@ class Settings(BaseSettings):
             user=self.mysql_user,
             password=self.mysql_password,
             db=self.mysql_db,
+            socket_path=self.mysql_socket_path,
         )
 
     @property
@@ -401,6 +426,11 @@ class Settings(BaseSettings):
         """Async connection string for read-only dynamic tool execution."""
         user = self.mysql_readonly_user or self.mysql_user
         pwd = self.mysql_readonly_password or self.mysql_password
+        if self.mysql_socket_path:
+            return (
+                f"mysql+aiomysql://{user}:{pwd}"
+                f"@/{self.mysql_db}?unix_socket={self.mysql_socket_path}&charset=utf8mb4"
+            )
         return (
             f"mysql+aiomysql://{user}:{pwd}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
@@ -413,7 +443,20 @@ class Settings(BaseSettings):
             port=self.qdrant_port,
             api_key=self.qdrant_api_key,
             collection_name=self.qdrant_collection_name,
+            https=self.qdrant_https,
         )
+
+    @property
+    def bucket_pages(self) -> str:
+        if (self.storage_backend or "").lower() == "gcs":
+            return self.gcs_bucket_pages
+        return self.minio_bucket_pages
+
+    @property
+    def bucket_originals(self) -> str:
+        if (self.storage_backend or "").lower() == "gcs":
+            return self.gcs_bucket_originals
+        return self.minio_bucket_originals
 
     @property
     def minio(self) -> MinioSettings:
@@ -422,8 +465,8 @@ class Settings(BaseSettings):
             access_key=self.minio_access_key,
             secret_key=self.minio_secret_key,
             secure=self.minio_secure,
-            bucket_pages=self.minio_bucket_pages,
-            bucket_originals=self.minio_bucket_originals,
+            bucket_pages=self.bucket_pages,
+            bucket_originals=self.bucket_originals,
         )
 
     @property

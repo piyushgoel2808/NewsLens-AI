@@ -106,6 +106,15 @@ class MinioStore:
 
         return await self._run(_delete_prefix)
 
+    async def list_objects(self, bucket: str, prefix: str = "") -> list[str]:
+        """List object keys in a bucket matching prefix."""
+
+        def _list_objects() -> list[str]:
+            objects = self._client.list_objects(bucket, prefix=prefix, recursive=True)
+            return [obj.object_name for obj in objects if obj.object_name]
+
+        return await self._run(_list_objects)
+
     async def presign_url(
         self,
         bucket: str,

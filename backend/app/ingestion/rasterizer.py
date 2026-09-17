@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.newspaper import Issue, Page
-from app.storage.minio_store import MinioStore
+from app.storage import get_object_store
+from app.storage.base import ObjectStore
 
 logger = get_logger(__name__)
 
@@ -39,10 +40,10 @@ class RasterizedPage:
 class PDFRasterizer:
     """Renders PDF documents into image assets and persists them to MinIO and MySQL."""
 
-    def __init__(self, db: AsyncSession, minio: MinioStore | None = None) -> None:
+    def __init__(self, db: AsyncSession, minio: ObjectStore | None = None) -> None:
         self._db = db
         self._settings = get_settings()
-        self._minio = minio or MinioStore(self._settings.minio)
+        self._minio = minio or get_object_store(self._settings)
 
     def render_page(
         self,

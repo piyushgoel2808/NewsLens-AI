@@ -30,12 +30,26 @@ class QdrantStore:
         self._settings = settings
         self._embedding_dim = embedding_dim
         self._collection = settings.collection_name
-        self._client = AsyncQdrantClient(
-            host=settings.host,
-            port=settings.port,
-            api_key=settings.api_key,
-            check_compatibility=False,
-        )
+        if settings.host.startswith("http://") or settings.host.startswith("https://"):
+            self._client = AsyncQdrantClient(
+                url=settings.host,
+                port=settings.port if settings.port not in (80, 443) else None,
+                api_key=settings.api_key,
+                check_compatibility=False,
+            )
+        elif getattr(settings, "https", False):
+            self._client = AsyncQdrantClient(
+                url=f"https://{settings.host}:{settings.port}",
+                api_key=settings.api_key,
+                check_compatibility=False,
+            )
+        else:
+            self._client = AsyncQdrantClient(
+                host=settings.host,
+                port=settings.port,
+                api_key=settings.api_key,
+                check_compatibility=False,
+            )
 
     async def _ensure_collection(self) -> None:
         """Create the Qdrant collection if it does not exist."""
