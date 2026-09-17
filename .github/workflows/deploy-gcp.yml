@@ -75,7 +75,10 @@ jobs:
           MYSQL_PASSWORD: newslens_pass
           MYSQL_DB: newslens_test
           TESTING: "true"
-        run: uv run pytest tests/ -v --tb=short
+          GEMINI_API_KEY: "mock-ci-gemini-key"
+          GOOGLE_API_KEY: "mock-ci-google-key"
+        run: |
+          uv run pytest tests/ -v --tb=short
 
   build-and-deploy:
     name: Build Images and Deploy to Cloud Run

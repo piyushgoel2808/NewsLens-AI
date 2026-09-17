@@ -15,6 +15,9 @@ os.environ.setdefault("MYSQL_HOST", "localhost")
 os.environ.setdefault("MYSQL_DB", "newslens_test")
 os.environ.setdefault("APP_DEBUG", "true")
 os.environ.setdefault("MODEL_CONFIG_PATH", "../model_config.yaml")
+os.environ.setdefault("GEMINI_API_KEY", "mock-test-gemini-key")
+os.environ.setdefault("GOOGLE_API_KEY", "mock-test-google-key")
+
 
 
 @pytest.fixture
