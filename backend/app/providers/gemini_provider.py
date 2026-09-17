@@ -419,6 +419,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         stream: bool = False,
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Run a chat completion via Google Gemini API."""
         t0 = time.monotonic()
@@ -428,6 +429,14 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
             "temperature": temperature,
             "maxOutputTokens": max_tokens,
         }
+        thinking_budget = kwargs.get("thinking_budget")
+        if thinking_budget is not None:
+            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+        elif max_tokens < 1024:
+            # Prevent reasoning models from consuming the entire output token budget
+            # on short completions (like query reformulation, classification, etc.)
+            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+
         if response_schema:
             generation_config["responseMimeType"] = "application/json"
             generation_config["responseSchema"] = _clean_schema_for_gemini(response_schema)
@@ -454,6 +463,17 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
                         json=payload,
                         headers=headers,
                     )
+                    if res.status_code == 400 and "thinkingConfig" in payload.get("generationConfig", {}):
+                        # Retry without thinkingConfig if this candidate does not support it
+                        fallback_payload = dict(payload)
+                        fallback_payload["generationConfig"] = dict(payload["generationConfig"])
+                        fallback_payload["generationConfig"].pop("thinkingConfig", None)
+                        res = await client.post(
+                            url,
+                            params=params,
+                            json=fallback_payload,
+                            headers=headers,
+                        )
                 except Exception as e:
                     last_error = e
                     continue
@@ -537,16 +557,22 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         messages: list[Message],
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Streaming chat completion yielding text deltas with automatic model fallback."""
         system_instruction, contents = self._to_gemini_contents(messages)
 
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        }
+        thinking_budget = kwargs.get("thinking_budget")
+        if thinking_budget is not None:
+            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+
         payload: dict[str, Any] = {
             "contents": contents,
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            },
+            "generationConfig": generation_config,
         }
         if system_instruction:
             payload["systemInstruction"] = system_instruction

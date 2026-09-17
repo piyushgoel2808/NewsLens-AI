@@ -550,8 +550,7 @@ class AnswerSynthesizer:
                 from sqlalchemy import select
                 from sqlalchemy.orm import selectinload
                 from app.models.article import Article
-                from app.models.issue import Issue
-                from app.models.newspaper import Newspaper
+                from app.models.newspaper import Issue, Newspaper
 
                 async with self._session_factory() as db:
                     stmt = (

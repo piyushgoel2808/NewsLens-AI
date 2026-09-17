@@ -623,8 +623,9 @@ async def condense_conversational_query(
             ]
             resp = await resolved_provider.complete(
                 messages=messages,
-                max_tokens=128,
+                max_tokens=1024,
                 temperature=0.0,
+                thinking_budget=0,
             )
             rewritten = resp.text.strip()
 
@@ -637,9 +638,18 @@ async def condense_conversational_query(
             ).strip()
             rewritten = re.sub(r'("|\'|`)$', "", rewritten).strip()
 
+            q_words = query.strip().split()
+            rewritten_words = rewritten.strip().split()
+            is_truncated = len(q_words) >= 6 and len(rewritten_words) <= 2
+
             has_unresolved_pronoun = bool(re.search(r"\b(its|it|this\s+paper)\b", rewritten, re.I))
             is_echo = rewritten.lower() == query.lower()
-            is_valid = len(rewritten) >= 3 and not (is_echo and (np_name or iss_id)) and not (has_unresolved_pronoun and (np_name or iss_id))
+            is_valid = (
+                len(rewritten) >= 3
+                and not is_truncated
+                and not (is_echo and (np_name or iss_id))
+                and not (has_unresolved_pronoun and (np_name or iss_id))
+            )
 
             if is_valid and "\n" not in rewritten and not rewritten.startswith("*"):
                 logger.info(
