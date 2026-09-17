@@ -216,6 +216,9 @@ def reattach_drop_caps(blocks: list[DigitalTextBlock]) -> list[DigitalTextBlock]
                 target_next.mean_font_size = (
                     (blk.mean_font_size + target_next.mean_font_size * 4) / 5.0
                 )
+                bold_chars = sum(len(sp.text) for sp in new_spans if sp.is_bold)
+                total_chars = sum(len(sp.text) for sp in new_spans) or 1
+                target_next.is_bold = (bold_chars / total_chars) >= 0.50
                 skip_indices.add(idx)
                 continue
 
@@ -587,6 +590,7 @@ class DigitalTextBlock:
     spans: list[TextSpan] = field(default_factory=list)
     mean_font_size: float = 10.0
     is_heading_candidate: bool = False
+    is_bold: bool = False
 
 
 @dataclass
@@ -757,6 +761,10 @@ class PDFPageDetector:
                     mean_fsize = (
                         sum(block_font_sizes) / len(block_font_sizes) if block_font_sizes else 10.0
                     )
+                    bold_char_count = sum(len(sp.text) for sp in block_spans if sp.is_bold)
+                    total_char_count = sum(len(sp.text) for sp in block_spans) or 1
+                    block_is_bold = (bold_char_count / total_char_count) >= 0.50
+
                     block_bbox = (
                         float(b["bbox"][0]),
                         float(b["bbox"][1]),
@@ -771,6 +779,7 @@ class PDFPageDetector:
                             lines=block_lines,
                             spans=block_spans,
                             mean_font_size=mean_fsize,
+                            is_bold=block_is_bold,
                         )
                     )
                     block_counter += 1
@@ -810,13 +819,30 @@ class PDFPageDetector:
                 blk.is_heading_candidate = False
                 continue
             # Multi-sentence paragraphs ending in period/semicolon are never headlines
-            if len(words_blk) > 12 and clean_blk.rstrip().endswith((".", ";")):
-                blk.is_heading_candidate = False
-                continue
+            r_blk = clean_blk.rstrip()
+            if len(words_blk) >= 5 and r_blk.endswith((".", ";")):
+                tokens = r_blk.split()
+                last_tok = tokens[-1].lower() if tokens else ""
+                is_abbrev = last_tok in {
+                    "inc.", "corp.", "co.", "ltd.", "pvt.", "llc.", "u.s.", "u.k.", "d.c.",
+                    "govt.", "no.", "vs.", "v.", "dr.", "prof.", "st.", "jr.", "sr.",
+                } or bool(re.search(r"\b(?:[A-Z]\.){1,4}$", tokens[-1]))
+                if not is_abbrev:
+                    blk.is_heading_candidate = False
+                    continue
 
             is_large = blk.mean_font_size >= dominant_font_size * 1.25
+            is_modestly_large = blk.mean_font_size >= dominant_font_size * 1.08
             is_cased = is_title_case_or_uppercase(clean_blk)
-            if is_large and is_cased and len(words_blk) >= 2:
+            if (
+                len(words_blk) >= 2
+                and is_cased
+                and (
+                    is_large
+                    or (blk.is_bold and is_modestly_large)
+                    or (blk.is_bold and clean_blk.isupper() and len(words_blk) >= 3)
+                )
+            ):
                 blk.is_heading_candidate = True
             else:
                 blk.is_heading_candidate = False

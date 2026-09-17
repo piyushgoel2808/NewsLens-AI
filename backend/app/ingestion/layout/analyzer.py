@@ -31,6 +31,7 @@ from app.ingestion.layout.slugs import (
     is_pullquote_author_block,
     is_syndication_or_agency_slug,
     is_toc_index_block,
+    is_valid_headline_candidate,
 )
 from app.providers.base import (
     DocumentLayoutProvider,
@@ -367,6 +368,16 @@ STATUTORY_AD_REGEX = re.compile(
     r"(?i)\b(?:" + "|".join(re.escape(k) for k in STATUTORY_AD_KEYWORDS) + r")\b"
 )
 
+_LEGAL_BOILERPLATE_RE = re.compile(
+    r"(?i)\b(?:public notice|notice is hereby|before the hon'?ble|"
+    r"tender notice|corrigendum|statutory notice|in the matter of|"
+    r"whereas it has been|auction sale|possession notice)\b"
+)
+
+_WIRE_DATELINE_RE = re.compile(
+    r"^[A-Z][A-Z\s]{1,20}\s*(?:—|-{1,2}|\|)\s*$"
+)
+
 
 def detect_advertisement_envelopes(
     elements: list[LayoutElement],
@@ -697,13 +708,19 @@ class LayoutAnalyzer:
                 elif is_numeric_stat_box(cleaned_text):
                     b_type = BlockType.TABLE
                 else:
+                    is_candidate_headline = (
+                        not is_single_boilerplate
+                        and is_valid_headline_candidate(cleaned_text)
+                        and not _LEGAL_BOILERPLATE_RE.search(cleaned_text)
+                        and not _WIRE_DATELINE_RE.match(cleaned_text)
+                    )
                     is_banner = (
                         box_width >= float(width_px) * 0.50
                         and lh >= median_lh * 1.25
-                        and not is_single_boilerplate
+                        and is_candidate_headline
                     )
                     is_headline = (
-                        not is_single_boilerplate
+                        is_candidate_headline
                         and (
                             is_banner
                             or (

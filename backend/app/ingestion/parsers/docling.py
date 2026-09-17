@@ -20,7 +20,7 @@ from docling.document_converter import DocumentConverter
 from docling_core.types.doc import CoordOrigin
 
 from app.core.logging import get_logger
-from app.ingestion.detector import is_text_gibberish
+from app.ingestion.detector import is_text_gibberish, is_title_case_or_uppercase
 from app.ingestion.layout import (
     DATELINE_CITIES,
     SECTION_HEADER_BLACKLIST,
@@ -401,15 +401,20 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                 sentences = [s.strip() for s in body_str.split("\n") if s.strip()]
                 if sentences:
                     # If first line is a very short brand/kicker and second line is a substantive headline
-                    if len(sentences[0].split()) <= 2 and len(sentences) > 1 and len(sentences[1].split()) >= 3:
+                    if (
+                        len(sentences[0].split()) <= 2
+                        and len(sentences) > 1
+                        and len(sentences[1].split()) >= 3
+                        and is_valid_headline_candidate(sentences[1])
+                    ):
                         h_text = sentences[1]
                         remaining = [sentences[0]] + sentences[2:]
                         body_str = "\n".join(remaining).strip()
-                    elif len(sentences[0].split()) <= 15:
+                    elif is_valid_headline_candidate(sentences[0]):
                         h_text = sentences[0]
                         body_str = "\n".join(sentences[1:]).strip()
                     else:
-                        h_text = sentences[0][:80] + "..."
+                        h_text = f"[{active_page_section or 'News'} Brief]"
 
             if not h_text:
                 return
@@ -425,7 +430,8 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             w_count = len(full_text.split())
 
             is_ad_article = final_h.startswith("[Advertisement]") or active_page_section == "Advertisement"
-            if w_count >= 10 or (is_ad_article and w_count >= 3):
+            is_valid_hl = is_valid_headline_candidate(final_h)
+            if (is_valid_hl and w_count >= 5) or w_count >= 10 or (is_ad_article and w_count >= 3):
                 art_counter += 1
                 articles.append(
                     SegmentedArticle(
@@ -550,13 +556,9 @@ class DoclingLayoutParser(DocumentLayoutProvider):
             # 2. Standalone Dateline handling (e.g. "NEW YORK", "PANAJI", "MARGAO", "TASHKENT")
             # Datelines belong to the active article's body and should NEVER become headlines!
             if is_dateline_city:
-                if current_headline:
-                    current_body_parts.append(f"{txt} —")
-                    current_bboxes.append(bbox)
-                    continue
-                else:
-                    current_bboxes.append(bbox)
-                    continue
+                current_body_parts.append(f"{txt} —" if len(txt.split()) <= 3 else txt)
+                current_bboxes.append(bbox)
+                continue
 
             # 3. Section Header or Title
             if lbl in ("section_header", "title"):
@@ -604,13 +606,32 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                         or (len(txt.split()) > len(current_headline.split()))
                         or byline_inline_match
                     )
-                    if is_deck and not (is_valid_headline_candidate(txt) and current_bboxes and (bbox[1] - current_bboxes[-1][3] > height_px * 0.15)):
+                    # Compute horizontal and vertical separation
+                    if current_bboxes:
+                        _article_x_center = sum(b[0] + b[2] for b in current_bboxes) / (2 * len(current_bboxes))
+                        _new_x_center = (bbox[0] + bbox[2]) / 2.0
+                        _horiz_far = abs(_new_x_center - _article_x_center) > width_px * 0.18
+                        _vert_gap = bbox[1] - current_bboxes[-1][3]
+                        # Negative Δy guard: a deck cannot start above the headline
+                        _negative_delta = bbox[1] < min(b[1] for b in current_bboxes) - 10.0
+                    else:
+                        _horiz_far = False
+                        _vert_gap = 0.0
+                        _negative_delta = False
+
+                    _is_spatially_separate = bool(
+                        _horiz_far
+                        or _negative_delta
+                        or _vert_gap > height_px * 0.12
+                    )
+
+                    if is_deck and not (is_valid_headline_candidate(txt) and _is_spatially_separate):
                         current_subheadline = txt
                         current_bboxes.append(bbox)
                         continue
                     else:
                         # If previous headline was a very short kicker (1-3 words), swap it
-                        if len(current_headline.split()) <= 3:
+                        if len(current_headline.split()) <= 3 and not _is_spatially_separate:
                             current_subheadline = current_headline
                             current_headline = txt
                             current_bboxes.append(bbox)
@@ -664,6 +685,31 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                         current_body_parts.append(f"{txt} —")
                         current_bboxes.append(bbox)
                         continue
+
+                    # Promotion check: Docling sometimes mislabels headline blocks as "paragraph" or "text".
+                    # If an article is active and already has body paragraphs, test if this block is a new article headline.
+                    if current_headline and (current_body_parts or current_subheadline):
+                        _is_promoted_hl = (
+                            is_valid_headline_candidate(txt)
+                            and is_title_case_or_uppercase(txt)
+                            and len(txt.split()) <= 20
+                        )
+                        _has_spatial_jump = False
+                        if _is_promoted_hl and current_bboxes:
+                            _last_bbox = current_bboxes[-1]
+                            _vert_gap = bbox[1] - _last_bbox[3]
+                            _horiz_disp = abs(bbox[0] - _last_bbox[0])
+                            _negative_delta = bbox[1] < min(b[1] for b in current_bboxes) - 10.0
+                            _has_spatial_jump = (
+                                _vert_gap > height_px * 0.06
+                                or _horiz_disp > width_px * 0.18
+                                or _negative_delta
+                            )
+                        if _is_promoted_hl and _has_spatial_jump:
+                            _flush_current_article()
+                            current_headline = txt
+                            current_bboxes.append(bbox)
+                            continue
 
                     # If we don't have a subheadline yet, have no body yet, and this paragraph is short/sentence-like without dateline
                     if current_headline and not current_subheadline and not current_body_parts and len(txt.split()) <= 30 and not _DATELINE_PATTERN.match(txt):

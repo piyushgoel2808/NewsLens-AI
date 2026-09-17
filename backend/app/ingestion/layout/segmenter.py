@@ -389,16 +389,20 @@ class ArticleSegmenter:
                     pending_kicker = None
                     article_counter += 1
                 else:
-                    first_line = text.split("\n")[0][:60].strip()
+                    first_line = text.split("\n")[0][:120].strip()
                     clean_hl, kicker = extract_kicker_and_clean_headline(first_line)
+                    fallback_hl = clean_hl if clean_hl else f"Page {page_number} News"
                     current_article = SegmentedArticle(
                         article_temp_id=f"p{page_number}_art_{article_counter}",
-                        headline=clean_hl if clean_hl else f"Page {page_number} News",
-                        subheadline=kicker,
+                        headline=fallback_hl,
+                        subheadline=kicker or pending_kicker,
                         body_text=text,
                         bbox_list=[block.bbox],
                         raw_blocks=[block],
+                        byline_author=pending_byline,
                     )
+                    pending_byline = None
+                    pending_kicker = None
                     article_counter += 1
                 continue
 
@@ -442,7 +446,14 @@ class ArticleSegmenter:
 
         # Fallback for OCR/scanned pages with blocks but 0 articles detected
         if not articles:
-            text_blocks = [b for b in ordered_blocks if b.text and b.text.strip()]
+            text_blocks = [
+                b for b in ordered_blocks
+                if b.text and b.text.strip()
+                and b.block_type not in (BlockType.TOC_INDEX, BlockType.PULLQUOTE_AUTHOR)
+                and not is_toc_index_block(b.text)
+                and not is_pullquote_author_block(b.text)
+                and not is_noise_or_promo_text(b.text)
+            ]
             if text_blocks:
                 combined_text = "\n\n".join(b.text.strip() for b in text_blocks)
                 first_line = combined_text.split("\n")[0][:200].strip()
@@ -500,8 +511,14 @@ class ArticleSegmenter:
                 or (w_count >= MIN_ARTICLE_WORD_COUNT)
             )
 
-            # Restrict merging: Absorb if not a valid structured article and below minimum standalone threshold (< 15 words)
-            if not is_valid_structured_article and w_count < 15 and consolidated:
+            # Restrict merging: Only absorb if not a valid structured article, below 15 words,
+            # and lacks a valid editorial headline.
+            _brief_has_valid_hl = bool(
+                art.headline
+                and is_valid_headline_candidate(art.headline)
+                and not art.headline.startswith("Page ")
+            )
+            if not is_valid_structured_article and w_count < 15 and consolidated and not _brief_has_valid_hl:
                 prev = consolidated[-1]
                 prev.body_text += f"\n\n{full_c}"
                 prev.bbox_list.extend(art.bbox_list)
@@ -561,11 +578,13 @@ class ArticleSegmenter:
                 is_valid_headline_candidate(art.headline)
                 and art.word_count >= 6
             )
+            is_sole_page_content = len(articles) == 1 and art.word_count >= 5
             is_keep = (
                 is_ad
                 or is_valid_teaser
                 or is_shorts
                 or is_substantial
+                or is_sole_page_content
                 or art.word_count >= MIN_ARTICLE_WORD_COUNT
             )
             if is_keep:

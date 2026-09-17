@@ -73,6 +73,10 @@ SECTION_HEADER_BLACKLIST: frozenset[str] = frozenset(
         "news wrap",
         "in brief",
         "news in brief",
+        "brief update",
+        "brief updates",
+        "quick update",
+        "quick updates",
         "corporate",
         "global",
         "views",
@@ -215,6 +219,29 @@ CONTINUATION_END_TOKENS: frozenset[str] = frozenset(
         "over", "after", "and", "or", "of", "as", "against", "despite", "under",
         "near", "up", "down", "out", "a", "an", "the",
     }
+)
+
+_TERMINAL_ABBREVIATIONS: frozenset[str] = frozenset(
+    {
+        "inc.", "corp.", "co.", "ltd.", "pvt.", "llc.", "u.s.", "u.k.", "d.c.",
+        "govt.", "no.", "vs.", "v.", "dr.", "prof.", "st.", "jr.", "sr.",
+    }
+)
+
+_ACRONYM_END_RE = re.compile(r"\b(?:[A-Z]\.){1,4}$", re.IGNORECASE)
+
+_DATELINE_PREFIX_RE = re.compile(
+    r"^([A-Za-z\s]{2,25})\s*[:–—\-]\s*",
+)
+
+_DATELINE_WITH_AGENCY_RE = re.compile(
+    r"^[A-Za-z\s]{2,25}\s*\([A-Za-z\s\.\/]+\)\s*[:–—\-]\s*",
+)
+
+_LEGAL_NOTICE_RE = re.compile(
+    r"(?i)\b(?:public notice is hereby given|notice inviting tender|"
+    r"before the hon'?ble|in the matter of|whereas it has been|"
+    r"notice is hereby given|this is to inform that|corrigendum to)\b"
 )
 
 OCR_HEADLINE_REPAIRS: list[tuple[re.Pattern[str], str]] = [
@@ -412,14 +439,38 @@ def is_valid_headline_candidate(text: str) -> bool:
     # Filter out pure boilerplate token combinations
     if all(w.lower() in BOILERPLATE_TOKENS for w in words):
         return False
+    # Filter out legal / statutory boilerplate notices
+    if _LEGAL_NOTICE_RE.search(text):
+        return False
+    # Reject dateline-starting text (e.g. "NEW DELHI: The finance ministry...")
+    stripped_text = text.strip()
+    if _DATELINE_WITH_AGENCY_RE.match(stripped_text):
+        return False
+    d_match = _DATELINE_PREFIX_RE.match(stripped_text)
+    if d_match:
+        prefix = re.sub(r"[^\w\s]", "", d_match.group(1)).strip().upper()
+        if prefix in DATELINE_CITIES or prefix in WIRE_AGENCIES:
+            return False
     # Numeric stat boxes are never headlines
     stat_matches = NUMERIC_STAT_PATTERN.findall(text)
     if len(stat_matches) >= 3 or (len(stat_matches) >= 2 and len(words) <= 6):
         return False
+
+    r_text = text.rstrip()
+
+    # Reject declarative sentences >= 5 words ending in a period or semicolon, with abbreviation protection
+    if len(words) >= 5 and r_text.endswith((".", ";")):
+        tokens = r_text.split()
+        last_tok = tokens[-1].lower() if tokens else ""
+        is_abbrev = (
+            last_tok in _TERMINAL_ABBREVIATIONS
+            or bool(_ACRONYM_END_RE.search(tokens[-1]))
+        )
+        if not is_abbrev:
+            return False
+
     # Multi-sentence paragraphs ending in period, semicolon, or exclamation (>20 words) are not headlines
-    if len(words) > 20 and text.rstrip().endswith((".", ";", "!")):
-        return False
-    return not (len(words) > 15 and text.rstrip().endswith((".", ";")))
+    return not (len(words) > 20 and r_text.endswith((".", ";", "!")))
 
 
 __all__ = [
