@@ -40,10 +40,13 @@ class TestSettings:
         settings = Settings(redis_url="redis://myredis:6379/1")
         assert settings.redis.url == "redis://myredis:6379/1"
 
-    def test_optional_api_keys_default_to_none(self) -> None:
+    def test_optional_api_keys_default_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
         settings = Settings(_env_file=None)
         assert settings.anthropic_api_key is None
         assert settings.voyage_api_key is None
+
 
 
 class TestModelConfig:
