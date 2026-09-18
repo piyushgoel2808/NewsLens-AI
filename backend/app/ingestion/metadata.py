@@ -13,7 +13,6 @@ import asyncio
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
@@ -21,8 +20,6 @@ import pymupdf
 from rapidocr import RapidOCR
 
 from app.core.logging import get_logger
-from app.ingestion.detector import DigitalTextBlock
-from app.providers.base import OCRBlock
 
 logger = get_logger(__name__)
 
@@ -191,6 +188,7 @@ _MASTHEAD_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bDECCAN\s+HERALD\b", re.I), "Deccan Herald"),
     (re.compile(r"\bTHE\s+TELEGRAPH\b", re.I), "The Telegraph"),
     (re.compile(r"\bNAVBHARAT\s+TIMES\b", re.I), "Navbharat Times"),
+    (re.compile(r"\b(?:THE\s+)?HANS\s+INDIA\b|\bTHEHANSINDIA\b", re.I), "The Hans India"),
 ]
 
 
@@ -295,7 +293,7 @@ class MastheadVerifier:
 
         # 3. Filename supplementary hints
         if filename:
-            norm_fn = unicodedata.normalize("NFKD", filename)
+            norm_fn = unicodedata.normalize("NFKD", filename).replace("_", " ")
             # Brand hint in filename
             if not detected_brand:
                 fn_upper = norm_fn.upper()
@@ -323,6 +321,9 @@ class MastheadVerifier:
                 elif re.search(r"\bMINT\b", fn_upper):
                     detected_brand = "Mint"
                     brand_confidence = 0.85
+                elif re.search(r"\bHANS\b|\bTHE\s*HANS\s*INDIA\b", fn_upper):
+                    detected_brand = "The Hans India"
+                    brand_confidence = 0.90
                 elif re.search(r"\bBS\b|BUSINESS\s*STANDARD", fn_upper):
                     detected_brand = "Business Standard"
                     brand_confidence = 0.85
@@ -417,6 +418,8 @@ _KNOWN_MASTHEADS: list[tuple[str, str]] = [
     ("AMAR UJALA", "Amar Ujala"),
     ("HINDUSTAN", "Hindustan"),
     ("NAVBHARAT TIMES", "Navbharat Times"),
+    ("THE HANS INDIA", "The Hans India"),
+    ("HANS INDIA", "The Hans India"),
 ]
 
 
@@ -525,7 +528,7 @@ def extract_newspaper_and_date_consensus(
 
         # 3. Inspect Filename for supplementary clues
         if filename:
-            norm_fn = unicodedata.normalize("NFKD", filename)
+            norm_fn = unicodedata.normalize("NFKD", filename).replace("_", " ")
             fn_upper = norm_fn.upper()
 
             # Check shorthand broadsheet acronyms
@@ -545,6 +548,8 @@ def extract_newspaper_and_date_consensus(
                 brand_counter["Hindustan Times"] += 4
             elif re.search(r"\bMINT\b", fn_upper):
                 brand_counter["Mint"] += 4
+            elif re.search(r"\bHANS\b|\bTHE\s*HANS\s*INDIA\b", fn_upper):
+                brand_counter["The Hans India"] += 5
             elif re.search(r"\bBS\b|BUSINESS\s*STANDARD", fn_upper):
                 brand_counter["Business Standard"] += 4
             elif re.search(r"\bIE\b|INDIAN\s*EXPRESS", fn_upper):

@@ -148,6 +148,7 @@ async def upload_newspaper_document(
                         issue_id=issue_id,
                         pdf_bytes=pdf_payload,
                         parser_engine=parser_engine,
+                        filename=filename,
                     )
                     pipeline_results.append(res)
                 except Exception as e:
@@ -164,6 +165,7 @@ async def upload_newspaper_document(
                         issue_id=issue_id,
                         pdf_bytes=pdf_payload,
                         parser_engine=parser_engine,
+                        filename=filename,
                     )
                 )
                 pipeline_results.append(

@@ -34,11 +34,12 @@ task_bindings:
   answerer: gemini_flash
   synthesizer: gemini_flash
   visual_extraction: gemini_vision
-  layout_analysis: docling_parser
+  layout_analysis: gemini_flash
   metadata_extraction: gemini_flash
   classification: gemini_flash
   article_segmentation: gemini_flash
   query_condenser: gemini_flash
   document_parser: docling_parser
-  ocr: docling_parser
+  ocr: google_cloud_vision
+  scanned_page_segmentation: gemini_flash   # GFVS Phase 1 provider (Gemini Flash Vision)
   embedding: local_embed_bge

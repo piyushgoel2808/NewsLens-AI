@@ -9,11 +9,8 @@ import pytest
 from PIL import Image
 
 from app.ingestion.single_pass_extractor import (
-    PageVisualAnalysis,
-    RegionAnalysis,
     SinglePassVisualExtractor,
     VisualRegion,
-    VisualRegionResult,
 )
 from app.providers.base import ModelResponse, VisionModelProvider
 
@@ -67,6 +64,39 @@ def test_pre_filter_regions_drops_small_and_thin_elements() -> None:
     assert "rule_1" not in surviving_ids
     assert "bg_1" not in surviving_ids
     assert "tiny_noise" not in surviving_ids
+
+
+def test_pre_filter_regions_caps_max_regions() -> None:
+    """Verify that when more than max_regions pass pre-filtering, they are capped by area descending."""
+    extractor = SinglePassVisualExtractor()
+    page_w = 2000
+    page_h = 3000
+
+    # Create 25 valid regions of increasing area (from 200x200 to 200x440)
+    regions = [
+        VisualRegion(
+            region_id=f"photo_{i}",
+            bbox=(100, 100, 300, 300 + i * 10),
+            caption_hint=f"Image {i}",
+        )
+        for i in range(25)
+    ]
+
+    filtered = extractor.pre_filter_regions(
+        regions=regions,
+        page_width_px=page_w,
+        page_height_px=page_h,
+        max_regions=20,
+    )
+
+    assert len(filtered) == 20
+    # Largest regions (higher indices) should be kept
+    surviving_ids = {r.region_id for r in filtered}
+    assert "photo_24" in surviving_ids
+    assert "photo_23" in surviving_ids
+    # Smallest regions should be dropped
+    assert "photo_0" not in surviving_ids
+    assert "photo_1" not in surviving_ids
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +380,7 @@ def test_resolve_photo_article_binding_prevents_giant_envelope_theft() -> None:
 def test_resolve_photo_article_binding_generic_token_matching() -> None:
     """Verify that photo binding uses generic 4-character significant token matching without hardcoded company lists."""
     from unittest.mock import MagicMock
+
     from app.ingestion.media_extractor import MediaExtractor
 
     extractor = MediaExtractor(db=MagicMock())

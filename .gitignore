@@ -55,6 +55,8 @@ out/
 .env
 .env.local
 .env.*.local
+.env.cloudtest
+cloud-sql-proxy
 *.pem
 *.key
 *.crt

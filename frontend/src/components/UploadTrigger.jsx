@@ -570,17 +570,11 @@ export default function UploadTrigger() {
               onChange={(e) => setParserEngine(e.target.value)}
               className="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-medium outline-none focus:border-emerald-400 cursor-pointer"
             >
-              <optgroup label="⚡ Neural Layout Engines (Hybrid)" className="bg-slate-900 text-slate-400 font-semibold">
+              <optgroup label="⚡ High-Speed Layout Engines (Recommended)" className="bg-slate-900 text-slate-400 font-semibold">
                 <option value="auto" className="bg-slate-900 text-slate-200 font-normal">
-                  ✨ Auto ({taskBindings?.layout_analysis === 'google_cloud_vision'
-                    ? 'Google Cloud Vision Pure OCR'
-                    : taskBindings?.layout_analysis === 'docling_parser'
-                    ? 'Docling 2D Neural Layout + RapidOCR'
-                    : taskBindings?.layout_analysis === 'ollama_qwen3vl'
-                    ? 'Local Qwen 3 VL'
-                    : taskBindings?.layout_analysis || 'Docling 2D Neural Layout'})
+                  ✨ Auto (Tri-Modal Fast Engine: Digital / Cloud OCR / Fallback)
                 </option>
-                <option value="docling" className="bg-slate-900 text-slate-200 font-normal">⚡ Docling 2D Neural Layout Parser (Recommended)</option>
+                <option value="docling" className="bg-slate-900 text-slate-200 font-normal">⚡ Docling 2D Neural Layout Parser (Full ONNX - Slower)</option>
               </optgroup>
               <optgroup label="☁️ Cloud OCR Engines (Zero Local Stress)" className="bg-slate-900 text-slate-400 font-semibold">
                 <option value="google_cloud_vision" className="bg-slate-900 text-slate-200 font-normal">🔍 Google Cloud Vision API (Pure OCR Engine)</option>

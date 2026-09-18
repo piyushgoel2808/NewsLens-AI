@@ -167,4 +167,5 @@ task_bindings:
   query_condenser: gemini_flash
   document_parser: docling_parser
   ocr: docling_parser
+  scanned_page_segmentation: gemini_vision
   embedding: local_embed_bge

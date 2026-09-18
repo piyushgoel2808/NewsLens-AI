@@ -192,6 +192,7 @@ class SinglePassVisualExtractor:
         max_aspect: float = 12.0,
         min_area_ratio: float = 0.005,
         max_area_ratio: float = 0.75,
+        max_regions: int = 20,
     ) -> list[VisualRegion]:
         """Programmatically drop trivial, noisy, or background elements before calling VLM."""
         page_area = float(max(1, page_width_px * page_height_px))
@@ -219,6 +220,16 @@ class SinglePassVisualExtractor:
                 continue
 
             surviving.append(reg)
+
+        # 4. Region count cap: sort by area descending and retain top max_regions
+        if len(surviving) > max_regions:
+            surviving.sort(key=lambda r: r.width * r.height, reverse=True)
+            logger.info(
+                "pre_filter_regions: capped surviving regions to %d (was %d)",
+                max_regions,
+                len(surviving),
+            )
+            surviving = surviving[:max_regions]
 
         return surviving
 

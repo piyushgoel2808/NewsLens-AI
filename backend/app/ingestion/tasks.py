@@ -22,7 +22,7 @@ from typing import Any
 
 import pymupdf
 from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
@@ -30,7 +30,7 @@ from app.core.logging import get_logger
 from app.ingestion.celery_app import celery_app
 from app.ingestion.chunker import NewspaperChunker
 from app.ingestion.classifier import ArticleClassifier
-from app.ingestion.detector import PDFPageDetector, check_is_advertisement_text
+from app.ingestion.detector import PageType, PDFPageDetector, check_is_advertisement_text
 from app.ingestion.embedder import ArticleEmbedder
 from app.ingestion.layout import (
     ArticleSegmenter,
@@ -102,6 +102,7 @@ async def _execute_ingestion_pipeline(
     parser_engine: str = "auto",
     minio: ObjectStore | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    filename: str | None = None,
 ) -> dict[str, Any]:
     """Execute the end-to-end high-speed single-pass ingestion pipeline for an issue."""
     settings = get_settings()
@@ -134,7 +135,7 @@ async def _execute_ingestion_pipeline(
         consensus_extractor = ConsensusExtractor(max_pages=15)
         con_brand, con_date, con_telem = consensus_extractor.extract_consensus(
             pdf_bytes=pdf_bytes,
-            filename=issue.edition if issue else None,
+            filename=filename or (issue.edition if issue else None),
         )
 
         if issue:
@@ -158,13 +159,19 @@ async def _execute_ingestion_pipeline(
             logger.info("Consensus identified publication date", extra={"issue_date": str(con_date), "issue_id": issue_id})
         await db.commit()
 
-        is_docling_engine = not parser_engine or "docling" in parser_engine.lower() or parser_engine.lower() == "auto"
+        # Step 4: Phase 1 Bounded Parallel Extraction (Page Skeletons & Layout)
+        # Only executed when an explicit VLM engine is requested (e.g. "gemini", "openrouter", "ollama")
+        engine_str = (parser_engine or "").lower().strip()
+        is_explicit_vlm_engine = bool(
+            engine_str
+            and engine_str not in ("auto", "docling")
+            and not any(k in engine_str for k in ("google", "vision", "gcv"))
+        )
         phase1_layouts: dict[int, PageLayoutExtraction] = {}
 
-        if not is_docling_engine:
-            # Step 4: Phase 1 Bounded Parallel Extraction (Page Skeletons & Layout)
+        if is_explicit_vlm_engine:
             # 4 concurrent requests for cloud (Gemini / OpenRouter), 1 for local Ollama
-            is_local = "ollama" in (parser_engine or "").lower()
+            is_local = "ollama" in engine_str
             concurrency_limit = 1 if is_local else 4
             semaphore = asyncio.Semaphore(concurrency_limit)
 
@@ -208,6 +215,9 @@ async def _execute_ingestion_pipeline(
         parsed_doc_items_by_page: dict[int, list[Any]] = {}
         page_extractions: list[dict[str, Any]] = []
 
+        # Concurrency semaphore for Google Cloud Vision OCR (Path B) to protect against rate bursts
+        gcv_semaphore = asyncio.Semaphore(8)
+
         for i, rendered in enumerate(rendered_pages):
             page_num = rendered.page_number
             analysis = analysis_results[i]
@@ -222,101 +232,178 @@ async def _execute_ingestion_pipeline(
                 page_record.is_advertisement_page = layout_data.is_advertisement_page or analysis.is_advertisement
                 page_record.ingestion_status = "layout_done"
 
-            # Identify if using pure Google Cloud Vision layout (already has complete OCR blocks for the page)
-            is_gcv_engine = "google" in (parser_engine or "").lower() or "vision" in (parser_engine or "").lower()
+            # Identify if explicit engines were requested
+            is_force_docling = bool(parser_engine and "docling" in parser_engine.lower() and parser_engine.lower() != "auto")
+            is_force_gcv = bool(parser_engine and ("google" in parser_engine.lower() or "vision" in parser_engine.lower()))
 
             # Process articles on this page
             page_segmented_articles: list[SegmentedArticle] = []
 
-            # If docling engine is selected, OR Phase 1 layout extraction returned 0 articles (or empty layout)
-            if is_docling_engine or not layout_data.articles:
+            # -----------------------------------------------------------------
+            # Tri-Modal Per-Page Router
+            # -----------------------------------------------------------------
+            raw_text = analysis.full_text or ""
+            alnum_count = sum(1 for c in raw_text if c.isalnum())
+            alpha_ratio = (alnum_count / len(raw_text)) if raw_text else 0.0
+
+            # Path A: Digital Fast-Path (<0.02s per page)
+            # Active when sufficient high-quality digital text and blocks exist
+            is_digital_candidate = (
+                not is_force_docling
+                and not is_force_gcv
+                and analysis.character_count >= 150
+                and alpha_ratio >= 0.45
+                and analysis.page_type != PageType.SCANNED
+                and len(analysis.blocks) > 0
+            )
+
+            # Path B: Scanned OCR Fast-Path (~1.5s per page)
+            # Active when page is scanned, corrupt font/gibberish, or explicitly requested
+            is_scanned_candidate = (
+                not is_force_docling
+                and (
+                    is_force_gcv
+                    or analysis.page_type == PageType.SCANNED
+                    or (analysis.character_count < 50 and len(analysis.blocks) == 0)
+                )
+            )
+
+            if is_digital_candidate and not layout_data.articles:
                 logger.info(
-                    "Extracting articles using DoclingLayoutParser",
-                    extra={"page_number": page_num, "is_docling_engine": is_docling_engine},
+                    "Extracting articles using Path A (Digital Fast-Path)",
+                    extra={
+                        "page_number": page_num,
+                        "char_count": analysis.character_count,
+                        "blocks": len(analysis.blocks),
+                        "alpha_ratio": round(alpha_ratio, 3),
+                    },
                 )
                 try:
-                    docling_parser = DoclingLayoutParser()
-                    src_pdf = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-                    single_doc = pymupdf.open()
-                    single_doc.insert_pdf(src_pdf, from_page=i, to_page=i)
-                    page_pdf_bytes = single_doc.tobytes()
-                    single_doc.close()
-                    src_pdf.close()
-
-                    parsed_doc_items = await asyncio.get_running_loop().run_in_executor(
-                        None,
-                        docling_parser.parse_docling_document,
-                        page_pdf_bytes,
-                        page_num,
-                        int(rendered.width_px),
-                        int(rendered.height_px),
-                    )
-                    docling_articles = docling_parser.assemble_articles(
+                    layout_analyzer = LayoutAnalyzer()
+                    page_layout_res = layout_analyzer.analyze_from_text_blocks(
                         page_number=page_num,
-                        items=parsed_doc_items,
                         width_px=int(rendered.width_px),
                         height_px=int(rendered.height_px),
+                        digital_blocks=analysis.blocks,
+                    )
+                    segmenter = ArticleSegmenter()
+                    seg_articles = segmenter.segment_page(
+                        page_number=page_num,
+                        ordered_blocks=page_layout_res.reading_order,
                         is_advertisement_page=page_record.is_advertisement_page if page_record else False,
                     )
-                    page_media_items[page_num] = docling_parser.extract_page_media_items(parsed_doc_items)
-                    parsed_doc_items_by_page[page_num] = parsed_doc_items
-                    if docling_articles:
-                        page_segmented_articles.extend(docling_articles)
-                except Exception as docling_err:
+                    if seg_articles:
+                        page_segmented_articles.extend(seg_articles)
+                        if page_layout_res.photos:
+                            page_media_items[page_num] = page_layout_res.photos
+                except Exception as dig_err:
                     logger.warning(
-                        "DoclingLayoutParser failed on page, attempting legacy fallback",
-                        extra={"page_number": page_num, "error": str(docling_err)},
+                        "Path A (Digital Fast-Path) failed on page %d, attempting fallback: %s",
+                        page_num,
+                        dig_err,
                     )
-                    if len(analysis.blocks) > 0:
-                        try:
-                            layout_analyzer = LayoutAnalyzer()
-                            page_layout_res = layout_analyzer.analyze_from_text_blocks(
-                                page_number=page_num,
-                                width_px=int(rendered.width_px),
-                                height_px=int(rendered.height_px),
-                                digital_blocks=analysis.blocks,
-                            )
-                            segmenter = ArticleSegmenter()
-                            seg_fallback = segmenter.segment_page(
-                                page_number=page_num,
-                                ordered_blocks=page_layout_res.reading_order,
-                                is_advertisement_page=page_record.is_advertisement_page if page_record else False,
-                            )
-                            if seg_fallback:
-                                page_segmented_articles.extend(seg_fallback)
-                        except Exception as fallback_err:
-                            logger.warning(
-                                "LayoutAnalyzer fallback failed on page",
-                                extra={"page_number": page_num, "error": str(fallback_err)},
-                            )
-                    else:
-                        # Corrupted font stream or scanned page: run pure OCR on rendered image
-                        try:
-                            from app.providers.google_vision_provider import GoogleCloudVisionOCR
-                            gcv_key = settings.google_api_key or settings.gemini_api_key
-                            gcv_ocr = GoogleCloudVisionOCR(api_key=gcv_key)
-                            ocr_res = await gcv_ocr.ocr(image_bytes=rendered.image_bytes, lang_hint=issue_lang)
-                            if ocr_res.blocks:
-                                layout_analyzer = LayoutAnalyzer()
-                                page_layout_res = layout_analyzer.analyze_from_text_blocks(
-                                    page_number=page_num,
-                                    width_px=int(rendered.width_px),
-                                    height_px=int(rendered.height_px),
-                                    ocr_blocks=ocr_res.blocks,
-                                )
-                                segmenter = ArticleSegmenter()
-                                seg_fallback = segmenter.segment_page(
-                                    page_number=page_num,
-                                    ordered_blocks=page_layout_res.reading_order,
-                                    is_advertisement_page=page_record.is_advertisement_page if page_record else False,
-                                )
-                                if seg_fallback:
-                                    page_segmented_articles.extend(seg_fallback)
-                        except Exception as ocr_fb_err:
-                            logger.warning(
-                                "GCV OCR fallback failed on page",
-                                extra={"page_number": page_num, "error": str(ocr_fb_err)},
-                            )
+
+            elif is_scanned_candidate and not layout_data.articles:
+                # -----------------------------------------------------------------
+                # Path B2: GFVS — Gemini-First Vision Segmentation
+                # -----------------------------------------------------------------
+                # Why we no longer use pure GCV → LayoutAnalyzer:
+                #   GCV returns ~200 raw OCR blocks with no concept of article
+                #   boundaries or column structure. The statistical line-height
+                #   heuristic in LayoutAnalyzer collapses on scanned images due
+                #   to scan noise and ink variation — causing 60–87% missed
+                #   articles per page (observed: Page 2 → 1 article vs 8 actual).
+                #
+                # GFVS two-phase approach:
+                #   Phase 1: Gemini Flash sees the FULL page image and identifies
+                #            article boundaries, headlines, metadata, and photo
+                #            regions using semantic visual understanding.
+                #   Phase 2: GCV OCR on each article CROP (not the full page) —
+                #            a narrow 2-3 column strip is trivially ordered and
+                #            produces accurate verbatim text at 98%+ accuracy.
+                # -----------------------------------------------------------------
+                logger.info(
+                    "Extracting articles using Path B2 (GFVS: Gemini Vision + GCV per-crop)",
+                    extra={"page_number": page_num, "page_type": analysis.page_type.value},
+                )
+                try:
+                    from app.ingestion.parsers.gfvs import GFVSPageSegmenter, resolve_gemini_provider
+                    from app.providers.google_vision_provider import GoogleCloudVisionOCR
+
+                    gcv_key = settings.google_api_key or settings.gemini_api_key
+                    gcv_ocr = GoogleCloudVisionOCR(api_key=gcv_key)
+                    gemini_prov = resolve_gemini_provider(settings)
+
+                    gfvs = GFVSPageSegmenter(
+                        gemini_provider=gemini_prov,
+                        gcv_provider=gcv_ocr,
+                        gcv_semaphore=gcv_semaphore,
+                    )
+                    gfvs_articles = await gfvs.segment_page(
+                        page_number=page_num,
+                        image_bytes=rendered.image_bytes,
+                        lang_hint=issue_lang,
+                    )
+                    if gfvs_articles:
+                        page_segmented_articles.extend(gfvs_articles)
+                        logger.info(
+                            "Path B2 (GFVS) produced %d articles on page %d",
+                            len(gfvs_articles),
+                            page_num,
+                        )
+                except Exception as gfvs_err:
+                    logger.warning(
+                        "Path B2 (GFVS) failed on page %d, will fall through to Docling: %s",
+                        page_num,
+                        gfvs_err,
+                    )
+
+            # Path C: Docling Engine (Explicit opt-in OR fallback when Path A/B produced 0 articles and no VLM layout)
+            if not page_segmented_articles and (is_force_docling or not layout_data.articles):
+                # Avoid running heavy Docling on blank/pure-ad pages with no content
+                should_run_docling = is_force_docling or (
+                    analysis.page_type != PageType.ADVERTISEMENT
+                    and (analysis.page_type == PageType.SCANNED or analysis.character_count >= 50)
+                )
+                if should_run_docling:
+                    logger.info(
+                        "Extracting articles using DoclingLayoutParser",
+                        extra={"page_number": page_num, "is_force_docling": is_force_docling},
+                    )
+                    try:
+                        docling_parser = DoclingLayoutParser()
+                        src_pdf = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+                        single_doc = pymupdf.open()
+                        single_doc.insert_pdf(src_pdf, from_page=i, to_page=i)
+                        page_pdf_bytes = single_doc.tobytes()
+                        single_doc.close()
+                        src_pdf.close()
+
+                        parsed_doc_items = await asyncio.get_running_loop().run_in_executor(
+                            None,
+                            docling_parser.parse_docling_document,
+                            page_pdf_bytes,
+                            page_num,
+                            int(rendered.width_px),
+                            int(rendered.height_px),
+                        )
+                        docling_articles = docling_parser.assemble_articles(
+                            page_number=page_num,
+                            items=parsed_doc_items,
+                            width_px=int(rendered.width_px),
+                            height_px=int(rendered.height_px),
+                            is_advertisement_page=page_record.is_advertisement_page if page_record else False,
+                        )
+                        page_media_items[page_num] = docling_parser.extract_page_media_items(parsed_doc_items)
+                        parsed_doc_items_by_page[page_num] = parsed_doc_items
+                        if docling_articles:
+                            page_segmented_articles.extend(docling_articles)
+                    except Exception as docling_err:
+                        logger.warning(
+                            "DoclingLayoutParser failed on page %d: %s",
+                            page_num,
+                            docling_err,
+                        )
 
             # Process LLM/VLM articles on this page if not already populated by Docling
             if not page_segmented_articles:
@@ -332,7 +419,7 @@ async def _execute_ingestion_pipeline(
                     # Phase 2 enrichment:
                     # When using Google Cloud Vision, full-page OCR blocks are already extracted with 98%+ accuracy.
                     # Avoid wasteful per-article crop API calls and extract directly from skel.body_text / page text.
-                    if is_gcv_engine or is_minor:
+                    if is_force_gcv or is_minor:
                         full_body = skel.body_text or (
                             f"{skel.headline}\n\n{skel.subheadline}" if skel.subheadline else (skel.headline or "News item.")
                         )
@@ -583,8 +670,8 @@ async def _execute_ingestion_pipeline(
         # Step 7b: Extract & Store Visual Regions for each page (Single-Pass 1 Call Per Page)
         article_photos_map: dict[int, list[Photo]] = {}
 
-        # Concurrency semaphore for single-pass visual extraction (capped at 2 to protect TPM limits)
-        visual_semaphore = asyncio.Semaphore(2)
+        # Concurrency semaphore for single-pass visual extraction (capped at 5 for high-throughput parallel processing)
+        visual_semaphore = asyncio.Semaphore(5)
 
         async def _process_page_visuals(rendered: RasterizedPage, analysis: Any) -> list[tuple[int | None, Photo]]:
             p_num = rendered.page_number
@@ -785,6 +872,7 @@ async def run_ingestion_pipeline(
     parser_engine: str = "auto",
     minio: ObjectStore | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    filename: str | None = None,
 ) -> dict[str, Any]:
     """Top-level robust entrypoint for ingestion pipeline with automated DB failure tracking."""
     maker = session_factory or get_session_factory()
@@ -796,6 +884,7 @@ async def run_ingestion_pipeline(
             parser_engine=parser_engine,
             minio=minio,
             session_factory=maker,
+            filename=filename,
         )
     except Exception as exc:
         logger.exception("Ingestion pipeline failed for issue %d: %s", issue_id, exc)
