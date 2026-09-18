@@ -171,6 +171,7 @@ jobs:
         run: |
           gcloud run services update newslens-backend \
             --image=${{ steps.meta.outputs.registry }}/backend:${{ steps.meta.outputs.sha }} \
+            --min-instances=1 \
             --region=asia-south1 \
             --project=${{ secrets.GCP_PROJECT_ID }}
 
