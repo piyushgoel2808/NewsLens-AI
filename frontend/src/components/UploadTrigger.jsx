@@ -101,22 +101,41 @@ export default function UploadTrigger() {
         });
 
         if (res.ok) {
-          const preview = await res.json();
-          setUploadQueue((prev) =>
-            prev.map((item, idx) =>
-              idx === i
-                ? {
-                    ...item,
-                    status: 'ready',
-                    detectedNewspaper: preview.detected_newspaper,
-                    detectedDate: preview.detected_date,
-                    isNewNewspaper: preview.is_new_newspaper,
-                    dateVotes: preview.telemetry?.date_votes,
-                    detail: `Detected: ${preview.detected_newspaper || 'Daily Broadsheet'} • Date: ${preview.detected_date || 'Auto'}`,
-                  }
-                : item
-            )
-          );
+          let preview = null;
+          try {
+            preview = await res.json();
+          } catch {
+            preview = null;
+          }
+          if (preview) {
+            setUploadQueue((prev) =>
+              prev.map((item, idx) =>
+                idx === i
+                  ? {
+                      ...item,
+                      status: 'ready',
+                      detectedNewspaper: preview.detected_newspaper,
+                      detectedDate: preview.detected_date,
+                      isNewNewspaper: preview.is_new_newspaper,
+                      dateVotes: preview.telemetry?.date_votes,
+                      detail: `Detected: ${preview.detected_newspaper || 'Daily Broadsheet'} • Date: ${preview.detected_date || 'Auto'}`,
+                    }
+                  : item
+              )
+            );
+          } else {
+            setUploadQueue((prev) =>
+              prev.map((item, idx) =>
+                idx === i
+                  ? {
+                      ...item,
+                      status: 'ready',
+                      detail: 'Auto-detection will resolve during ingestion pipeline',
+                    }
+                  : item
+              )
+            );
+          }
         } else {
           setUploadQueue((prev) =>
             prev.map((item, idx) =>
@@ -190,9 +209,40 @@ export default function UploadTrigger() {
           body: formData,
         });
 
-        const data = await response.json();
+        let data = null;
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          try {
+            data = await response.json();
+          } catch {
+            data = null;
+          }
+        }
+
         if (!response.ok) {
-          throw new Error(data.detail || `HTTP ${response.status}`);
+          if (data && data.detail) {
+            const detailMsg = typeof data.detail === 'string'
+              ? data.detail
+              : (Array.isArray(data.detail)
+                  ? data.detail.map((d) => d.msg || d.message || JSON.stringify(d)).join('; ')
+                  : JSON.stringify(data.detail));
+            throw new Error(detailMsg);
+          }
+          if (response.status === 413) {
+            throw new Error('File size exceeds server upload limit (HTTP 413). Cloud Run supports up to 32 MB per request.');
+          }
+          if (response.status === 504) {
+            throw new Error('Ingestion timed out at proxy gateway (HTTP 504). Task may still be running in the worker.');
+          }
+          let fallbackText = '';
+          try {
+            fallbackText = await response.text();
+          } catch {}
+          throw new Error(fallbackText ? fallbackText.slice(0, 150) : `Upload failed with HTTP ${response.status}`);
+        }
+
+        if (!data) {
+          throw new Error('Server returned an unexpected empty response.');
         }
 
         const isDuplicate =

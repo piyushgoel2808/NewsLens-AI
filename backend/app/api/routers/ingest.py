@@ -73,7 +73,7 @@ async def inspect_upload_preview(
 async def upload_newspaper_document(
     file: UploadFile = File(...),
     newspaper_name: str = Form("auto", description="Newspaper title or 'auto' for consensus"),
-    issue_date: date | None = Form(None, description="Publication date or None for consensus"),
+    issue_date: str | None = Form(None, description="Publication date or None for consensus"),
     edition: str = Form("morning", description="Edition identifier (e.g. 'morning', 'evening')"),
     language: str = Form("en", description="Primary ISO 639-1 language code (e.g. 'en', 'hi')"),
     parser_engine: str = Form(
@@ -95,7 +95,31 @@ async def upload_newspaper_document(
     filename = file.filename or "upload.pdf"
     intake = IntakeService(db=db)
 
-    effective_date = issue_date or date.today()
+    # Parse issue_date flexibly (ISO, DD/MM/YYYY, DD-MM-YYYY, etc.)
+    parsed_date: date | None = None
+    has_explicit_date = False
+    if issue_date and str(issue_date).strip():
+        val = str(issue_date).strip()
+        if val.lower() not in ("none", "null", "undefined", "auto", ""):
+            try:
+                parsed_date = date.fromisoformat(val)
+                has_explicit_date = True
+            except ValueError:
+                from datetime import datetime as dt
+                for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%m/%d/%Y", "%Y.%m.%d", "%d.%m.%Y"):
+                    try:
+                        parsed_date = dt.strptime(val, fmt).date()
+                        has_explicit_date = True
+                        break
+                    except ValueError:
+                        continue
+                if not parsed_date:
+                    logger.warning(
+                        "Could not parse explicit issue_date; falling back to auto-consensus",
+                        extra={"raw_issue_date": val},
+                    )
+
+    effective_date = parsed_date or date.today()
     effective_name = newspaper_name if newspaper_name and newspaper_name != "auto" else "auto"
 
     try:
@@ -107,6 +131,7 @@ async def upload_newspaper_document(
             edition=edition,
             language=language,
             force=force,
+            has_explicit_date=has_explicit_date,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

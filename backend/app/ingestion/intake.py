@@ -114,6 +114,7 @@ class IntakeService:
         edition: str = "morning",
         language: str | None = "en",
         force: bool = False,
+        has_explicit_date: bool = False,
     ) -> IntakeResult:
         """Process an uploaded single PDF or ZIP archive."""
         # Create IngestionJob entry
@@ -222,10 +223,10 @@ class IntakeService:
                         existing_newspaper_names=existing_names,
                         filename=item.filename,
                     )
-                    if det_brand:
+                    if det_brand and (item.newspaper_name == "auto" or not item.newspaper_name):
                         item.newspaper_name = det_brand
 
-                    if det_date:
+                    if det_date and not has_explicit_date:
                         item.issue_date = det_date
 
                     logger.info(

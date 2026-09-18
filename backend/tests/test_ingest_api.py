@@ -73,6 +73,11 @@ async def test_upload_endpoint(mock_db_session: AsyncMock) -> None:
             assert body["job_id"] == 42
             assert body["issues_created"] == [101]
 
+            # Test alternative date format DD/MM/YYYY
+            data["issue_date"] = "24/10/1929"
+            resp2 = await client.post("/api/ingest/upload", files={"file": ("frontpage.pdf", pdf_bytes, "application/pdf")}, data=data)
+            assert resp2.status_code == 201
+
 
 @pytest.mark.asyncio
 async def test_get_ingestion_job_not_found(mock_db_session: AsyncMock) -> None:
