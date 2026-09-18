@@ -53,7 +53,10 @@ class TestDoclingDualMode:
         settings = get_settings()
         registry = ModelRegistry(settings)
 
-        with patch("docling.service_client.DoclingServiceClient") as mock_client_cls:
+        with (
+            patch.object(settings, "docling_api_key", "test_docling_api_key_123"),
+            patch("docling.service_client.DoclingServiceClient") as mock_client_cls,
+        ):
             mock_client_cls.return_value = MagicMock()
             provider = registry.get_provider_by_id("docling_cloud_parser")
             assert isinstance(provider, DoclingLayoutParser)
