@@ -32,7 +32,7 @@ from app.agent.taxonomy import (
 )
 from app.core.cost_tracker import record_usage_and_cost
 from app.core.logging import get_logger
-from app.providers.base import ChatModelProvider, Message
+from app.providers.base import ChatModelProvider, Message, ProviderCapability
 from app.providers.registry import get_registry
 from app.retrieval.sql_analytics import sanitize_headline
 
@@ -268,12 +268,17 @@ COMMON_ANALYTICAL_GUIDELINES = """CRITICAL ANALYTICAL GUIDELINES:
      * SINGLE-ARTICLE DEEP-DIVES & FACTUAL SUMMARIES:
        When analyzing or summarizing a specific article, deliver a rich narrative brief covering the events, numbers, personnel, and implications directly from the text.
        Never format a single article response as a metadata catalog or inventory list.
-4. CONVERSATION HISTORY & PUBLICATION ISOLATION:
+4. OCR NOISE TOLERANCE & INTELLIGENT RECONSTRUCTION:
+   - The input text originates from Optical Character Recognition (OCR) of scanned historical or broadsheet newspaper pages and will frequently contain character misrecognitions, phonetic substitutions, broken ligatures, and layout artifacts (e.g. 'NDW DEUHR' for 'NEW DELHI', 'Fire commponics' for 'Five companies', 'horve shens lntorcst' for 'have shown interest', 'le the gow emmn\'s' for 'in the government\'s', '37.300 crone coul pooi' for '37,500 crore coal pool', 'wh Aan Boderpetses Lad scheiling' for 'with Adani Enterprises Ltd submitting', 'cm mdo lo' / '@0% mnarkort shane' for '80% market share', 'adebotic' for 'adiabatic').
+   - You MUST use surrounding sentence context, newsroom domain knowledge, and phonetic reconstruction to restore garbled OCR text into clean, fluent, and grammatical English prose.
+   - RECONSTRUCTION IS NOT HALLUCINATION: Faithfully interpreting and fixing OCR typos, corrupted words, and misrecognized characters from surrounding sentence context is MANDATORY. You are strictly forbidden from copying raw OCR gibberish, broken typography, or garbled character strings into your response.
+   - Always synthesize authoritative, readable sentences that faithfully explain what the broadsheet reported.
+5. CONVERSATION HISTORY & PUBLICATION ISOLATION:
    - The conversation history is ONLY for understanding conversational context and follow-up intent.
    - Substantive facts, headlines, and analysis must be derived EXCLUSIVELY from the "Available Newspaper Evidence" for the CURRENT turn.
    - NEVER carry over news stories, events, or newspaper titles from previous conversation turns into a new date-specific or comparative query.
    - If the user asks to compare newspapers on a specific date, you must ONLY report on the publications explicitly present in the verified evidence for that date.
-5. REASONING EFFICIENCY CONSTRAINT:
+6. REASONING EFFICIENCY CONSTRAINT:
    - If you are a reasoning model, keep internal chain-of-thought concise (<150 words) focusing strictly on verifying facts against evidence.
    - Do NOT output repetitive drafts during reasoning. Immediately proceed to output the structured brief in the required markdown format."""
 
@@ -387,6 +392,64 @@ def compile_structure_from_blueprint(
     return "\n".join(lines)
 
 
+def resolve_dynamic_token_budget(
+    provider: Any,
+    archetype: str | None = None,
+    answer_blueprint: AnswerBlueprint | dict[str, Any] | None = None,
+    query: str | None = None,
+) -> int:
+    """Dynamically allocate the maximum output token budget for LLM response generation.
+
+    Derives the token budget from provider capabilities (max_output_tokens, is_reasoning_model,
+    reasoning_headroom), user-requested word limits, and query complexity without hardcoded caps.
+    """
+    capability: ProviderCapability | None = getattr(provider, "capability", None)
+    if isinstance(capability, ProviderCapability):
+        max_out = capability.max_output_tokens or 4096
+        is_reasoning = capability.is_reasoning_model
+        headroom = capability.reasoning_headroom
+    else:
+        model_name = str(getattr(provider, "_model", getattr(provider, "model_name", "")) or "").lower()
+        is_reasoning = any(k in model_name for k in ("2.5", "thinking", "r1", "nemotron", "qwq", "o1", "o3", "reasoning"))
+        max_out = 8192 if is_reasoning else 4096
+        headroom = 2048 if is_reasoning else 0
+
+    # 1. Parse target word count if specified
+    target_words: int | None = None
+    if isinstance(answer_blueprint, AnswerBlueprint):
+        target_words = answer_blueprint.target_word_count
+    elif isinstance(answer_blueprint, dict):
+        target_words = answer_blueprint.get("target_word_count")
+
+    if target_words is None and query:
+        wc_match = re.search(r"\b(?:in|under|around|within|max(?:imum)?)\s+(\d+)\s+words?\b", query.lower())
+        if wc_match:
+            with contextlib.suppress(ValueError):
+                target_words = int(wc_match.group(1))
+
+    # 2. If an explicit word limit is requested by user/blueprint:
+    if target_words and target_words > 0:
+        needed_tokens = max(1024, int(target_words * 4))
+        if is_reasoning:
+            needed_tokens += headroom
+        return max(1024, min(max_out, needed_tokens))
+
+    # 3. If it's a reasoning model without explicit word cap:
+    # Reasoning models require headroom for chain-of-thought tokens plus response tokens.
+    # Giving them the full max_output_tokens ensures reasoning tokens never starve output generation.
+    if is_reasoning:
+        return max_out
+
+    # 4. Non-reasoning models by query archetype:
+    concise_archetypes = {"scalar_count", "conversational_meta_query", "archive_availability"}
+    if archetype in concise_archetypes:
+        return min(max_out, 1024)
+
+    # For all comprehensive archetypes (analytical_computation, article_catalog,
+    # cross_newspaper_comparison, thematic_timeline, article_deep_dive, quantitative_trend, factual_lookup):
+    return max_out
+
+
 # ---------------------------------------------------------------------------
 # AnswerSynthesizer Coordinator
 # ---------------------------------------------------------------------------
@@ -399,6 +462,7 @@ class AnswerSynthesizer:
     _render_broadsheet_perspectives = staticmethod(render_broadsheet_perspectives)
     _render_explore_further = staticmethod(render_explore_further)
     _generate_deterministic_summary = staticmethod(generate_deterministic_summary)
+    resolve_token_budget = staticmethod(resolve_dynamic_token_budget)
 
     ARCHETYPE_TOKEN_CAPS: dict[str, int] = {
         "factual_lookup": 1024,
@@ -772,9 +836,10 @@ class AnswerSynthesizer:
         # Detect whether the query is scalar, counting, or pure archive metadata
         is_scalar_or_count = bool(
             re.search(
-                r"\b(how many|no of|number of|count of|total issues|total pages|total articles|count issues|count pages)\b",
+                r"\b(how many|no of|number of|count of\s+(?:issues|newspapers|pages|articles|ads|advertisements|photos)|total issues|total pages|total articles|count issues|count pages)\b",
                 query.lower(),
             )
+            and not any(w in query.lower() for w in ["word count", "average length", "character count", "ratio", "percentage", "correlat"])
             or (
                 archetype in ("quantitative_trend", "factual_lookup")
                 and bool(ev_items)
@@ -792,6 +857,21 @@ class AnswerSynthesizer:
    - Clean, compact bullet points or a concise metric summary of the verified figures (e.g. Total Issues, Total Articles, Newspaper, Date Scope).
    - DO NOT generate empty or single-item article catalog tables.
    - DO NOT invent fake sector highlights or artificial 'Explore Further' questions when answering an atomic count or metadata query."""
+
+        elif archetype == "analytical_computation":
+            structure = """REQUIRED RESPONSE STRUCTURE (STATISTICAL & ANALYTICAL COMPUTATION):
+1. ### ⚡ Computed Result
+   - 1 to 2 authoritative, direct sentences answering the exact user question with the verified computed figure(s), methodology, and analyzed broadsheet scope (newspaper, date, section).
+   - State the final verified calculation immediately.
+
+2. ### 📊 Analytical Breakdown & Methodology
+   - Detailed breakdown of data points, contributing articles/metrics, and underlying calculations.
+   - Present figures cleanly in a structured metric summary or breakdown table.
+   - Include intermediate counts (e.g. Total Articles Analyzed, Total Words, Average / Distribution).
+
+3. ### 🔍 Explore Further
+   - 1 to 2 concise follow-up prompts exploring related statistical or editorial dimensions:
+     > 💡 Explore: <Specific analytical follow-up question>"""
 
         elif archetype == "cross_newspaper_comparison" and domain:
             metric_col = DOMAIN_TAXONOMY.get(domain, {}).get("metric_col", "Key Takeaways & Core Findings")
@@ -1050,10 +1130,15 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
 
         cost_usd = 0.0
         providers = self._get_provider_candidates(model_override=model_override)
-        effective_max_tokens = self.ARCHETYPE_TOKEN_CAPS.get(archetype, self.ARCHETYPE_TOKEN_CAPS["_default"])
 
         for provider in providers:
             try:
+                effective_max_tokens = resolve_dynamic_token_budget(
+                    provider=provider,
+                    archetype=archetype,
+                    answer_blueprint=answer_blueprint,
+                    query=query,
+                )
                 response = await provider.complete(messages=messages, max_tokens=effective_max_tokens, temperature=0.1)
                 th_trace, cleaned_answer = parse_thought_and_answer(response.text)
                 answer_text = cleaned_answer if cleaned_answer else ("" if th_trace else response.text)
@@ -1137,10 +1222,15 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
         messages.append(Message(role="user", content=user_prompt))
 
         providers = self._get_provider_candidates(model_override=model_override)
-        effective_max_tokens = self.ARCHETYPE_TOKEN_CAPS.get(archetype, self.ARCHETYPE_TOKEN_CAPS["_default"])
 
         for provider in providers:
             try:
+                effective_max_tokens = resolve_dynamic_token_budget(
+                    provider=provider,
+                    archetype=archetype,
+                    answer_blueprint=answer_blueprint,
+                    query=query,
+                )
                 stream_gen = provider.complete_stream(messages=messages, max_tokens=effective_max_tokens, temperature=0.1)
                 streamed_any = False
                 async for chunk in stream_gen:

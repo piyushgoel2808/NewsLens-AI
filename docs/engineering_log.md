@@ -4200,6 +4200,78 @@ When users interacted with broadsheet articles containing companion infographics
 - **Test Suite Integrity**:
   - 574 unit and integration tests passing across 55 test suites (100% green).
 
+---
+
+## Phase 26 — Planner LLM Cognitive Authority, Dynamic Token Budgeting & OCR Semantic Reconstruction
+
+**Date**: 2026-09-18
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make test` (`pytest tests/`) — **578/578 tests passing** (100% green across all unit, integration, and regression suites).
+- Dynamic token budget verified across reasoning models (Gemini 2.5 Flash, DeepSeek-R1) with 8,192-token envelope and 2,048-token reasoning headroom.
+- Target inquiry (`Calculate the average word count of sports articles IN HINDUSTAN TIMES DATED 2026-09-03?`) correctly routes to `analytical_computation`, executing `dynamic_analysis` without numerical cutoff.
+- OCR noise tolerance and semantic reconstruction verified active in `synthesizer.py`.
+- Single-article queries verified isolated from extraneous Page 3 advertisements and outside articles.
+
+### Architectural Decisions & Changes
+
+1. **Authoritative Planner LLM Cognitive Routing (`graph.py`)**:
+   - Removed fast-path deterministic bypass from `_classify_and_plan_node`.
+   - The Planner LLM is now the authoritative decision-maker on every incoming query, receiving live database schema, active archive boundaries (dates, issues, newspapers), and conversation history.
+   - The deterministic heuristic router is reserved strictly as a resilient failover fallback when LLM providers fail.
+
+2. **Dynamic Model-Aware Token Budgeting (`synthesizer.py`, `base.py`, `config.py`)**:
+   - Eliminated static archetype token caps dictionary (`ARCHETYPE_TOKEN_CAPS`) in favor of dynamic per-model output envelopes derived from `ProviderCapability` (`max_output_tokens` 4,096 or 8,192).
+   - Added `max_output_tokens`, `is_reasoning_model`, and `reasoning_headroom` to `ProviderConfig` and `ProviderCapability`.
+   - Implemented `resolve_dynamic_token_budget(provider, archetype, answer_blueprint, query)` dynamically deriving token budget per provider candidate:
+     - Reasoning models (Gemini 2.5, DeepSeek-R1, NVIDIA Nemotron, OpenAI o-series): receive the full 8,192 generation envelope, with 2,048 tokens reserved for chain-of-thought traces, preventing thinking token starvation.
+     - User-specified word limits: scaled dynamically via $\max(1024, \text{target\_words} \times 4) + \text{reasoning\_headroom}$.
+     - Concise non-reasoning archetypes: allocated 1,024 tokens.
+     - Comprehensive archetypes: allocated full model capacity (4,096 or 8,192 tokens).
+
+3. **Decoupling Analytical Computations from Scalar Counts (`planner.py`, `synthesizer.py`)**:
+   - Introduced dedicated `analytical_computation` archetype in Planner system prompt and Blueprints, routing statistical/mathematical queries to `dynamic_analysis`.
+   - Refined `is_scalar_or_count` regex so phrases like `"word count of"` or `"average length"` are not clamped to scalar count structures or an 80-word ceiling.
+   - Added structured synthesis response guidelines for `analytical_computation` (`### ⚡ Computed Result`, `### 📊 Analytical Breakdown & Methodology`).
+
+4. **OCR Noise Tolerance & Intelligent Semantic Reconstruction (`synthesizer.py`)**:
+   - Added Section 4 (`OCR NOISE TOLERANCE & INTELLIGENT RECONSTRUCTION`) to `COMMON_ANALYTICAL_GUIDELINES`.
+   - Authorizes the LLM to phonetically and semantically reconstruct words corrupted by broadsheet scanning ("Reconstruction is not hallucination"), strictly prohibiting copying raw OCR errors into answers.
+
+5. **Prompt Context Isolation & Contamination Elimination (`prompt_context.py`)**:
+   - Single-article queries isolate evidence strictly to target article chunks, eliminating irrelevant advertisements and unrelated page stories from contaminating prompt context.
+
+6. **Conversational Follow-Up Condenser Disambiguation (`condenser.py`, `query.py`)**:
+   - Enhanced history extraction to parse citations and quoted headlines from previous turns.
+   - Normalizer catches truncated outputs and safely reformulates follow-ups like `"summarise it"` into standalone article queries.
+   - Added emergency LLM synthesis fallback before Python string slicing in streaming API.
+
+### Files Modified
+
+| File | Changes |
+| :--- | :--- |
+| `backend/app/agent/graph.py` | Removed deterministic fast-path bypass from LangGraph classification node. |
+| `backend/app/agent/planner.py` | Added `analytical_computation` to ARCHETYPE SELECTION; added average word count few-shot; decoupled from scalar count 80-word ceiling. |
+| `backend/app/agent/synthesizer.py` | Implemented `resolve_dynamic_token_budget()`; dynamically budgeted provider loops; added OCR reconstruction guidelines; added `analytical_computation` structure. |
+| `backend/app/agent/prompt_context.py` | Isolated single-article prompt context from irrelevant outside advertisements. |
+| `backend/app/agent/condenser.py` | Enhanced citation history extraction; fixed truncated output recovery; made thinking budget provider-safe. |
+| `backend/app/api/routers/query.py` | Added emergency non-streaming LLM synthesis fallback. |
+| `backend/app/core/config.py` | Added `max_output_tokens`, `is_reasoning_model`, `reasoning_headroom` to `ProviderConfig`. |
+| `backend/app/providers/base.py` | Added `max_output_tokens`, `is_reasoning_model`, `reasoning_headroom` to `ProviderCapability`. |
+| `backend/app/providers/gemini_provider.py` | Added dynamic token budgeting, reasoning model auto-detection, and `thinkingBudget: 0` guard on short completions. |
+| `backend/app/providers/ollama_provider.py` | Added reasoning model auto-detection (`r1`, `nemotron`, `qwq`) and 8,192 token envelope. |
+| `backend/app/providers/groq_provider.py` | Added dynamic token budgeting and reasoning model support. |
+| `backend/app/providers/nvidia_provider.py` | Added dynamic token budgeting and reasoning model support. |
+| `backend/app/providers/openai_provider.py` | Added dynamic token budgeting and reasoning model support. |
+| `backend/app/providers/openrouter_provider.py` | Added dynamic token budgeting and reasoning model support. |
+| `backend/app/providers/registry.py` | Injected dynamic token budgeting config from `model_config.yaml` to providers. |
+| `backend/tests/test_rag_query_optimization.py` | Added tests for dynamic token budget resolution across reasoning and blueprint constraints. |
+| `model_config.yaml` & `backend/model_config.prod.yaml` | Configured `max_output_tokens` and reasoning flags across provider instances. |
+| `README.md`, `CHANGELOG.md`, `docs/features.md`, `docs/architecture.md` | Updated system documentation, feature references, and release notes. |
+
+
 
 
 

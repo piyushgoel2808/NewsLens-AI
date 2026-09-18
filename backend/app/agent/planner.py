@@ -195,11 +195,21 @@ Output: {"thought_process": "User wants all article headings/catalog on a specif
 Query: "Show me all headlines from Business Standard on 2026-08-15"
 Output: {"thought_process": "User wants a catalog of all headlines from a specific newspaper edition. No page specified — retrieve the complete issue manifest. This is article_catalog not quantitative_trend because the user is asking to LIST articles, not count them.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "Business Standard", "issue_date": "2026-08-15", "analysis_type": "issue_summary"}, "purpose": "Retrieve complete article manifest for Business Standard on 2026-08-15"}, {"tool_name": "hybrid_search", "arguments": {"query": "Business Standard news 2026-08-15", "newspaper_name": "Business Standard", "date_from": "2026-08-15", "date_to": "2026-08-15", "top_k": 8}, "purpose": "Retrieve article text excerpts for synthesis"}]}
 
+Query: "Explain article \"Adani leads rush for 37,500 cr coal gasification plan\" in Hindustan Times dated 2026-09-09"
+Output: {"thought_process": "User is asking to explain and summarize a specific broadsheet story by quoted headline. Schedule hybrid_search targeting the headline, publication, and date with top_k=4.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "hybrid_search", "arguments": {"query": "Adani leads rush for 37500 cr coal gasification plan", "newspaper_name": "Hindustan Times", "date_from": "2026-09-09", "date_to": "2026-09-09", "top_k": 4}, "purpose": "Retrieve full article text for the coal gasification report"}], "answer_blueprint": {"user_intent": "single_article_summary", "overall_tone": "executive_brief", "sections": [{"title": "### ⚡ Executive Summary: Adani leads rush for 37,500 cr coal gasification plan", "format_type": "narrative", "content_focus": "Core news event, government coal gasification plan, bidding companies, investment scale", "target_length": "1 to 2 paragraphs"}, {"title": "### 📌 Key Takeaways & Operational Highlights", "format_type": "bullet_list", "content_focus": "Verified operational figures, participating companies, policies, and timelines", "target_length": "3 to 4 bullets"}, {"title": "### 🔍 Explore Further", "format_type": "bullet_list", "content_focus": "Journalistic follow-up angles", "target_length": "2 prompts"}], "prohibited_elements": ["robotic catalog tables", "unrelated advertisements or briefs", "raw OCR typos", "conversational filler"]}}
+
+Query: "Summarise the article 'Adani leads rush for 37,500 cr coal gasification plan' from Hindustan Times dated 2026-09-09"
+Output: {"thought_process": "Condensed conversational query requesting a summary of a specific broadsheet article. Schedule hybrid_search targeting the headline and publication date.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "hybrid_search", "arguments": {"query": "Adani leads rush for 37500 cr coal gasification plan", "newspaper_name": "Hindustan Times", "date_from": "2026-09-09", "date_to": "2026-09-09", "top_k": 4}, "purpose": "Retrieve targeted article text for synthesis"}]}
+
+Query: "Calculate the average word count of sports articles in Hindustan Times dated 2026-09-03"
+Output: {"thought_process": "User is asking to compute the mathematical average word count of sports articles on a specific date. This is an analytical computation requiring SQL/Python data aggregation. Schedule dynamic_analysis.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "Calculate the average word count of sports articles in Hindustan Times dated 2026-09-03", "analysis_description": "Compute the average word count of sports articles in Hindustan Times on 2026-09-03"}, "purpose": "Execute analytical calculation of average word count for sports articles"}], "answer_blueprint": {"user_intent": "statistical_computation", "overall_tone": "analytical_comparison", "sections": [{"title": "### ⚡ Computed Result", "format_type": "narrative", "content_focus": "Direct computed average word count with exact verified number and article count", "target_length": "1 to 2 crisp sentences"}, {"title": "### 📊 Analytical Breakdown", "format_type": "metric_card", "content_focus": "Supporting statistics: total articles analyzed, total word count, distribution across sports articles", "target_length": "Clean metric card or bullet list"}], "prohibited_elements": ["narrative speculation", "conversational filler"]}}
+
 ### ⚡ REASONING & OUTPUT INSTRUCTIONS
 - Keep internal chain-of-thought concise (<80 words).
 - CRITICAL DATE RESTRAINT: NEVER invent or hallucinate date ranges (e.g. "2020-01-01" to "2022-12-31") or historical years when the user query does NOT specify any dates! If the query contains no dates, leave `date_from`, `date_to`, `issue_date`, and `target_date` empty or omitted so the retrieval tools search across the entire broadsheet archive.
 - ARCHETYPE SELECTION:
   * For queries citing specific statements, article quotes, headlines, or factual claims without explicit multi-newspaper comparative keywords, choose `factual_lookup` and schedule targeted `hybrid_search`.
+  * For mathematical, statistical, or analytical calculations (e.g. "calculate average word count", "average length", "word count of articles", "ratio of", "percentage of"), choose `analytical_computation` and schedule `dynamic_analysis`.
   * For counting, frequencies, volume, or metadata questions (e.g. "how many issues", "number of pages", "count of articles", "total editions"), choose `quantitative_trend` or `factual_lookup`. NEVER select `article_catalog` for scalar counts!
   * Select `article_catalog` when the user wants to LIST, ENUMERATE, or BROWSE multiple articles — including page-scoped listing queries like "list all news on page 5", "what articles are on page 6", "show headlines on page 3 of [newspaper]", "show all articles in [newspaper] on [date]". A query asking to LIST articles on a specific page IS article_catalog, not quantitative_trend.
   * Only select `cross_newspaper_comparison` when the user explicitly asks to compare across publications (e.g. "compare newspapers", "across editions", "coverage differences").
@@ -563,11 +573,23 @@ def build_heuristic_answer_blueprint(
         return bp
 
     # Scalar / count query
-    is_scalar_or_count = bool(re.search(r"\b(how many|no of|number of|count of|total issues|total pages|total articles|count issues|count pages|count advertisements|ad count)\b", q_lower))
-    if is_scalar_or_count or (archetype in ("quantitative_trend", "analytical_computation") and not any(w in q_lower for w in ["table", "list all", "catalog"])):
-        bp_key = archetype if archetype in DEFAULT_BLUEPRINTS else "scalar_count_metric"
+    is_scalar_or_count = bool(
+        re.search(
+            r"\b(how many|no of|number of|count of\s+(?:issues|newspapers|pages|articles|ads|advertisements|photos)|total issues|total pages|total articles|count issues|count pages|count advertisements|ad count)\b",
+            q_lower,
+        )
+    ) and not any(w in q_lower for w in ["word count", "average length", "character count", "ratio", "percentage", "correlat"])
+    if is_scalar_or_count or (archetype == "quantitative_trend" and not any(w in q_lower for w in ["table", "list all", "catalog"])):
+        bp_key = "scalar_count_metric"
         bp = DEFAULT_BLUEPRINTS[bp_key].model_copy(deep=True)
         bp.target_word_count = target_word_count or 80
+        return bp
+
+    # Analytical / Statistical computation
+    if archetype == "analytical_computation" or any(w in q_lower for w in ["average word count", "word count", "average length", "calculate the average", "pearson correlation"]):
+        bp = DEFAULT_BLUEPRINTS["analytical_computation"].model_copy(deep=True)
+        if target_word_count:
+            bp.target_word_count = target_word_count
         return bp
 
     # Cross-newspaper comparison or explicit table requested

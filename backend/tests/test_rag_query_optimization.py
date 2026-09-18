@@ -318,7 +318,54 @@ class TestSynthesizerTokenCaps:
         )
 
         _, kwargs = mock_provider.complete.call_args
-        assert kwargs["max_tokens"] == 512
+        # Concise non-reasoning archetypes dynamically allocate 1024 tokens
+        assert kwargs["max_tokens"] == 1024
+
+    def test_resolve_dynamic_token_budget_reasoning_and_blueprints(self) -> None:
+        """Validate dynamic token allocation across reasoning models and custom blueprints."""
+        from app.agent.models import AnswerBlueprint
+        from app.agent.synthesizer import resolve_dynamic_token_budget
+        from app.providers.base import ProviderCapability
+
+        # Standard non-reasoning provider
+        std_provider = MagicMock()
+        std_provider.capability = ProviderCapability(
+            max_output_tokens=4096,
+            is_reasoning_model=False,
+            reasoning_headroom=0,
+        )
+
+        # Reasoning provider (e.g. Gemini 2.5 Flash / DeepSeek-R1)
+        reasoning_provider = MagicMock()
+        reasoning_provider.capability = ProviderCapability(
+            max_output_tokens=8192,
+            is_reasoning_model=True,
+            reasoning_headroom=2048,
+        )
+
+        # 1. Reasoning provider gets full envelope for analytical computation
+        budget = resolve_dynamic_token_budget(
+            provider=reasoning_provider,
+            archetype="analytical_computation",
+            query="Calculate average word count",
+        )
+        assert budget == 8192
+
+        # 2. Non-reasoning provider gets concise 1024 tokens for scalar counts
+        budget = resolve_dynamic_token_budget(
+            provider=std_provider,
+            archetype="scalar_count",
+            query="Count of articles",
+        )
+        assert budget == 1024
+
+        # 3. Explicit blueprint word count scales dynamically with headroom
+        bp = AnswerBlueprint(target_word_count=50)
+        # Non-reasoning: 50 words * 4 = 200, clamped to min 1024
+        assert resolve_dynamic_token_budget(provider=std_provider, answer_blueprint=bp) == 1024
+
+        # Reasoning: 50 words * 4 = 200 -> max(1024, 200) + 2048 headroom = 3072
+        assert resolve_dynamic_token_budget(provider=reasoning_provider, answer_blueprint=bp) == 3072
 
 
 class TestStreamingCacheAndGateways:

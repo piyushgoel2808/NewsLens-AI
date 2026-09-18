@@ -241,6 +241,9 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         api_key: str | None = None,
         service_account_info: dict[str, Any] | str | None = None,
         base_url: str | None = None,
+        max_output_tokens: int | None = None,
+        is_reasoning_model: bool | None = None,
+        reasoning_headroom: int | None = None,
     ) -> None:
         self._model = model.replace("models/", "") if model else "gemini-3.8-flash"
         self._api_key = api_key
@@ -284,12 +287,28 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         else:
             self._base_url = AI_STUDIO_BASE
 
+        # Auto-detect reasoning model capabilities (e.g. Gemini 2.5 Flash / Pro with thinking)
+        is_reasoning = (
+            is_reasoning_model
+            if is_reasoning_model is not None
+            else bool("2.5" in self._model.lower() or "thinking" in self._model.lower())
+        )
+        max_out = max_output_tokens if max_output_tokens is not None else 8192
+        headroom = (
+            reasoning_headroom
+            if reasoning_headroom is not None
+            else (2048 if is_reasoning else 0)
+        )
+
         self._capability = ProviderCapability(
             supports_vision=True,
             supports_tool_use=True,
             supports_streaming=True,
             supports_structured_output=True,
             context_window=1000000,
+            max_output_tokens=max_out,
+            is_reasoning_model=is_reasoning,
+            reasoning_headroom=headroom,
         )
 
     @property
@@ -588,6 +607,8 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         thinking_budget = kwargs.get("thinking_budget")
         if thinking_budget is not None:
             generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+        elif max_tokens < 1024:
+            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
 
         payload: dict[str, Any] = {
             "contents": contents,

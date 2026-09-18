@@ -66,11 +66,17 @@ class ModelRegistry:
                 model=model,
                 base_url=cfg.base_url or self._settings.ollama_base_url,
                 supports_vision=cfg.supports_vision,
+                max_output_tokens=cfg.max_output_tokens,
+                is_reasoning_model=cfg.is_reasoning_model,
+                reasoning_headroom=cfg.reasoning_headroom,
             )
         elif provider_type == "groq":
             return GroqProvider(
                 model=model or "llama-3.3-70b-versatile",
                 api_key=self._settings.groq_api_key,
+                max_output_tokens=cfg.max_output_tokens,
+                is_reasoning_model=cfg.is_reasoning_model,
+                reasoning_headroom=cfg.reasoning_headroom,
             )
         elif provider_type in (
             "gemini",
@@ -84,6 +90,9 @@ class ModelRegistry:
                 api_key=self._settings.gemini_api_key or self._settings.google_api_key,
                 service_account_info=self._settings.gcp_service_account_json or self._settings.gcp_service_account_key,
                 base_url=cfg.base_url,
+                max_output_tokens=cfg.max_output_tokens,
+                is_reasoning_model=cfg.is_reasoning_model,
+                reasoning_headroom=cfg.reasoning_headroom,
             )
         elif provider_type == "anthropic":
             return AnthropicProvider(
@@ -94,6 +103,9 @@ class ModelRegistry:
             return OpenAIProvider(
                 model=model,
                 api_key=self._settings.openai_api_key,
+                max_output_tokens=cfg.max_output_tokens,
+                is_reasoning_model=cfg.is_reasoning_model,
+                reasoning_headroom=cfg.reasoning_headroom,
             )
         elif provider_type == "openrouter":
             from app.providers.openrouter_provider import OpenRouterProvider
@@ -109,6 +121,9 @@ class ModelRegistry:
                 base_url=cfg.base_url or self._settings.openrouter_base_url,
                 supports_vision=cfg.supports_vision,
                 context_window=cfg.context_window,
+                max_output_tokens=cfg.max_output_tokens,
+                is_reasoning_model=cfg.is_reasoning_model,
+                reasoning_headroom=cfg.reasoning_headroom,
             )
         elif provider_type in ("nvidia", "nvidia_nim"):
             from app.providers.nvidia_provider import NvidiaProvider
@@ -119,6 +134,9 @@ class ModelRegistry:
                 base_url=cfg.base_url or self._settings.nvidia_base_url,
                 supports_vision=cfg.supports_vision,
                 context_window=cfg.context_window,
+                max_output_tokens=cfg.max_output_tokens,
+                is_reasoning_model=cfg.is_reasoning_model,
+                reasoning_headroom=cfg.reasoning_headroom,
             )
         elif provider_type in ("google_cloud_vision", "gcp_vision", "google_vision"):
             from app.providers.google_vision_provider import GoogleCloudVisionOCR
@@ -357,13 +375,13 @@ class ModelRegistry:
         """
         cloud_priority = [
             "gemini_flash",
-            "gemini_vision",
-            "gemini_pro",
             "nvidia_nemotron",
             "groq_compound",
-            "openai_gpt4o_mini",
-            "openai_gpt4o",
             "groq_qwen",
+            "openai_gpt4o_mini",
+            "gemini_vision",
+            "gemini_pro",
+            "openai_gpt4o",
         ]
         local_priority = [
             "ollama_llama3",

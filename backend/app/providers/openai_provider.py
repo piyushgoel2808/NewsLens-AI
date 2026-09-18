@@ -41,17 +41,38 @@ _EMBED_PRICING: dict[str, float] = {
 class OpenAIProvider:
     """Hosted LLM + Embedding provider backed by the OpenAI API."""
 
-    def __init__(self, model: str, api_key: str | None) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None,
+        max_output_tokens: int | None = None,
+        is_reasoning_model: bool | None = None,
+        reasoning_headroom: int | None = None,
+    ) -> None:
         if not api_key:
             raise ProviderError("OpenAI API key is required. Set OPENAI_API_KEY in your .env file.")
         self._model = model
         self._client = AsyncOpenAI(api_key=api_key)
+        is_reasoning = (
+            is_reasoning_model
+            if is_reasoning_model is not None
+            else any(k in model.lower() for k in ("o1", "o3", "o4", "reasoning"))
+        )
+        max_out = max_output_tokens if max_output_tokens is not None else (16384 if is_reasoning else 4096)
+        headroom = (
+            reasoning_headroom
+            if reasoning_headroom is not None
+            else (4096 if is_reasoning else 0)
+        )
         self._capability = ProviderCapability(
             supports_vision="gpt-4" in model.lower(),
             supports_tool_use=True,
             supports_streaming=True,
             supports_structured_output=True,
             context_window=128000,
+            max_output_tokens=max_out,
+            is_reasoning_model=is_reasoning,
+            reasoning_headroom=headroom,
         )
 
     @property

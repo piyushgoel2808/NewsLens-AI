@@ -62,6 +62,9 @@ class ProviderCapability:
     supports_structured_output: bool = False
     supports_layout: bool = False
     context_window: int = 8192
+    max_output_tokens: int = 4096
+    is_reasoning_model: bool = False
+    reasoning_headroom: int = 2048
     embedding_dim: int | None = None
 
 

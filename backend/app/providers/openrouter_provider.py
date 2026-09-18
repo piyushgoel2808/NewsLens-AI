@@ -152,6 +152,9 @@ class OpenRouterProvider(ChatModelProvider, VisionModelProvider):
         base_url: str = "https://openrouter.ai/api/v1",
         supports_vision: bool | None = None,
         context_window: int | None = None,
+        max_output_tokens: int | None = None,
+        is_reasoning_model: bool | None = None,
+        reasoning_headroom: int | None = None,
     ) -> None:
         self._model = model
         self._base_url = base_url.rstrip("/")
@@ -196,12 +199,27 @@ class OpenRouterProvider(ChatModelProvider, VisionModelProvider):
             else:
                 ctx = 128_000
 
+        is_reasoning = (
+            is_reasoning_model
+            if is_reasoning_model is not None
+            else any(k in model.lower() for k in ("r1", "nemotron", "qwq", "thinking", "reasoning"))
+        )
+        max_out = max_output_tokens if max_output_tokens is not None else (8192 if is_reasoning else 4096)
+        headroom = (
+            reasoning_headroom
+            if reasoning_headroom is not None
+            else (2048 if is_reasoning else 0)
+        )
+
         self._capability = ProviderCapability(
             supports_vision=bool(is_vision),
             supports_tool_use=True,
             supports_streaming=True,
             supports_structured_output=True,
             context_window=ctx,
+            max_output_tokens=max_out,
+            is_reasoning_model=is_reasoning,
+            reasoning_headroom=headroom,
         )
 
     @property

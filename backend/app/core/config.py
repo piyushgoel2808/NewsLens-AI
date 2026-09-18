@@ -35,6 +35,9 @@ class ProviderConfig(BaseModel):
     model: str | None = None
     base_url: str | None = None
     context_window: int | None = None
+    max_output_tokens: int | None = None
+    is_reasoning_model: bool | None = None
+    reasoning_headroom: int | None = None
     supports_vision: bool = False
     supports_tool_use: bool = False
     embedding_dim: int | None = None

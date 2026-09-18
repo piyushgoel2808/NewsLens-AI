@@ -267,33 +267,6 @@ class AgentWorkflow:
                 "evidence_items": [],
             }
 
-        # Fast-Path Deterministic Pre-Planner for unambiguous standalone queries
-        if _can_bypass_llm_planner(query, chat_history, has_attached):
-            plan_res = self._planner._plan_query_heuristic(
-                query,
-                enable_web_search=state.get("enable_web_search", False),
-            )
-            if plan_res and plan_res.tool_calls:
-                planned_calls = [
-                    {
-                        "tool_name": c.tool_name,
-                        "arguments": c.arguments,
-                        "purpose": c.purpose,
-                    }
-                    for c in plan_res.tool_calls
-                ]
-                blueprint_dict = (
-                    plan_res.answer_blueprint.model_dump()
-                    if hasattr(plan_res.answer_blueprint, "model_dump")
-                    else (plan_res.answer_blueprint if isinstance(plan_res.answer_blueprint, dict) else None)
-                )
-                return {
-                    "query": query,
-                    "original_query": original_query,
-                    "archetype": plan_res.archetype,
-                    "plan": planned_calls,
-                    "answer_blueprint": blueprint_dict,
-                }
 
         # Use working context already initialized in state with current_query grounding
         active_issue_id = state.get("active_issue_id")

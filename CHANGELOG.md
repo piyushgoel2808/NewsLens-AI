@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-09-18
+
+### Added
+- **Dynamic Model-Aware Token Budgeting (`resolve_dynamic_token_budget`)**:
+  - Eliminated static archetype token caps in favor of dynamic per-model output envelopes derived from `ProviderCapability` (`max_output_tokens` 4,096 or 8,192).
+  - Added reasoning model auto-detection (`is_reasoning_model: true`) and `reasoning_headroom = 2048` across Gemini 2.5 Flash, DeepSeek-R1, NVIDIA Nemotron, and OpenAI reasoning models.
+  - Formulated dynamic token scaling for user-requested word limits: $\max(1024, \text{target\_words} \times 4) + \text{reasoning\_headroom}$.
+  - Dynamically calculates `effective_max_tokens` inside provider loops for both `synthesize()` and `synthesize_stream()`.
+- **Authoritative Planner LLM Cognitive Routing**:
+  - Removed fast-path deterministic bypass from `_classify_and_plan_node` in LangGraph (`graph.py`); the Planner LLM is now the authoritative cognitive router receiving live database schema and archive boundaries.
+  - Deterministic heuristic router is reserved strictly as an emergency resilience fallback in `QueryPlanner.plan_query_async`.
+- **Statistical & Analytical Computation Archetype (`analytical_computation`)**:
+  - Introduced `analytical_computation` archetype in Planner prompt and Blueprints, routing statistical/mathematical queries ("average word count", "average length", "correlation") to `dynamic_analysis`.
+  - Decoupled analytical computations from scalar counts, eliminating the 80-word ceiling.
+- **OCR Noise Tolerance & Semantic Reconstruction**:
+  - Added Section 4 (`OCR NOISE TOLERANCE & INTELLIGENT RECONSTRUCTION`) to `COMMON_ANALYTICAL_GUIDELINES` in `synthesizer.py`.
+  - Authorizes the LLM to phonetically and semantically reconstruct words corrupted by broadsheet scanning ("Reconstruction is not hallucination"), strictly prohibiting copying raw OCR errors into answers.
+- **Prompt Context Isolation & Contamination Elimination**:
+  - Single-article queries isolate evidence strictly to target article chunks, eliminating irrelevant advertisements and unrelated page stories from contaminating prompt context.
+- **Conversational Follow-Up Condenser Disambiguation**:
+  - Enhanced history extraction to parse citations and quoted headlines from previous turns.
+  - Normalizer catches truncated outputs and safely reformulates follow-ups like `"summarise it"` into standalone article queries.
+  - Emergency LLM fallback before Python string slicing in streaming API.
+
+---
+
 ## [0.2.0] - 2026-09-18
 
 ### Added

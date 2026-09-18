@@ -73,8 +73,21 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
                 if target_hl in it_hl or it_hl in target_hl:
                     matching_idx = i
                     break
+        else:
+            for i, it in enumerate(sorted_evidence):
+                it_hl = (it.get("headline") or "").lower().strip()
+                if it_hl and len(it_hl) > 10 and (it_hl in q_lower or any(part in q_lower for part in it_hl.split() if len(part) > 5)):
+                    matching_idx = i
+                    break
         target_item = sorted_evidence.pop(matching_idx)
-        budgeted_items = [target_item] + sorted_evidence[:2]
+        target_art_id = target_item.get("article_id")
+        target_pages = set(target_item.get("pages") or [])
+        related_items = [
+            it for it in sorted_evidence
+            if (target_art_id and it.get("article_id") == target_art_id)
+            or (target_pages and set(it.get("pages") or []) & target_pages and not it.get("is_advertisement"))
+        ]
+        budgeted_items = [target_item] + (related_items[:2] if related_items else [])
     else:
         has_manifest_evidence = any(
             item.get("source_tool", "").startswith("sql_analytics")

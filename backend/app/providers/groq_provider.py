@@ -34,7 +34,14 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 class GroqProvider:
     """Ultra-fast hosted LLM provider backed by Groq LPU inference."""
 
-    def __init__(self, model: str, api_key: str | None) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None,
+        max_output_tokens: int | None = None,
+        is_reasoning_model: bool | None = None,
+        reasoning_headroom: int | None = None,
+    ) -> None:
         if not api_key:
             raise ProviderError("Groq API key is required. Set GROQ_API_KEY in your .env file.")
         self._model = model
@@ -42,12 +49,26 @@ class GroqProvider:
             base_url=GROQ_BASE_URL,
             api_key=api_key,
         )
+        is_reasoning = (
+            is_reasoning_model
+            if is_reasoning_model is not None
+            else any(k in model.lower() for k in ("r1", "qwq", "reasoning", "deepseek"))
+        )
+        max_out = max_output_tokens if max_output_tokens is not None else (8192 if is_reasoning else 4096)
+        headroom = (
+            reasoning_headroom
+            if reasoning_headroom is not None
+            else (2048 if is_reasoning else 0)
+        )
         self._capability = ProviderCapability(
             supports_vision=False,
             supports_tool_use=True,
             supports_streaming=True,
             supports_structured_output=True,
             context_window=128000,
+            max_output_tokens=max_out,
+            is_reasoning_model=is_reasoning,
+            reasoning_headroom=headroom,
         )
 
     @property

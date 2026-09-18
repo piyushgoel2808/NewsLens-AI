@@ -4,6 +4,8 @@ providers:
     model: nemotron-3.5-lightning:latest
     base_url: http://localhost:11434
     context_window: 128000
+    max_output_tokens: 8192
+    is_reasoning_model: true
     supports_vision: false
     supports_tool_use: true
   ollama_deepseek:
@@ -11,6 +13,8 @@ providers:
     model: deepseek-r1:14b
     base_url: http://localhost:11434
     context_window: 65536
+    max_output_tokens: 8192
+    is_reasoning_model: true
     supports_vision: false
     supports_tool_use: true
   ollama_llama3:
@@ -18,6 +22,8 @@ providers:
     model: llama3.1:8b
     base_url: http://localhost:11434
     context_window: 128000
+    max_output_tokens: 4096
+    is_reasoning_model: false
     supports_vision: false
     supports_tool_use: true
   ollama_chat:
@@ -25,6 +31,8 @@ providers:
     model: llama3.1:8b
     base_url: http://localhost:11434
     context_window: 128000
+    max_output_tokens: 4096
+    is_reasoning_model: false
     supports_vision: false
     supports_tool_use: true
   ollama_qwen3vl:
@@ -62,42 +70,49 @@ providers:
     provider: gemini
     model: gemini-3.8-flash
     context_window: 1048576
+    max_output_tokens: 8192
     supports_vision: true
     supports_tool_use: true
   gemini_flash:
     provider: gemini
     model: gemini-3.8-flash
     context_window: 1048576
+    max_output_tokens: 8192
     supports_vision: true
     supports_tool_use: true
   gemini_pro:
     provider: gemini
     model: gemini-3.8-flash
     context_window: 1048576
+    max_output_tokens: 8192
     supports_vision: true
     supports_tool_use: true
   gemini_flash_lite:
     provider: gemini
     model: gemini-3.8-flash
     context_window: 1048576
+    max_output_tokens: 8192
     supports_vision: true
     supports_tool_use: true
   gemini_live:
     provider: gemini
     model: gemini-3.8-live
     context_window: 1048576
+    max_output_tokens: 8192
     supports_vision: true
     supports_tool_use: true
   openai_gpt4o:
     provider: openai
     model: gpt-4o
     context_window: 128000
+    max_output_tokens: 4096
     supports_vision: true
     supports_tool_use: true
   openai_gpt4o_mini:
     provider: openai
     model: gpt-4o-mini
     context_window: 128000
+    max_output_tokens: 4096
     supports_vision: true
     supports_tool_use: true
   openai_embed:
@@ -110,24 +125,30 @@ providers:
     provider: openrouter
     model: google/gemma-4-26b-a4b-it:free
     context_window: 262144
+    max_output_tokens: 4096
     supports_vision: true
     supports_tool_use: true
   openrouter_nemotron:
     provider: openrouter
     model: nvidia/nemotron-3.5-lightning:free
     context_window: 1000000
+    max_output_tokens: 8192
+    is_reasoning_model: true
     supports_vision: false
     supports_tool_use: true
   nvidia_nemotron:
     provider: nvidia
     model: nvidia/nemotron-3.5-lightning-30b-a3b
     context_window: 128000
+    max_output_tokens: 8192
+    is_reasoning_model: true
     supports_vision: false
     supports_tool_use: true
   nvidia_llama_vision:
     provider: nvidia
     model: meta/llama-3.2-11b-vision-instruct
     context_window: 128000
+    max_output_tokens: 4096
     supports_vision: true
     supports_tool_use: true
   docling_parser:

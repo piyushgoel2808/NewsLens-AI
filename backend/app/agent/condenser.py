@@ -257,6 +257,11 @@ CONDENSER_SYSTEM_PROMPT = (
     "     Preserve both newspaper names, the date, and the comparison intent.\n"
     "     Example: 'list all those similar stories' (Context: The Indian Express and The Hindu, 2026-05-20)\n"
     "     Rewrite: 'List all similar and shared articles between The Indian Express and The Hindu dated 2026-05-20'\n\n"
+    "7. ARTICLE SUMMARY / EXPLANATION FOLLOW-UP:\n"
+    "   - When the user asks 'summarise it', 'explain it', 'what happened', 'tell me more' after discussing or referencing a specific broadsheet article:\n"
+    "     Rewrite the query to explicitly name the article headline, newspaper, and date from the active context or cited articles.\n"
+    "     Example: 'summarise it' (Context: Adani leads rush for 37,500 cr coal gasification plan, Hindustan Times, 2026-09-09)\n"
+    "     Rewrite: 'Explain article \"Adani leads rush for 37,500 cr coal gasification plan\" in Hindustan Times dated 2026-09-09'\n\n"
     "OUTPUT FORMAT: Output ONLY the plain rewritten query text. Do NOT include quotes, explanations, prefixes, or bullet points."
 )
 
@@ -386,13 +391,33 @@ def extract_active_issue_from_history(
             if summary_m.group(3) and not res.get("issue_date"):
                 res["issue_date"] = summary_m.group(3)
 
+        # Check citations in turn for active headline, newspaper, date
+        citations = turn.get("citations") or []
+        for cit in citations:
+            if isinstance(cit, dict):
+                if cit.get("headline") and not res.get("headline"):
+                    res["headline"] = cit["headline"]
+                if cit.get("newspaper_name") and not res.get("newspaper_name"):
+                    res["newspaper_name"] = cit["newspaper_name"]
+                if cit.get("issue_date") and not res.get("issue_date"):
+                    res["issue_date"] = cit["issue_date"]
+                if cit.get("page_number") and not res.get("page_number"):
+                    with contextlib.suppress(ValueError):
+                        res["page_number"] = int(cit["page_number"])
+
+        # Also check for quoted headlines or "Explain article ..." in content
+        if not res.get("headline"):
+            q_hl = re.search(r"(?:article|story|headline|titled|report)?\s*[\"“]([^\"”]{8,150})[\"”]", content, re.I)
+            if q_hl:
+                res["headline"] = q_hl.group(1).strip()
+
         if not res.get("newspaper_name"):
             for pat, brand in _KNOWN_BRANDS_PATTERNS:
                 if pat.search(content):
                     res["newspaper_name"] = brand
                     break
 
-        if res.get("newspaper_name") and res.get("issue_date"):
+        if res.get("newspaper_name") and res.get("issue_date") and res.get("headline"):
             break
 
     if is_cross_newspaper and not explicit_query_np:
@@ -621,12 +646,14 @@ async def condense_conversational_query(
                 Message(role="system", content=CONDENSER_SYSTEM_PROMPT),
                 Message(role="user", content=prompt),
             ]
-            resp = await resolved_provider.complete(
-                messages=messages,
-                max_tokens=1024,
-                temperature=0.0,
-                thinking_budget=0,
-            )
+            complete_kwargs: dict[str, Any] = {
+                "messages": messages,
+                "max_tokens": 1024,
+                "temperature": 0.0,
+            }
+            if getattr(resolved_provider, "provider_name", "") == "gemini":
+                complete_kwargs["thinking_budget"] = 0
+            resp = await resolved_provider.complete(**complete_kwargs)
             rewritten = resp.text.strip()
 
             # Lightweight Normalizer: Clean quotes and conversational prefixes
@@ -640,7 +667,10 @@ async def condense_conversational_query(
 
             q_words = query.strip().split()
             rewritten_words = rewritten.strip().split()
-            is_truncated = len(q_words) >= 6 and len(rewritten_words) <= 2
+            is_truncated = (len(q_words) >= 6 and len(rewritten_words) <= 2) or (
+                len(rewritten_words) <= 2
+                and rewritten.lower().strip("?.! ") in {"tell", "explain", "summarize", "summarise", "it", "more", "details", "brief"}
+            )
 
             has_unresolved_pronoun = bool(re.search(r"\b(its|it|this\s+paper)\b", rewritten, re.I))
             is_echo = rewritten.lower() == query.lower()
@@ -677,6 +707,20 @@ async def condense_conversational_query(
         elif asset_art_id or asset_hl:
             target_hl = active_hl or f"Article #{asset_art_id}"
             return f'Explain article "{target_hl}" in {pub_desc}'.strip()
+
+    # Article explanation / summarization follow-up with active headline from conversation
+    if active_hl and (
+        GENERIC_FOLLOWUP_SHORT_PATTERN.search(query.strip())
+        or AMBIGUOUS_PRONOUNS_PATTERN.search(query.strip())
+        or any(w in query.lower() for w in ["summarise", "summarize", "explain", "it", "takeaways"])
+    ):
+        pub_parts = []
+        if np_name:
+            pub_parts.append(np_name)
+        if iss_date:
+            pub_parts.append(f"dated {iss_date}")
+        pub_desc = f" in {' '.join(pub_parts)}" if pub_parts else ""
+        return f'Explain article "{active_hl}"{pub_desc}'.strip()
 
     if comp_np and np_name and is_diff:
         dt_suffix = f" dated {iss_date}" if iss_date else ""

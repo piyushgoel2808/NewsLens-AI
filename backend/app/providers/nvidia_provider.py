@@ -43,6 +43,9 @@ class NvidiaProvider:
         base_url: str | None = None,
         supports_vision: bool | None = None,
         context_window: int = 128000,
+        max_output_tokens: int | None = None,
+        is_reasoning_model: bool | None = None,
+        reasoning_headroom: int | None = None,
     ) -> None:
         if not api_key:
             raise ProviderError("NVIDIA API key is required. Set NVIDIA_API_KEY in your .env file.")
@@ -60,6 +63,17 @@ class NvidiaProvider:
             if supports_vision is not None
             else any(kw in model.lower() for kw in ("vision", "vl", "vila", "neva", "multimodal"))
         )
+        is_reasoning = (
+            is_reasoning_model
+            if is_reasoning_model is not None
+            else any(kw in model.lower() for kw in ("nemotron", "r1", "reasoning"))
+        )
+        max_out = max_output_tokens if max_output_tokens is not None else (8192 if is_reasoning else 4096)
+        headroom = (
+            reasoning_headroom
+            if reasoning_headroom is not None
+            else (2048 if is_reasoning else 0)
+        )
 
         self._capability = ProviderCapability(
             supports_vision=is_vision,
@@ -67,6 +81,9 @@ class NvidiaProvider:
             supports_streaming=True,
             supports_structured_output=True,
             context_window=context_window,
+            max_output_tokens=max_out,
+            is_reasoning_model=is_reasoning,
+            reasoning_headroom=headroom,
         )
 
     @property

@@ -240,10 +240,12 @@ Statutory, commercial disclosures (*QIP announcements, IPO prospectus summaries,
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
-   ┌──────────────────────────────────────────────────────────────┐
+   ┌─────────────────────────────────────────────────────────────┐
    │           Cognitive Query Planner & Intent Router            │
    │  • Grounded with live archive metadata (dates, papers, cats) │
-   │  • Classifies into 1 of 7 Broadsheet Query Archetypes        │
+   │  • Authoritative Planner LLM decision-making (sole authority)│
+   │  • Classifies into 1 of 8 Broadsheet Query Archetypes        │
+   │    (including dedicated analytical_computation archetype)   │
    │  • Dynamic Answer Blueprint Generation:                      │
    │    - Formulates SectionSpec (narrative, table, metric_card)  │
    │    - Target word counts, table columns, prohibited elements  │
@@ -256,7 +258,8 @@ Statutory, commercial disclosures (*QIP announcements, IPO prospectus summaries,
    │    - coverage_analyzer (cross-newspaper comparison)          │
    │    - web_search (real-time live internet grounding)          │
    │    - dynamic_analysis (on-demand synthesized Python/SQL tool)│
-   └──────────────────────────────┬───────────────────────────────┘
+   │  • Deterministic heuristic router reserved strictly as fallbk│
+   └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
@@ -286,12 +289,15 @@ Statutory, commercial disclosures (*QIP announcements, IPO prospectus summaries,
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
    │     Dynamic Blueprint-Driven Broadsheet Synthesizer         │
+   │  • Dynamic Model-Aware Token Budgeting (resolve_budget)     │
+   │  • ProviderCapability Envelopes (8,192 / 4,096 max tokens)  │
+   │  • Reasoning Auto-Detection & 2,048 CoT Headroom            │
+   │  • OCR Noise Tolerance & Intelligent Semantic Reconstruction│
+   │  • Isolated Single-Article Evidence Context (ad filtering)  │
    │  • Dynamic Prompt Compilation from AnswerBlueprint           │
    │  • Single-Article Full-Text Budgeting (up to 7,500 chars)   │
    │  • Deterministic Robotic Catalog Table Stripping            │
    │  • Photo Visual Scene Annotation Noise Sanitization         │
-   │  • Quantitative Metric Absence Hard-Stop                    │
-   │  • Broadsheet Ligature Repair & Author Box Cleansing        │
    │  • Strict 1-Shot Citations: [Paper, YYYY-MM-DD, Page, Title]│
    └──────────────────────────────┬──────────────────────────────┘
                                   │
@@ -700,6 +706,7 @@ The system maintains **16 interconnected relational tables**:
 | **Phase 23: Google Gemini Full Cloud Architecture & Production Containerization** | OpenRouter dual-key rate limits and legacy model deprecations created operational friction; onboarding required manual multi-service orchestration without container guarantees. | Transitioned primary cloud engine to Google AI Studio Gemini (`gemini-3.8-flash`, `gemini-3.8-live`, `gemini-3.5-flash`); engineered multi-candidate failover cascade (`GeminiProvider._get_model_candidates`) and Pydantic schema title cleaner; built 8-service Docker Compose specification (`docker-compose.yml`), multi-stage Dockerfiles (`backend/Dockerfile`, `frontend/Dockerfile`, `frontend/nginx.conf` with SSE reverse proxy), unified developer `Makefile`, and open-source governance standard (`LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`). |
 | **Phase 24: High-Throughput Ingestion & Single-Pass Multimodal Extraction** | Monolithic 300 DPI broadsheet rasters incurred heavy memory pressure and slow rendering (6–8s/page); serial per-crop visual extraction led to 30+ network trips per page; embedded advertisements and photo bounding boxes contaminated article text envelopes and continuation reading trees. | Standardized on 150 DPI rasterization ($4\times$ memory reduction, ~1.5s/page); engineered `SinglePassVisualExtractor` supporting unified single-pass for cloud vision (`gemini-3.8-flash` with normalized coordinate manifests) and concurrent per-crop execution (`qwen3-vl:latest` via `asyncio.Semaphore(2)`); stripped `picture` bboxes from Docling article text envelopes; added ad container isolation & spatial discontinuity guards ($>200\text{px}$ jumps); built `clean_vlm_text` token sanitizer; added page-aware photo filtering and page badges to `BroadsheetReader.jsx`. |
 | **Phase 25: Serverless Cloud Migration to GCP & Resilient Production Architecture** | Self-hosted infrastructure on local developer machines or single VMs created compute bottlenecks; ephemeral containers lacked persistence for vectors and broadsheet scans; background Celery workers suffered CPU starvation on standard serverless tiers; permanent cloud credentials posed security risks. | Migrated to Google Cloud Platform (`asia-south1`): deployed `newslens-frontend` (Nginx SPA reverse proxy), `newslens-backend` (FastAPI with Cloud SQL Unix Socket), and `newslens-worker` (`--no-cpu-throttling` + embedded HTTP health server on `$PORT`) to Cloud Run; migrated storage from MinIO to Google Cloud Storage (`gs://newslens-ai-prod-pages`, `gs://newslens-ai-prod-originals`) via polymorphic `ObjectStore` factory (`GoogleCloudStorageStore`); provisioned Cloud SQL MySQL 8.0 with automated migrations via Cloud Run Job `newslens-migrate`; integrated Qdrant Cloud managed vector cluster and Upstash Redis TLS with `ssl_cert_reqs=required`; secured all secrets in Secret Manager and established Workload Identity Federation (WIF) for zero-permanent-credential GitHub Actions CI/CD. |
+| **Phase 26: Planner Cognitive Authority, Dynamic Token Budgeting & OCR Semantic Reconstruction** | Hardcoded token caps caused reasoning-token starvation (numerical answers truncated at `**2`); fast-path bypasses skipped Planner LLM reasoning; OCR typographical noise was copied into final answers; single-article queries suffered prompt contamination from outside ads. | Eliminated static token caps with `resolve_dynamic_token_budget()` deriving allocations from `ProviderCapability` (`max_output_tokens` 4,096/8,192); added reasoning model auto-detection and 2,048-token CoT headroom; removed deterministic fast-path bypass from LangGraph classification node making Planner LLM the authoritative router; introduced `analytical_computation` archetype; added OCR noise tolerance & semantic reconstruction guidelines in `synthesizer.py`; isolated single-article prompt context from irrelevant ads. |
 
 ---
 

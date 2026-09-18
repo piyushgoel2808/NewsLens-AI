@@ -136,6 +136,23 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Server-Sent Events (SSE) Streaming with Visual Provenance**:
   * Low-latency token streaming with live tool telemetry (`event: stage` including `inspecting_visual_asset`).
   * Yields structured citations (`event: citations`) flagged with `is_visual_asset: true` and thumbnail endpoints (`/api/photos/{id}/image`), rendering interactive visual cards in the UI.
+* **Dynamic Model-Aware Token Budgeting (`resolve_dynamic_token_budget`)**:
+  * Completely eliminates static archetype token caps, dynamically resolving the output token budget per invocation based on the active provider's capability envelope (`max_output_tokens: 8192` or `4096`).
+  * Seamlessly scales based on user-requested word limits: $\max(1024, \text{target\_words} \times 4) + \text{reasoning\_headroom}$.
+* **Reasoning Model Auto-Detection & Headroom (`reasoning_headroom: 2048`)**:
+  * Automatically identifies reasoning/thinking models (Gemini 2.5 Flash, DeepSeek-R1, NVIDIA Nemotron, OpenAI o-series) and provides up to 8,192 tokens with 2,048 tokens reserved for chain-of-thought traces.
+  * Guarantees that internal thinking processes never starve the final answer or cause mid-number truncation.
+* **Authoritative Planner LLM Cognitive Routing**:
+  * Removed fast-path deterministic bypass from LangGraph's classification node; the Planner LLM is the authoritative cognitive router operating with live relational schema, date bounds, and conversational memory, reserving heuristic planning solely as an emergency failover.
+* **Statistical & Analytical Computation Archetype (`analytical_computation`)**:
+  * Introduced dedicated `analytical_computation` archetype in Planner prompt and Blueprints, routing statistical/mathematical queries (*"calculate average word count"*, *"average length"*, *"correlation"*) to `dynamic_analysis` without artificial 80-word count ceilings.
+* **OCR Noise Tolerance & Semantic Reconstruction**:
+  * Added Section 4 (`OCR NOISE TOLERANCE & INTELLIGENT RECONSTRUCTION`) to `COMMON_ANALYTICAL_GUIDELINES` in `synthesizer.py`.
+  * Authorizes the LLM to phonetically and semantically reconstruct words corrupted by broadsheet scanning (*"Reconstruction is not hallucination"*), strictly prohibiting copying raw OCR errors into answers.
+* **Isolated Single-Article Prompt Context**:
+  * Enforces strict chunk filtering for article explanation and deep-dive queries, eliminating prompt context contamination from unrelated advertisements or outside page stories.
+* **Emergency LLM Synthesis Fallback**:
+  * Before falling back to deterministic summaries on streaming failure, the system attempts a non-streaming LLM synthesis fallback to ensure conversational quality.
 
 ---
 

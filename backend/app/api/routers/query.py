@@ -509,18 +509,39 @@ async def stream_query(
                 yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
                 yield f"event: token\ndata: {json.dumps({'delta': full_answer})}\n\n"
             else:
-                # If cannot separate or model only produced scratchpad / repetition loop,
-                # synthesize clean deterministic grounded brief so UI is never blank or corrupted
-                fallback_summary = workflow._synthesizer._generate_deterministic_summary(
-                    query, evidence, archetype=effective_archetype
-                )
-                full_thought = full_thought_final
-                done_th = json.dumps({"thought": full_thought, "duration_sec": t_dur})
-                yield f"event: thought_done\ndata: {done_th}\n\n"
-                yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
-                for word in fallback_summary.split(" "):
-                    yield f"event: token\ndata: {json.dumps({'delta': word + ' '})}\n\n"
-                full_answer = fallback_summary
+                # If cannot separate or streaming returned empty, attempt non-streaming synthesis
+                synth_success = False
+                try:
+                    full_answer, _, _ = await workflow._synthesizer.synthesize(
+                        query=query,
+                        archetype=effective_archetype,
+                        evidence_items=evidence,
+                        model_override=effective_model,
+                        chat_history=chat_history,
+                        answer_blueprint=blueprint_dict,
+                    )
+                    if full_answer and full_answer.strip():
+                        synth_success = True
+                        full_thought = full_thought_final
+                        done_th = json.dumps({"thought": full_thought, "duration_sec": t_dur})
+                        yield f"event: thought_done\ndata: {done_th}\n\n"
+                        yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
+                        yield f"event: token\ndata: {json.dumps({'delta': full_answer})}\n\n"
+                except Exception as ex:
+                    logger.warning("Emergency non-streaming synthesis attempt failed", extra={"error": str(ex)})
+
+                if not synth_success:
+                    # Final safety fallback so UI is never blank
+                    fallback_summary = workflow._synthesizer._generate_deterministic_summary(
+                        query, evidence, archetype=effective_archetype
+                    )
+                    full_thought = full_thought_final
+                    done_th = json.dumps({"thought": full_thought, "duration_sec": t_dur})
+                    yield f"event: thought_done\ndata: {done_th}\n\n"
+                    yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"
+                    for word in fallback_summary.split(" "):
+                        yield f"event: token\ndata: {json.dumps({'delta': word + ' '})}\n\n"
+                    full_answer = fallback_summary
         else:
             full_answer = "".join(answer_chunks).strip()
             full_answer = workflow._synthesizer.clean_synthesized_answer(
