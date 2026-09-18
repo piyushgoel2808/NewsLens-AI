@@ -286,7 +286,21 @@ class PageReingestionService:
         page_media_items: list[ExtractedPhotoData] = []
         parsed_doc_items: list[Any] = []
         try:
-            docling_parser = DoclingLayoutParser()
+            from app.providers.registry import get_registry
+
+            is_force_cloud = "cloud" in (parser_engine or "").lower()
+            is_force_local = (parser_engine or "").lower() in ("docling", "docling_local", "docling_parser")
+
+            if is_force_cloud:
+                docling_parser = DoclingLayoutParser(is_cloud=True)
+            elif is_force_local:
+                docling_parser = DoclingLayoutParser(is_cloud=False)
+            else:
+                try:
+                    prov = get_registry().get_provider("document_parser")
+                    docling_parser = prov if isinstance(prov, DoclingLayoutParser) else DoclingLayoutParser()
+                except Exception:
+                    docling_parser = DoclingLayoutParser()
             parsed_doc_items = await asyncio.get_running_loop().run_in_executor(
                 None,
                 docling_parser.parse_docling_document,

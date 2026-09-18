@@ -156,15 +156,20 @@ providers:
     model: doclaynet-rapidocr
     supports_vision: true
     supports_tool_use: false
+  docling_cloud_parser:
+    provider: docling_cloud
+    model: docling-ibm-cloud
+    supports_vision: true
+    supports_tool_use: false
 task_bindings:
-  query_planner: ollama_llama3
-  answerer: ollama_llama3
-  visual_extraction: ollama_qwen3vl
-  layout_analysis: docling_parser
-  metadata_extraction: ollama_llama3
-  classification: ollama_llama3
-  article_segmentation: ollama_deepseek
+  query_planner: gemini_flash
+  answerer: gemini_flash
+  visual_extraction: gemini_flash
+  layout_analysis: gemini_flash
+  metadata_extraction: gemini_flash
+  classification: gemini_flash
+  article_segmentation: gemini_flash
   query_condenser: gemini_flash
-  document_parser: docling_parser
-  ocr: docling_parser
+  document_parser: docling_cloud_parser
+  ocr: docling_cloud_parser
   embedding: local_embed_bge

@@ -249,6 +249,12 @@ DEFAULT_PROVIDERS = {
         supports_vision=True,
         supports_tool_use=False,
     ),
+    "docling_cloud_parser": ProviderConfig(
+        provider="docling_cloud",
+        model="docling-ibm-cloud",
+        supports_vision=True,
+        supports_tool_use=False,
+    ),
 }
 
 DEFAULT_TASK_BINDINGS = {
@@ -376,6 +382,10 @@ class Settings(BaseSettings):
     serper_api_key: str | None = None
     tavily_api_key: str | None = None
 
+    # --- Hosted IBM Docling Cloud ---
+    docling_api_key: str | None = None
+    docling_service_url: str = "https://api.aws-c1.dcls.saas.ibm.com/20260918-1838-0663-6071-b702840c3d46"
+
     @field_validator(
         "groq_api_key",
         "gemini_api_key",
@@ -394,6 +404,7 @@ class Settings(BaseSettings):
         "qdrant_api_key",
         "hf_token",
         "huggingface_token",
+        "docling_api_key",
         mode="before",
     )
     @classmethod

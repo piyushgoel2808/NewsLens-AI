@@ -54,11 +54,11 @@ const PRESET_PROFILES = [
     },
     pipelineHighlights: {
       reasoning: 'Google Gemini 3.8 Flash (1M ctx)',
-      vision: 'Gemini 3.8 Flash VLM (Native OCR & Layout)',
+      vision: 'Gemini 3.8 Flash + IBM Docling Cloud',
       indexing: 'BAAI BGE-M3 (1024d)',
     },
     description:
-      'Routes all LLM reasoning, article segmentation, visual extraction, and layout analysis through Google Gemini 3.8 Flash via Google AI Studio.',
+      'Routes all LLM reasoning, article segmentation, and visual extraction through Google Gemini 3.8 Flash, with document parsing and OCR powered by high-speed IBM Cloud Docling API.',
     bindings: {
       query_planner: 'gemini_flash',
       answerer: 'gemini_flash',
@@ -67,8 +67,8 @@ const PRESET_PROFILES = [
       article_segmentation: 'gemini_flash',
       visual_extraction: 'gemini_flash',
       layout_analysis: 'gemini_flash',
-      document_parser: 'docling_parser',
-      ocr: 'docling_parser',
+      document_parser: 'docling_cloud_parser',
+      ocr: 'docling_cloud_parser',
       embedding: 'local_embed_bge',
     },
   },

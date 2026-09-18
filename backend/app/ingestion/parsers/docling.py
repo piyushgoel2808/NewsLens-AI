@@ -19,6 +19,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter
 from docling_core.types.doc import CoordOrigin
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ingestion.detector import is_text_gibberish, is_title_case_or_uppercase
 from app.ingestion.layout import (
@@ -108,13 +109,84 @@ class DoclingParsedItem:
 
 
 class DoclingLayoutParser(DocumentLayoutProvider):
-    """Deep Layout Parser powered by Docling for broadsheet newspaper pages."""
+    """Deep Layout Parser powered by Docling for broadsheet newspaper pages.
 
-    def __init__(self, do_ocr: bool = True, do_table_structure: bool = True) -> None:
-        self._options = PdfPipelineOptions()
-        self._options.do_ocr = do_ocr
-        self._options.do_table_structure = do_table_structure
-        self._converter = DocumentConverter()
+    Supports:
+    - Local DocumentConverter (DocLayNet + RapidOCR/PaddleOCR on CPU/GPU)
+    - IBM Docling Cloud SaaS API (DoclingServiceClient via API key and service URL)
+    """
+
+    def __init__(
+        self,
+        do_ocr: bool = True,
+        do_table_structure: bool = True,
+        is_cloud: bool | None = None,
+        service_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self._do_ocr = do_ocr
+        self._do_table_structure = do_table_structure
+        self._options: PdfPipelineOptions | None = None
+        self._converter: DocumentConverter | None = None
+        self._client: Any = None
+
+        settings = get_settings()
+        self._service_url = service_url or settings.docling_service_url
+        self._api_key = api_key or settings.docling_api_key
+
+        if is_cloud is None:
+            try:
+                model_cfg = settings.load_model_config()
+                binding = model_cfg.task_bindings.get("document_parser", "")
+            except Exception:
+                binding = ""
+            self._is_cloud = (binding == "docling_cloud_parser") or bool(
+                self._api_key and "cloud" in binding
+            )
+        else:
+            self._is_cloud = is_cloud
+
+        if self._is_cloud:
+            if not self._api_key:
+                logger.warning(
+                    "DoclingLayoutParser requested cloud mode, but no DOCLING_API_KEY is available. "
+                    "Falling back to local Docling converter."
+                )
+                self._is_cloud = False
+                self._init_local()
+            else:
+                try:
+                    from docling.service_client import DoclingServiceClient
+
+                    self._client = DoclingServiceClient(
+                        url=self._service_url,
+                        api_key=self._api_key,
+                    )
+                    logger.info(
+                        "DoclingLayoutParser initialized in Cloud mode (IBM Cloud Docling API)",
+                        extra={"service_url": self._service_url},
+                    )
+                except Exception as ex:
+                    logger.warning(
+                        "Failed to initialize DoclingServiceClient; falling back to local: %s",
+                        ex,
+                    )
+                    self._is_cloud = False
+                    self._init_local()
+        else:
+            self._init_local()
+
+    def _init_local(self) -> None:
+        """Lazily initialize the local DocumentConverter pipeline."""
+        if self._converter is None:
+            self._options = PdfPipelineOptions()
+            self._options.do_ocr = self._do_ocr
+            self._options.do_table_structure = self._do_table_structure
+            self._converter = DocumentConverter()
+
+    @property
+    def is_cloud(self) -> bool:
+        return self._is_cloud
 
     @property
     def capability(self) -> ProviderCapability:
@@ -128,7 +200,7 @@ class DoclingLayoutParser(DocumentLayoutProvider):
 
     @property
     def provider_name(self) -> str:
-        return "docling"
+        return "docling_cloud" if self._is_cloud else "docling"
 
     def _convert_bbox_to_pixels(
         self,
@@ -208,8 +280,30 @@ class DoclingLayoutParser(DocumentLayoutProvider):
     ) -> list[DoclingParsedItem]:
         """Convert a single-page PDF slice using Docling and extract parsed items."""
         stream = DocumentStream(name=f"page_{page_number}.pdf", stream=io.BytesIO(pdf_bytes))
-        conv_res = self._converter.convert(stream)
-        docling_doc = conv_res.document
+        docling_doc = None
+
+        if self._is_cloud and self._client:
+            try:
+                res = self._client.convert(source=stream)
+                docling_doc = res.document
+            except Exception as cloud_err:
+                logger.warning(
+                    "Cloud Docling conversion failed on page %d; falling back to local: %s",
+                    page_number,
+                    cloud_err,
+                )
+                self._init_local()
+                assert self._converter is not None
+                stream_fallback = DocumentStream(
+                    name=f"page_{page_number}.pdf", stream=io.BytesIO(pdf_bytes)
+                )
+                conv_res = self._converter.convert(stream_fallback)
+                docling_doc = conv_res.document
+        else:
+            self._init_local()
+            assert self._converter is not None
+            conv_res = self._converter.convert(stream)
+            docling_doc = conv_res.document
 
         try:
             pdf_doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")

@@ -570,19 +570,26 @@ export default function UploadTrigger() {
               onChange={(e) => setParserEngine(e.target.value)}
               className="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-emerald-300 font-medium outline-none focus:border-emerald-400 cursor-pointer"
             >
-              <optgroup label="⚡ Neural Layout Engines (Hybrid)" className="bg-slate-900 text-slate-400 font-semibold">
+              <optgroup label="⚡ Neural Layout Engines" className="bg-slate-900 text-slate-400 font-semibold">
                 <option value="auto" className="bg-slate-900 text-slate-200 font-normal">
-                  ✨ Auto ({taskBindings?.layout_analysis === 'google_cloud_vision'
+                  ✨ Auto ({taskBindings?.document_parser === 'docling_cloud_parser'
+                    ? 'IBM Docling Cloud SaaS'
+                    : taskBindings?.layout_analysis === 'google_cloud_vision'
                     ? 'Google Cloud Vision Pure OCR'
                     : taskBindings?.layout_analysis === 'docling_parser'
-                    ? 'Docling 2D Neural Layout + RapidOCR'
+                    ? 'Docling Local CPU/GPU'
                     : taskBindings?.layout_analysis === 'ollama_qwen3vl'
                     ? 'Local Qwen 3 VL'
                     : taskBindings?.layout_analysis || 'Docling 2D Neural Layout'})
                 </option>
-                <option value="docling" className="bg-slate-900 text-slate-200 font-normal">⚡ Docling 2D Neural Layout Parser (Recommended)</option>
+                <option value="docling_cloud" className="bg-slate-900 text-slate-200 font-normal">
+                  ☁️ IBM Docling Cloud (Hosted SaaS API — Ultra Fast)
+                </option>
+                <option value="docling" className="bg-slate-900 text-slate-200 font-normal">
+                  🖥️ Docling 2D Neural Layout (Local CPU/GPU)
+                </option>
               </optgroup>
-              <optgroup label="☁️ Cloud OCR Engines (Zero Local Stress)" className="bg-slate-900 text-slate-400 font-semibold">
+              <optgroup label="☁️ Cloud Vision & OCR (Zero Local Stress)" className="bg-slate-900 text-slate-400 font-semibold">
                 <option value="google_cloud_vision" className="bg-slate-900 text-slate-200 font-normal">🔍 Google Cloud Vision API (Pure OCR Engine)</option>
               </optgroup>
               <optgroup label="🖥️ Local Hardware Inference" className="bg-slate-900 text-slate-400 font-semibold">

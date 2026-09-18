@@ -147,15 +147,23 @@ class ModelRegistry:
             )
         elif provider_type == "local_sentence_transformers":
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
+        elif provider_type in ("docling_cloud", "docling_cloud_parser"):
+            from app.ingestion.parsers.docling import DoclingLayoutParser
+
+            return DoclingLayoutParser(
+                is_cloud=True,
+                service_url=self._settings.docling_service_url,
+                api_key=self._settings.docling_api_key,
+            )
         elif provider_type in ("docling", "docling_parser"):
             from app.ingestion.parsers.docling import DoclingLayoutParser
 
-            return DoclingLayoutParser()
+            return DoclingLayoutParser(is_cloud=False)
         else:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
                 "Supported: gemini, google_cloud_vision, ollama, groq, anthropic, openai, openrouter, nvidia, "
-                "local_sentence_transformers, docling"
+                "local_sentence_transformers, docling, docling_cloud"
             )
 
     def get_provider(self, task: str) -> AnyProvider:
@@ -466,7 +474,8 @@ class ModelRegistry:
             "openai_gpt4o_mini": "OpenAI GPT-4o Mini",
             "nvidia_nemotron": "NVIDIA Nemotron 3.5 Lightning (Hosted NIM)",
             "nvidia_llama_vision": "NVIDIA Meta Llama 3.2 11B Vision (Hosted NIM)",
-            "docling_parser": "Docling Document Layout Engine",
+            "docling_parser": "Docling Document Layout Engine (Local)",
+            "docling_cloud_parser": "IBM Docling Cloud (Hosted SaaS API)",
             "mineru_parser": "MinerU Magic-PDF Layout Engine",
             "local_embed_bge": "BAAI BGE-M3 Multilingual Embedding",
         }
@@ -525,6 +534,8 @@ class ModelRegistry:
                 return bool(self._settings.openai_api_key)
             elif provider_type in ("nvidia", "nvidia_nim"):
                 return bool(self._settings.nvidia_api_key)
+            elif provider_type in ("docling_cloud", "docling_cloud_parser"):
+                return bool(self._settings.docling_api_key)
             elif provider_type in ("local_sentence_transformers", "tesseract", "docling", "docling_parser"):
                 return True  # Always "reachable" (local, no network needed)
             else:

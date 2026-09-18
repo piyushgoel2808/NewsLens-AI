@@ -235,7 +235,21 @@ async def _execute_ingestion_pipeline(
                     extra={"page_number": page_num, "is_docling_engine": is_docling_engine},
                 )
                 try:
-                    docling_parser = DoclingLayoutParser()
+                    from app.providers.registry import get_registry
+
+                    is_force_cloud = "cloud" in (parser_engine or "").lower()
+                    is_force_local = (parser_engine or "").lower() in ("docling", "docling_local", "docling_parser")
+
+                    if is_force_cloud:
+                        docling_parser = DoclingLayoutParser(is_cloud=True)
+                    elif is_force_local:
+                        docling_parser = DoclingLayoutParser(is_cloud=False)
+                    else:
+                        try:
+                            prov = get_registry().get_provider("document_parser")
+                            docling_parser = prov if isinstance(prov, DoclingLayoutParser) else DoclingLayoutParser()
+                        except Exception:
+                            docling_parser = DoclingLayoutParser()
                     src_pdf = pymupdf.open(stream=pdf_bytes, filetype="pdf")
                     single_doc = pymupdf.open()
                     single_doc.insert_pdf(src_pdf, from_page=i, to_page=i)
