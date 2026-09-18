@@ -33,6 +33,12 @@ providers:
     model: docling-ibm-cloud
     supports_vision: true
     supports_tool_use: false
+  gemini_embedding:
+    provider: gemini_embedding
+    model: gemini-embedding-001
+    supports_vision: false
+    supports_tool_use: false
+    embedding_dim: 768
 
 task_bindings:
   query_planner: gemini_flash
@@ -46,4 +52,4 @@ task_bindings:
   query_condenser: gemini_flash
   document_parser: docling_cloud_parser
   ocr: docling_cloud_parser
-  embedding: local_embed_bge
+  embedding: gemini_embedding

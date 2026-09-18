@@ -147,6 +147,17 @@ class ModelRegistry:
             )
         elif provider_type == "local_sentence_transformers":
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
+        elif provider_type in ("gemini_embedding", "google_embedding", "gemini_embed"):
+            from app.providers.gemini_embedding_provider import GeminiEmbeddingProvider
+
+            return GeminiEmbeddingProvider(
+                model=model or "gemini-embedding-001",
+                embedding_dim=cfg.embedding_dim or 768,
+                api_key=self._settings.gemini_api_key or self._settings.google_api_key,
+                service_account_info=self._settings.gcp_service_account_json or self._settings.gcp_service_account_key,
+                project_id=self._settings.gcp_project_id,
+                base_url=cfg.base_url,
+            )
         elif provider_type in ("docling_cloud", "docling_cloud_parser"):
             from app.ingestion.parsers.docling import DoclingLayoutParser
 
@@ -162,7 +173,7 @@ class ModelRegistry:
         else:
             raise ProviderError(
                 f"Unknown provider type {provider_type!r} for {provider_id!r}. "
-                "Supported: gemini, google_cloud_vision, ollama, groq, anthropic, openai, openrouter, nvidia, "
+                "Supported: gemini, gemini_embedding, google_cloud_vision, ollama, groq, anthropic, openai, openrouter, nvidia, "
                 "local_sentence_transformers, docling, docling_cloud"
             )
 
@@ -478,6 +489,7 @@ class ModelRegistry:
             "docling_cloud_parser": "IBM Docling Cloud (Hosted SaaS API)",
             "mineru_parser": "MinerU Magic-PDF Layout Engine",
             "local_embed_bge": "BAAI BGE-M3 Multilingual Embedding",
+            "gemini_embedding": "Google Gemini Embedding 001 (Cloud MRL 768d → article_chunks_v2)",
         }
 
         local_providers = (
@@ -522,6 +534,13 @@ class ModelRegistry:
                     return r.status_code == 200
             elif provider_type == "gemini":
                 return bool(self._settings.gemini_api_key or self._settings.google_api_key)
+            elif provider_type in ("gemini_embedding", "google_embedding"):
+                return bool(
+                    self._settings.gemini_api_key
+                    or self._settings.google_api_key
+                    or self._settings.gcp_service_account_json
+                    or self._settings.gcp_service_account_key
+                )
             elif provider_type == "google_cloud_vision":
                 return bool(self._settings.google_application_credentials or self._settings.google_api_key or self._settings.gemini_api_key)
             elif provider_type == "openrouter":

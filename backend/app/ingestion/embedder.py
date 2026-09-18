@@ -71,7 +71,13 @@ class ArticleEmbedder:
         # 1. Embed chunk texts
         texts_to_embed = [c.text for c in chunks]
         provider = self._get_embedding_provider()
-        vectors = await provider.embed(texts_to_embed)
+        if getattr(provider, "provider_name", "") in ("gemini_embedding", "gemini"):
+            try:
+                vectors = await provider.embed(texts_to_embed, task_type="RETRIEVAL_DOCUMENT")  # type: ignore[call-arg]
+            except TypeError:
+                vectors = await provider.embed(texts_to_embed)
+        else:
+            vectors = await provider.embed(texts_to_embed)
 
         vector_ids: list[str] = []
         qdrant_points: list[VectorPoint] = []

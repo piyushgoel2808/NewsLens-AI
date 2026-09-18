@@ -14,7 +14,9 @@ A broadsheet newspaper presents unique data modeling challenges compared to stan
 
 NewsLens-AI cleanly separates concerns across storage tiers:
 1. **Object Store (Google Cloud Storage / MinIO)**: High-resolution raster images, cropped photo assets, and original PDFs accessed via the polymorphic `ObjectStore` abstraction.
-2. **Qdrant (Managed Cloud / Local Container)**: High-dimensional vector embeddings (`article_chunks`) for semantic similarity search.
+2. **Qdrant (Managed Cloud / Local Container)**: High-dimensional vector embeddings partitioned across dual collections:
+   - `article_chunks`: 1024-dimensional dense vectors for local `BAAI/bge-m3`.
+   - `article_chunks_v2`: 768-dimensional dense vectors for cloud `gemini-embedding-001` (Matryoshka MRL).
 3. **MySQL (Cloud SQL / Local MySQL 8.4 LTS - The 17 Tables)**: Relational system of record enforcing structural integrity, canonical taxonomies, named entity graphs, FULLTEXT search indexes, and provenance lineage.
 
 ---
@@ -31,7 +33,7 @@ NewsLens-AI cleanly separates concerns across storage tiers:
                       ├──< [articles]  ├──< [photos]
                       │       │   │    └──< [tables]
                       │       │   │
-                      │       │   └──< [article_chunks] ──> (Qdrant Point UUID)
+                      │       │   └──< [article_chunks] ──> (Qdrant Point UUID in article_chunks or article_chunks_v2)
                       │       │
                       │       ├──< [article_pages] (Junction to [pages] + BBoxes)
                       │       ├──< [article_entities] >── [entities] (Canonical NER)
@@ -315,7 +317,7 @@ NewsLens-AI cleanly separates concerns across storage tiers:
    - `ON DELETE CASCADE` ensures that deleting a newspaper or issue cleanly prunes all associated pages, articles, bounding boxes, chunks, and junction records without leaving orphaned records.
    - `ON DELETE SET NULL` protects visual media assets (`photos`, `tables`) and canonical entities from inadvertent loss if an article or canonical record is reassigned.
 2. **Decoupling Vector Payloads from Relational Records**:
-   - MySQL stores structured attributes, bounding boxes, and full text for BM25 search. High-dimensional 1024-d float embeddings are stored in Qdrant and linked using `article_chunks.embedding_vector_id` (UUID), maintaining MySQL buffer pool efficiency.
+   - MySQL stores structured attributes, bounding boxes, and full text for BM25 search. High-dimensional float embeddings are stored in Qdrant and linked using `article_chunks.embedding_vector_id` (UUID), maintaining MySQL buffer pool efficiency. Depending on whether cloud or local embedding is bound, the UUID resolves to points in either `article_chunks_v2` (768d Gemini 001 MRL) or `article_chunks` (1024d BGE-M3).
 3. **Multi-Page Article Stitching**:
    - Articles spanning multiple pages are stored as a single `articles` row linked via `article_pages` with ordered bounding boxes, ensuring that full stories can be retrieved as a single coherent text block while still linking back to exact page coordinates.
 

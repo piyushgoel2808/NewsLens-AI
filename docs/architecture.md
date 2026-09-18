@@ -41,9 +41,9 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** purpose-bui
 | **Web Framework** | **FastAPI + Uvicorn** | Flask, Django, Express | Native async/await concurrency, automatic OpenAPI/Swagger documentation, Pydantic v2 data validation, and first-class Server-Sent Events (SSE) streaming. |
 | **Task Queue** | **Celery + Redis** | Celery+RabbitMQ, RQ, Dramatiq | Distributed background processing for multi-page broadsheet OCR and VLM extraction with Redis serving dual roles (Celery broker and query cache). |
 | **System of Record** | **MySQL 8** (`aiomysql` + `pymysql`) | PostgreSQL / pgvector | Strict relational schema, battle-tested `FULLTEXT` indexing on broadsheet text, native JSON payload columns, and high-throughput async connections via `aiomysql`. |
-| **Vector Database** | **Qdrant** | Pinecone, Milvus, Chroma, Weaviate | Self-hostable, rust-powered vector search with rich payload filtering (newspaper, issue_date, section, article_type, prominence), cosine similarity, and low memory footprint. |
-| **Object Store** | **MinIO** (S3-compatible) | Local Filesystem, AWS S3 only | Local S3-compliant distributed object storage for 150 DPI page scans and high-res image crops, allowing seamless transition to AWS S3/GCS without code changes. |
-| **PDF Extraction & Layout** | **PyMuPDF + Docling** | PDFMiner, Poppler, naive OCR | PyMuPDF provides ultra-fast digital text/font extraction and high-res rasterization; IBM Docling (DocLayNet) provides 2D spatial layout and reading-order tree analysis. |
+| **Vector Database** | **Qdrant** | Pinecone, Milvus, Chroma, Weaviate | Self-hostable, Rust-powered vector search with rich payload filtering (`newspaper_name`, `issue_date`, `section`, `has_visual_data`). Employs a strict **dual-collection architecture**: `article_chunks` (1024d BGE-M3) and `article_chunks_v2` (768d Gemini 001 MRL) with automatic dimension-aware routing. |
+| **Object Store** | **MinIO / GCS** | Local Filesystem, AWS S3 only | Polymorphic storage architecture (`get_object_store()`): Google Cloud Storage (`gs://...`) in production, local MinIO (S3-compatible) in development for 150/300 DPI page scans and high-res image crops. |
+| **PDF Extraction & Layout** | **PyMuPDF + IBM Docling (Local & Cloud SaaS)** | PDFMiner, Poppler, naive OCR | PyMuPDF provides ultra-fast digital text/font extraction and high-res rasterization; IBM Docling (DocLayNet) provides 2D spatial layout and reading-order tree analysis, supporting both local in-container parsing and offloaded **IBM Cloud Docling SaaS API** (`docling_cloud`). |
 | **OCR Engines** | **Tesseract + RapidOCR** | Tesseract alone, Cloud Vision only | RapidOCR (ONNX) and Tesseract provide high-speed local character transcription, token coordinate bounding boxes, and multi-language support (English + Indic scripts). |
 | **Frontend Framework** | **React 18 + Vite** | Next.js, Nuxt, Angular | Lightweight client-side Single Page Application (SPA), instant HMR development with Vite, zero unnecessary server-rendering overhead for desktop analytical tools. |
 | **Styling & Icons** | **Tailwind CSS + Lucide** | Material UI, Ant Design, Bootstrap | Utility-first styling for complex responsive broadsheet canvas layouts, crisp typography, dark mode support, and comprehensive icons. |
@@ -57,18 +57,31 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
 ### Evolution & Model Transitions
 1. **Local vs. Hosted Provider Flexibility**:
    - **Local Inference (Ollama & Sentence-Transformers)**: Supports privacy-conscious, offline deployments using `llama3.1:8b` / `deepseek-r1:14b` for planning and answer synthesis, `qwen2.5-vl` / `qwen3-vl` for visual layout triage, IBM Docling for 2D geometry parsing, and `BAAI/bge-m3` for local dense embeddings.
-    - **Primary Hosted Cloud Engine (Google AI Studio / Gemini Cloud)**:
-     - **`gemini-3.8-flash`** (Canonical Workhorse): 1,048,576-token context window, ultra-low latency, native multimodal visual extraction without downscaling, and zero-failure adherence to Pydantic JSON schemas. Bound to `query_planner`, `answerer`, `visual_extraction`, `query_condenser`, and `article_segmentation`.
+   - **Dual-Mode Broadsheet Layout Parsing (`docling_parser` vs `docling_cloud`)**:
+     - *Local Mode (`docling_parser`)*: Runs DocLayNet neural layout models and RapidOCR directly inside the local worker container.
+     - *Cloud SaaS Mode (`docling_cloud`)*: Connects to the IBM Cloud Docling SaaS service endpoint (`DoclingServiceClient`) using API keys, completely eliminating neural layout CPU/RAM overhead from serverless worker containers.
+   - **Primary Hosted Cloud Engine (Google AI Studio / Gemini Cloud)**:
+     - **`gemini-3.8-flash` / `gemini-2.5-flash`** (Canonical Workhorse): 1,048,576-token context window, ultra-low latency, native multimodal visual extraction without downscaling, and zero-failure adherence to Pydantic JSON schemas. Bound to `query_planner`, `synthesizer`, `visual_extraction`, `query_condenser`, and `article_segmentation`.
      - **`gemini-3.8-live`** (Real-time Audio/Stream): Native audio-to-audio multimodal interaction via Gemini Live API.
      - **`gemini-3.5-flash`** (High-Speed Fallback): 1,048,576-token context window serving as zero-downtime fallback candidate.
-     - **`gemini-3.1-pro-preview` / `gemini-3.1-flash-lite`**: Specialized reasoning and conversational lightweight models.
-     - **Transparent Candidate Failover**: `GeminiProvider` incorporates an automatic multi-model candidate failover (`[gemini-3.8-flash, gemini-3.5-flash, gemini-3.6-flash, gemini-3.7-flash]`), ensuring continuous zero-downtime execution across varying Google API account access tiers without encountering deprecated 404 models.
+     - **Transparent Candidate Failover**: `GeminiProvider` incorporates an automatic multi-model candidate failover (`[gemini-3.8-flash, gemini-2.5-flash, gemini-3.5-flash]`), ensuring continuous zero-downtime execution across varying Google API account access tiers without encountering deprecated 404 models.
    - **Hosted Gateways & Alternative Endpoints (Groq, OpenAI, NVIDIA NIM, OpenRouter)**: Supports Groq LPU inference (`groq_compound`, `groq_qwen`), OpenAI (`gpt-4o`, `gpt-4o-mini`), NVIDIA NIM (`nvidia/nemotron-3.5-lightning`), and optional multi-provider routing via OpenRouter.
-2. **Why `BAAI/bge-m3` as Default Embedding**:
-   - 1024-dimensional dense representation.
-   - 8,192-token context window (accommodates lengthy long-form newspaper articles without aggressive truncation).
-   - Multi-lingual cross-lingual alignment (handles English, Hindi, and regional vernacular broadsheets).
-   - Zero external API call costs and zero latency fluctuations.
+2. **Dual-Mode Vector Embedding Strategy (`gemini-embedding-001` vs `BAAI/bge-m3`)**:
+   - **Cloud Mode (`gemini-embedding-001`)**:
+     - 768-dimensional dense vector representation via Google Vertex AI / AI Studio using Matryoshka Representation Learning (MRL `output_dimensionality: 768`).
+     - **Zero Container RAM Overhead**: Eliminates loading 2.4 GB of PyTorch model weights inside Cloud Run containers, enabling instantaneous cold starts and ultra-lean container operation.
+     - **Asymmetric Retrieval Optimization**: Utilizes explicit task types: `task_type="RETRIEVAL_DOCUMENT"` during chunk ingestion and `task_type="RETRIEVAL_QUERY"` during search queries.
+     - **Target Collection**: Upserted into and retrieved from **`article_chunks_v2`** (768d, Cosine distance).
+   - **Local / Sovereign Mode (`BAAI/bge-m3`)**:
+     - 1024-dimensional dense representation via PyTorch / SentenceTransformers.
+     - 8,192-token context window; multilingual cross-lingual alignment for vernacular broadsheets.
+     - Zero external API costs and zero network latency.
+     - **Target Collection**: Upserted into and retrieved from **`article_chunks`** (1024d, Cosine distance).
+   - **Strict Dual Qdrant Collection Isolation & Auto-Routing**:
+     - `QdrantStore.get_collection_name(dim)` automatically routes vectors based on dimensionality: length 768 routes to `article_chunks_v2`, length 1024 routes to `article_chunks`.
+     - `QdrantStore.delete_by_filter()` deletes across *both* collections when collection is omitted, ensuring issue re-ingestion cleans up all previous vectors regardless of which model was originally bound.
+   - **Background Migration CLI (`scripts/reindex_embeddings.py`)**:
+     - Backfills existing relational MySQL article chunks into `article_chunks_v2` using `gemini-embedding-001` with batched processing, exponential backoff, and progress reporting.
 3. **The Necessity of Deterministic Fallbacks**:
    - Local vision models (e.g. running on Apple Silicon or consumer GPUs) occasionally return empty responses (`''`) or encounter memory timeouts when parsing high-density financial matrices.
    - **The Deterministic Spatial OCR Matrix Reconstruction Engine** was engineered as a zero-failure fallback: when VLM structured extraction returns empty, the spatial matrix algorithm reconstructs tabular data directly from OCR bounding boxes with confidence $\ge 0.85$.
@@ -780,27 +793,35 @@ In production, NewsLens-AI runs on Google Cloud Platform in region `asia-south1`
 │  ┌──────────────────────────────────────────────────┐   ┌──────────────────────────────────────────────────────────┐   │
 │  │ Qdrant Cloud (Managed Vector DB)                 │   │ Upstash Redis TLS (Managed Broker & Cache)               │   │
 │  │ • australia-southeast1-0.gcp.cloud.qdrant.io:6333│   │ • hopeful-octopus-283720.upstash.io:6379                 │   │
-│  │ • Collection: article_chunks (1024-dim BGE-M3)   │   │ • TLS Enforced (rediss://...ssl_cert_reqs=required)      │   │
+│  │ • article_chunks (1024d Cosine - BGE-M3)         │   │ • TLS Enforced (rediss://...ssl_cert_reqs=required)      │   │
+│  │ • article_chunks_v2 (768d Cosine - Gemini 001)   │   │                                                          │   │
 │  └──────────────────────────────────────────────────┘   └──────────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────┐   ┌──────────────────────────────────────────────────────────┐   │
-│  │ Google AI Studio (Gemini 3.8 Flash)              │   │ Google Cloud Vision API                                  │   │
-│  │ • Query Planning, Reasoning & Multimodal VLM     │   │ • Pure Broadsheet OCR & Layout Analysis Fallback         │   │
+│  │ Google Vertex AI & AI Studio                     │   │ IBM Cloud Docling SaaS API                               │   │
+│  │ • Query Planning, Reasoning & Multimodal VLM     │   │ • Remote Neural Layout Parsing (DocLayNet)               │   │
+│  │ • gemini-embedding-001 (768d MRL, Asymmetric)   │   │ • Zero Worker Container Compute Overhead                 │   │
 │  └──────────────────────────────────────────────────┘   └──────────────────────────────────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 #### Production Specifications
-1. **Dynamic Storage Factory (`GoogleCloudStorageStore`)**:
+1. **Zero Container RAM Footprint & Cloud Embeddings**:
+   - In production (`cloud_full` preset), the backend and worker containers use `gemini-embedding-001` via Vertex AI Express or regional IAM authentication, eliminating 2.4 GB of PyTorch model weights from container memory.
+   - Combined with `docling_cloud`, serverless Cloud Run instances start faster and run with minimal CPU and memory footprints.
+2. **Dual-Collection Vector Isolation & Auto-Routing**:
+   - `QdrantStore` manages dual collections: `article_chunks` (1024-dim Cosine) and `article_chunks_v2` (768-dim Cosine).
+   - Vectors are automatically routed to the proper collection based on their dimensionality ($768 \to \text{v2}$, $1024 \to \text{legacy}$), while filter deletions operate across both collections to ensure complete cleanup.
+3. **Dynamic Storage Factory (`GoogleCloudStorageStore`)**:
    - Implements the polymorphic `ObjectStore` interface in `backend/app/storage/gcs_store.py` backed by `google-cloud-storage`.
    - The factory `get_object_store()` dynamically instantiates `GoogleCloudStorageStore` in production (`STORAGE_BACKEND=gcs`) and `MinioStore` in local development (`STORAGE_BACKEND=minio`).
-2. **Cloud Run Celery Worker (`newslens-worker`)**:
+4. **Cloud Run Celery Worker (`newslens-worker`)**:
    - Standard Cloud Run services throttle CPU to zero when not handling incoming HTTP requests. `newslens-worker` is deployed with `--no-cpu-throttling` and `--min-instances=1`, ensuring the Celery consumer maintains 100% CPU capacity 24/7.
    - Embeds a lightweight background HTTP health server (`app/run_worker.py`) on `$PORT` (8080) that responds `200 OK` to Cloud Run startup and liveness probes while running `celery worker` in the foreground.
-3. **Database Migration Job (`newslens-migrate`)**:
+5. **Database Migration Job (`newslens-migrate`)**:
    - Cloud Run Job configured to run `alembic upgrade head` over the Cloud SQL Unix domain socket before updating backend or worker revisions, guaranteeing zero-downtime schema evolution.
-4. **Keyless CI/CD via Workload Identity Federation**:
+6. **Keyless CI/CD via Workload Identity Federation**:
    - `.github/workflows/deploy-gcp.yml` uses Google Cloud Workload Identity Federation to exchange GitHub Actions OIDC tokens for short-lived Google Cloud access tokens, completely eliminating static service account JSON keys.
-   - Automatically runs Alembic migrations on ephemeral test MySQL containers, executes the 574-test suite, builds and pushes multi-arch images to Google Artifact Registry, and rolls out updates to Cloud Run.
+   - Automatically runs Alembic migrations on ephemeral test MySQL containers, executes the test suite, builds and pushes multi-arch images to Google Artifact Registry, and rolls out updates to Cloud Run.
 
 ---
 

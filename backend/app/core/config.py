@@ -119,6 +119,7 @@ class QdrantSettings(BaseModel):
     port: int = 6333
     api_key: str | None = None
     collection_name: str = "article_chunks"
+    collection_name_v2: str = "article_chunks_v2"
     https: bool = False
 
 
@@ -255,6 +256,13 @@ DEFAULT_PROVIDERS = {
         supports_vision=True,
         supports_tool_use=False,
     ),
+    "gemini_embedding": ProviderConfig(
+        provider="gemini_embedding",
+        model="gemini-embedding-001",
+        supports_vision=False,
+        supports_tool_use=False,
+        embedding_dim=768,
+    ),
 }
 
 DEFAULT_TASK_BINDINGS = {
@@ -341,6 +349,7 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
     qdrant_api_key: str | None = None
     qdrant_collection_name: str = "article_chunks"
+    qdrant_collection_name_v2: str = "article_chunks_v2"
     qdrant_https: bool = False
 
     # --- MinIO ---
@@ -457,6 +466,7 @@ class Settings(BaseSettings):
             port=self.qdrant_port,
             api_key=self.qdrant_api_key,
             collection_name=self.qdrant_collection_name,
+            collection_name_v2=self.qdrant_collection_name_v2,
             https=self.qdrant_https,
         )
 

@@ -601,13 +601,15 @@ If all vision providers are offline, rate-limited, or unconfigured, the system t
 
 ### 1.6 Chunking & Verified Qdrant Vector Point Payloads
 
-The chunk text is vectorized with `BAAI/bge-m3` ($1024$ dimensions) and upserted into Qdrant collection `newslens_articles`:
+The chunk text is vectorized according to the active embedding provider binding and routed to the corresponding Qdrant collection:
+- **Cloud Mode (`gemini_embedding`)**: Vectorized with `gemini-embedding-001` ($768$ dimensions via Matryoshka Representation Learning with `task_type="RETRIEVAL_DOCUMENT"`) and upserted into collection **`article_chunks_v2`**.
+- **Local/Hybrid Mode (`local_embed_bge`)**: Vectorized with `BAAI/bge-m3` ($1024$ dimensions via SentenceTransformers) and upserted into collection **`article_chunks`**.
 
-#### Exact Qdrant Point Retrieved from Live Cluster
+#### Exact Qdrant Point Retrieved from Live Cluster (`article_chunks`)
 ```json
 {
   "id": "3b3b67a0-afac-46ba-942d-ce3c67af41c8",
-  "vector": [0.0142, -0.0219, 0.0811, 0.0035, "... 1024 float dimensions ..."],
+  "vector": [0.0142, -0.0219, 0.0811, 0.0035, "... 1024 float dimensions for BGE-M3 (or 768 float dimensions for Gemini 001 in v2) ..."],
   "payload": {
     "article_id": 40403,
     "issue_id": 93,
@@ -1024,16 +1026,22 @@ NewsLens-AI decouples cognitive reasoning and vision tasks from hardcoded LLM ve
 #### A. The Three Architectural Model Tiers
 
 1. **Local Sovereign Tier (Air-Gapped Privacy)**:
-   - Built on local Ollama daemon instances (`ollama_llama3: llama3.1:8b`, `ollama_deepseek: deepseek-r1:14b`, `ollama_qwen3vl: qwen3-vl:latest` / `qwen2.5vl:7b`, `local_embed_bge: BAAI/bge-m3`).
+   - Built on local Ollama daemon instances (`ollama_llama3: llama3.1:8b`, `ollama_deepseek: deepseek-r1:14b`, `ollama_qwen3vl: qwen3-vl:latest`), local Docling layout parser (`docling_parser`), and local dense embeddings (`local_embed_bge: BAAI/bge-m3` [1024d] targeting Qdrant collection `article_chunks`).
    - Zero outbound cloud network egress. Broadsheet texts, investigative queries, and visual crops remain strictly on-premises.
 
-2. **Google Gemini Cloud Tier (Google AI Studio Primary)**:
-   - Powered by official Google AI Studio endpoints: `gemini_flash` (`gemini-3.8-flash`), `gemini_live` (`gemini-3.8-live`), and `gemini-3.5-flash` fallback.
-   - Serves as the primary cloud workhorse for VLM visual extraction, cognitive query planning, broadsheet synthesis, and answer verification. Includes automatic transparent multi-candidate model failover.
+2. **Google Gemini Cloud Tier (Vertex AI & AI Studio Primary)**:
+   - Powered by Google Gemini endpoints: `gemini_flash` (`gemini-2.5-flash` / `gemini-3.8-flash`), `gemini_live` (`gemini-3.8-live`), and `gemini-3.5-flash` fallback.
+   - **`gemini_embedding` (`gemini-embedding-001`)**: 768-dimensional Matryoshka Representation Learning (MRL) dense embeddings targeting collection `article_chunks_v2` with asymmetric retrieval task types (`RETRIEVAL_DOCUMENT` vs `RETRIEVAL_QUERY`), saving 2.4 GB PyTorch RAM in Cloud Run.
+   - Serves as the primary cloud workhorse for VLM visual extraction, cognitive query planning, broadsheet synthesis, and answer verification with automatic transparent model failover.
 
 3. **Multi-Provider Gateways & Commercial Fallbacks**:
-   - Secondary vendor access to OpenAI (`gpt-4o`, `gpt-4o-mini`), Groq, and OpenRouter (`gemma-4`, `nemotron-3.5`).
+   - Secondary vendor access to OpenAI (`gpt-4o`, `gpt-4o-mini`), Groq (`groq_compound`), OpenRouter, and **IBM Cloud Docling SaaS API** (`docling_cloud` for remote neural layout parsing).
    - Backed by dynamic HTTP 429 circuit breakers with cooldown timers.
+
+#### Preset Profiles (Model Settings Studio)
+- **Full Cloud (`cloud_full`)**: `gemini_flash` + `docling_cloud` + `gemini_embedding` &rarr; `article_chunks_v2` (768d). Zero container RAM overhead in Cloud Run.
+- **Cloud Hybrid (`cloud_hybrid`)**: `gemini_flash` + `docling_parser` + `local_embed_bge` &rarr; `article_chunks` (1024d).
+- **Local Offline (`local_offline`)**: `ollama_llama3` / `deepseek` + `docling_parser` + `local_embed_bge` &rarr; `article_chunks` (1024d).
 
 ---
 

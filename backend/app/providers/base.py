@@ -45,6 +45,7 @@ class ProviderType(StrEnum):
     HOSTED_OCR = "hosted_ocr"
     MINERU = "mineru"
     DOCLING = "docling"
+    GEMINI_EMBEDDING = "gemini_embedding"
 
 
 # ---------------------------------------------------------------------------

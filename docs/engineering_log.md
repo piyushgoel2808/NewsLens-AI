@@ -4271,6 +4271,77 @@ When users interacted with broadsheet articles containing companion infographics
 | `model_config.yaml` & `backend/model_config.prod.yaml` | Configured `max_output_tokens` and reasoning flags across provider instances. |
 | `README.md`, `CHANGELOG.md`, `docs/features.md`, `docs/architecture.md` | Updated system documentation, feature references, and release notes. |
 
+---
+
+## Phase 27 — Dual-Mode Vector Embeddings (Gemini 001 MRL vs BGE-M3), Strict Dual Qdrant Collection Routing & Zero-RAM Cloud Run Optimization
+
+**Date**: 2026-09-18
+**Status**: Completed ✅
+
+### Exit Criteria Verification
+
+- `make test` (`pytest tests/`) — All unit, integration, and regression suites passing (100% green).
+- Added 9 new unit tests covering `GeminiEmbeddingProvider` and `QdrantStore` dual-collection auto-routing (`backend/tests/test_gemini_embedding.py` and `backend/tests/test_qdrant_dual_collections.py`), all passing.
+- Live Qdrant Cloud cluster verified: `article_chunks_v2` initialized with 768-dim Cosine configuration, point insertion, vector search, and cross-collection filter deletions verified; existing 7,206 vectors in `article_chunks` (1024-dim BGE-M3) preserved completely intact.
+- Frontend production build verified (`npm run build` completed in 1.02s without errors).
+- Background vector migration CLI `scripts/reindex_embeddings.py` created and tested with `--dry-run` and live batching.
+
+### Architectural Decisions & Changes
+
+1. **Dual-Mode Vector Embedding Architecture (`GeminiEmbeddingProvider` & `LocalEmbeddingProvider`)**:
+   - Implemented `backend/app/providers/gemini_embedding_provider.py` implementing the `EmbeddingProvider` Protocol.
+   - **Google `gemini-embedding-001`**: Utilizes Matryoshka Representation Learning (MRL) to downscale from native 3,072 dimensions to 768 dimensions (`output_dimensionality: 768`), optimizing vector index memory and bandwidth without sacrificing semantic precision.
+   - **Asymmetric Retrieval Optimization**: Automatically sets `task_type="RETRIEVAL_DOCUMENT"` during chunk embedding (`embed_batch`) and `task_type="RETRIEVAL_QUERY"` during search query embedding (`embed_query`), matching Google's upstream information retrieval best practices.
+   - **Multi-Tier Google Cloud Authentication**:
+     - *Vertex AI Express*: Uses `AQ...` API keys with the `x-goog-api-key` header targeting `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-embedding-001:predict`.
+     - *Regional Service Account IAM*: In Cloud Run, uses Application Default Credentials (ADC) targeting regional Vertex AI endpoints (`https://asia-south1-aiplatform.googleapis.com/v1/projects/{project}/locations/asia-south1/...`).
+     - *Google AI Studio*: Fallback for standard AI Studio API keys targeting `https://generativelanguage.googleapis.com`.
+   - **Zero Container RAM in Cloud Run**: Offloading embeddings to Google Vertex AI eliminates the need to load 2.4 GB of PyTorch model weights and `sentence-transformers` libraries in Cloud Run containers, saving memory and eliminating container cold-start delays.
+
+2. **Strict Dual Qdrant Collection Isolation & Auto-Routing (`QdrantStore`)**:
+   - Added `collection_name_v2: str = "article_chunks_v2"` (768-dim Cosine) alongside `collection_name: str = "article_chunks"` (1024-dim Cosine) in `backend/app/core/config.py`.
+   - Implemented `QdrantStore.get_collection_name(dim: Optional[int])`:
+     - 768-dimensional vectors dynamically route to `article_chunks_v2`.
+     - 1024-dimensional vectors dynamically route to `article_chunks`.
+   - `_ensure_collection()` creates and verifies *both* collections idempotently on application startup.
+   - `upsert()` and `search()` auto-detect vector dimensionality and direct traffic to the matching collection.
+   - `delete_by_filter()` deletes from *both* collections when `collection_name` is omitted, guaranteeing that re-ingesting an issue purges all previous vectors regardless of whether they were originally embedded with BGE-M3 or Gemini 001.
+
+3. **Dual-Mode Document Parsing (IBM Docling Local vs Cloud SaaS)**:
+   - Added support for IBM Cloud Docling SaaS API (`docling_cloud`) using `DoclingServiceClient` with service URL and API key, alongside containerized `docling_parser` (DocLayNet + RapidOCR).
+   - In full cloud mode, all heavy neural document layout parsing is offloaded to IBM Cloud SaaS, completely eliminating CPU/RAM contention in serverless worker containers.
+
+4. **Background Vector Migration CLI (`scripts/reindex_embeddings.py`)**:
+   - Production CLI utility for re-embedding existing relational MySQL `article_chunks` and populating `article_chunks_v2` (or vice versa).
+   - Features configurable `--batch-size`, `--limit`, `--target-model`, `--dry-run`, exponential backoff for rate limits, and real-time progress indicators.
+
+5. **Frontend Model Settings Studio Enhancements (`ModelSettingsStudio.jsx`)**:
+   - Added deployment preset buttons:
+     - `Full Cloud (GCP)`: Binds `gemini_flash`, `docling_cloud`, and `gemini_embedding` (&rarr; `article_chunks_v2` [768d]).
+     - `Cloud Hybrid`: Binds `gemini_flash`, `docling_parser`, and `local_embed_bge` (&rarr; `article_chunks` [1024d]).
+     - `Local Offline`: Binds `ollama_llama3`/`deepseek`, `docling_parser`, and `local_embed_bge` (&rarr; `article_chunks` [1024d]).
+   - Added dynamic target collection badges next to embedding tasks (`Target: article_chunks_v2 [768d]` vs `Target: article_chunks [1024d]`).
+   - Grouped provider options in dropdowns using `<optgroup>` labels (Google Cloud Gemini, Sovereign Local Models, Cloud SaaS APIs, Hosted Gateways).
+
+### Files Created & Modified
+
+| File | Purpose / Changes |
+| :--- | :--- |
+| `backend/app/providers/gemini_embedding_provider.py` | [NEW] Google Gemini embedding provider with 768d MRL, asymmetric task types, Vertex Express, IAM, and AI Studio auth. |
+| `backend/tests/test_gemini_embedding.py` | [NEW] Unit tests for Gemini embedding generation, MRL dimension validation, and asymmetric task types. |
+| `backend/tests/test_qdrant_dual_collections.py` | [NEW] Unit tests for dual collection initialization, auto-dimension routing (768d vs 1024d), and cross-collection filter deletions. |
+| `scripts/reindex_embeddings.py` | [NEW] Asynchronous CLI migration utility for backfilling existing MySQL chunks into Qdrant collections. |
+| `backend/app/core/config.py` | Added `collection_name_v2: str = "article_chunks_v2"`; added `gemini_embedding` to `DEFAULT_PROVIDERS`. |
+| `backend/app/providers/base.py` | Added `GEMINI_EMBEDDING = "gemini_embedding"` to `ProviderType`. |
+| `backend/app/providers/registry.py` | Registered `GeminiEmbeddingProvider`, display names, reachability checks, and task capability mappings. |
+| `backend/app/storage/qdrant_store.py` | Added `get_collection_name(dim)`, dual-collection initialization, dimension-aware routing, and cross-collection filter deletion. |
+| `backend/app/ingestion/embedder.py` | Added `task_type="RETRIEVAL_DOCUMENT"` for chunk embedding. |
+| `backend/app/retrieval/hybrid_search.py` | Added `task_type="RETRIEVAL_QUERY"` for query embedding; updated logging to show active collection. |
+| `frontend/src/components/ModelSettingsStudio.jsx` | Added preset profiles, active collection badges, and grouped provider dropdowns. |
+| `model_config.yaml` & `model_config.prod.yaml` | Added `gemini_embedding` provider definition; bound `gemini_embedding` in production. |
+| `README.md` & `docs/*` | Comprehensively updated system architecture, data flows, schemas, tools guide, and codebase reference. |
+
+
 
 
 

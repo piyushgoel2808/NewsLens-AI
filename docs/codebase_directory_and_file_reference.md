@@ -990,6 +990,7 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 - [`backend/app/providers/nvidia_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/nvidia_provider.py): NVIDIA NIM hosted inference via OpenAI-compatible endpoint (`https://integrate.api.nvidia.com/v1`). Supports `nvidia/nemotron-3.5-lightning-30b-a3b` with progressive `<think>` reasoning streaming and `meta/llama-3.2-11b-vision-instruct` for multimodal vision.
 - [`backend/app/providers/openrouter_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/openrouter_provider.py): OpenRouter unified gateway with multi-key rotation and rate-limit handling.
 - [`backend/app/providers/anthropic_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/anthropic_provider.py): Anthropic Claude API (`claude-3-5-sonnet`).
+- [`backend/app/providers/gemini_embedding_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/gemini_embedding_provider.py): Google Gemini embedding provider for `gemini-embedding-001` supporting Matryoshka Representation Learning (MRL, downscalable to 768d), asymmetric retrieval task types (`RETRIEVAL_DOCUMENT` vs `RETRIEVAL_QUERY`), and multi-modal authentication (Vertex Express API key, regional GCP Service Account IAM, Google AI Studio).
 - [`backend/app/providers/local_embedding_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/local_embedding_provider.py): PyTorch & SentenceTransformers client for local `BAAI/bge-m3` embedding computation.
 - [`backend/app/providers/cascade.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/cascade.py): Automatic fallback cascade (e.g. Groq -> Ollama -> Gemini) handling rate limits and timeouts transparently.
 
@@ -1302,6 +1303,10 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 ##### [`scripts/reclassify_articles.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/scripts/reclassify_articles.py)
 * **What It Has**: Batch article re-classification utility.
 * **Work It Is Doing**: Re-runs the `ArticleClassifier` over existing database articles to update categories against modified alias rulebooks.
+
+##### [`scripts/reindex_embeddings.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/scripts/reindex_embeddings.py)
+* **What It Has**: CLI background re-indexing and migration utility for vector embeddings.
+* **Work It Is Doing**: Iterates through existing relational MySQL `article_chunks`, generates new vector representations via the targeted embedding model (e.g. `gemini_embedding` with 768d MRL or `local_embed_bge` with 1024d), and upserts them into the corresponding Qdrant collection (`article_chunks_v2` or `article_chunks`) with batched processing, rate-limit backoff, and `--dry-run` validation.
 
 ##### Verification Scripts:
 - [`scripts/verify_phase1.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/scripts/verify_phase1.py): Verifies PDF rasterization and Docling layout analysis.

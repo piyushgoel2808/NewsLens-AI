@@ -14,10 +14,15 @@
 
 ## 🌟 Key Features
 
-- **📑 Docling Broadsheet Neural Layout & 2D Article Segmentation**: Uses **IBM Docling (DocLayNet)** with **RapidOCR** and 2D spatial sorting to cleanly coalesce multi-line headlines and subheadline/decks, extract inline bylines (`BY <NAME>`), and segment complex multi-story broadsheets without column bleeding.
+- **📑 Dual-Mode Broadsheet Neural Layout & 2D Article Segmentation**: Uses **IBM Docling (DocLayNet)** with **RapidOCR** and 2D spatial sorting to cleanly coalesce multi-line headlines and subheadline/decks, extract inline bylines (`BY <NAME>`), and segment complex multi-story broadsheets without column bleeding. Supports **Dual Parsing Modes**: local containerized Docling (`docling_parser`) for offline/on-prem deployments, and **IBM Cloud Docling SaaS API** (`docling_cloud`) to offload heavy neural layout workloads with zero container compute overhead.
 - **📷 2D Spatial Photo/Infographic Extraction & Multimodal Data Chunks**: Automatically isolates editorial photos, graphics, and composite photo galleries, pairs them with shared multi-column captions using 2D proximity scoring, and indexes infographic data tables into Qdrant via **Qwen3-VL** (`qwen3-vl:latest`).
 - **🏛️ Multi-Page Consensus Masthead Verification**: Robustly extracts newspaper brand and publication dates across global (*The New York Times*, *The Wall Street Journal*, *Financial Times*, *The Washington Post*, *The Guardian*) and national broadsheets with RapidOCR visual verification.
-- **⚡ Two-Stage Neural Retrieval Cascade (Cross-Encoder)**: Stage 1 RRF hybrid search (Qdrant `BAAI/bge-m3` + MySQL `FULLTEXT`) expands candidates to $N=75$, followed by Stage 2 Cross-Encoder neural reranking (`cross-encoder/ms-marco-MiniLM-L-6-v2`) with macOS CPU optimization (avoiding MPS Metal shader lag) and candidate pool capping ($K=20$), returning the Top 10 high-precision hits in sub-second latency (~1.0s vs 30.4s).
+- **⚡ Dual-Mode Vector Embeddings & Strict Dual Qdrant Collection Architecture**: Employs an intelligent dual vector pipeline:
+  - **Cloud Mode (`gemini-embedding-001`)**: 768-dimensional embeddings utilizing Matryoshka Representation Learning (MRL) via Google Vertex AI / AI Studio with asymmetric retrieval task types (`RETRIEVAL_DOCUMENT` for chunk ingestion, `RETRIEVAL_QUERY` for search queries), indexing into **`article_chunks_v2`** with **zero container RAM footprint** in Cloud Run.
+  - **Local/Hybrid Mode (`BAAI/bge-m3`)**: 1024-dimensional dense vectors via PyTorch / SentenceTransformers indexing into **`article_chunks`**.
+  - **Auto-Dimension Collection Routing**: `QdrantStore` dynamically inspects vector dimensionality (768d vs 1024d) to isolate search and upserts to the matching collection, while `delete_by_filter()` operates across both collections to ensure clean issue re-ingestion.
+- **⚡ Two-Stage Neural Retrieval Cascade (Cross-Encoder)**: Stage 1 RRF hybrid search (Qdrant `article_chunks` / `article_chunks_v2` + MySQL `FULLTEXT`) expands candidates to $N=75$, followed by Stage 2 Cross-Encoder neural reranking (`cross-encoder/ms-marco-MiniLM-L-6-v2`) with macOS CPU optimization (avoiding MPS Metal shader lag) and candidate pool capping ($K=20$), returning the Top 10 high-precision hits in sub-second latency (~1.0s vs 30.4s).
+- **🔄 Background Vector Re-Indexing CLI (`scripts/reindex_embeddings.py`)**: Production-ready migration utility for backfilling existing MySQL chunks into `article_chunks_v2` using `gemini-embedding-001` with chunked batching, rate-limit backoff, and live progress indicators.
 - **📊 3-Tier Negative Coverage Engine**: Performs relational audits in MySQL to identify zero-coverage publications, semantic validation, and multi-newspaper editorial reconciliation matrices (`POST /api/query/coverage`).
 - **🤖 Autonomous Modular LangGraph Agent with Live Archive Grounding & Concurrency**: Pydantic structured Chain-of-Thought (CoT) planning grounded in live database metadata (`get_archive_metadata`). Built on a decoupled clean architecture: planning (`models.py`, `extractor.py`, `tool_factory.py`, `planner.py`), execution state machine (`executor.py`, `evaluator.py`, `graph.py`), and synthesis (`synthesizer.py` with centralized `DOMAIN_TAXONOMY`). Autonomously routes across 7 broadsheet archetypes (including sub-200ms `article_catalog`), executes planned tools concurrently via `asyncio.gather`, and performs real-time adaptive fallbacks on zero-hit category queries.
 - **🕸️ Interactive Multi-Hop Entity Knowledge Graph**: Interactive visualizer mapping entity relationships, co-occurrences, and hop depths across shared stories and event clusters with Corrective RAG (CRAG) self-reflection.
@@ -191,7 +196,7 @@ NewsLens-AI runs natively in production on **Google Cloud Platform (GCP)** in re
 | **Health Check** | **HEALTHY** | [https://newslens-backend-679327043786.asia-south1.run.app/health](https://newslens-backend-679327043786.asia-south1.run.app/health) |
 | **Celery Worker** | **CONNECTED** | `newslens-worker` on Cloud Run (`--no-cpu-throttling`, 6Gi RAM, 2 vCPU) |
 | **Cloud SQL MySQL 8.0** | **MANAGED** | `newslens-ai-prod:asia-south1:newslens-mysql` |
-| **Vector DB (Qdrant Cloud)** | **MANAGED** | `australia-southeast1-0.gcp.cloud.qdrant.io:6333` |
+| **Vector DB (Qdrant Cloud)** | **MANAGED** | `australia-southeast1-0.gcp.cloud.qdrant.io:6333`<br/>• `article_chunks` (1024d Cosine - BGE-M3)<br/>• `article_chunks_v2` (768d Cosine - Gemini 001 MRL) |
 | **Object Storage (GCS)** | **ACTIVE** | `gs://newslens-ai-prod-pages` & `gs://newslens-ai-prod-originals` |
 | **Redis & Message Broker** | **MANAGED** | Upstash Redis TLS (`rediss://...`) |
 | **CI/CD Pipeline** | **AUTOMATED** | GitHub Actions with Workload Identity Federation (Zero permanent keys) |
@@ -202,55 +207,75 @@ NewsLens-AI runs natively in production on **Google Cloud Platform (GCP)** in re
    - `newslens-backend`: FastAPI running under Python 3.12 with Gunicorn/Uvicorn workers, Cloud SQL Unix domain socket connectivity, and automatic Google Cloud Storage credential resolution.
    - `newslens-worker`: Background Celery task consumer configured with `--no-cpu-throttling`, 6Gi RAM, and an embedded HTTP health server on `$PORT` to satisfy Cloud Run service liveness probes while processing ingestion queues 24/7.
    - `newslens-migrate`: Cloud Run Job running Alembic database migrations (`alembic upgrade head`) before revisions are deployed.
-2. **Dynamic Object Storage Abstraction**:
+2. **Zero Container RAM & Native Cloud Provider Offload**:
+   - In production cloud mode (`cloud_full` preset), heavy neural compute is fully offloaded to managed cloud APIs: `gemini-embedding-001` eliminates loading 2.4 GB of PyTorch model weights inside the container, and `docling_cloud` offloads layout parsing to IBM Cloud.
+3. **Dynamic Object Storage Abstraction**:
    - Production uses native `google-cloud-storage` (`GoogleCloudStorageStore`) against GCS buckets, while local development seamlessly uses MinIO (`MinioStore`) via `get_object_store()`.
-3. **Automated CI/CD**:
-   - Every push to `main` triggers `.github/workflows/deploy-gcp.yml`, which executes the 574-test suite against an ephemeral MySQL 8 service container, authenticates to GCP via Workload Identity Federation, builds and pushes multi-arch images to Google Artifact Registry, runs database migrations, and updates Cloud Run revisions with zero downtime.
+4. **Automated CI/CD**:
+   - Every push to `main` triggers `.github/workflows/deploy-gcp.yml`, which executes the test suite against an ephemeral MySQL 8 service container, authenticates to GCP via Workload Identity Federation, builds and pushes multi-arch images to Google Artifact Registry, runs database migrations, and updates Cloud Run revisions with zero downtime.
 
 ---
 
 ## ⚙️ Model Provider Configuration (`model_config.yaml`)
 
-NewsLens-AI supports declarative provider bindings without changing application code:
+NewsLens-AI supports declarative provider bindings and dynamic presets without changing application code:
 
 ```yaml
 providers:
-  groq_compound:
-    provider: groq
-    model: groq/compound
-    context_window: 128000
-    supports_tool_use: true
-
   gemini_flash:
     provider: gemini
-    model: gemini-3.7-flash
+    model: gemini-2.5-flash
     context_window: 1000000
     supports_vision: true
     supports_tool_use: true
 
-  ollama_llama3:
-    provider: ollama
-    model: llama3.1:8b
-    base_url: http://localhost:11434
-
-  ollama_qwen3vl:
-    provider: ollama
-    model: qwen3-vl:latest
-    base_url: http://localhost:11434
-    supports_vision: true
+  gemini_embedding:
+    provider: gemini_embedding
+    model: gemini-embedding-001
+    embedding_dim: 768  # 768-dim via Matryoshka Representation Learning (MRL)
 
   local_embed_bge:
     provider: local_sentence_transformers
     model: BAAI/bge-m3
     embedding_dim: 1024
 
+  docling_cloud:
+    provider: docling_cloud
+    model: ibm-docling-saas
+
+  docling_parser:
+    provider: docling
+    model: docling-local
+
 task_bindings:
-  query_planner: groq_compound
-  answerer: groq_compound
-  layout_analysis: docling_parser
-  article_segmentation: ollama_llama3
-  visual_extraction: ollama_qwen3vl
-  embedding: local_embed_bge
+  query_planner: gemini_flash
+  synthesizer: gemini_flash
+  visual_extraction: gemini_flash
+  layout_analysis: docling_cloud  # Or docling_parser for offline/local
+  embedding: gemini_embedding    # Or local_embed_bge for offline/local
+```
+
+### Dynamic Preset Profiles (Model Settings Studio)
+
+The UI's **Model Settings Studio** allows one-click switching between deployment archetypes:
+
+| Preset Profile | Planning & Synthesis | Layout Parsing | Embeddings & Target Collection | Primary Use Case |
+| :--- | :--- | :--- | :--- | :--- |
+| **Full Cloud (`cloud_full`)** | `gemini_flash` | `docling_cloud` | `gemini_embedding` &rarr; `article_chunks_v2` (768d) | Production Cloud Run (Zero container RAM) |
+| **Cloud Hybrid (`cloud_hybrid`)** | `gemini_flash` | `docling_parser` | `local_embed_bge` &rarr; `article_chunks` (1024d) | Cloud LLMs + Local PyTorch embeddings |
+| **Local Offline (`local_offline`)** | `ollama_llama3` / `deepseek` | `docling_parser` | `local_embed_bge` &rarr; `article_chunks` (1024d) | 100% offline air-gapped workstations |
+
+### Background Vector Re-Indexing CLI
+
+When migrating existing broadsheet archives between vector embedding models, run the background re-indexer:
+
+```bash
+# Re-index all existing MySQL article chunks into Qdrant article_chunks_v2 (768d)
+cd backend
+python ../scripts/reindex_embeddings.py --target-model gemini_embedding --batch-size 32
+
+# Or dry-run / inspect without modifying vectors:
+python ../scripts/reindex_embeddings.py --target-model gemini_embedding --dry-run
 ```
 
 ---
@@ -283,7 +308,7 @@ npm run build
 - **[Feature Matrix & Capabilities](docs/features.md)**: Complete guide to all broadsheet capabilities, negative coverage audits, VLM extraction, and on-demand tool synthesis.
 - **[Codebase Architecture & File Reference Guide](docs/codebase_directory_and_file_reference.md)**: Complete directory tree, folder responsibilities, and file-by-file technical reference detailing classes, functions, external tools/frameworks, and LLM/VLM models used.
 - **[Relational Database Schema & Manifest Reference](docs/database_schema.md)**: Deep dive into all 17 MySQL tables, relational invariants, foreign keys, spatial bounding boxes, and manifest queries.
-- **[Engineering & Incident Log](docs/engineering_log.md)**: Chronological engineering log documenting architectural decisions, performance milestones, and bug resolutions (Phases 1 through 18).
+- **[Engineering & Incident Log](docs/engineering_log.md)**: Chronological engineering log documenting architectural decisions, performance milestones, and bug resolutions (Phases 1 through 27).
 
 ---
 

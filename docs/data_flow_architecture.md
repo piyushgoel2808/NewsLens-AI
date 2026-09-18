@@ -37,8 +37,8 @@ flowchart TD
         VisualExtractor --> MySQL
         LayoutEngine --> Chunker["Contextual Broadsheet Chunker<br/>(400-500 Tok + Context Headers)"]
         VisualExtractor --> Chunker
-        Chunker --> Embedder["Embedding Provider<br/>(BAAI/bge-m3 1024-dim Dense)"]
-        Embedder --> Qdrant[("Qdrant Vector DB<br/>Managed Qdrant Cloud / Local Container")]
+        Chunker --> Embedder["Embedding Provider<br/>(Gemini 001 768d MRL or BGE-M3 1024d)"]
+        Embedder --> Qdrant[("Qdrant Vector DB<br/>article_chunks_v2 [768d] / article_chunks [1024d]")]
         MySQL -.-> Redis[("Redis Cache & Task Broker<br/>Upstash Redis TLS / Redis 7 Alpine")]
     end
 
@@ -86,33 +86,36 @@ NewsLens-AI decouples application pipelines from hardcoded AI vendors using a **
 │                                 DYNAMIC MODEL PROVIDER REGISTRY                                 │
 ├──────────────────────────────┬───────────────────────────────┬──────────────────────────────────┤
 │ Tier 1: Local Sovereign      │ Tier 2: Google Gemini Cloud   │ Tier 3: Multi-Provider Gateways │
-│ (100% On-Premise / Offline)  │ (Google AI Studio Primary)    │ (Commercial Gateways & Fallbacks)│
+│ (100% On-Premise / Offline)  │ (Vertex AI & AI Studio)       │ (Commercial Gateways & Fallbacks)│
 ├──────────────────────────────┼───────────────────────────────┼──────────────────────────────────┤
 │ • Ollama Llama 3.1 8B        │ • Google Gemini 2.5 Flash     │ • OpenAI GPT-4o & GPT-4o-mini    │
-│ • Ollama DeepSeek R1 14B     │   (Workhorse VLM, Plan, Synth)│ • OpenRouter (Gemma 4, Nemotron) │
-│ • Ollama Qwen 2.5 VL / 3 VL  │ • Google Gemini 2.5 Pro       │ • NVIDIA NIM Catalog             │
-│ • Docling Layout + RapidOCR  │   (Frontier Reasoning/Synthesis│ • Google Cloud Vision OCR        │
-│ • BAAI/bge-m3 (1024d Dense)  │ • Google Gemini 2.5 Flash-Lite│ • Text-Embedding-3-Large         │
-│                              │ • Transparent Model Failover  │ • HTTP 429 Cooldown Circuit Breaker
+│ • Ollama DeepSeek R1 14B     │   (Workhorse VLM, Plan, Synth)│ • IBM Cloud Docling SaaS API     │
+│ • Ollama Qwen 2.5 VL / 3 VL  │ • Google Gemini 2.5 Pro       │   (docling_cloud remote layout)  │
+│ • Docling Layout + RapidOCR  │   (Frontier Reasoning/Synth)  │ • OpenRouter (Gemma 4, Nemotron) │
+│ • BAAI/bge-m3 (1024d Dense)  │ • gemini-embedding-001        │ • NVIDIA NIM Catalog             │
+│   (Target: article_chunks)   │   (768d MRL, asymmetric tasks)│ • Google Cloud Vision OCR        │
+│                              │   (Target: article_chunks_v2) │ • HTTP 429 Cooldown Breakers     │
 └──────────────────────────────┴───────────────────────────────┴──────────────────────────────────┘
 ```
 
 ### Granular Pipeline Task Bindings
 1. **Stage 1 — Agentic Reasoning & Synthesis**:
-   - `query_planner`: Autonomous tool sequence planner & sub-query generator (`gemini-3.8-flash` / `ollama_llama3`).
-   - `answerer`: Multi-newspaper factual synthesizer & citation linker (`gemini-3.8-flash` / `ollama_llama3`).
-   - `answer_verifier`: Reflective fact-checking critic and fluff eliminator (`gemini-3.8-flash` / `ollama_llama3`).
-   - `query_condenser`: Coreference and pronoun resolution (`gemini-3.8-flash` / `ollama_llama3`).
+   - `query_planner`: Autonomous tool sequence planner & sub-query generator (`gemini-2.5-flash` / `groq_compound` / `ollama_llama3`).
+   - `answerer` / `synthesizer`: Multi-newspaper factual synthesizer & citation linker (`gemini-2.5-flash` / `ollama_llama3`).
+   - `answer_verifier`: Reflective fact-checking critic and fluff eliminator (`gemini-2.5-flash` / `ollama_llama3`).
+   - `query_condenser`: Coreference and pronoun resolution (`gemini-2.5-flash` / `ollama_llama3`).
 2. **Stage 2 — Vision & Broadsheet Ingestion**:
-   - `visual_extraction`: Multimodal chart, table, and scene extractor (`gemini-3.8-flash` / `ollama_qwen3vl`).
-   - `layout_analysis`: 2D spatial layout and column parsing (`gemini-3.8-flash` / `docling_parser`).
-   - `document_parser`: Broadsheet hierarchy structure extractor (`docling_parser`).
-   - `ocr`: Character transcription engine (`rapidocr` / `docling`).
+   - `visual_extraction`: Multimodal chart, table, and scene extractor (`gemini-2.5-flash` / `ollama_qwen3vl`).
+   - `layout_analysis`: 2D spatial layout and column parsing (`docling_cloud` for cloud SaaS or `docling_parser` for local DocLayNet).
+   - `document_parser`: Broadsheet hierarchy structure extractor (`docling_cloud` / `docling_parser`).
+   - `ocr`: Character transcription engine (`rapidocr` / `docling` / `google_vision`).
 3. **Stage 3 — Classification & Indexing**:
-   - `embedding`: 1024-dimensional dense vector generator (`local_embed_bge` - BAAI/bge-m3).
-   - `article_segmentation`: Complex multi-column jump-line stitcher (`gemini-3.8-flash` / `ollama_deepseek`).
-   - `classification`: 12-domain probabilistic categorization (`gemini-3.8-flash` / `ollama_llama3`).
-   - `metadata_extraction`: Publication, edition, and date extractor (`gemini-3.8-flash` / `ollama_llama3`).
+   - `embedding`: Dual-mode vector generator:
+     - Cloud Mode: `gemini_embedding` (`gemini-embedding-001`, 768d Matryoshka MRL, Vertex AI / AI Studio &rarr; indexes into `article_chunks_v2`).
+     - Local Mode: `local_embed_bge` (`BAAI/bge-m3`, 1024d dense via SentenceTransformers &rarr; indexes into `article_chunks`).
+   - `article_segmentation`: Complex multi-column jump-line stitcher (`gemini-2.5-flash` / `ollama_deepseek`).
+   - `classification`: 12-domain probabilistic categorization (`gemini-2.5-flash` / `ollama_llama3`).
+   - `metadata_extraction`: Publication, edition, and date extractor (`gemini-2.5-flash` / `ollama_llama3`).
 
 ---
 
@@ -180,7 +183,8 @@ The ingestion pipeline processes complex 2D newspaper broadsheet scans through s
 │ • Secondary Topic Extraction; persist in `Topic` & `ArticleTopic`      │
 │ • Insert `Article`, `ArticlePage`, `Photo` in MySQL 8                  │
 │ • Contextual chunking: Prepend [Newspaper|Date|Sec|Headline|Pages]     │
-│ • Embed via BAAI/bge-m3 (1024-dim dense); upsert into Qdrant           │
+│ • Embed via configured model (gemini-embedding-001 ➔ article_chunks_v2 │
+│   [768d] or BAAI/bge-m3 ➔ article_chunks [1024d]); upsert into Qdrant │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -211,7 +215,7 @@ flowchart TD
     DeterministicFallback --> CrossValidate
 
     CrossValidate --> VisualChunk["Create Dedicated Visual ArticleChunk<br/>chunk_type='visual', has_visual_data=True"]
-    VisualChunk --> QdrantIndex[("Qdrant Vector DB<br/>Embedded via BAAI/bge-m3")]
+    VisualChunk --> QdrantIndex[("Qdrant Vector DB<br/>article_chunks_v2 [768d] / article_chunks [1024d]")]
     VisualChunk --> MySQLIndex[("MySQL 8 `photos` & `tables`<br/>vlm_description, markdown_table")]
 ```
 
@@ -262,7 +266,7 @@ graph LR
 | Layer | Component | Engine / Driver | Stored Data & Schema | Access Patterns & Indexing |
 |---|---|---|---|---|
 | **System of Record** | Relational Database | • **Prod (GCP)**: Cloud SQL MySQL 8.0 (Unix Domain Socket `/cloudsql/...`)<br/>• **Local Dev**: MySQL 8.4 LTS Container (`aiomysql` / SQLAlchemy 2) | • `newspapers`, `issues`, `pages`<br/>• `articles`, `article_pages`<br/>• `photos`, `tables`<br/>• `entities`, `article_entities`<br/>• `topics`, `article_topics`<br/>• `query_log`, `ingestion_jobs` | • Foreign keys & relational joins<br/>• `FULLTEXT(headline, full_text)`<br/>• B-tree indexes on `(newspaper_id, issue_date)`<br/>• Sub-5ms metadata queries |
-| **Vector Store** | Dense Vector DB | • **Prod (GCP)**: Managed Qdrant Cloud Cluster (`australia-southeast1-0.gcp.cloud.qdrant.io:6333`)<br/>• **Local Dev**: Qdrant v1.11.3 Container | • Collection: `article_chunks`<br/>• 1024-dim dense vectors (`BAAI/bge-m3`)<br/>• Payload: `article_id`, `issue_id`, `newspaper_name`, `issue_date`, `page_number`, `headline`, `section`, `has_visual_data`, `bboxes` | • Cosine similarity search (HNSW index)<br/>• Payload pre-filtering on `newspaper_name`, `issue_date`, `section`<br/>• Sub-15ms vector retrieval |
+| **Vector Store** | Dense Vector DB | • **Prod (GCP)**: Managed Qdrant Cloud Cluster (`australia-southeast1-0.gcp.cloud.qdrant.io:6333`)<br/>• **Local Dev**: Qdrant v1.11.3 Container | • **Dual Collections**:<br/>  - `article_chunks`: 1024-dim dense vectors (`BAAI/bge-m3`)<br/>  - `article_chunks_v2`: 768-dim dense vectors (`gemini-embedding-001` MRL)<br/>• Payload: `article_id`, `issue_id`, `newspaper_name`, `issue_date`, `page_number`, `headline`, `section`, `has_visual_data`, `bboxes` | • Cosine similarity search (HNSW index)<br/>• Automatic dimension-based collection routing (768d &rarr; v2, 1024d &rarr; v1)<br/>• Cross-collection filter deletions on re-ingestion<br/>• Payload pre-filtering on `newspaper_name`, `issue_date`, `section`<br/>• Sub-15ms vector retrieval |
 | **Object Store** | Polymorphic Blob Store (`get_object_store()`) | • **Prod (GCP)**: **Google Cloud Storage** (`GoogleCloudStorageStore` via `google-cloud-storage`)<br/>• **Local Dev**: **MinIO S3** (`MinioStore` via `miniopy_async`) | • Originals bucket (`gs://newslens-ai-prod-originals` or `newslens-originals`): Raw source PDFs<br/>• Pages bucket (`gs://newslens-ai-prod-pages` or `newslens-pages`): 150 DPI page rasters (WebP/PNG)<br/>• Cropped visual assets & chart images | • High-throughput binary streaming<br/>• V4 Signed URLs and public image endpoints (`/api/photos/{id}/image`)<br/>• Threadpool executor wrapping for non-blocking async execution<br/>• Immutable asset storage |
 | **In-Memory Cache & Broker** | Key-Value & Queue | • **Prod (GCP)**: Upstash Managed Redis with TLS (`rediss://...ssl_cert_reqs=required`)<br/>• **Local Dev**: Redis 7 Alpine Container | • Celery background worker task queue (`newslens-worker` on Cloud Run)<br/>• Query response cache (TTL: 1h)<br/>• Condensed query hash cache<br/>• Timeline trajectory cache<br/>• SSE Pub/Sub channels | • In-memory sub-millisecond lookups<br/>• TLS encrypted transport in production<br/>• Distributed task locks (`redis-lock`)<br/>• Automatic TTL expiration (1h to 24h) |
 

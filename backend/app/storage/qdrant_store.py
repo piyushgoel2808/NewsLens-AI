@@ -31,6 +31,7 @@ class QdrantStore:
         self._settings = settings
         self._embedding_dim = embedding_dim
         self._collection = settings.collection_name
+        self._collection_v2 = getattr(settings, "collection_name_v2", "article_chunks_v2")
         if settings.host.startswith("http://") or settings.host.startswith("https://"):
             self._client = AsyncQdrantClient(
                 url=settings.host,
@@ -52,24 +53,31 @@ class QdrantStore:
                 check_compatibility=False,
             )
 
-    async def _ensure_collection(self) -> None:
-        """Create the Qdrant collection if it does not exist, and ensure payload indexes."""
+    def get_collection_name(self, embedding_dim: int | None = None) -> str:
+        """Resolve collection name based on vector dimension (768 -> v2, default 1024 -> v1)."""
+        dim = embedding_dim if embedding_dim is not None else self._embedding_dim
+        if dim == 768:
+            return self._collection_v2
+        return self._collection
+
+    async def _ensure_single_collection(self, collection_name: str, dim: int) -> None:
+        """Create a specific collection if it doesn't exist, and create payload indexes."""
         try:
             existing = await self._client.get_collections()
             names = [c.name for c in existing.collections]
-            if self._collection not in names:
+            if collection_name not in names:
                 await self._client.create_collection(
-                    collection_name=self._collection,
+                    collection_name=collection_name,
                     vectors_config=qmodels.VectorParams(
-                        size=self._embedding_dim,
+                        size=dim,
                         distance=qmodels.Distance.COSINE,
                     ),
                 )
                 logger.info(
                     "Created Qdrant collection",
                     extra={
-                        "collection": self._collection,
-                        "dim": self._embedding_dim,
+                        "collection": collection_name,
+                        "dim": dim,
                     },
                 )
 
@@ -86,26 +94,49 @@ class QdrantStore:
             for field, schema_type in indexed_fields.items():
                 with contextlib.suppress(Exception):
                     await self._client.create_payload_index(
-                        collection_name=self._collection,
+                        collection_name=collection_name,
                         field_name=field,
                         field_schema=schema_type,
                     )
         except Exception as e:
-            logger.error("Failed to ensure Qdrant collection", extra={"error": str(e)})
+            logger.error(
+                "Failed to ensure Qdrant collection",
+                extra={"collection": collection_name, "error": str(e)},
+            )
             raise
 
-    async def upsert(self, points: list[VectorPoint]) -> None:
-        """Upsert a batch of VectorPoints into Qdrant."""
+    async def _ensure_collection(self) -> None:
+        """Ensure both article_chunks (1024d) and article_chunks_v2 (768d) collections exist."""
+        # 1. Local/Hybrid collection (1024d)
+        await self._ensure_single_collection(self._collection, 1024)
+        # 2. Cloud collection (768d)
+        if self._collection_v2 and self._collection_v2 != self._collection:
+            await self._ensure_single_collection(self._collection_v2, 768)
+
+    async def upsert(
+        self,
+        points: list[VectorPoint],
+        collection_name: str | None = None,
+    ) -> None:
+        """Upsert a batch of VectorPoints into Qdrant. Auto-routes by vector dimension if not specified."""
         if not points:
             return
+        target_collection = collection_name
+        if not target_collection:
+            dim = len(points[0].vector) if points[0].vector else self._embedding_dim
+            target_collection = self.get_collection_name(dim)
+
         qdrant_points = [
             qmodels.PointStruct(id=p.id, vector=p.vector, payload=p.payload) for p in points
         ]
         await self._client.upsert(
-            collection_name=self._collection,
+            collection_name=target_collection,
             points=qdrant_points,
         )
-        logger.info("Qdrant upsert", extra={"count": len(points)})
+        logger.info(
+            "Qdrant upsert",
+            extra={"count": len(points), "collection": target_collection},
+        )
 
     def _build_filter(self, filters: dict[str, Any]) -> qmodels.Filter | None:
         """Convert a simple filter dict to a Qdrant Filter."""
@@ -182,11 +213,13 @@ class QdrantStore:
         top_k: int = 10,
         filters: dict[str, Any] | None = None,
         score_threshold: float = 0.0,
+        collection_name: str | None = None,
     ) -> list[VectorSearchResult]:
-        """Find similar vectors. Applies payload filters if provided."""
+        """Find similar vectors in target collection (auto-routed by vector dimension if not specified)."""
+        target_collection = collection_name or self.get_collection_name(len(query_vector))
         qdrant_filter = self._build_filter(filters) if filters else None
         query_response = await self._client.query_points(
-            collection_name=self._collection,
+            collection_name=target_collection,
             query=query_vector,
             limit=top_k,
             score_threshold=score_threshold,
@@ -203,46 +236,64 @@ class QdrantStore:
             for r in query_response.points
         ]
 
-    async def delete(self, ids: list[str]) -> None:
-        """Delete points by ID."""
+    def _target_collections(self, collection_name: str | None = None) -> list[str]:
+        """Return list of collections to operate on."""
+        if collection_name:
+            return [collection_name]
+        cols = [self._collection]
+        if self._collection_v2 and self._collection_v2 not in cols:
+            cols.append(self._collection_v2)
+        return cols
+
+    async def delete(self, ids: list[str], collection_name: str | None = None) -> None:
+        """Delete points by ID from target collection(s)."""
         if not ids:
             return
-        await self._client.delete(
-            collection_name=self._collection,
-            points_selector=qmodels.PointIdsList(points=list(ids)),
-        )
+        for col in self._target_collections(collection_name):
+            with contextlib.suppress(Exception):
+                await self._client.delete(
+                    collection_name=col,
+                    points_selector=qmodels.PointIdsList(points=list(ids)),
+                )
 
-    async def delete_by_filter(self, filters: dict[str, Any]) -> None:
-        """Delete points matching payload filters (e.g. {'issue_id': 42})."""
+    async def delete_by_filter(self, filters: dict[str, Any], collection_name: str | None = None) -> None:
+        """Delete points matching payload filters from target collection(s)."""
         qdrant_filter = self._build_filter(filters)
         if not qdrant_filter:
             return
-        await self._client.delete(
-            collection_name=self._collection,
-            points_selector=qmodels.FilterSelector(filter=qdrant_filter),
-        )
+        for col in self._target_collections(collection_name):
+            with contextlib.suppress(Exception):
+                await self._client.delete(
+                    collection_name=col,
+                    points_selector=qmodels.FilterSelector(filter=qdrant_filter),
+                )
         logger.info("Qdrant delete by filter", extra={"filters": filters})
 
-    async def set_payload_by_filter(self, payload: dict[str, Any], filters: dict[str, Any]) -> None:
-        """Update payload fields for all points matching a filter selector."""
+    async def set_payload_by_filter(
+        self, payload: dict[str, Any], filters: dict[str, Any], collection_name: str | None = None
+    ) -> None:
+        """Update payload fields for all points matching a filter selector in target collection(s)."""
         qdrant_filter = self._build_filter(filters)
         if not qdrant_filter:
             return
-        await self._client.set_payload(
-            collection_name=self._collection,
-            payload=payload,
-            points=qmodels.FilterSelector(filter=qdrant_filter),
-        )
+        for col in self._target_collections(collection_name):
+            with contextlib.suppress(Exception):
+                await self._client.set_payload(
+                    collection_name=col,
+                    payload=payload,
+                    points=qmodels.FilterSelector(filter=qdrant_filter),
+                )
         logger.info(
             "Qdrant updated payload by filter",
             extra={"filters": filters, "payload_keys": list(payload.keys())},
         )
 
-    async def collection_info(self) -> dict[str, Any]:
+    async def collection_info(self, collection_name: str | None = None) -> dict[str, Any]:
         """Return collection metadata."""
-        info = await self._client.get_collection(self._collection)
+        col = collection_name or self._collection
+        info = await self._client.get_collection(col)
         return {
-            "name": self._collection,
+            "name": col,
             "indexed_vectors_count": info.indexed_vectors_count,
             "points_count": info.points_count,
             "status": str(info.status),

@@ -55,10 +55,10 @@ const PRESET_PROFILES = [
     pipelineHighlights: {
       reasoning: 'Google Gemini 3.8 Flash (1M ctx)',
       vision: 'Gemini 3.8 Flash + IBM Docling Cloud',
-      indexing: 'BAAI BGE-M3 (1024d)',
+      indexing: 'Google Gemini 001 (768d Cloud → article_chunks_v2)',
     },
     description:
-      'Routes all LLM reasoning, article segmentation, and visual extraction through Google Gemini 3.8 Flash, with document parsing and OCR powered by high-speed IBM Cloud Docling API.',
+      'Routes all LLM reasoning, article segmentation, and visual extraction through Google Gemini 3.8 Flash, with document parsing and OCR powered by high-speed IBM Cloud Docling API, and vector indexing routed to Qdrant article_chunks_v2 via Gemini Embedding 001.',
     bindings: {
       query_planner: 'gemini_flash',
       answerer: 'gemini_flash',
@@ -69,7 +69,7 @@ const PRESET_PROFILES = [
       layout_analysis: 'gemini_flash',
       document_parser: 'docling_cloud_parser',
       ocr: 'docling_cloud_parser',
-      embedding: 'local_embed_bge',
+      embedding: 'gemini_embedding',
     },
   },
   {
@@ -89,7 +89,7 @@ const PRESET_PROFILES = [
     pipelineHighlights: {
       reasoning: 'Google Gemini 3.6 Flash + Nemotron',
       vision: 'Gemini 3.6 Flash VLM + Docling 2D Layout',
-      indexing: 'BAAI BGE-M3 (1024d)',
+      indexing: 'BAAI BGE-M3 (1024d Local → article_chunks)',
     },
     description:
       'Combines Google Gemini 3.6 Flash for vision and synthesis, paired with IBM Docling 2D for table & column geometry parsing.',
@@ -123,7 +123,7 @@ const PRESET_PROFILES = [
     pipelineHighlights: {
       reasoning: 'Meta Llama 3.1 8B + DeepSeek R1 14B',
       vision: 'Qwen 3 VL + Docling Layout',
-      indexing: 'BAAI BGE-M3 (1024d)',
+      indexing: 'BAAI BGE-M3 (1024d Local → article_chunks)',
     },
     description:
       'Runs locally via Ollama hardware acceleration. Llama 3.1 8B handles fast planning and synthesis, DeepSeek R1 handles reasoning, Qwen 3 VL handles images, and Docling handles 2D layout.',
@@ -1151,6 +1151,19 @@ export default function ModelSettingsStudio() {
                                   {task.requiredLabel}
                                 </span>
                               )}
+                              {task.id === 'embedding' && (
+                                <span
+                                  className={`text-[10px] font-mono px-2 py-0.5 rounded border font-semibold ${
+                                    selectedProviderId === 'gemini_embedding'
+                                      ? 'bg-sky-950/80 border-sky-500/50 text-sky-300'
+                                      : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
+                                  }`}
+                                >
+                                  {selectedProviderId === 'gemini_embedding'
+                                    ? 'Qdrant: article_chunks_v2 (768d Cloud)'
+                                    : 'Qdrant: article_chunks (1024d Local)'}
+                                </span>
+                              )}
                               {isModified && (
                                 <span className="text-[10px] font-bold text-amber-400 bg-amber-950/60 border border-amber-800 px-1.5 py-0.5 rounded animate-pulse">
                                   Pending Save
@@ -1190,9 +1203,9 @@ export default function ModelSettingsStudio() {
                               onChange={(e) => handleStageTaskBinding(task.id, e.target.value)}
                               className="flex-1 bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-xs text-slate-200 outline-none focus:border-sky-500 cursor-pointer font-mono"
                             >
-                              <optgroup label="☁️ Google Gemini Cloud (Google AI Studio)">
+                              <optgroup label="☁️ Google Gemini Cloud (AI Studio & Vertex AI)">
                                 {configuredProviders
-                                  .filter((p) => p.provider === 'gemini')
+                                  .filter((p) => p.provider === 'gemini' || p.provider === 'gemini_embedding')
                                   .map((p) => (
                                     <option key={p.id} value={p.id}>
                                       {reachabilityMap[p.id]?.name || p.id} ({p.model})
@@ -1204,6 +1217,7 @@ export default function ModelSettingsStudio() {
                                   .filter(
                                     (p) =>
                                       p.provider !== 'gemini' &&
+                                      p.provider !== 'gemini_embedding' &&
                                       p.provider !== 'openrouter' &&
                                       p.provider !== 'ollama' &&
                                       p.provider !== 'local_sentence_transformers' &&

@@ -72,8 +72,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def close_db() -> None:
-    """Close the async engine. Call at shutdown."""
-    global _engine
+    """Dispose of the global async engine on shutdown."""
+    global _engine, _async_session_factory
     if _engine is not None:
         await _engine.dispose()
         _engine = None
+        _async_session_factory = None

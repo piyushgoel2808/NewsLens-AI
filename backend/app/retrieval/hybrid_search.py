@@ -183,7 +183,13 @@ class HybridSearchEngine:
             if cached_vec:
                 query_vector = cached_vec
             else:
-                query_vector = await provider.embed_one(query)
+                if getattr(provider, "provider_name", "") in ("gemini_embedding", "gemini"):
+                    try:
+                        query_vector = await provider.embed_one(query, task_type="RETRIEVAL_QUERY")  # type: ignore[call-arg]
+                    except TypeError:
+                        query_vector = await provider.embed_one(query)
+                else:
+                    query_vector = await provider.embed_one(query)
                 try:
                     await self._cache.set_embedding(query, query_vector, model=embed_model_name)
                 except Exception:

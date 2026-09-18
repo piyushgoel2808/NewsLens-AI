@@ -274,9 +274,20 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
     * `query_planner`: Fast structured tool scheduling and archetype classification.
     * `synthesizer` / `answerer`: High-capacity grounded synthesis and analytical reporting.
     * `vlm_extractor`: Multimodal vision models for charts, tables, and broadsheet photojournalism.
-    * `embedding`: Dense vector representations (BAAI/bge-m3).
-    * `ocr`: Local RapidOCR / Tesseract or cloud OCR engines.
+    * `embedding`: Dual-mode vector embeddings:
+      * **Cloud Mode (`gemini_embedding`)**: Google `gemini-embedding-001` (768d Matryoshka MRL via Vertex AI / AI Studio with asymmetric retrieval task types) &rarr; upserts to and searches `article_chunks_v2` with zero container RAM overhead.
+      * **Local Mode (`local_embed_bge`)**: Sovereign `BAAI/bge-m3` (1024d dense via SentenceTransformers) &rarr; upserts to and searches `article_chunks`.
+    * `layout_analysis`: Dual parsing modes:
+      * **Cloud SaaS (`docling_cloud`)**: Remote IBM Cloud Docling API for serverless zero-RAM execution.
+      * **Local Container (`docling_parser`)**: On-prem DocLayNet + RapidOCR.
+    * `ocr`: Local RapidOCR / Tesseract or Google Cloud Vision OCR.
   * Persisted in `model_config.yaml` and hot-reloaded dynamically via `/api/settings/model-bindings` without server restarts.
+* **One-Click Deployment Presets (`ModelSettingsStudio.jsx`)**:
+  * **Full Cloud (`cloud_full`)**: `gemini_flash` + `docling_cloud` + `gemini_embedding` (`article_chunks_v2` [768d]) &mdash; Zero container RAM footprint on Cloud Run.
+  * **Cloud Hybrid (`cloud_hybrid`)**: `gemini_flash` + `docling_parser` + `local_embed_bge` (`article_chunks` [1024d]).
+  * **Local Offline (`local_offline`)**: `ollama_llama3` / `deepseek` + `docling_parser` + `local_embed_bge` (`article_chunks` [1024d]).
+* **Background Vector Migration CLI (`scripts/reindex_embeddings.py`)**:
+  * Seamlessly backfills existing relational MySQL article chunks into `article_chunks_v2` using `gemini-embedding-001` with batched processing, rate-limit backoff, and progress reporting.
 * **Task Capability Validation**: Validates that assigned providers satisfy required capabilities (e.g. vision support for layout analysis and chart extraction).
 
 ---
