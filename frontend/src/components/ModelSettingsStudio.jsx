@@ -41,7 +41,7 @@ const PRESET_PROFILES = [
   {
     id: 'cloud_full',
     name: 'Full Cloud Google Gemini',
-    badge: 'Google AI Studio Cloud',
+    badge: 'Zero Container RAM (GCP Prod)',
     icon: Cloud,
     tagline: 'Recommended for ultra-fast, robust reasoning and vision with zero local GPU / CPU resource consumption.',
     theme: {
@@ -109,7 +109,7 @@ const PRESET_PROFILES = [
   {
     id: 'local_offline',
     name: 'Local Sovereign',
-    badge: '100% Air-Gapped',
+    badge: '100% On-Premise (No API Keys)',
     icon: Laptop,
     tagline: 'Private on-premise execution with zero external API calls.',
     theme: {

@@ -92,18 +92,15 @@
 
 ## 🚀 Quick Start & Deployment Options
 
-NewsLens-AI supports four deployment modes: **Google Cloud Platform (Production Serverless)**, **Full-Stack Docker Compose** (local containerized), **Makefile Developer Automation** (fastest for active development), or **Manual Host Setup**.
-
-
-### Prerequisites
-- [Docker & Docker Compose](https://docs.docker.com/get-docker/) (v2.20+)
-- *(Optional for host development)*: Python 3.12+ with [`uv`](https://docs.astral.sh/uv/) and Node.js 20+
+NewsLens-AI supports dual-track execution out-of-the-box:
+1. **Track A: Local Sovereign Mode (100% Free / On-Premise)**: Runs completely offline using Ollama, local Docling, and BAAI/bge-m3 embeddings. Zero external API keys required.
+2. **Track B: Full Cloud Mode (GCP Production / Cloud Run)**: Offloads all heavy parsing to IBM Docling Cloud SaaS and vector embeddings to Google Gemini 001 MRL (768d), achieving zero container RAM overhead (~350 MB) and instant sub-2s cold starts.
 
 ---
 
-### Option 1: One-Command Production Boot (Docker Compose — Recommended)
+### Option 1: One-Command Boot (Docker Compose)
 
-Run the entire application stack in containers with a single command:
+Run the complete 8-service application stack with Docker Compose:
 
 ```bash
 # 1. Clone the repository
@@ -112,6 +109,15 @@ cd NewsLens-AI
 
 # 2. Copy the environment configuration template
 cp .env.example .env
+
+# For Local Sovereign Mode (No API keys needed):
+# Leave .env defaults as-is. It will use Ollama, local Docling, and local BGE-M3.
+
+# For Full Cloud Mode (Google Cloud / Docling Cloud):
+# Add your keys in .env:
+#   GEMINI_API_KEY=AIzaSy...
+#   DOCLING_API_KEY=azI6...
+#   DOCLING_SERVICE_URL=https://api.aws-c1.dcls.saas.ibm.com/...
 
 # 3. Build images and start all 8 services
 docker compose up -d --build

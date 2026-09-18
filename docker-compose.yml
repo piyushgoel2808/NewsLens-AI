@@ -131,6 +131,7 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-article_chunks}
+      - QDRANT_COLLECTION_NAME_V2=${QDRANT_COLLECTION_NAME_V2:-article_chunks_v2}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin123}
@@ -152,6 +153,8 @@ services:
       - OPENROUTER_API_KEYS=${OPENROUTER_API_KEYS:-}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
       - NEWSDATA_API_KEY=${NEWSDATA_API_KEY:-}
+      - DOCLING_SERVICE_URL=${DOCLING_SERVICE_URL:-}
+      - DOCLING_API_KEY=${DOCLING_API_KEY:-}
     volumes:
       - ./model_config.yaml:/app/model_config.yaml
     depends_on:
@@ -184,6 +187,7 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-article_chunks}
+      - QDRANT_COLLECTION_NAME_V2=${QDRANT_COLLECTION_NAME_V2:-article_chunks_v2}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin123}
@@ -202,6 +206,8 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENROUTER_API_KEYS=${OPENROUTER_API_KEYS:-}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - DOCLING_SERVICE_URL=${DOCLING_SERVICE_URL:-}
+      - DOCLING_API_KEY=${DOCLING_API_KEY:-}
     volumes:
       - ./model_config.yaml:/app/model_config.yaml
     depends_on:
