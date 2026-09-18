@@ -25,12 +25,15 @@ async def _check_mysql() -> dict[str, Any]:
     t0 = time.monotonic()
     try:
         from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import create_async_engine
+        from app.models.base import get_session_factory
 
-        engine = create_async_engine(settings.database.async_url, pool_pre_ping=True)
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        await engine.dispose()
+        factory = get_session_factory()
+
+        async def _ping_db() -> None:
+            async with factory() as session:
+                await session.execute(text("SELECT 1"))
+
+        await asyncio.wait_for(_ping_db(), timeout=2.5)
         return {"status": "up", "latency_ms": round((time.monotonic() - t0) * 1000)}
     except Exception as e:
         logger.warning("MySQL health check failed", extra={"error": str(e)})
@@ -44,7 +47,7 @@ async def _check_qdrant() -> dict[str, Any]:
         from app.storage.qdrant_store import QdrantStore
 
         store = QdrantStore(settings.qdrant)
-        reachable = await store.ping()
+        reachable = await asyncio.wait_for(store.ping(), timeout=2.5)
         await store.close()
         if reachable:
             return {"status": "up", "latency_ms": round((time.monotonic() - t0) * 1000)}
@@ -60,7 +63,7 @@ async def _check_minio() -> dict[str, Any]:
         from app.storage import get_object_store
 
         store = get_object_store(settings)
-        reachable = await store.ping()
+        reachable = await asyncio.wait_for(store.ping(), timeout=2.0)
         if reachable:
             return {"status": "up", "latency_ms": round((time.monotonic() - t0) * 1000)}
         backend_name = "GCS" if settings.storage_backend == "gcs" else "MinIO"
@@ -76,7 +79,7 @@ async def _check_redis() -> dict[str, Any]:
         import redis.asyncio as aioredis
 
         r = aioredis.Redis.from_url(settings.redis_url, socket_connect_timeout=2)
-        await r.ping()
+        await asyncio.wait_for(r.ping(), timeout=2.0)
         await r.aclose()
         return {"status": "up", "latency_ms": round((time.monotonic() - t0) * 1000)}
     except Exception as e:
@@ -89,9 +92,13 @@ async def _check_celery() -> dict[str, Any]:
         from app.ingestion.celery_app import celery_app
 
         loop = asyncio.get_running_loop()
-        ping_res = await loop.run_in_executor(
-            None, lambda: celery_app.control.ping(timeout=0.5)
-        )
+
+        async def _ping_celery() -> list[Any] | None:
+            return await loop.run_in_executor(
+                None, lambda: celery_app.control.ping(timeout=0.5)
+            )
+
+        ping_res = await asyncio.wait_for(_ping_celery(), timeout=1.5)
         active_workers = len(ping_res) if ping_res else 0
         return {
             "status": "up" if active_workers > 0 else "idle",
