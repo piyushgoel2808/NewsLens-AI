@@ -134,7 +134,7 @@ async def test_groq() -> None:
     from app.providers.base import Message, ProviderError
     from app.providers.groq_provider import GroqProvider
 
-    model = "qwen/qwen3.6-27b"
+    model = "groq/compound"
     provider = GroqProvider(model=model, api_key=api_key)
 
     t0 = time.monotonic()
@@ -232,6 +232,41 @@ async def test_provider_swap_proof() -> None:
     )
 
 
+async def test_gemini_embedding() -> None:
+    """Test GeminiEmbeddingProvider — Vertex Express or AI Studio."""
+    import os
+    from app.providers.gemini_embedding_provider import (
+        GeminiEmbeddingProvider,
+        ProviderError,
+    )
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        _result("GeminiEmbeddingProvider (gemini-embedding-001)", True, "SKIPPED — GEMINI_API_KEY not set")
+        return
+
+    provider = GeminiEmbeddingProvider(model="gemini-embedding-001", embedding_dim=768, api_key=api_key)
+    t0 = time.monotonic()
+    try:
+        texts = [
+            "The stock market crashed today.",
+            "वैश्विक अर्थव्यवस्था पर प्रभाव।",
+        ]
+        embeddings = await provider.embed(texts)
+        assert len(embeddings) == 2
+        assert len(embeddings[0]) == 768
+        latency = round((time.monotonic() - t0) * 1000)
+        _result(
+            f"GeminiEmbeddingProvider (gemini-embedding-001, dim={provider.embedding_dim})",
+            True,
+            f"Embedded {len(texts)} texts | shape: [{len(embeddings[0])}] | {latency}ms",
+        )
+    except ProviderError as e:
+        _result("GeminiEmbeddingProvider (gemini-embedding-001)", False, f"ProviderError: {e}")
+    except Exception as e:
+        _result("GeminiEmbeddingProvider (gemini-embedding-001)", False, f"{type(e).__name__}: {e}")
+
+
 async def main() -> None:
     print("\n" + "=" * 60)
     print("NewsLens-AI Provider Verification")
@@ -243,6 +278,7 @@ async def main() -> None:
         test_groq(),
         test_anthropic(),
         test_local_embedding(),
+        test_gemini_embedding(),
         test_provider_swap_proof(),
         return_exceptions=True,
     )
