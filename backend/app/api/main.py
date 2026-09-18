@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as prewarm_err:
             logger.warning("Model pre-warming non-critical warning", extra={"error": str(prewarm_err)})
 
-    if not settings.testing:
+    if not settings.testing and os.environ.get("ENABLE_MODEL_PREWARM", "false").lower() in ("1", "true"):
         asyncio.create_task(_prewarm_models())
 
     logger.info("NewsLens-AI startup complete")
