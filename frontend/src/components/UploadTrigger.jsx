@@ -166,6 +166,90 @@ export default function UploadTrigger() {
     setInspectingFiles(false);
   }
 
+  // Poll issue progress in background
+  async function pollIssueProgress(issueId, queueIndex) {
+    const maxAttempts = 400; // 400 * 3s = 20 minutes
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        const res = await fetch(`/api/issues/${issueId}`);
+        if (!res.ok) continue;
+        const issue = await res.json();
+
+        const totalPages = issue.total_pages || (issue.pages ? issue.pages.length : 0);
+        const processedPages = (issue.pages || []).filter(
+          (p) => p.ingestion_status === 'layout_done' || p.ingestion_status === 'ocr_done' || p.ingestion_status === 'embedded'
+        ).length;
+        const articleCount = issue.article_count || (issue.articles ? issue.articles.length : 0);
+
+        if (issue.ingestion_status === 'completed') {
+          setUploadQueue((prev) =>
+            prev.map((q, idx) =>
+              idx === queueIndex
+                ? {
+                    ...q,
+                    status: 'completed',
+                    issueId: issue.id,
+                    detail: `Issue #${issue.id} • ${articleCount} articles • Fully Indexed`,
+                  }
+                : q
+            )
+          );
+          loadNewspapers();
+          return;
+        }
+
+        if (issue.ingestion_status === 'failed') {
+          setUploadQueue((prev) =>
+            prev.map((q, idx) =>
+              idx === queueIndex
+                ? {
+                    ...q,
+                    status: 'failed',
+                    issueId: issue.id,
+                    detail: 'Pipeline failed during processing. Check server logs or retry with Force Re-ingest.',
+                  }
+                : q
+            )
+          );
+          return;
+        }
+
+        // Live progress update while running
+        setUploadQueue((prev) =>
+          prev.map((q, idx) =>
+            idx === queueIndex
+              ? {
+                  ...q,
+                  status: 'uploading',
+                  issueId: issue.id,
+                  detail: totalPages > 0
+                    ? `Processing: Page ${processedPages}/${totalPages} • ${articleCount} articles found...`
+                    : `Neural processing running on server (Issue #${issue.id})...`,
+                }
+              : q
+          )
+        );
+      } catch (e) {
+        console.warn('Issue polling error:', e);
+      }
+    }
+
+    setUploadQueue((prev) =>
+      prev.map((q, idx) =>
+        idx === queueIndex
+          ? {
+              ...q,
+              detail: `Processing still running in background (Issue #${issueId}). You can refresh the page to view progress.`,
+            }
+          : q
+      )
+    );
+  }
+
   // Handle Ingest Batch
   async function handleBatchUpload(e) {
     e.preventDefault();
@@ -203,6 +287,8 @@ export default function UploadTrigger() {
         formData.append('edition', edition);
         formData.append('parser_engine', parserEngine);
         formData.append('force', forceReingest ? 'true' : 'false');
+        // Run asynchronously in background to eliminate HTTP 504 timeouts
+        formData.append('sync_processing', 'false');
 
         const response = await fetch('/api/ingest/upload', {
           method: 'POST',
@@ -232,7 +318,7 @@ export default function UploadTrigger() {
             throw new Error('File size exceeds server upload limit (HTTP 413). Cloud Run supports up to 32 MB per request.');
           }
           if (response.status === 504) {
-            throw new Error('Ingestion timed out at proxy gateway (HTTP 504). Task may still be running in the worker.');
+            throw new Error('Ingestion timed out at proxy gateway (HTTP 504). Task may still be running on server.');
           }
           let fallbackText = '';
           try {
@@ -250,28 +336,48 @@ export default function UploadTrigger() {
           data.is_duplicate ||
           (data.skipped_duplicates && data.skipped_duplicates.length > 0);
 
-        let infoDetail = '';
         if (isDuplicate) {
-          infoDetail = 'Already in archive. Check "Force Re-ingest" to overwrite.';
-        } else if (data.pipeline_results && data.pipeline_results.length > 0) {
-          const res = data.pipeline_results[0];
-          infoDetail = `Issue #${data.issue_id} • ${res.articles_created || 0} articles • ${res.chunks_created || 0} chunks`;
+          setUploadQueue((prev) =>
+            prev.map((q, idx) =>
+              idx === i
+                ? {
+                    ...q,
+                    status: 'skipped (duplicate)',
+                    issueId: data.issue_id,
+                    detail: 'Already in archive. Check "Force Re-ingest" to overwrite.',
+                  }
+                : q
+            )
+          );
+        } else if (data.issue_id) {
+          const targetIssueId = data.issue_id;
+          setUploadQueue((prev) =>
+            prev.map((q, idx) =>
+              idx === i
+                ? {
+                    ...q,
+                    status: 'uploading',
+                    issueId: targetIssueId,
+                    detail: `Issue #${targetIssueId} • Uploaded, starting neural pipeline...`,
+                  }
+                : q
+            )
+          );
+          // Start non-blocking polling for background progress
+          pollIssueProgress(targetIssueId, i);
         } else {
-          infoDetail = `Issue #${data.issue_id || 'Queued'}`;
+          setUploadQueue((prev) =>
+            prev.map((q, idx) =>
+              idx === i
+                ? {
+                    ...q,
+                    status: 'completed',
+                    detail: 'Upload processed successfully.',
+                  }
+                : q
+            )
+          );
         }
-
-        setUploadQueue((prev) =>
-          prev.map((q, idx) =>
-            idx === i
-              ? {
-                  ...q,
-                  status: isDuplicate ? 'skipped (duplicate)' : 'completed',
-                  issueId: data.issue_id,
-                  detail: infoDetail,
-                }
-              : q
-          )
-        );
 
         // Refresh newspapers list in case a new one was auto-created
         loadNewspapers();

@@ -51,6 +51,7 @@ from app.ingestion.parsers import (
 from app.ingestion.rasterizer import PDFRasterizer, RasterizedPage
 from app.ingestion.storage import DebugArtifactsExporter
 from app.models.article import Article, ArticleCategory, ArticleChunk, ArticlePage, Photo
+from app.models.base import get_session_factory
 from app.models.entity import ArticleEntity, ArticleTopic, Topic
 from app.models.newspaper import Issue, Newspaper, Page
 from app.providers.openrouter_provider import RateLimitExhaustedError
@@ -94,7 +95,7 @@ def detect_masthead_and_date(blocks: Sequence[Any], height_px: float) -> tuple[s
     return detected_brand, detected_date
 
 
-async def run_ingestion_pipeline(
+async def _execute_ingestion_pipeline(
     issue_id: int,
     pdf_bytes: bytes,
     dpi: int = 150,
@@ -105,12 +106,7 @@ async def run_ingestion_pipeline(
     """Execute the end-to-end high-speed single-pass ingestion pipeline for an issue."""
     settings = get_settings()
     store = minio or get_object_store(settings)
-
-    if session_factory is None:
-        engine = create_async_engine(settings.database.async_url, echo=False)
-        maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    else:
-        maker = session_factory
+    maker = session_factory or get_session_factory()
 
     async with maker() as db:
         # Step 1: Rasterize PDF pages to PNG (MinIO upload)
@@ -160,7 +156,7 @@ async def run_ingestion_pipeline(
         if con_date and issue:
             issue.issue_date = con_date
             logger.info("Consensus identified publication date", extra={"issue_date": str(con_date), "issue_id": issue_id})
-        await db.flush()
+        await db.commit()
 
         is_docling_engine = not parser_engine or "docling" in parser_engine.lower() or parser_engine.lower() == "auto"
         phase1_layouts: dict[int, PageLayoutExtraction] = {}
@@ -428,6 +424,8 @@ async def run_ingestion_pipeline(
                 "is_advertisement_page": page_record.is_advertisement_page if page_record else False,
                 "articles_count": len(page_segmented_articles),
             })
+
+        await db.commit()
 
         # Step 6: Cross-Page Continuation Assembly
         assembler = CrossPageAssembler()
@@ -778,6 +776,40 @@ async def run_ingestion_pipeline(
             "total_chunks": total_chunks_created,
             "debug_dir": debug_dir,
         }
+
+
+async def run_ingestion_pipeline(
+    issue_id: int,
+    pdf_bytes: bytes,
+    dpi: int = 150,
+    parser_engine: str = "auto",
+    minio: ObjectStore | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> dict[str, Any]:
+    """Top-level robust entrypoint for ingestion pipeline with automated DB failure tracking."""
+    maker = session_factory or get_session_factory()
+    try:
+        return await _execute_ingestion_pipeline(
+            issue_id=issue_id,
+            pdf_bytes=pdf_bytes,
+            dpi=dpi,
+            parser_engine=parser_engine,
+            minio=minio,
+            session_factory=maker,
+        )
+    except Exception as exc:
+        logger.exception("Ingestion pipeline failed for issue %d: %s", issue_id, exc)
+        try:
+            async with maker() as err_db:
+                err_stmt = select(Issue).where(Issue.id == issue_id)
+                res = await err_db.execute(err_stmt)
+                err_issue = res.scalar_one_or_none()
+                if err_issue:
+                    err_issue.ingestion_status = "failed"
+                    await err_db.commit()
+        except Exception:
+            logger.exception("Failed to mark issue %d as failed in error handler", issue_id)
+        raise
 
 
 @celery_app.task(

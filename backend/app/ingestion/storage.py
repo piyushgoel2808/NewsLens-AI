@@ -208,18 +208,27 @@ class DeletionService:
         # Tier 3: MySQL Relational Database Purge
         # ---------------------------------------------------------------------
         try:
+            # Dissociate foreign key to avoid FK constraint conflict/autoflush issues
+            issue.source_zip_id = None
+
+            # Delete the Issue (cascading deletes pages, articles, chunks, tables, photos)
+            await self._db.delete(issue)
+
             # Delete associated IngestionJob if present
             if source_job_id:
                 job = await self._db.get(IngestionJob, source_job_id)
                 if job:
                     await self._db.delete(job)
 
-            # Delete the Issue (cascading deletes pages, articles, chunks, tables, photos)
-            await self._db.delete(issue)
             await self._db.commit()
             logger.info("Tier 3: Purged MySQL records", extra={"issue_id": issue_id})
         except Exception as e:
-            await self._db.rollback()
+            import inspect
+
+            if hasattr(self._db, "rollback"):
+                r = self._db.rollback()
+                if inspect.isawaitable(r):
+                    await r
             logger.error(
                 "Tier 3: MySQL deletion failed",
                 extra={"issue_id": issue_id, "error": str(e)},
