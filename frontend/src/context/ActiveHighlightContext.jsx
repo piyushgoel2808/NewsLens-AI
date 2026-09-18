@@ -3,7 +3,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 const ActiveHighlightContext = createContext(null);
 
 export function ActiveHighlightProvider({ children }) {
-  const [activeTab, setActiveTab] = useState('reader');
+  const [activeTab, setActiveTab] = useState('home');
   const [selectedIssueId, setSelectedIssueId] = useState(null);
   const [selectedPageNumber, setSelectedPageNumber] = useState(1);
   const [selectedArticleId, setSelectedArticleId] = useState(null);

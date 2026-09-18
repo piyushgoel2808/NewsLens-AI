@@ -8,11 +8,13 @@ import {
   Sparkles,
   GitMerge,
   Network,
+  Compass,
 } from 'lucide-react';
 import {
   ActiveHighlightProvider,
   useActiveHighlight,
 } from './context/ActiveHighlightContext';
+import HomePage from './components/HomePage';
 import BroadsheetReader from './components/BroadsheetReader';
 import AgentAssistant from './components/AgentAssistant';
 import ArchiveExplorer from './components/ArchiveExplorer';
@@ -25,6 +27,7 @@ function MainApp() {
   const { activeTab, setActiveTab, selectedModel, taskBindings } = useActiveHighlight();
 
   const navigationTabs = [
+    { id: 'home', label: 'Overview', icon: Compass },
     { id: 'reader', label: 'Broadsheet Reader', icon: Newspaper },
     { id: 'agent', label: 'Agent Assistant', icon: Bot },
     { id: 'graph', label: 'Entity Graph', icon: Network },
@@ -117,6 +120,9 @@ function MainApp() {
 
       {/* Main View Container (Preserves tab state across switching) */}
       <main className="flex-1 overflow-hidden relative">
+        <div className={activeTab === 'home' ? 'h-full w-full overflow-y-auto' : 'hidden'}>
+          <HomePage />
+        </div>
         <div className={activeTab === 'reader' ? 'h-full w-full' : 'hidden'}>
           <BroadsheetReader />
         </div>
