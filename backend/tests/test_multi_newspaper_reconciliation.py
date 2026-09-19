@@ -388,3 +388,186 @@ def test_build_evidence_context_multi_newspaper_fair_interleaving():
     assert "Morning Standard Article" in ctx
 
 
+def test_extractor_multi_page_phrases():
+    """Verify that extract_parameters_from_query extracts all target pages from various phrases."""
+    # 1. "between page 1 and page 3"
+    q1 = "Compare stories between page 1 and page 3 of The Goan on 2026-08-01"
+    params1 = extract_parameters_from_query(q1)
+    assert params1.get("target_pages") == ["1", "3"]
+    assert params1.get("page_filter") == "1"
+
+    # 2. "pages 1, 2 and 4"
+    q2 = "What is covered on pages 1, 2 and 4?"
+    params2 = extract_parameters_from_query(q2)
+    assert params2.get("target_pages") == ["1", "2", "4"]
+
+    # 3. "pages 1 to 3" range
+    q3 = "Summarize news on pages 1 to 3 in The Goan"
+    params3 = extract_parameters_from_query(q3)
+    assert params3.get("target_pages") == ["1", "2", "3"]
+
+    # 4. "front page vs page 5"
+    q4 = "Compare front page with page 5 of The Morning Standard"
+    params4 = extract_parameters_from_query(q4)
+    assert params4.get("target_pages") == ["1", "5"]
+
+
+def test_reconcile_arguments_multi_page_purpose_extraction():
+    """Verify that reconcile_and_sanitize_arguments resolves page from purpose and unconstrains hybrid_search."""
+    query = "Compare stories between page 1 and page 3 of The Goan on 2026-08-01"
+    extracted = extract_parameters_from_query(query)
+
+    # 1. sql_analytics with purpose for Page 3
+    args3 = reconcile_and_sanitize_arguments(
+        tool_name="sql_analytics",
+        args={},
+        extracted=extracted,
+        query=query,
+        purpose="Retrieve manifest for Page 3 of The Goan",
+    )
+    assert args3.get("page_filter") == "3"
+
+    # 2. sql_analytics with purpose for front page
+    args1 = reconcile_and_sanitize_arguments(
+        tool_name="sql_analytics",
+        args={},
+        extracted=extracted,
+        query=query,
+        purpose="Retrieve manifest for front page of The Goan",
+    )
+    assert args1.get("page_filter") == "1"
+
+    # 3. hybrid_search should NOT be constrained to single page when multiple pages targeted
+    args_hs = reconcile_and_sanitize_arguments(
+        tool_name="hybrid_search",
+        args={"query": "stories", "page_filter": "1"},
+        extracted=extracted,
+        query=query,
+        purpose="Retrieve comparative story excerpts across pages 1 and 3",
+    )
+    # The valid_pages has length 2, but if user explicitly passed page_filter "1" and it's valid, it stays
+    # However, if args has no page_filter:
+    args_hs_empty = reconcile_and_sanitize_arguments(
+        tool_name="hybrid_search",
+        args={"query": "stories"},
+        extracted=extracted,
+        query=query,
+        purpose="Retrieve comparative story excerpts across pages 1 and 3",
+    )
+    assert args_hs_empty.get("page_filter") is None
+
+
+def test_planner_multi_page_scheduling():
+    """Verify that QueryPlanner schedules dedicated tool calls for all target pages."""
+    from app.agent.planner import AgentPlan, QueryPlanner, ToolCallSpec
+
+    planner = QueryPlanner()
+    query = "Compare stories between page 1 and page 3 of The Goan on 2026-08-01"
+
+    # 1. Structured plan with empty args
+    plan_obj = AgentPlan(
+        thought_process="Compare page 1 and 3",
+        archetype="cross_newspaper_comparison",
+        tool_calls=[
+            ToolCallSpec(tool_name="sql_analytics", arguments={}, purpose="Retrieve manifest for Page 1"),
+            ToolCallSpec(tool_name="sql_analytics", arguments={}, purpose="Retrieve manifest for Page 3"),
+            ToolCallSpec(tool_name="hybrid_search", arguments={}, purpose="Search comparative stories"),
+        ],
+    )
+
+    res = planner._build_plan_from_structured_model(query, plan_obj)
+    sql_calls = [t for t in res.tool_calls if t.tool_name == "sql_analytics"]
+    assert len(sql_calls) >= 2
+    scheduled_pages = {c.arguments.get("page_filter") for c in sql_calls}
+    assert "1" in scheduled_pages
+    assert "3" in scheduled_pages
+
+    # Hybrid search should not be pinned to a single page
+    hs_calls = [t for t in res.tool_calls if t.tool_name == "hybrid_search"]
+    assert len(hs_calls) >= 1
+    assert hs_calls[0].arguments.get("page_filter") is None
+
+    # 2. Heuristic plan for multi-page query
+    heur_res = planner._plan_query_heuristic(query)
+    heur_sql_calls = [t for t in heur_res.tool_calls if t.tool_name == "sql_analytics"]
+    assert len(heur_sql_calls) >= 2
+    heur_pages = {c.arguments.get("page_filter") for c in heur_sql_calls}
+    assert "1" in heur_pages
+    assert "3" in heur_pages
+
+
+def test_build_evidence_context_multi_page_fair_interleaving():
+    """Verify that build_evidence_context and prompt interleaves articles fairly across multiple pages."""
+    from app.agent.prompt_context import build_evidence_context, build_synthesizer_user_prompt
+
+    evidence = [
+        # Manifest for Page 1
+        {
+            "article_id": 0,
+            "headline": "Issue Manifest: The Goan Page 1 (2026-08-01)",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-01",
+            "pages": [1],
+            "snippet": "RELATIONAL ARCHIVE MANIFEST for Page 1: 15 articles",
+            "source_tool": "sql_analytics",
+        },
+        # Manifest for Page 3
+        {
+            "article_id": 0,
+            "headline": "Issue Manifest: The Goan Page 3 (2026-08-01)",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-01",
+            "pages": [3],
+            "snippet": "RELATIONAL ARCHIVE MANIFEST for Page 3: 12 articles",
+            "source_tool": "sql_analytics",
+        },
+    ]
+
+    # Add 25 articles from Page 1
+    for i in range(1, 26):
+        evidence.append({
+            "article_id": i,
+            "headline": f"Front Page Article {i}",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-01",
+            "pages": [1],
+            "snippet": f"Story {i} from Page 1.",
+            "source_tool": "sql_analytics_manifest",
+        })
+
+    # Add 10 articles from Page 3
+    for j in range(1, 11):
+        evidence.append({
+            "article_id": 100 + j,
+            "headline": f"Page 3 Article {j}",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-01",
+            "pages": [3],
+            "snippet": f"Story {j} from Page 3.",
+            "source_tool": "sql_analytics_manifest",
+        })
+
+    query = "Compare stories between page 1 and page 3 of The Goan on 2026-08-01"
+    ctx = build_evidence_context(evidence, query=query)
+
+    # Both page manifests MUST be present
+    assert "Issue Manifest: The Goan Page 1" in ctx
+    assert "Issue Manifest: The Goan Page 3" in ctx
+
+    # Articles from BOTH pages MUST be present
+    assert "Front Page Article" in ctx
+    assert "Page 3 Article" in ctx
+
+    # Prompt must contain MULTI-PAGE COVERAGE DIRECTIVE
+    prompt = build_synthesizer_user_prompt(
+        query=query,
+        archetype="cross_newspaper_comparison",
+        evidence_items=evidence,
+        context=ctx,
+    )
+    assert "MULTI-PAGE COVERAGE DIRECTIVE" in prompt
+    assert "Page 1" in prompt
+    assert "Page 3" in prompt
+
+
+

@@ -231,16 +231,45 @@ def reconcile_and_sanitize_arguments(
     if extracted.get("category_filter") and "category_filter" not in sanitized:
         sanitized["category_filter"] = extracted["category_filter"]
 
-    if extracted.get("page_filter") and "page_filter" not in sanitized:
-        sanitized["page_filter"] = str(extracted["page_filter"]).strip()
+    valid_pages: list[str] = (
+        extracted.get("target_pages")
+        or ([str(extracted["page_filter"])] if extracted.get("page_filter") else [])
+    )
 
-    if sanitized.get("page_filter") is not None:
+    if tool_name == "hybrid_search" and len(valid_pages) >= 2:
+        sanitized.pop("page_filter", None)
+    elif sanitized.get("page_filter"):
         p_val = str(sanitized["page_filter"]).strip()
         is_front_page = p_val == "1" and bool(re.search(r"\b(?:front[\s-]*page|cover[\s-]*page|page\s*(?:1|one))\b", query, re.I))
-        if not is_front_page and not re.search(rf"\b(?:page|pg|p\.?)\s*{re.escape(p_val)}\b", query, re.I):
+        is_valid_page = p_val in valid_pages or is_front_page or bool(re.search(rf"\b(?:page|pg|p\.?)\s*{re.escape(p_val)}\b", query, re.I))
+        if not is_valid_page:
             sanitized.pop("page_filter", None)
         else:
             sanitized["page_filter"] = p_val
+    else:
+        # Check purpose for specific single page number match
+        matched_page_from_purpose = None
+        if purpose:
+            is_compound_purpose = bool(re.search(r"\b(?:pages?|pgs?|p\.?)\s*\d{1,3}\s*(?:and|&|,|-|to)\s*\d{1,3}\b", purpose, re.I))
+            if not is_compound_purpose:
+                p_pm = re.search(r"\b(?:pages?|pgs?|p\.?)\s*(\d{1,3})\b", purpose, re.I)
+                if p_pm:
+                    cand_p = p_pm.group(1)
+                    if valid_pages:
+                        if cand_p in valid_pages:
+                            matched_page_from_purpose = cand_p
+                    else:
+                        matched_page_from_purpose = cand_p
+                elif re.search(r"\b(?:front[\s-]*page|cover[\s-]*page)\b", purpose, re.I):
+                    matched_page_from_purpose = "1"
+
+        if matched_page_from_purpose:
+            sanitized["page_filter"] = matched_page_from_purpose
+        elif len(valid_pages) == 1:
+            sanitized["page_filter"] = valid_pages[0]
+        elif len(valid_pages) >= 2:
+            # Leave unassigned so planner can distribute or search across the issue
+            pass
 
     if extracted.get("issue_id") is not None and "issue_id" not in sanitized:
         sanitized["issue_id"] = extracted["issue_id"]

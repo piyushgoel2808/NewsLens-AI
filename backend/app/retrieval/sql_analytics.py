@@ -571,31 +571,47 @@ class SQLAnalyticsEngine:
                 filtered_manifest = matched
 
             # 2. Apply positive page filter if requested
-            target_pnum: int | None = None
+            target_pnums: set[int] = set()
             if page_number is not None:
-                target_pnum = page_number
+                try:
+                    target_pnums.add(int(page_number))
+                except (ValueError, TypeError):
+                    pass
             elif page_filter is not None:
-                p_raw = str(page_filter).strip().lower()
-                p_target = p_raw.replace("page", "").replace("pg", "").strip()
-                if p_target.isdigit():
-                    target_pnum = int(p_target)
+                if isinstance(page_filter, (list, tuple, set)):
+                    for p in page_filter:
+                        digits = re.findall(r"\b\d{1,3}\b", str(p))
+                        for d in digits:
+                            target_pnums.add(int(d))
+                else:
+                    digits = re.findall(r"\b\d{1,3}\b", str(page_filter))
+                    for d in digits:
+                        target_pnums.add(int(d))
 
-            if target_pnum is not None:
+            if target_pnums:
                 filtered_manifest = [
                     m for m in filtered_manifest
-                    if target_pnum in (m.get("pages") or [m.get("page_number")])
+                    if set(m.get("pages") or ([m.get("page_number")] if m.get("page_number") is not None else [])) & target_pnums
                 ]
 
             # 3. Apply negative page exclusion filter (hard safety net)
+            excl_pnums: set[int] = set()
             if exclude_page_filter is not None:
-                excl_raw = str(exclude_page_filter).strip().lower()
-                excl_target = excl_raw.replace("page", "").replace("pg", "").strip()
-                if excl_target.isdigit():
-                    excl_pnum = int(excl_target)
-                    filtered_manifest = [
-                        m for m in filtered_manifest
-                        if excl_pnum not in (m.get("pages") or [m.get("page_number")])
-                    ]
+                if isinstance(exclude_page_filter, (list, tuple, set)):
+                    for p in exclude_page_filter:
+                        digits = re.findall(r"\b\d{1,3}\b", str(p))
+                        for d in digits:
+                            excl_pnums.add(int(d))
+                else:
+                    digits = re.findall(r"\b\d{1,3}\b", str(exclude_page_filter))
+                    for d in digits:
+                        excl_pnums.add(int(d))
+
+            if excl_pnums:
+                filtered_manifest = [
+                    m for m in filtered_manifest
+                    if not (set(m.get("pages") or ([m.get("page_number")] if m.get("page_number") is not None else [])) & excl_pnums)
+                ]
 
             # Compute word count analytics on filtered manifest
             wc_list = [m["word_count"] for m in filtered_manifest if m.get("word_count")]

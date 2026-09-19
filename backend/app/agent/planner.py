@@ -210,6 +210,9 @@ Output: {"thought_process": "User is asking for the count and availability of ne
 Query: "Calculate the average word count of sports articles in Hindustan Times dated 2026-09-03"
 Output: {"thought_process": "User is asking to compute the mathematical average word count of sports articles on a specific date. This is an analytical computation requiring SQL/Python data aggregation. Schedule dynamic_analysis.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "Calculate the average word count of sports articles in Hindustan Times dated 2026-09-03", "analysis_description": "Compute the average word count of sports articles in Hindustan Times on 2026-09-03"}, "purpose": "Execute analytical calculation of average word count for sports articles"}], "answer_blueprint": {"user_intent": "statistical_computation", "overall_tone": "analytical_comparison", "sections": [{"title": "### ⚡ Computed Result", "format_type": "narrative", "content_focus": "Direct computed average word count with exact verified number and article count", "target_length": "1 to 2 crisp sentences"}, {"title": "### 📊 Analytical Breakdown", "format_type": "metric_card", "content_focus": "Supporting statistics: total articles analyzed, total word count, distribution across sports articles", "target_length": "Clean metric card or bullet list"}], "prohibited_elements": ["narrative speculation", "conversational filler"]}}
 
+Query: "Compare stories between page 1 and page 3 of The Goan on 2026-08-01"
+Output: {"thought_process": "User is comparing broadsheet reporting between Page 1 and Page 3 of The Goan on 2026-08-01. Schedule dedicated sql_analytics issue_summary calls for Page 1 and Page 3 to retrieve their respective manifests, and hybrid_search across the issue for comparative context.", "archetype": "cross_newspaper_comparison", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "issue_date": "2026-08-01", "page_filter": "1", "analysis_type": "issue_summary"}, "purpose": "Retrieve manifest for Page 1 of The Goan"}, {"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "issue_date": "2026-08-01", "page_filter": "3", "analysis_type": "issue_summary"}, "purpose": "Retrieve manifest for Page 3 of The Goan"}, {"tool_name": "hybrid_search", "arguments": {"query": "stories reporting headlines", "newspaper_name": "The Goan", "date_from": "2026-08-01", "date_to": "2026-08-01", "top_k": 10}, "purpose": "Retrieve comparative story excerpts across pages 1 and 3"}]}
+
 ### ⚡ REASONING & OUTPUT INSTRUCTIONS
 - Keep internal chain-of-thought concise (<80 words).
 - CRITICAL DATE RESTRAINT: NEVER invent or hallucinate date ranges (e.g. "2020-01-01" to "2022-12-31") or historical years when the user query does NOT specify any dates! If the query contains no dates, leave `date_from`, `date_to`, `issue_date`, and `target_date` empty or omitted so the retrieval tools search across the entire broadsheet archive.
@@ -218,7 +221,8 @@ Output: {"thought_process": "User is asking to compute the mathematical average 
   * For mathematical, statistical, or analytical calculations (e.g. "calculate average word count", "average length", "word count of articles", "ratio of", "percentage of"), choose `analytical_computation` and schedule `dynamic_analysis`.
   * For counting, frequencies, volume, or metadata questions (e.g. "how many issues", "how many [brand] newspaper", "number of pages", "count of articles", "total editions"), choose `quantitative_trend` and schedule `sql_analytics count_issues` or `count_articles`. NEVER select `article_catalog` or `factual_lookup` for scalar counts!
   * Select `article_catalog` when the user wants to LIST, ENUMERATE, or BROWSE multiple articles — including page-scoped listing queries like "list all news on page 5", "what articles are on page 6", "show headlines on page 3 of [newspaper]", "show all articles in [newspaper] on [date]". A query asking to LIST articles on a specific page IS article_catalog, not quantitative_trend.
-  * Select `cross_newspaper_comparison` whenever the user asks to compare stories, headlines, pages, or coverage across two or more publications (e.g. "compare newspapers", "compare between [paper A] and [paper B]", "across editions", "coverage differences"). Schedule `sql_analytics issue_summary` for EACH named newspaper so both manifests are retrieved.
+  * Select `cross_newspaper_comparison` whenever the user asks to compare stories, headlines, pages, or coverage across two or more publications, or compare different pages within a publication (e.g. "compare newspapers", "compare between [paper A] and [paper B]", "across editions", "coverage differences", "compare stories between page 1 and page 3"). Schedule `sql_analytics issue_summary` for EACH named newspaper and EACH requested page so all manifests are retrieved.
+  * MULTI-PAGE RETRIEVAL & CROSS-PAGE COMPARISONS: Whenever the user query references multiple pages (e.g. "compare page 1 and page 3", "across pages 1, 2, and 4", "what is on front page vs page 5"), you MUST schedule a separate tool call (e.g. `sql_analytics` with `page_filter: "1"`, `page_filter: "3"`, etc.) for EACH requested page so data from every page is retrieved. Schedule `hybrid_search` without restricting `page_filter` to a single page so excerpts from all target pages are retrieved.
 - You MUST respond with a valid JSON object matching the required schema. Return only the JSON object, with no markdown fences or conversational text.
 - DYNAMIC ANSWER BLUEPRINT (OPTIONAL):
   You may optionally include an `answer_blueprint` object in your JSON response to design the exact sections and layout of the final answer:
@@ -934,6 +938,63 @@ class QueryPlanner:
                         )
                         assigned_nps.add(req_np.lower())
 
+            # Multi-page completeness check: ensure all targeted pages have an issue_summary call scheduled
+            target_pages: list[str] = [str(p).strip() for p in extracted.get("target_pages", []) if str(p).strip()]
+            if len(target_pages) >= 2:
+                target_dt = extracted.get("issue_date") or active_issue_date
+                req_np = extracted.get("newspaper_name") or (active_newspapers[0] if active_newspapers else None)
+
+                # 1. Normalize all sql_analytics calls: ensure analysis_type is issue_summary if unset
+                for c in tool_calls:
+                    if c.tool_name == "sql_analytics" and not c.arguments.get("analysis_type"):
+                        c.arguments["analysis_type"] = "issue_summary"
+
+                # 2. Check for duplicate or unassigned page_filter across sql_analytics summary calls
+                sql_summary_calls = [
+                    c for c in tool_calls
+                    if c.tool_name == "sql_analytics" and c.arguments.get("analysis_type") == "issue_summary"
+                ]
+                assigned_pages: set[str] = set()
+                calls_to_reassign: list[PlannedToolCall] = []
+                for c in sql_summary_calls:
+                    p_val = str(c.arguments.get("page_filter") or "").strip()
+                    if p_val and p_val in target_pages and p_val not in assigned_pages:
+                        assigned_pages.add(p_val)
+                    else:
+                        calls_to_reassign.append(c)
+
+                # Reassign duplicates or empty calls to uncovered target_pages
+                for req_p in target_pages:
+                    if req_p not in assigned_pages:
+                        if calls_to_reassign:
+                            call_to_fix = calls_to_reassign.pop(0)
+                            call_to_fix.arguments["page_filter"] = req_p
+                            if target_dt and "issue_date" not in call_to_fix.arguments:
+                                call_to_fix.arguments["issue_date"] = target_dt
+                            if req_np and "newspaper_name" not in call_to_fix.arguments:
+                                call_to_fix.arguments["newspaper_name"] = req_np
+                            call_to_fix.purpose = f"Retrieve manifest for Page {req_p}"
+                            assigned_pages.add(req_p)
+
+                # 3. For any remaining target page still uncovered, insert a new sql_analytics call
+                for req_p in target_pages:
+                    if req_p not in assigned_pages:
+                        tool_calls.append(
+                            build_sql_summary_tool(
+                                newspaper_name=req_np,
+                                issue_date=target_dt,
+                                page_filter=req_p,
+                                query=query,
+                                purpose=f"Retrieve manifest for Page {req_p}",
+                            )
+                        )
+                        assigned_pages.add(req_p)
+
+                # 4. Ensure hybrid_search is not restricted to a single page when searching multiple pages
+                for c in tool_calls:
+                    if c.tool_name == "hybrid_search" and "page_filter" in c.arguments:
+                        c.arguments.pop("page_filter", None)
+
             # Quantitative trend count safety: ensure sql_analytics is scheduled for count queries
             if archetype == "quantitative_trend" and not any(c.tool_name == "sql_analytics" for c in tool_calls):
                 named_brand = extracted.get("newspaper_name")
@@ -1014,6 +1075,26 @@ class QueryPlanner:
                     cov_target_dt = target_dt or args.get("target_date")
                     cov_np = src_np or args.get("newspaper_name")
                     tool_calls.append(build_coverage_analysis_tool(args.get("query", query), target_date=cov_target_dt, newspaper_name=cov_np))
+                elif len(target_pages) >= 2:
+                    for p in target_pages:
+                        tool_calls.append(build_sql_summary_tool(
+                            analysis_type="issue_summary",
+                            newspaper_name=src_np,
+                            issue_date=target_dt,
+                            page_filter=p,
+                            category_filter=args.get("category_filter"),
+                            query=args.get("query", query),
+                            purpose=f"SQL article manifest for Page {p}{f' of {src_np}' if src_np else ''}",
+                        ))
+                    tool_calls.append(build_hybrid_search_tool(
+                        query=args.get("query", query),
+                        newspaper_name=src_np,
+                        date_from=target_dt,
+                        date_to=target_dt,
+                        category_filter=args.get("category_filter"),
+                        top_k=12,
+                        purpose=f"Comparative article excerpts across pages {', '.join(target_pages)}",
+                    ))
                 else:
                     tool_calls.append(build_sql_summary_tool(
                         analysis_type="issue_summary",
@@ -1398,6 +1479,7 @@ class QueryPlanner:
         is_diff = params.get("is_differential", False)
         comp_newspaper = params.get("comparison_newspaper")
 
+        target_pages: list[str] = [str(p).strip() for p in params.get("target_pages", []) if str(p).strip()]
         page_filter = params.get("page_filter")
         if not page_filter:
             if re.search(r"\b(?:front[\s-]*page|cover[\s-]*page|page\s*(?:1|one))\b", q_lower):
@@ -1407,6 +1489,8 @@ class QueryPlanner:
                 page_filter = p_match.group(1) if p_match else None
         if page_filter is not None:
             page_filter = str(page_filter).strip()
+        if not target_pages and page_filter:
+            target_pages = [page_filter]
 
         # Detect single article reading / summarization intent
         is_target_art = bool(
@@ -1488,8 +1572,8 @@ class QueryPlanner:
             calls = [build_sql_summary_tool(newspaper_name=newspaper, issue_date=dt, query=query, purpose=f"Manifest for {newspaper} on {dt}") for dt in target_dates]
             calls.append(build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, top_k=10, purpose="Multi-issue articles"))
 
-        # 5. Cross-Newspaper Comparison
-        elif comp_newspaper is not None or is_diff or any(w in q_lower for w in ["across newspapers", "across different papers", "all available", "all the available", "all newspapers", "both newspapers", "different papers", "different newspapers"]) or bool(re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff[a-z]*|versus|vs\.?)\b", q_lower)):
+        # 5. Cross-Newspaper Comparison or Cross-Page Comparison
+        elif comp_newspaper is not None or len(target_pages) >= 2 or is_diff or any(w in q_lower for w in ["across newspapers", "across different papers", "all available", "all the available", "all newspapers", "both newspapers", "different papers", "different newspapers"]) or bool(re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff[a-z]*|versus|vs\.?)\b", q_lower)):
             archetype = "cross_newspaper_comparison"
             target_dt = issue_date or date_from
             is_shared = params.get("is_shared", False) or any(w in q_lower for w in ["similar", "shared", "common", "same article", "same stories", "both"])
@@ -1500,6 +1584,29 @@ class QueryPlanner:
             elif newspaper and comp_newspaper:
                 calls = [build_sql_summary_tool(newspaper_name=np_name, issue_date=target_dt, category_filter=category, query=query, purpose=f"Retrieve manifest for {np_name}") for np_name in (newspaper, comp_newspaper)]
                 calls.append(build_hybrid_search_tool(query=query, date_from=target_dt, date_to=target_dt, category_filter=category, top_k=12, purpose=f"Comparative articles across {newspaper} and {comp_newspaper}"))
+            elif len(target_pages) >= 2:
+                calls = [
+                    build_sql_summary_tool(
+                        newspaper_name=newspaper,
+                        issue_date=target_dt,
+                        page_filter=p,
+                        category_filter=category,
+                        query=query,
+                        purpose=f"Retrieve manifest for Page {p}{f' of {newspaper}' if newspaper else ''}",
+                    )
+                    for p in target_pages
+                ]
+                calls.append(
+                    build_hybrid_search_tool(
+                        query=query,
+                        newspaper_name=newspaper,
+                        date_from=target_dt,
+                        date_to=target_dt,
+                        category_filter=category,
+                        top_k=12,
+                        purpose=f"Comparative articles across pages {', '.join(target_pages)}",
+                    )
+                )
             elif not target_dt:
                 calls = [build_hybrid_search_tool(query=query, category_filter=category, top_k=12, purpose="Comparative articles across broadsheet editions")]
                 if any(w in q_lower for w in ["omit", "miss", "exclusive", "gap", "audit", "coverage analysis", "unreported"]):
@@ -1567,9 +1674,36 @@ class QueryPlanner:
             else:
                 atype = "issue_summary"
 
-            calls = [build_sql_summary_tool(analysis_type=atype, newspaper_name=newspaper, issue_date=issue_date, date_from=date_from, date_to=date_to, issue_id=issue_id, page_filter=page_filter, category_filter=category, query=query)]
-            if page_filter and (is_ordinal_page or any(w in q_lower for w in ["list", "articles on", "stories on", "all articles", "news", "lead", "top", "first", "1st"])):
-                calls.append(build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=6, purpose=f"Articles on Page {page_filter}"))
+            if len(target_pages) >= 2:
+                calls = [
+                    build_sql_summary_tool(
+                        analysis_type=atype,
+                        newspaper_name=newspaper,
+                        issue_date=issue_date,
+                        date_from=date_from,
+                        date_to=date_to,
+                        issue_id=issue_id,
+                        page_filter=p,
+                        category_filter=category,
+                        query=query,
+                        purpose=f"Articles on Page {p}",
+                    )
+                    for p in target_pages
+                ]
+                calls.append(
+                    build_hybrid_search_tool(
+                        query=query,
+                        newspaper_name=newspaper,
+                        date_from=date_from,
+                        date_to=date_to,
+                        top_k=10,
+                        purpose=f"Articles across pages {', '.join(target_pages)}",
+                    )
+                )
+            else:
+                calls = [build_sql_summary_tool(analysis_type=atype, newspaper_name=newspaper, issue_date=issue_date, date_from=date_from, date_to=date_to, issue_id=issue_id, page_filter=page_filter, category_filter=category, query=query)]
+                if page_filter and (is_ordinal_page or any(w in q_lower for w in ["list", "articles on", "stories on", "all articles", "news", "lead", "top", "first", "1st"])):
+                    calls.append(build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=6, purpose=f"Articles on Page {page_filter}"))
 
         # 7. Factual Lookup (Default)
         else:

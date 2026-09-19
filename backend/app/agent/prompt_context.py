@@ -144,9 +144,50 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
 
             budgeted_items = budgeted_items[:item_cap]
         else:
+            # Check if evidence spans multiple distinct pages
+            page_buckets: dict[int, list[dict[str, Any]]] = {}
+            for it in sorted_evidence:
+                if it in manifest_items:
+                    continue
+                p_list = it.get("pages") or ([it.get("page_number")] if it.get("page_number") is not None else [])
+                found_page = False
+                for p in p_list:
+                    if p is not None and str(p).strip().isdigit():
+                        p_int = int(str(p).strip())
+                        page_buckets.setdefault(p_int, []).append(it)
+                        found_page = True
+                        break
+                if not found_page:
+                    general_items.append(it)
+
             has_manifest_evidence = bool(manifest_items)
-            item_cap = 30 if has_manifest_evidence else 12
-            budgeted_items = sorted_evidence[:item_cap] if sorted_evidence else []
+            is_page_focused = bool(re.search(r"\b(?:pages?|pgs?|front[\s-]*page|cover[\s-]*page)\b", q_lower))
+
+            if len(page_buckets) >= 2 and (has_manifest_evidence or is_page_focused):
+                # Multi-page balanced budgeting: ensure all requested/present pages have balanced representation
+                item_cap = 32 if has_manifest_evidence else 16
+                per_page_cap = max(4, 24 // len(page_buckets))
+
+                # Include manifests first
+                budgeted_items = list(manifest_items)
+
+                # Round-robin interleave article items across pages
+                max_page_articles = max(len(items) for items in page_buckets.values())
+                for i in range(max_page_articles):
+                    for p_num in sorted(page_buckets.keys()):
+                        p_items = page_buckets[p_num]
+                        if i < len(p_items) and i < per_page_cap:
+                            if p_items[i] not in budgeted_items:
+                                budgeted_items.append(p_items[i])
+
+                for git in general_items:
+                    if len(budgeted_items) < item_cap and git not in budgeted_items:
+                        budgeted_items.append(git)
+
+                budgeted_items = budgeted_items[:item_cap]
+            else:
+                item_cap = 30 if has_manifest_evidence else 12
+                budgeted_items = sorted_evidence[:item_cap] if sorted_evidence else []
 
     is_visual_query = any(
         w in q_lower
@@ -345,6 +386,20 @@ def build_synthesizer_user_prompt(
         if is_shared else ""
     )
 
+    distinct_pages = sorted(list({
+        int(p) for item in evidence_items
+        for p in (item.get("pages") or ([item.get("page_number")] if item.get("page_number") is not None else []))
+        if p is not None and str(p).strip().isdigit()
+    }))
+    is_multi_page_query = len(distinct_pages) >= 2 and any(w in query.lower() for w in ["page", "pg", "pages", "front page", "cover page"])
+    multi_page_note = (
+        f"MULTI-PAGE COVERAGE DIRECTIVE:\n"
+        f"- The query addresses multiple pages: {', '.join(f'Page {p}' for p in distinct_pages)}.\n"
+        f"- Clearly distinguish and compare coverage across each requested page.\n"
+        f"- Attribute each story to its specific printed page number.\n\n"
+        if is_multi_page_query else ""
+    )
+
     return (
         f"User Research Query: {query}\n"
         f"Query Archetype: {archetype}\n"
@@ -353,6 +408,7 @@ def build_synthesizer_user_prompt(
         f"{isolation_rule}"
         f"{domain_note}"
         f"{shared_note}"
+        f"{multi_page_note}"
         f"Available Newspaper Evidence:\n"
         f"{context or 'No new search results—refer to conversation history if applicable.'}\n\n"
         f"Synthesize an insightful, highly-structured executive intelligence response."

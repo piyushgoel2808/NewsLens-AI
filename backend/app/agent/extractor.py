@@ -260,15 +260,48 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
         if not any(pat.fullmatch(cand_hl) for pat, _ in brand_patterns):
             params["headline"] = cand_hl
 
-    # 6. Page Filter Extraction (including front page / cover page)
+    # 6. Page Filter Extraction (including front page / cover page and multi-page sequences)
+    target_pages: list[str] = []
+
+    # Check for front page / cover page
     if re.search(r"\b(?:front[\s-]*page|cover[\s-]*page|page\s*(?:1|one))\b", query, re.I):
-        params["page_filter"] = "1"
-        params["page_number"] = 1
-    else:
-        p_match = re.search(r"\b(?:page|pg|p\.?)\s*(\d{1,3})\b", query, re.I)
-        if p_match:
-            params["page_filter"] = p_match.group(1)
-            params["page_number"] = int(p_match.group(1))
+        if "1" not in target_pages:
+            target_pages.append("1")
+
+    # Match compound page specifications e.g. "pages 1, 2 and 4", "pages 1 and 3", "pg 2 and pg 4"
+    for m in re.finditer(r"\b(?:pages?|pgs?|p\.?)\s*(\d{1,3}(?:\s*(?:,|and|&|\/)\s*\d{1,3})*)\b", query, re.I):
+        for num in re.findall(r"\b\d{1,3}\b", m.group(1)):
+            if num not in target_pages:
+                target_pages.append(num)
+
+    # Match "between page X and Y"
+    m_between = re.search(r"\b(?:between\s+page\s*(\d{1,3})\s+and\s+(\d{1,3}))\b", query, re.I)
+    if m_between:
+        for num in (m_between.group(1), m_between.group(2)):
+            if num not in target_pages:
+                target_pages.append(num)
+
+    # Match "page X to Y" or "pages X-Y"
+    m_range = re.search(r"\b(?:pages?|pgs?)\s*(\d{1,3})\s*(?:to|-)\s*(\d{1,3})\b", query, re.I)
+    if m_range:
+        start_p, end_p = int(m_range.group(1)), int(m_range.group(2))
+        if 1 <= start_p < end_p <= 60 and (end_p - start_p) <= 6:
+            for p_i in range(start_p, end_p + 1):
+                p_str = str(p_i)
+                if p_str not in target_pages:
+                    target_pages.append(p_str)
+
+    # Catch any remaining standalone "page <N>" occurrences
+    for m in re.finditer(r"\b(?:page|pg|p\.?)\s*(\d{1,3})\b", query, re.I):
+        num = m.group(1)
+        if num not in target_pages:
+            target_pages.append(num)
+
+    if target_pages:
+        params["target_pages"] = target_pages
+        params["page_filter"] = target_pages[0]
+        with contextlib.suppress(ValueError):
+            params["page_number"] = int(target_pages[0])
 
     return params
 
