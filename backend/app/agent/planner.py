@@ -879,6 +879,7 @@ class QueryPlanner:
                     query,
                     active_issue_date=active_issue_date,
                     active_newspapers=active_newspapers,
+                    purpose=spec.purpose,
                 )
                 tool_calls.append(PlannedToolCall(tool_name=spec.tool_name, arguments=args, purpose=spec.purpose))
 
@@ -886,28 +887,52 @@ class QueryPlanner:
             if archetype == "cross_newspaper_comparison" and len(target_nps) >= 2:
                 target_dt = extracted.get("issue_date") or active_issue_date
                 p_filt = extracted.get("page_filter")
-                has_summary_calls = [
+
+                # 1. Normalize all sql_analytics calls: ensure analysis_type is issue_summary if unset
+                for c in tool_calls:
+                    if c.tool_name == "sql_analytics" and not c.arguments.get("analysis_type"):
+                        c.arguments["analysis_type"] = "issue_summary"
+
+                # 2. Check for duplicate or unassigned newspaper_name across sql_analytics summary calls
+                sql_summary_calls = [
                     c for c in tool_calls
                     if c.tool_name == "sql_analytics" and c.arguments.get("analysis_type") == "issue_summary"
                 ]
-                if has_summary_calls:
-                    covered_nps = {
-                        str(c.arguments.get("newspaper_name", "")).lower()
-                        for c in has_summary_calls
-                        if c.arguments.get("newspaper_name")
-                    }
-                    for req_np in target_nps:
-                        if not any(req_np.lower() in cn or cn in req_np.lower() for cn in covered_nps):
-                            tool_calls.insert(
-                                len(has_summary_calls),
-                                build_sql_summary_tool(
-                                    newspaper_name=req_np,
-                                    issue_date=target_dt,
-                                    page_filter=p_filt,
-                                    query=query,
-                                    purpose=f"Retrieve manifest for {req_np}",
-                                ),
+                assigned_nps: set[str] = set()
+                calls_to_reassign: list[PlannedToolCall] = []
+                for c in sql_summary_calls:
+                    np_val = (c.arguments.get("newspaper_name") or "").strip().lower()
+                    if np_val and np_val not in assigned_nps:
+                        assigned_nps.add(np_val)
+                    else:
+                        calls_to_reassign.append(c)
+
+                # Reassign duplicates or empty calls to uncovered target_nps
+                for req_np in target_nps:
+                    if not any(req_np.lower() in an or an in req_np.lower() for an in assigned_nps):
+                        if calls_to_reassign:
+                            call_to_fix = calls_to_reassign.pop(0)
+                            call_to_fix.arguments["newspaper_name"] = req_np
+                            if target_dt and "issue_date" not in call_to_fix.arguments:
+                                call_to_fix.arguments["issue_date"] = target_dt
+                            if p_filt and "page_filter" not in call_to_fix.arguments:
+                                call_to_fix.arguments["page_filter"] = str(p_filt)
+                            call_to_fix.purpose = f"Retrieve manifest for {req_np}"
+                            assigned_nps.add(req_np.lower())
+
+                # 3. For any remaining target newspaper still uncovered, insert a new sql_analytics call
+                for req_np in target_nps:
+                    if not any(req_np.lower() in an or an in req_np.lower() for an in assigned_nps):
+                        tool_calls.append(
+                            build_sql_summary_tool(
+                                newspaper_name=req_np,
+                                issue_date=target_dt,
+                                page_filter=p_filt,
+                                query=query,
+                                purpose=f"Retrieve manifest for {req_np}",
                             )
+                        )
+                        assigned_nps.add(req_np.lower())
 
             # Quantitative trend count safety: ensure sql_analytics is scheduled for count queries
             if archetype == "quantitative_trend" and not any(c.tool_name == "sql_analytics" for c in tool_calls):
@@ -996,11 +1021,20 @@ class QueryPlanner:
                         issue_date=target_dt,
                         category_filter=args.get("category_filter"),
                         query=args.get("query", query),
-                        purpose="SQL article manifest",
+                        purpose=f"SQL article manifest for {src_np}" if src_np else "SQL article manifest",
                     ))
+                    if comp_np and comp_np != src_np:
+                        tool_calls.append(build_sql_summary_tool(
+                            analysis_type="issue_summary",
+                            newspaper_name=comp_np,
+                            issue_date=target_dt,
+                            category_filter=args.get("category_filter"),
+                            query=args.get("query", query),
+                            purpose=f"SQL article manifest for {comp_np}",
+                        ))
                     tool_calls.append(build_hybrid_search_tool(
                         query=args.get("query", query),
-                        newspaper_name=src_np,
+                        newspaper_name=None if comp_np else src_np,
                         date_from=target_dt,
                         date_to=target_dt,
                         category_filter=args.get("category_filter"),
@@ -1220,6 +1254,7 @@ class QueryPlanner:
                             continue
 
                         raw_args = rc.get("arguments", {})
+                        purpose = rc.get("purpose") or f"Recovery {t_name}"
                         san_args = reconcile_and_sanitize_arguments(
                             tool_name=t_name,
                             args=raw_args,
@@ -1227,8 +1262,8 @@ class QueryPlanner:
                             query=query,
                             active_issue_date=active_issue_date,
                             active_newspapers=active_newspapers,
+                            purpose=purpose,
                         )
-                        purpose = rc.get("purpose") or f"Recovery {t_name}"
 
                         # Anti-repetition check against previously attempted calls
                         is_repeated = False

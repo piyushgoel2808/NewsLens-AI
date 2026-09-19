@@ -89,14 +89,64 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
         ]
         budgeted_items = [target_item] + (related_items[:2] if related_items else [])
     else:
-        has_manifest_evidence = any(
-            item.get("source_tool", "").startswith("sql_analytics")
-            or "RELATIONAL ARCHIVE MANIFEST" in str(item.get("snippet", ""))
-            or "Issue Manifest:" in str(item.get("headline", ""))
-            for item in sorted_evidence
-        )
-        item_cap = 30 if has_manifest_evidence else 12
-        budgeted_items = sorted_evidence[:item_cap] if sorted_evidence else []
+        # Check if multiple distinct newspapers are represented in evidence
+        pub_buckets: dict[str, list[dict[str, Any]]] = {}
+        manifest_items: list[dict[str, Any]] = []
+        general_items: list[dict[str, Any]] = []
+
+        ignore_pubs = {
+            "archive",
+            "multi-newspaper audit",
+            "aggregated archive analytics",
+            "live web",
+            "unknown publication",
+        }
+
+        for it in sorted_evidence:
+            art_id = it.get("article_id")
+            source_t = str(it.get("source_tool", ""))
+            is_manifest = bool(
+                source_t in ("sql_analytics", "coverage_analysis")
+                or "RELATIONAL ARCHIVE MANIFEST" in str(it.get("snippet", ""))
+                or "Issue Manifest:" in str(it.get("headline", ""))
+                or "COVERAGE RECONCILIATION MATRIX" in str(it.get("snippet", ""))
+                or "VERIFIED EXCLUSIVE COVERAGE" in str(it.get("snippet", ""))
+                or "VERIFIED SHARED SYNDICATED WIRE COVERAGE" in str(it.get("snippet", ""))
+                or (art_id == 0 and ("Manifest" in str(it.get("headline", "")) or it.get("is_statistical_metric")))
+            ) and source_t != "sql_analytics_manifest"
+            raw_pub = str(it.get("newspaper_name") or it.get("publication") or "").strip()
+            if is_manifest:
+                manifest_items.append(it)
+            elif raw_pub and raw_pub.lower() not in ignore_pubs:
+                pub_buckets.setdefault(raw_pub, []).append(it)
+            else:
+                general_items.append(it)
+
+        if len(pub_buckets) >= 2:
+            # Multi-newspaper balanced budgeting: ensure all publications have equal representation
+            item_cap = max(36, 16 * len(pub_buckets))
+            per_pub_cap = max(8, 32 // len(pub_buckets))
+
+            # Include manifests first
+            budgeted_items = list(manifest_items)
+
+            # Round-robin interleave article items across publications
+            max_articles = max(len(items) for items in pub_buckets.values())
+            for i in range(max_articles):
+                for pub_name, pub_items in pub_buckets.items():
+                    if i < len(pub_items) and i < per_pub_cap:
+                        budgeted_items.append(pub_items[i])
+
+            # Append general / search items up to cap
+            for git in general_items:
+                if len(budgeted_items) < item_cap:
+                    budgeted_items.append(git)
+
+            budgeted_items = budgeted_items[:item_cap]
+        else:
+            has_manifest_evidence = bool(manifest_items)
+            item_cap = 30 if has_manifest_evidence else 12
+            budgeted_items = sorted_evidence[:item_cap] if sorted_evidence else []
 
     is_visual_query = any(
         w in q_lower
@@ -184,9 +234,11 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
             np_name = item.get("newspaper_name") or "Archive Analytics"
             dt = item.get("issue_date") or ""
             dt_str = f"Date / Period: {dt}\n" if dt else ""
+            title_str = f"Title: {hl}\n" if hl else ""
             context_blocks.append(
                 f"--- ARCHIVE STATISTICAL ANALYTICS & METADATA EXCERPT [{idx}] ---\n"
                 f"Source: Archive Statistical Analytics ({np_name})\n"
+                f"{title_str}"
                 f"{dt_str}"
                 f"Calculated Finding & Scope:\n{text}\n"
                 f"[Quantitative Archive Metric: State these verified figures directly. Do NOT cite as a printed newspaper story.]\n"

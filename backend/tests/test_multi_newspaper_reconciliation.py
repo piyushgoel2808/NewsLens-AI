@@ -242,3 +242,149 @@ def test_folio_elimination_clean_page_format():
     assert "Page(s): 4" in hdr
     assert "(PDF p." not in hdr
 
+
+def test_reconcile_with_purpose_brand_extraction():
+    """Verify that reconcile_and_sanitize_arguments detects brand from purpose when arguments are empty."""
+    query = "Compare the front-page stories between The Goan (2026-8-01) and The morning standard on 2026-08-01"
+    extracted = extract_parameters_from_query(query)
+
+    # Call 1: purpose names The Morning Standard
+    args_ms = reconcile_and_sanitize_arguments(
+        tool_name="sql_analytics",
+        args={},
+        extracted=extracted,
+        query=query,
+        purpose="Retrieve front-page stories for The Morning Standard",
+    )
+    assert args_ms.get("newspaper_name") == "The Morning Standard"
+    assert args_ms.get("analysis_type") == "issue_summary"
+    assert args_ms.get("issue_date") == "2026-08-01"
+    assert args_ms.get("page_filter") == "1"
+
+    # Call 2: purpose names The Goan
+    args_goan = reconcile_and_sanitize_arguments(
+        tool_name="sql_analytics",
+        args={},
+        extracted=extracted,
+        query=query,
+        purpose="Retrieve front-page stories for The Goan",
+    )
+    assert args_goan.get("newspaper_name") == "The Goan"
+    assert args_goan.get("analysis_type") == "issue_summary"
+    assert args_goan.get("issue_date") == "2026-08-01"
+    assert args_goan.get("page_filter") == "1"
+
+
+def test_planner_schedules_both_newspapers_when_llm_provides_empty_args():
+    """Verify QueryPlanner guarantees both newspapers get scheduled even if LLM provides empty arguments."""
+    from app.agent.planner import AgentPlan, QueryPlanner, ToolCallSpec
+
+    planner = QueryPlanner()
+    query = "Compare the front-page stories between The Goan (2026-8-01) and The morning standard on 2026-08-01"
+
+    # Simulate LLM returning 2 tool calls with empty arguments and minimal purpose
+    plan_obj = AgentPlan(
+        thought_process="Compare front page stories",
+        archetype="cross_newspaper_comparison",
+        tool_calls=[
+            ToolCallSpec(
+                tool_name="sql_analytics",
+                arguments={},
+                purpose="Front-page manifest for The Goan",
+            ),
+            ToolCallSpec(
+                tool_name="sql_analytics",
+                arguments={},
+                purpose="Front-page manifest for The Morning Standard",
+            ),
+            ToolCallSpec(
+                tool_name="hybrid_search",
+                arguments={},
+                purpose="Search front page headlines",
+            ),
+        ],
+    )
+
+    res = planner._build_plan_from_structured_model(query, plan_obj)
+    assert res.archetype == "cross_newspaper_comparison"
+
+    # Must have at least 2 sql_analytics calls, covering both newspapers
+    sql_calls = [t for t in res.tool_calls if t.tool_name == "sql_analytics"]
+    assert len(sql_calls) >= 2
+    scheduled_nps = {c.arguments.get("newspaper_name") for c in sql_calls}
+    assert "The Goan" in scheduled_nps
+    assert "The Morning Standard" in scheduled_nps
+
+    # Both must have page_filter '1' and issue_date '2026-08-01'
+    for sc in sql_calls:
+        assert sc.arguments.get("page_filter") == "1"
+        assert sc.arguments.get("issue_date") == "2026-08-01"
+        assert sc.arguments.get("analysis_type") == "issue_summary"
+
+    # Hybrid search should not be restricted to one single newspaper
+    hs_calls = [t for t in res.tool_calls if t.tool_name == "hybrid_search"]
+    if hs_calls:
+        assert hs_calls[0].arguments.get("newspaper_name") is None
+        assert hs_calls[0].arguments.get("date_from") == "2026-08-01"
+
+
+def test_build_evidence_context_multi_newspaper_fair_interleaving():
+    """Verify that build_evidence_context includes and balances articles from multiple newspapers."""
+    from app.agent.prompt_context import build_evidence_context
+
+    evidence = [
+        # Manifest for The Goan
+        {
+            "article_id": 0,
+            "headline": "Issue Manifest: The Goan (2026-08-01)",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-01",
+            "snippet": "RELATIONAL ARCHIVE MANIFEST for The Goan: 171 articles",
+            "source_tool": "sql_analytics",
+        },
+        # Manifest for The Morning Standard
+        {
+            "article_id": 0,
+            "headline": "Issue Manifest: The Morning Standard (2026-08-01)",
+            "newspaper_name": "The Morning Standard",
+            "issue_date": "2026-08-01",
+            "snippet": "RELATIONAL ARCHIVE MANIFEST for The Morning Standard: 144 articles",
+            "source_tool": "sql_analytics",
+        },
+    ]
+
+    # Add 25 articles from The Goan first
+    for i in range(1, 26):
+        evidence.append({
+            "article_id": i,
+            "headline": f"Goan Article {i}",
+            "newspaper_name": "The Goan",
+            "issue_date": "2026-08-01",
+            "pages": [1],
+            "snippet": f"Story {i} from The Goan front page.",
+            "source_tool": "sql_analytics_manifest",
+        })
+
+    # Add 15 articles from The Morning Standard
+    for j in range(1, 16):
+        evidence.append({
+            "article_id": 100 + j,
+            "headline": f"Morning Standard Article {j}",
+            "newspaper_name": "The Morning Standard",
+            "issue_date": "2026-08-01",
+            "pages": [1],
+            "snippet": f"Story {j} from The Morning Standard front page.",
+            "source_tool": "sql_analytics_manifest",
+        })
+
+    ctx = build_evidence_context(evidence, query="Compare front page stories between The Goan and The Morning Standard")
+
+    # Both manifests MUST be present in context
+    assert "Issue Manifest: The Goan" in ctx
+    assert "Issue Manifest: The Morning Standard" in ctx
+
+    # Articles from BOTH publications MUST be present in context
+    assert "Goan Article" in ctx
+    assert "Morning Standard Article" in ctx
+
+

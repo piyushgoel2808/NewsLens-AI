@@ -49,6 +49,7 @@ def reconcile_and_sanitize_arguments(
     query: str,
     active_issue_date: str | None = None,
     active_newspapers: list[str] | None = None,
+    purpose: str | None = None,
 ) -> dict[str, Any]:
     """Reconcile and normalize tool arguments against ground truth without destructive deletion."""
     sanitized = {k: v for k, v in args.items() if v is not None and v != ""}
@@ -115,8 +116,34 @@ def reconcile_and_sanitize_arguments(
                 brand_tokens = [w.lower() for w in str(sanitized["newspaper_name"]).split() if w.lower() not in {"the", "of", "and"}]
                 if not any(tok in q_lower for tok in brand_tokens):
                     sanitized.pop("newspaper_name", None)
-    elif not sanitized.get("newspaper_name") and extracted.get("newspaper_name") and named_brand_in_query:
-        sanitized["newspaper_name"] = extracted["newspaper_name"]
+    else:
+        # Check purpose for specific newspaper brand match if available
+        matched_from_purpose = None
+        if purpose and valid_brands:
+            p_lower = purpose.lower()
+            for b in valid_brands:
+                if b.lower() in p_lower:
+                    matched_from_purpose = b
+                    break
+            if not matched_from_purpose:
+                for pat, canonical in _KNOWN_BRANDS_PATTERNS:
+                    if pat.search(purpose):
+                        for b in valid_brands:
+                            if canonical.lower() in b.lower() or b.lower() in canonical.lower():
+                                matched_from_purpose = b
+                                break
+                        if not matched_from_purpose:
+                            matched_from_purpose = canonical
+                        break
+        if matched_from_purpose:
+            sanitized["newspaper_name"] = matched_from_purpose
+        elif tool_name == "hybrid_search" and len(valid_brands) >= 2:
+            # For cross-newspaper comparative queries, leave hybrid_search unconstrained to search across editions
+            pass
+        elif extracted.get("newspaper_name") and named_brand_in_query and len(valid_brands) <= 1:
+            sanitized["newspaper_name"] = extracted["newspaper_name"]
+        elif tool_name == "sql_analytics" and extracted.get("newspaper_name") and len(valid_brands) == 1:
+            sanitized["newspaper_name"] = extracted["newspaper_name"]
 
     for np_field in ("comparison_newspaper", "source_newspaper"):
         if sanitized.get(np_field):
@@ -137,6 +164,9 @@ def reconcile_and_sanitize_arguments(
             sanitized["analysis_type"] = "coverage_difference"
         elif extracted.get("is_shared") and sanitized.get("analysis_type") in ("coverage_difference", None, "issue_summary"):
             sanitized["analysis_type"] = "shared_coverage"
+        elif not sanitized.get("analysis_type"):
+            if sanitized.get("issue_date") or extracted.get("issue_date") or sanitized.get("page_filter") or extracted.get("page_filter"):
+                sanitized["analysis_type"] = "issue_summary"
 
     if sanitized.get("analysis_type") in ("shared_coverage", "coverage_difference"):
         if not sanitized.get("comparison_newspaper") and extracted.get("comparison_newspaper"):
