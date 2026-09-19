@@ -3,7 +3,7 @@ import io
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, distinct, func, select
@@ -625,6 +625,7 @@ async def reingest_issue_page(
     issue_id: int,
     page_number: int,
     parser_engine: str = Query("auto", description="Parser engine to use: auto, docling, google_vision, or gemini"),
+    request_data: dict[str, Any] | None = Body(None),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Execute complete atomic re-ingestion for a single page of an issue.
@@ -634,8 +635,34 @@ async def reingest_issue_page(
     extracts metadata and Named Entities; chunks and embeds into Qdrant and MySQL.
     """
     from app.ingestion.page_reingestion import PageReingestionService
+    from app.providers.registry import get_registry
 
     try:
+        if request_data:
+            if "parser_engine" in request_data and request_data["parser_engine"]:
+                parser_engine = str(request_data["parser_engine"]).strip()
+            if "task_bindings" in request_data and isinstance(request_data["task_bindings"], dict) and request_data["task_bindings"]:
+                try:
+                    settings = get_settings()
+                    model_cfg = settings.load_model_config()
+                    valid_bindings = {
+                        k: v for k, v in request_data["task_bindings"].items()
+                        if v and (v in model_cfg.providers or k in model_cfg.task_bindings)
+                    }
+                    if valid_bindings:
+                        model_cfg.task_bindings.update(valid_bindings)
+                        settings.save_model_config(model_cfg)
+                        get_registry().invalidate_all()
+                        logger.info(
+                            "Reingest applied dynamic task_bindings",
+                            extra={"task_bindings": valid_bindings, "issue_id": issue_id, "page_number": page_number},
+                        )
+                except Exception as b_err:
+                    logger.warning(
+                        "Failed to update task_bindings during reingest",
+                        extra={"error": str(b_err)},
+                    )
+
         service = PageReingestionService(db=db)
         result = await service.reingest_page(
             issue_id=issue_id,
@@ -665,6 +692,7 @@ async def reingest_issue_page(
 async def reingest_page_by_id(
     page_id: int,
     parser_engine: str = Query("auto", description="Parser engine to use"),
+    request_data: dict[str, Any] | None = Body(None),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Re-ingest page using page_id."""
@@ -677,6 +705,7 @@ async def reingest_page_by_id(
         issue_id=page.issue_id,
         page_number=page.page_number,
         parser_engine=parser_engine,
+        request_data=request_data,
         db=db,
     )
 

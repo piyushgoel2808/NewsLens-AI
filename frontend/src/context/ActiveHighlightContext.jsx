@@ -1,5 +1,18 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 
+export const DEFAULT_CLOUD_FULL_BINDINGS = {
+  query_planner: 'gemini_flash',
+  answerer: 'gemini_flash',
+  metadata_extraction: 'gemini_flash',
+  classification: 'gemini_flash',
+  article_segmentation: 'gemini_flash',
+  visual_extraction: 'gemini_flash',
+  layout_analysis: 'gemini_flash',
+  document_parser: 'docling_cloud_parser',
+  ocr: 'docling_cloud_parser',
+  embedding: 'gemini_embedding',
+};
+
 const ActiveHighlightContext = createContext(null);
 
 export function ActiveHighlightProvider({ children }) {
@@ -11,18 +24,23 @@ export function ActiveHighlightProvider({ children }) {
   const [isPulsing, setIsPulsing] = useState(false);
   const [hoveredArticleId, setHoveredArticleId] = useState(null);
 
-  // Synchronized Task Bindings State across all tabs
+  // Synchronized Task Bindings State across all tabs (Default: Full Cloud Google Gemini)
   const [taskBindings, setTaskBindings] = useState(() => {
     try {
       const saved = localStorage.getItem('newslens_task_bindings');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          return { ...DEFAULT_CLOUD_FULL_BINDINGS, ...parsed };
+        }
+      }
     } catch {
       // ignore
     }
-    return {};
+    return { ...DEFAULT_CLOUD_FULL_BINDINGS };
   });
 
-  // Persistent Selected LLM Model (Default: gemini_flash or active answerer binding)
+  // Persistent Selected LLM Model (Default: gemini_flash)
   const [selectedModel, setSelectedModelState] = useState(() => {
     return localStorage.getItem('newslens_selected_model') || 'gemini_flash';
   });

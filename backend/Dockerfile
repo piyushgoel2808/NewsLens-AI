@@ -37,6 +37,7 @@ COPY --chown=appuser:appuser alembic.ini ./
 COPY --chown=appuser:appuser alembic ./alembic
 COPY --chown=appuser:appuser app ./app
 COPY --chown=appuser:appuser model_config.prod.yaml /app/model_config.prod.yaml
+COPY --chown=appuser:appuser model_config.prod.yaml /app/model_config.yaml
 
 USER appuser
 

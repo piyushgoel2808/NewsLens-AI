@@ -39,6 +39,8 @@ export default function BroadsheetReader() {
     setHoveredArticleId,
     highlightArticle,
     attachAssetForAgent,
+    taskBindings,
+    selectedModel,
   } = useActiveHighlight();
 
   const [issues, setIssues] = useState([]);
@@ -55,18 +57,39 @@ export default function BroadsheetReader() {
     return null;
   }, [issueData, issues, selectedIssueId]);
 
-  // Canvas Viewport Controls
+  // Canvas Viewport Controls: Overlays off by default
   const [zoom, setZoom] = useState(1);
-  const [showOverlays, setShowOverlays] = useState(true);
+  const [showOverlays, setShowOverlays] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSection, setSelectedSection] = useState('ALL');
   const [analyzingPhotoIds, setAnalyzingPhotoIds] = useState({});
+
+  // Active VLM model derivation
+  const activeVlmModel = taskBindings?.visual_extraction || selectedModel || 'gemini_flash';
+  const activeVlmLabel = useMemo(() => {
+    const m = (activeVlmModel || '').toLowerCase();
+    if (m.includes('gemini')) return 'Google Gemini VLM';
+    if (m.includes('qwen')) return 'Qwen-VL';
+    if (m.includes('llama')) return 'Llama Vision';
+    return activeVlmModel;
+  }, [activeVlmModel]);
+  const activeVlmShort = useMemo(() => {
+    const m = (activeVlmModel || '').toLowerCase();
+    if (m.includes('gemini')) return 'Gemini VLM';
+    if (m.includes('qwen')) return 'Qwen-VL';
+    return 'VLM';
+  }, [activeVlmModel]);
 
   const handleAnalyzePhoto = async (photoId) => {
     if (!photoId) return;
     setAnalyzingPhotoIds((prev) => ({ ...prev, [photoId]: true }));
     try {
-      const res = await fetch(`/api/photos/${photoId}/analyze`, { method: 'POST' });
+      const vlmModel = taskBindings?.visual_extraction || selectedModel || 'gemini_flash';
+      const res = await fetch(`/api/photos/${photoId}/analyze?model=${encodeURIComponent(vlmModel)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: vlmModel }),
+      });
       if (!res.ok) throw new Error('Failed to analyze photo');
       const updated = await res.json();
       setArticleDetails((prev) => {
@@ -89,21 +112,55 @@ export default function BroadsheetReader() {
   const handleReingestCurrentPage = async () => {
     if (!selectedIssueId || !selectedPageNumber || isReingestingPage) return;
 
+    const activeParserName =
+      taskBindings?.document_parser === 'docling_cloud_parser'
+        ? 'Docling Cloud'
+        : taskBindings?.document_parser === 'docling_parser'
+        ? 'Docling Local'
+        : taskBindings?.document_parser || 'Docling Cloud';
+
+    const activeVlmName =
+      (taskBindings?.visual_extraction || selectedModel || '').includes('gemini')
+        ? 'Gemini Flash VLM'
+        : (taskBindings?.visual_extraction || selectedModel || '').includes('qwen')
+        ? 'Qwen-VL'
+        : taskBindings?.visual_extraction || selectedModel || 'Gemini Flash VLM';
+
+    const activeEmbedName =
+      taskBindings?.embedding === 'gemini_embedding'
+        ? 'Gemini Embedding (768d)'
+        : taskBindings?.embedding === 'local_embed_bge'
+        ? 'BAAI BGE-M3 (1024d)'
+        : taskBindings?.embedding || 'Gemini Embedding';
+
     const confirmed = window.confirm(
-      `Re-ingest Page ${selectedPageNumber}?\n\nThis will re-run Docling OCR, recover picture-nested text, extract photos with Qwen-VL scene intelligence, re-segment articles, extract entities/topics, and re-index dense vector embeddings into Qdrant.`
+      `Re-ingest Page ${selectedPageNumber} using currently selected models?\n\n` +
+      `• Document Parser: ${activeParserName}\n` +
+      `• Visual Extraction (VLM): ${activeVlmName}\n` +
+      `• Dense Vector Embedding: ${activeEmbedName}\n\n` +
+      `This will purge previous page extractions, re-run layout parsing & OCR with ${activeParserName}, ` +
+      `extract photo scenes & charts with ${activeVlmName}, and re-index dense embeddings with ${activeEmbedName} into Qdrant.`
     );
     if (!confirmed) return;
 
     setIsReingestingPage(true);
     setReingestStatus({
       type: 'loading',
-      message: `Re-ingesting Page ${selectedPageNumber}... Running Docling OCR, Visual Extraction, and Vector Re-indexing.`,
+      message: `Re-ingesting Page ${selectedPageNumber} using ${activeParserName}, ${activeVlmName}, and ${activeEmbedName}...`,
     });
 
     try {
+      const parserEngine = taskBindings?.document_parser || 'auto';
       const res = await fetch(
-        `/api/issues/${selectedIssueId}/pages/${selectedPageNumber}/reingest`,
-        { method: 'POST' }
+        `/api/issues/${selectedIssueId}/pages/${selectedPageNumber}/reingest?parser_engine=${encodeURIComponent(parserEngine)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            parser_engine: parserEngine,
+            task_bindings: taskBindings,
+          }),
+        }
       );
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -121,7 +178,7 @@ export default function BroadsheetReader() {
 
       setReingestStatus({
         type: 'success',
-        message: `Page ${selectedPageNumber} successfully re-ingested! (${data.articles_count} articles, ${data.chunks_count} chunks re-indexed into Qdrant).`,
+        message: `Page ${selectedPageNumber} successfully re-ingested with ${activeParserName} & ${activeEmbedName}! (${data.articles_count} articles, ${data.chunks_count} chunks re-indexed into Qdrant).`,
       });
       setTimeout(() => setReingestStatus(null), 7000);
     } catch (err) {
@@ -775,7 +832,7 @@ export default function BroadsheetReader() {
                                       ? 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
                                       : 'bg-purple-600 hover:bg-purple-500 text-white border-purple-500 shadow-md shadow-purple-950/50'
                                   }`}
-                                  title={ph.vlm_description ? "Re-run Qwen-3VL scene analysis" : "Analyze this photograph with Qwen-3VL"}
+                                  title={ph.vlm_description ? `Re-run ${activeVlmLabel} scene analysis` : `Analyze this photograph with ${activeVlmLabel}`}
                                 >
                                   {isAnalyzing ? (
                                     <>
@@ -785,7 +842,7 @@ export default function BroadsheetReader() {
                                   ) : (
                                     <>
                                       <Sparkles className="w-3 h-3 text-purple-300" />
-                                      <span>{ph.vlm_description ? 'Re-Analyze with VLM' : '⚡ Analyze with Qwen-VL'}</span>
+                                      <span>{ph.vlm_description ? 'Re-Analyze with VLM' : `⚡ Analyze with ${activeVlmShort}`}</span>
                                     </>
                                   )}
                                 </button>
@@ -844,7 +901,7 @@ export default function BroadsheetReader() {
                                 <div className="flex items-center justify-between gap-2 mb-2 pb-1.5 border-b border-purple-900/30">
                                   <span className="text-[11px] uppercase tracking-wider font-bold text-purple-300 flex items-center gap-1.5">
                                     <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                                    Qwen-VL Visual Scene Analysis
+                                    {activeVlmLabel} Visual Scene Analysis
                                   </span>
                                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 text-purple-400 border border-purple-800/40 font-mono">
                                     AI Verified
@@ -865,7 +922,7 @@ export default function BroadsheetReader() {
                                   className="inline-flex items-center gap-1 text-[11px] font-semibold text-purple-400 hover:text-purple-300 transition-colors"
                                 >
                                   <Sparkles className="w-3 h-3" />
-                                  Click here to analyze with Qwen-VL
+                                  Click here to analyze with {activeVlmShort}
                                 </button>
                               </div>
                             )}

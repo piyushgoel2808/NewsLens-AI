@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -516,11 +517,21 @@ class Settings(BaseSettings):
             candidate_paths.append(Path(self.model_config_path))
 
         root = find_project_root()
+        if (self.storage_backend or "").lower() == "gcs" or os.getenv("K_SERVICE"):
+            candidate_paths.extend(
+                [
+                    root / "model_config.prod.yaml",
+                    Path("/app/model_config.prod.yaml"),
+                    Path.cwd() / "model_config.prod.yaml",
+                ]
+            )
+
         candidate_paths.extend(
             [
                 root / "model_config.yaml",
                 Path.cwd() / "model_config.yaml",
                 Path.cwd() / "../model_config.yaml",
+                Path("/app/model_config.yaml"),
             ]
         )
 

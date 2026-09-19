@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.logging import get_logger
 from app.models.article import Article
 from app.models.base import get_db
 from app.models.newspaper import Issue
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api", tags=["articles"])
 
@@ -145,9 +148,11 @@ async def get_photo_image(
 @router.post("/photos/{photo_id}/analyze", summary="Run on-demand VLM scene analysis on a photo")
 async def analyze_photo_asset(
     photo_id: int,
+    model: str | None = Query(None, description="Optional vision model / provider ID override"),
+    request_data: dict[str, Any] | None = Body(None),
     db: AsyncSession = Depends(get_db),
-    ) -> dict[str, Any]:
-    """Run on-demand Qwen-VL / VLM visual intelligence analysis on a specific photo asset."""
+) -> dict[str, Any]:
+    """Run on-demand VLM visual intelligence analysis on a specific photo asset."""
     from app.core.config import get_settings
     from app.ingestion.visual_extractor import VisualDataExtractor
     from app.models.article import Photo
@@ -170,7 +175,27 @@ async def analyze_photo_asset(
     if not image_bytes:
         raise HTTPException(status_code=404, detail="Photo object missing from storage")
 
-    extractor = VisualDataExtractor()
+    # Resolve active vision model override if provided by caller/frontend
+    vlm_model_id = model or (request_data.get("model") if isinstance(request_data, dict) else None)
+    vision_provider = None
+    if vlm_model_id:
+        from app.providers.registry import get_registry
+        reg = get_registry()
+        try:
+            if vlm_model_id in reg._model_config.providers:
+                vision_provider = reg.get_provider_by_id(vlm_model_id)
+            elif vlm_model_id in reg._model_config.task_bindings:
+                vision_provider = reg.get_provider(vlm_model_id)
+            else:
+                vision_provider = reg.get_chat_provider(vlm_model_id)
+        except Exception as prov_err:
+            logger.warning(
+                "Could not resolve requested vision provider %s: %s, falling back to bound default",
+                vlm_model_id,
+                prov_err,
+            )
+
+    extractor = VisualDataExtractor(vision_provider=vision_provider)
     classification, extraction = await extractor.process_image_crop(
         image_bytes=image_bytes,
         ocr_text=photo.caption or "",
