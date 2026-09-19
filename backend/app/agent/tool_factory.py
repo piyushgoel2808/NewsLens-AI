@@ -115,6 +115,8 @@ def reconcile_and_sanitize_arguments(
                 brand_tokens = [w.lower() for w in str(sanitized["newspaper_name"]).split() if w.lower() not in {"the", "of", "and"}]
                 if not any(tok in q_lower for tok in brand_tokens):
                     sanitized.pop("newspaper_name", None)
+    elif not sanitized.get("newspaper_name") and extracted.get("newspaper_name") and named_brand_in_query:
+        sanitized["newspaper_name"] = extracted["newspaper_name"]
 
     for np_field in ("comparison_newspaper", "source_newspaper"):
         if sanitized.get(np_field):
@@ -147,20 +149,27 @@ def reconcile_and_sanitize_arguments(
             sanitized["newspaper_name"] = valid_brands[0]
 
     # Date normalization & ground truth retention
-    if is_archive_np and not has_date_in_query:
+    if is_archive_np and not has_date_in_query and not named_brand_in_query:
         sanitized.pop("issue_date", None)
         sanitized.pop("date_from", None)
         sanitized.pop("date_to", None)
     elif extracted.get("issue_date"):
         sanitized["issue_date"] = extracted["issue_date"]
-        if not extracted.get("date_from"):
-            if "date_from" in sanitized:
-                sanitized["date_from"] = extracted["issue_date"]
-            if "date_to" in sanitized:
-                sanitized["date_to"] = extracted["issue_date"]
+        if not sanitized.get("date_from"):
+            sanitized["date_from"] = extracted["issue_date"]
+        if not sanitized.get("date_to"):
+            sanitized["date_to"] = extracted["issue_date"]
+    elif sanitized.get("issue_date"):
+        if not sanitized.get("date_from"):
+            sanitized["date_from"] = sanitized["issue_date"]
+        if not sanitized.get("date_to"):
+            sanitized["date_to"] = sanitized["issue_date"]
     elif active_issue_date and not extracted.get("date_from") and not is_archive_np:
         if "issue_date" not in sanitized:
             sanitized["issue_date"] = active_issue_date
+            if not sanitized.get("date_from"):
+                sanitized["date_from"] = active_issue_date
+                sanitized["date_to"] = active_issue_date
 
     if extracted.get("date_from"):
         sanitized["date_from"] = extracted["date_from"]

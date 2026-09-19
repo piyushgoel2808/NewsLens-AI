@@ -202,6 +202,7 @@ class ToolExecutor:
             "newspaper_name",
             "date_from",
             "date_to",
+            "issue_date",
             "page_filter",
             "page_number",
             "category_filter",
@@ -223,13 +224,16 @@ class ToolExecutor:
             except (ValueError, TypeError):
                 pass
 
-        has_filter = any(k in args for k in filter_keys) or (np_id is not None) or (p_filt is not None)
+        d_from = args.get("date_from") or args.get("issue_date")
+        d_to = args.get("date_to") or args.get("issue_date")
+
+        has_filter = any(k in args for k in filter_keys) or (np_id is not None) or (p_filt is not None) or (d_from is not None)
         if has_filter:
             filters = SearchFilter(
                 newspaper_id=np_id,
                 newspaper_name=np_name,
-                date_from=args.get("date_from"),
-                date_to=args.get("date_to"),
+                date_from=d_from,
+                date_to=d_to,
                 page_number=p_num,
                 category_name=args.get("category_filter") or args.get("category_name"),
             )

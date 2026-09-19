@@ -855,6 +855,131 @@ class TestAgentWorkflowToolExecution:
         assert dyn_call is not None
         assert "avg length" in dyn_call.arguments.get("query", "").lower()
 
+    def test_cross_newspaper_comparison_front_page_plan_reconciliation(self) -> None:
+        """Verify cross-newspaper comparison preserves both newspapers and front-page filter."""
+        from app.agent.planner import AgentPlan, ExtractedToolArguments, QueryPlanner, ToolCallSpec
+
+        planner = QueryPlanner()
+        query = "Compare the front-page stories between The morning standard and Goan on 2026-08-01"
+
+        # Simulate LLM returning a plan that only scheduled 1 summary or factual_lookup
+        raw_plan = AgentPlan(
+            thought_process="Compare front page stories",
+            archetype="factual_lookup",
+            tool_calls=[
+                ToolCallSpec(
+                    tool_name="sql_analytics",
+                    arguments={"analysis_type": "issue_summary", "issue_date": "2026-08-01", "page_filter": "1"},
+                    purpose="Front page summary",
+                ),
+                ToolCallSpec(
+                    tool_name="hybrid_search",
+                    arguments={"query": "front page stories", "issue_date": "2026-08-01", "page_filter": "1"},
+                    purpose="Retrieve stories",
+                ),
+            ],
+        )
+
+        res = planner._build_plan_from_structured_model(query, raw_plan)
+        assert res.archetype == "cross_newspaper_comparison"
+
+        # Verify issue_summary tool calls cover both Morning Standard and The Goan
+        summary_calls = [
+            t for t in res.tool_calls
+            if t.tool_name == "sql_analytics" and t.arguments.get("analysis_type") == "issue_summary"
+        ]
+        assert len(summary_calls) >= 2
+        covered_nps = {c.arguments.get("newspaper_name") for c in summary_calls}
+        assert any("Morning Standard" in (np or "") for np in covered_nps)
+        assert any("Goan" in (np or "") for np in covered_nps)
+
+        # Verify page_filter and date preserved
+        for sc in summary_calls:
+            assert sc.arguments.get("page_filter") == "1"
+            assert sc.arguments.get("issue_date") == "2026-08-01"
+
+        # Verify hybrid_search has date_from/date_to mapped
+        hs_calls = [t for t in res.tool_calls if t.tool_name == "hybrid_search"]
+        for hc in hs_calls:
+            assert hc.arguments.get("date_from") == "2026-08-01"
+            assert hc.arguments.get("date_to") == "2026-08-01"
+
+    def test_how_many_goan_newspaper_plan_and_execution(self) -> None:
+        """Verify publication count query routes to quantitative_trend and count_issues with newspaper_name."""
+        from app.agent.planner import AgentPlan, ExtractedToolArguments, QueryPlanner, ToolCallSpec
+
+        planner = QueryPlanner()
+        query = "how many Goan newspaper are there"
+
+        # 1. Heuristic plan
+        res_heur = planner.plan_query(query)
+        assert res_heur.archetype == "quantitative_trend"
+        count_calls = [
+            t for t in res_heur.tool_calls
+            if t.tool_name == "sql_analytics" and t.arguments.get("analysis_type") == "count_issues"
+        ]
+        assert len(count_calls) >= 1
+        assert "Goan" in (count_calls[0].arguments.get("newspaper_name") or "")
+
+        # 2. LLM plan without newspaper_name in args
+        raw_plan = AgentPlan(
+            thought_process="Count Goan newspapers",
+            archetype="quantitative_trend",
+            tool_calls=[
+                ToolCallSpec(
+                    tool_name="sql_analytics",
+                    arguments={"analysis_type": "count_issues"},
+                    purpose="Count issues",
+                ),
+            ],
+        )
+        res_llm = planner._build_plan_from_structured_model(query, raw_plan)
+        assert res_llm.archetype == "quantitative_trend"
+        assert len(res_llm.tool_calls) >= 1
+        assert "Goan" in (res_llm.tool_calls[0].arguments.get("newspaper_name") or "")
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_analytics_count_issues_backfills_newspaper_from_query(self) -> None:
+        """Verify _exec_sql_count_issues extracts newspaper_name from query when missing in arguments."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.agent.graph import AgentWorkflow
+
+        mock_session_factory = MagicMock()
+        workflow = AgentWorkflow(session_factory=mock_session_factory)
+        workflow._sql_analytics.count_issues = AsyncMock(
+            return_value={
+                "count": 8,
+                "total_issues": 8,
+                "newspapers": ["The Goan"],
+                "newspaper_name": "The Goan",
+                "earliest_date": "2026-08-01",
+                "latest_date": "2026-08-30",
+            }
+        )
+
+        state = {
+            "query": "how many Goan newspaper are there",
+            "plan": [
+                {
+                    "tool_name": "sql_analytics",
+                    "arguments": {
+                        "analysis_type": "count_issues",
+                    },
+                    "purpose": "Count issues",
+                }
+            ],
+            "archetype": "quantitative_trend",
+        }
+
+        res = await workflow._execute_tools_node(state)  # type: ignore[arg-type]
+        workflow._sql_analytics.count_issues.assert_awaited_once()
+        call_kwargs = workflow._sql_analytics.count_issues.await_args.kwargs
+        assert call_kwargs.get("newspaper_name") == "The Goan"
+        assert len(res["evidence_items"]) >= 1
+        assert "8" in res["evidence_items"][0]["snippet"]
+
+
+
 
 
 

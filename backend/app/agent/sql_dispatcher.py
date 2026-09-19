@@ -178,11 +178,16 @@ class SQLAnalyticsDispatcher:
         iss_d_arg = args.get("issue_date") or (active_issue_date if inherit_history else None)
         iss_id_arg = args.get("issue_id") or (active_issue_id if inherit_history else None)
 
+        target_nps: list[str] = []
         if not np_arg or not page_filter or not iss_d_arg:
             from app.agent.extractor import extract_parameters_from_query
             extracted = extract_parameters_from_query(args.get("query") or state.get("query") or "")
+            target_nps = extracted.get("target_newspapers", [])
             if not np_arg and extracted.get("newspaper_name"):
-                np_arg = extracted["newspaper_name"]
+                # If multiple newspapers are targeted (e.g. comparative queries), do NOT collapse
+                # np_arg to only the first one so is_multi_issue_date fetches all targeted papers on that date
+                if len(target_nps) < 2:
+                    np_arg = extracted["newspaper_name"]
             if not page_filter and extracted.get("page_filter"):
                 page_filter = str(extracted["page_filter"]).strip()
             if not iss_d_arg and extracted.get("issue_date"):
@@ -196,6 +201,12 @@ class SQLAnalyticsDispatcher:
 
         if is_multi_issue_date and iss_d_arg:
             date_issues = await self._sql_analytics.get_issues_by_date(iss_d_arg)
+            if date_issues and target_nps and len(target_nps) >= 2:
+                target_lower = {tn.lower() for tn in target_nps}
+                date_issues = [
+                    di for di in date_issues
+                    if di.newspaper and any(tn in di.newspaper.name.lower() or di.newspaper.name.lower() in tn for tn in target_lower)
+                ]
             if date_issues:
                 summaries_collected = []
                 total_found = 0
@@ -449,6 +460,11 @@ class SQLAnalyticsDispatcher:
             np_name = None
         else:
             np_name = args.get("newspaper_name") or (active_newspaper_name if not is_archive_wide else None)
+            if not np_name and named_in_q:
+                from app.agent.extractor import extract_parameters_from_query
+                ext_params = extract_parameters_from_query(args.get("query") or state.get("query") or "")
+                if ext_params.get("newspaper_name"):
+                    np_name = ext_params["newspaper_name"]
 
         iss_res = await self._sql_analytics.count_issues(
             newspaper_name=np_name,
@@ -456,7 +472,7 @@ class SQLAnalyticsDispatcher:
             date_from=d_from,
             date_to=d_to,
         )
-        c_val = iss_res.get("count", 0)
+        c_val = iss_res.get("count") if iss_res.get("count") is not None else iss_res.get("total_issues", 0)
         hits_count = c_val
         filt_info = ", ".join(f"{k}: {v}" for k, v in iss_res.get("filters", {}).items() if v)
         if d_from and d_to:

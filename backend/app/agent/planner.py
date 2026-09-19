@@ -201,6 +201,12 @@ Output: {"thought_process": "User is asking to explain and summarize a specific 
 Query: "Summarise the article 'Adani leads rush for 37,500 cr coal gasification plan' from Hindustan Times dated 2026-09-09"
 Output: {"thought_process": "Condensed conversational query requesting a summary of a specific broadsheet article. Schedule hybrid_search targeting the headline and publication date.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "hybrid_search", "arguments": {"query": "Adani leads rush for 37500 cr coal gasification plan", "newspaper_name": "Hindustan Times", "date_from": "2026-09-09", "date_to": "2026-09-09", "top_k": 4}, "purpose": "Retrieve targeted article text for synthesis"}]}
 
+Query: "Compare the front-page stories between The morning standard and Goan on 2026-08-01"
+Output: {"thought_process": "User wants a side-by-side comparison of front-page (page 1) stories between The Morning Standard and The Goan on 2026-08-01. Retrieve page 1 manifests for both newspapers via sql_analytics, and comparative excerpts via hybrid_search.", "archetype": "cross_newspaper_comparison", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Morning Standard", "issue_date": "2026-08-01", "page_filter": "1", "analysis_type": "issue_summary"}, "purpose": "Retrieve page 1 manifest for The Morning Standard on 2026-08-01"}, {"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "issue_date": "2026-08-01", "page_filter": "1", "analysis_type": "issue_summary"}, "purpose": "Retrieve page 1 manifest for The Goan on 2026-08-01"}, {"tool_name": "hybrid_search", "arguments": {"query": "front page lead stories headlines", "date_from": "2026-08-01", "date_to": "2026-08-01", "page_filter": "1", "top_k": 10}, "purpose": "Retrieve comparative front-page article excerpts across both newspapers"}]}
+
+Query: "how many Goan newspaper are there"
+Output: {"thought_process": "User is asking for the count and availability of newspapers under the brand 'The Goan' in the archive. Schedule sql_analytics count_issues.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Goan", "analysis_type": "count_issues"}, "purpose": "Count total available issues and editions of The Goan"}], "answer_blueprint": {"user_intent": "scalar_count_metric", "overall_tone": "concise_atomic", "target_word_count": 80, "sections": [{"title": "### ⚡ Direct Finding", "format_type": "narrative", "content_focus": "Direct authoritative answer stating the exact number of distinct publications and total issues for The Goan.", "target_length": "1 to 2 crisp sentences"}, {"title": "### 📊 Key Computed Metrics", "format_type": "metric_card", "content_focus": "Breakdown of publication name, total archived issues, and active date range.", "target_length": "Metric card or bullet list"}], "prohibited_elements": ["conversational filler"]}}
+
 Query: "Calculate the average word count of sports articles in Hindustan Times dated 2026-09-03"
 Output: {"thought_process": "User is asking to compute the mathematical average word count of sports articles on a specific date. This is an analytical computation requiring SQL/Python data aggregation. Schedule dynamic_analysis.", "archetype": "analytical_computation", "tool_calls": [{"tool_name": "dynamic_analysis", "arguments": {"query": "Calculate the average word count of sports articles in Hindustan Times dated 2026-09-03", "analysis_description": "Compute the average word count of sports articles in Hindustan Times on 2026-09-03"}, "purpose": "Execute analytical calculation of average word count for sports articles"}], "answer_blueprint": {"user_intent": "statistical_computation", "overall_tone": "analytical_comparison", "sections": [{"title": "### ⚡ Computed Result", "format_type": "narrative", "content_focus": "Direct computed average word count with exact verified number and article count", "target_length": "1 to 2 crisp sentences"}, {"title": "### 📊 Analytical Breakdown", "format_type": "metric_card", "content_focus": "Supporting statistics: total articles analyzed, total word count, distribution across sports articles", "target_length": "Clean metric card or bullet list"}], "prohibited_elements": ["narrative speculation", "conversational filler"]}}
 
@@ -210,9 +216,9 @@ Output: {"thought_process": "User is asking to compute the mathematical average 
 - ARCHETYPE SELECTION:
   * For queries citing specific statements, article quotes, headlines, or factual claims without explicit multi-newspaper comparative keywords, choose `factual_lookup` and schedule targeted `hybrid_search`.
   * For mathematical, statistical, or analytical calculations (e.g. "calculate average word count", "average length", "word count of articles", "ratio of", "percentage of"), choose `analytical_computation` and schedule `dynamic_analysis`.
-  * For counting, frequencies, volume, or metadata questions (e.g. "how many issues", "number of pages", "count of articles", "total editions"), choose `quantitative_trend` or `factual_lookup`. NEVER select `article_catalog` for scalar counts!
+  * For counting, frequencies, volume, or metadata questions (e.g. "how many issues", "how many [brand] newspaper", "number of pages", "count of articles", "total editions"), choose `quantitative_trend` and schedule `sql_analytics count_issues` or `count_articles`. NEVER select `article_catalog` or `factual_lookup` for scalar counts!
   * Select `article_catalog` when the user wants to LIST, ENUMERATE, or BROWSE multiple articles — including page-scoped listing queries like "list all news on page 5", "what articles are on page 6", "show headlines on page 3 of [newspaper]", "show all articles in [newspaper] on [date]". A query asking to LIST articles on a specific page IS article_catalog, not quantitative_trend.
-  * Only select `cross_newspaper_comparison` when the user explicitly asks to compare across publications (e.g. "compare newspapers", "across editions", "coverage differences").
+  * Select `cross_newspaper_comparison` whenever the user asks to compare stories, headlines, pages, or coverage across two or more publications (e.g. "compare newspapers", "compare between [paper A] and [paper B]", "across editions", "coverage differences"). Schedule `sql_analytics issue_summary` for EACH named newspaper so both manifests are retrieved.
 - You MUST respond with a valid JSON object matching the required schema. Return only the JSON object, with no markdown fences or conversational text.
 - DYNAMIC ANSWER BLUEPRINT (OPTIONAL):
   You may optionally include an `answer_blueprint` object in your JSON response to design the exact sections and layout of the final answer:
@@ -823,6 +829,46 @@ class QueryPlanner:
         elif archetype == "negative_coverage_audit":
             archetype = "cross_newspaper_comparison"
 
+        q_lower = query.lower()
+        target_nps = extracted.get("target_newspapers", [])
+        is_comparative = (
+            archetype == "cross_newspaper_comparison"
+            or plan_obj.archetype in ("cross_newspaper_comparison", "negative_coverage_audit")
+            or len(target_nps) >= 2
+            or bool(re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff[a-z]*|versus|vs\.?)\b", q_lower))
+            or any(
+                w in q_lower
+                for w in [
+                    "between",
+                    "difference between",
+                    "audit negative",
+                    "omissions across",
+                    "negative coverage",
+                    "similar articles",
+                    "shared articles",
+                    "across newspapers",
+                    "across different papers",
+                    "both newspapers",
+                ]
+            )
+        )
+        if is_comparative:
+            archetype = "cross_newspaper_comparison"
+        else:
+            is_count_query = (
+                bool(
+                    re.search(
+                        r"\b(how\s+many|count\s+of|number\s+of|total\s+number\s+of|no\s+of)\s+.*(?:newspapers?|publications?|dailies|issues?|articles?|pages?|ads?|advertisements?)\b",
+                        q_lower,
+                    )
+                )
+                or is_archive_wide_newspaper_query(query)
+            )
+            if is_count_query and archetype not in ("quantitative_trend", "analytical_computation") and not any(
+                w in q_lower for w in ["list", "catalog", "headlines", "headings", "what articles"]
+            ):
+                archetype = "quantitative_trend"
+
         # 1. Direct tool calling (Option 2)
         if plan_obj.tool_calls:
             for spec in plan_obj.tool_calls:
@@ -835,6 +881,50 @@ class QueryPlanner:
                     active_newspapers=active_newspapers,
                 )
                 tool_calls.append(PlannedToolCall(tool_name=spec.tool_name, arguments=args, purpose=spec.purpose))
+
+            # Cross-newspaper completeness check: ensure all targeted newspapers have an issue_summary call scheduled
+            if archetype == "cross_newspaper_comparison" and len(target_nps) >= 2:
+                target_dt = extracted.get("issue_date") or active_issue_date
+                p_filt = extracted.get("page_filter")
+                has_summary_calls = [
+                    c for c in tool_calls
+                    if c.tool_name == "sql_analytics" and c.arguments.get("analysis_type") == "issue_summary"
+                ]
+                if has_summary_calls:
+                    covered_nps = {
+                        str(c.arguments.get("newspaper_name", "")).lower()
+                        for c in has_summary_calls
+                        if c.arguments.get("newspaper_name")
+                    }
+                    for req_np in target_nps:
+                        if not any(req_np.lower() in cn or cn in req_np.lower() for cn in covered_nps):
+                            tool_calls.insert(
+                                len(has_summary_calls),
+                                build_sql_summary_tool(
+                                    newspaper_name=req_np,
+                                    issue_date=target_dt,
+                                    page_filter=p_filt,
+                                    query=query,
+                                    purpose=f"Retrieve manifest for {req_np}",
+                                ),
+                            )
+
+            # Quantitative trend count safety: ensure sql_analytics is scheduled for count queries
+            if archetype == "quantitative_trend" and not any(c.tool_name == "sql_analytics" for c in tool_calls):
+                named_brand = extracted.get("newspaper_name")
+                analysis_t = "count_articles" if "article" in q_lower else "count_issues"
+                tool_calls.insert(
+                    0,
+                    build_sql_summary_tool(
+                        analysis_type=analysis_t,
+                        newspaper_name=named_brand,
+                        issue_date=extracted.get("issue_date"),
+                        date_from=extracted.get("date_from"),
+                        date_to=extracted.get("date_to"),
+                        query=query,
+                        purpose=f"Count verified {analysis_t.split('_')[-1]} in archive",
+                    ),
+                )
 
         # 2. Legacy adapter: if mock/legacy caller provided primary_tool or arguments without tool_calls
         elif plan_obj.primary_tool or plan_obj.arguments:
@@ -1182,12 +1272,25 @@ class QueryPlanner:
             newspaper = params.get("newspaper_name")
 
             if "missing_newspaper_coverage" in diag or "missing articles from" in diag:
+                cov_dt = params.get("issue_date") or params.get("date_from") or active_issue_date
+                cov_pfilt = params.get("page_filter")
                 # Find which newspaper is missing
                 for np_name in get_known_publications():
                     if np_name.lower() in diag:
+                        if cov_dt:
+                            planned_calls.append(build_sql_summary_tool(
+                                newspaper_name=np_name,
+                                issue_date=cov_dt,
+                                page_filter=cov_pfilt,
+                                query=query,
+                                purpose=f"Recover relational manifest for {np_name} on {cov_dt}",
+                            ))
                         planned_calls.append(build_hybrid_search_tool(
                             query=query,
                             newspaper_name=np_name,
+                            date_from=cov_dt,
+                            date_to=cov_dt,
+                            page_filter=cov_pfilt,
                             top_k=8,
                             purpose=f"Recover missing coverage from {np_name}",
                         ))
@@ -1243,7 +1346,12 @@ class QueryPlanner:
             or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper"])
         )
         raw_np = params.get("newspaper_name")
-        newspaper = raw_np if raw_np and (not is_archive_np or raw_np.lower() in q_lower) else None
+        brand_in_q = False
+        if raw_np:
+            b_low = raw_np.lower()
+            b_clean = re.sub(r"^the\s+", "", b_low).strip()
+            brand_in_q = b_low in q_lower or (bool(b_clean) and b_clean in q_lower)
+        newspaper = raw_np if raw_np and (not is_archive_np or brand_in_q) else None
         issue_id = params.get("issue_id") if newspaper else None
 
         has_explicit_range = bool(params.get("date_from") and params.get("date_to"))
