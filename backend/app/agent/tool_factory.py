@@ -86,6 +86,14 @@ def reconcile_and_sanitize_arguments(
     is_archive_np = is_archive_wide_newspaper_query(query)
     has_date_in_query = bool(extracted.get("issue_date") or extracted.get("date_from"))
     named_brand_in_query = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+    is_volume_query = bool(
+        re.search(r"\b(?:how\s+many|total|count\s+of|number\s+of|volume\s+of)\s+.*(?:issues?|newspapers?|editions?|papers?)\b", q_lower)
+        or ("issue" in q_lower and any(w in q_lower for w in ["how many", "total", "count", "number of", "list all"]))
+    )
+    is_comparative = bool(
+        re.search(r"\b(?:compa[a-z]*|contrast[a-z]*|diff[a-z]*|versus|vs\.?)\b", q_lower)
+        or any(w in q_lower for w in ["across newspapers", "across different papers", "all newspapers", "both newspapers"])
+    )
     if is_archive_np and not named_brand_in_query:
         sanitized.pop("newspaper_name", None)
         sanitized.pop("comparison_newspaper", None)
@@ -94,7 +102,17 @@ def reconcile_and_sanitize_arguments(
             sanitized.pop("issue_date", None)
             sanitized.pop("date_from", None)
             sanitized.pop("date_to", None)
-        if tool_name == "sql_analytics" and sanitized.get("analysis_type") in ("issue_summary", None):
+            if tool_name == "sql_analytics" and sanitized.get("analysis_type") in ("issue_summary", None):
+                sanitized["analysis_type"] = "count_issues"
+        elif not is_comparative and any(w in q_lower for w in ["available", "availability", "how many", "count"]):
+            if tool_name == "sql_analytics" and sanitized.get("analysis_type") in ("issue_summary", None):
+                sanitized["analysis_type"] = "count_issues"
+
+    if is_volume_query and not has_date_in_query:
+        sanitized.pop("issue_date", None)
+        sanitized.pop("date_from", None)
+        sanitized.pop("date_to", None)
+        if tool_name == "sql_analytics":
             sanitized["analysis_type"] = "count_issues"
 
     # Newspaper Brand Normalization
@@ -164,6 +182,8 @@ def reconcile_and_sanitize_arguments(
             sanitized["analysis_type"] = "coverage_difference"
         elif extracted.get("is_shared") and sanitized.get("analysis_type") in ("coverage_difference", None, "issue_summary"):
             sanitized["analysis_type"] = "shared_coverage"
+        elif not is_comparative and ((is_volume_query and not has_date_in_query) or (is_archive_np and not named_brand_in_query and not has_date_in_query)):
+            sanitized["analysis_type"] = "count_issues"
         elif not sanitized.get("analysis_type"):
             if sanitized.get("issue_date") or extracted.get("issue_date") or sanitized.get("page_filter") or extracted.get("page_filter"):
                 sanitized["analysis_type"] = "issue_summary"
@@ -179,7 +199,7 @@ def reconcile_and_sanitize_arguments(
             sanitized["newspaper_name"] = valid_brands[0]
 
     # Date normalization & ground truth retention
-    if is_archive_np and not has_date_in_query and not named_brand_in_query:
+    if (is_archive_np and not has_date_in_query and not named_brand_in_query) or (is_volume_query and not has_date_in_query):
         sanitized.pop("issue_date", None)
         sanitized.pop("date_from", None)
         sanitized.pop("date_to", None)
@@ -194,7 +214,7 @@ def reconcile_and_sanitize_arguments(
             sanitized["date_from"] = sanitized["issue_date"]
         if not sanitized.get("date_to"):
             sanitized["date_to"] = sanitized["issue_date"]
-    elif active_issue_date and not extracted.get("date_from") and not is_archive_np:
+    elif active_issue_date and not extracted.get("date_from") and not is_archive_np and not is_volume_query:
         if "issue_date" not in sanitized:
             sanitized["issue_date"] = active_issue_date
             if not sanitized.get("date_from"):

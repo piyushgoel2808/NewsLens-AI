@@ -57,7 +57,20 @@ class SQLAnalyticsDispatcher:
                 analysis_type = "count_advertisements"
             elif any(w in q_text for w in ["photo count", "photos count", "number of photos"]):
                 analysis_type = "count_photos"
-            elif any(w in q_text for w in ["number of issues", "total issues", "availability"]):
+            elif any(w in q_text for w in [
+                "number of issues", "total issues", "availability", "how many issues",
+                "issue count", "count issues", "list all the newspaper", "list all newspapers",
+                "available newspaper", "how many newspaper", "how many editions",
+            ]):
+                analysis_type = "count_issues"
+            elif any(w in q_text for w in ["how many", "count", "number of", "total", "volume"]):
+                if any(w in q_text for w in ["issue", "newspaper", "edition", "paper"]):
+                    analysis_type = "count_issues"
+                elif any(w in q_text for w in ["article", "story", "news"]):
+                    analysis_type = "count_articles"
+                else:
+                    analysis_type = "count_issues"
+            elif is_archive_wide_newspaper_query(q_text) or any(w in q_text for w in ["available", "inventory", "archive", "newspapers"]):
                 analysis_type = "count_issues"
             else:
                 analysis_type = "issue_summary"
@@ -151,11 +164,14 @@ class SQLAnalyticsDispatcher:
         page_filter = str(args["page_filter"]).strip() if args.get("page_filter") is not None else None
         d_from = args.get("date_from")
         d_to = args.get("date_to")
-        has_date_range = bool(d_from and d_to)
+        has_multi_day_range = bool(d_from and d_to and d_from != d_to)
+        has_single_date = bool(args.get("issue_date") or (d_from and d_to and d_from == d_to))
         is_archive_np = is_archive_wide_newspaper_query(state.get("query", "")) or is_archive_wide_newspaper_query(args.get("query", ""))
 
-        # Redirect date-range or archive-wide requests without a specific newspaper to count_issues
-        if (has_date_range or is_archive_np) and not args.get("newspaper_name"):
+        # Redirect multi-day date range or archive-wide requests without a specific date or newspaper to count_issues
+        if ((has_multi_day_range or is_archive_np) and not has_single_date and not args.get("newspaper_name")) or (
+            has_multi_day_range and not args.get("newspaper_name")
+        ):
             args["analysis_type"] = "count_issues"
             res = await self.dispatch(args, state, active_issue_id, active_newspaper_name, active_issue_date)
             return res if res is not None else ([], 0, {})
@@ -449,11 +465,15 @@ class SQLAnalyticsDispatcher:
             or re.search(r"\b(?:no|number|count|how many|all|total)\s+(?:of\s+)?newspapers?\b", q_low)
             or any(w in q_low for w in ["all available", "all newspaper", "both newspaper", "across newspaper"])
         )
+        is_volume_query = bool(
+            re.search(r"\b(?:how\s+many|total|count\s+of|number\s+of|volume\s+of)\s+.*(?:issues?|newspapers?|editions?|papers?)\b", f"{q_low} {q_arg}")
+            or ("issue" in f"{q_low} {q_arg}" and any(w in f"{q_low} {q_arg}" for w in ["how many", "total", "count", "number of", "list all"]))
+        )
         has_date_in_q = bool(re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", f"{q_low} {q_arg}"))
-        if is_archive_wide and not has_date_in_q and not args.get("issue_date") and not d_from and not d_to or d_from or d_to:
+        if (is_archive_wide or is_volume_query) and not has_date_in_q and not args.get("issue_date") and not d_from and not d_to:
             iss_date = None
         else:
-            iss_date = args.get("issue_date") or args.get("date") or (active_issue_date if not is_archive_wide else None)
+            iss_date = args.get("issue_date") or args.get("date") or (active_issue_date if not is_archive_wide and not is_volume_query else None)
 
         named_in_q = any(pat.search(q_low) or pat.search(q_arg) for pat, _ in _KNOWN_BRANDS_PATTERNS)
         if (is_archive_wide and not named_in_q) or args.get("newspaper_name") == "":
@@ -484,20 +504,42 @@ class SQLAnalyticsDispatcher:
             matching_nps = iss_res.get("newspapers", [])
             nps_count = len(matching_nps)
             nps_str = ", ".join(matching_nps) or (np_name or "All Newspapers")
-            issues_sample = ", ".join(
-                f"{iss.get('newspaper')} ({iss.get('issue_date')})"
-                for iss in iss_res.get("issues", [])[:5]
-            )
-            summary_str = (
-                f"=== RELATIONAL ISSUE COUNT AUDIT ===\n"
-                f"• Total Matching Issues: {c_val}\n"
-                f"• Total Distinct Newspapers: {nps_count}\n"
-                f"• Distinct Publication Count: {nps_count}\n"
-                f"• Target Date / Range: {target_date_val}\n"
-                f"• Newspaper(s): {nps_str}\n"
-                f"• Active Filters: {filt_info or 'None'}\n"
-                f"• Issues Found: {issues_sample}\n"
-            )
+            pub_summaries = iss_res.get("publication_summary", [])
+
+            lines = [
+                "=== RELATIONAL ISSUE COUNT & PUBLICATION ROSTER ===",
+                f"• Total Matching Issues: {c_val}",
+                f"• Total Distinct Newspapers: {nps_count}",
+                f"• Distinct Publication Count: {nps_count}",
+                f"• Target Date / Range: {target_date_val}",
+                f"• Newspaper(s): {nps_str}",
+                f"• Active Filters: {filt_info or 'None'}",
+            ]
+            if pub_summaries:
+                lines.append("• Publication Breakdown & Verified Dates:")
+                for p in pub_summaries:
+                    p_name = p.get("newspaper", "")
+                    p_cnt = p.get("issue_count", 0)
+                    p_min = p.get("min_date", "")
+                    p_max = p.get("max_date", "")
+                    p_dates = p.get("dates", [])
+                    if p_dates:
+                        if len(p_dates) > 15:
+                            dates_str = f"{p_min} to {p_max} ({len(p_dates)} dates: {', '.join(p_dates[:10])}, ..., {p_dates[-1]})"
+                        else:
+                            dates_str = ", ".join(p_dates)
+                        lines.append(f"  - {p_name}: {p_cnt} issue{'s' if p_cnt != 1 else ''} (Dates: {dates_str})")
+                    else:
+                        span = f"{p_min} to {p_max}" if p_min != p_max else p_min
+                        lines.append(f"  - {p_name}: {p_cnt} issue{'s' if p_cnt != 1 else ''} ({span})")
+            else:
+                issues_sample = ", ".join(
+                    f"{iss.get('newspaper')} ({iss.get('issue_date')})"
+                    for iss in iss_res.get("issues", [])[:20]
+                )
+                lines.append(f"• Issues Found: {issues_sample}")
+
+            summary_str = "\n".join(lines)
             hl_text = f"Issue & Newspaper Count Analysis: {nps_count} newspapers ({c_val} issues) found for {target_date_val}"
         else:
             rng = iss_res.get("archive_range")

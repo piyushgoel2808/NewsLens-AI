@@ -165,6 +165,15 @@ Output: {"thought_process": "Quantitative count of newspaper issues. Schedule sq
 Query: "Is any newspaper available for dated 2024-04-15?"
 Output: {"thought_process": "Relational archive availability inquiry for 2024-04-15. Schedule sql_analytics count_issues with exact date.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues", "issue_date": "2024-04-15"}, "purpose": "Check archive newspaper availability for 2024-04-15"}], "answer_blueprint": {"user_intent": "archive_availability", "overall_tone": "concise_atomic", "target_word_count": 90, "sections": [{"title": "### ⚡ Availability Status", "format_type": "narrative", "content_focus": "Direct authoritative statement stating whether newspaper issues exist in the archive for the queried date", "target_length": "1 to 2 crisp sentences"}, {"title": "### 📋 Archive Scope & Available Coverage", "format_type": "bullet_list", "content_focus": "Compact list of available newspapers on that date, or if none, the verified archive date range and available publications", "target_length": "Compact bullet points"}], "prohibited_elements": ["speculative corporate strategy or publication planning advice", "fake future collaboration suggestions", "claiming positive availability when count is zero", "conversational filler"]}}
 
+Query: "Make a list of all the newspaper with there dates that are available"
+Output: {"thought_process": "User wants a comprehensive catalog/roster of all available newspapers in the archive and their respective publication dates. Schedule sql_analytics count_issues across the entire archive without date or brand filters.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"analysis_type": "count_issues"}, "purpose": "Retrieve complete archive inventory of all publications, issue counts, and date spans"}]}
+
+Query: "How many issues are there in Hindustan Times ?"
+Output: {"thought_process": "User is asking for the total number of issues archived for Hindustan Times across all dates. Schedule sql_analytics count_issues targeting Hindustan Times without date filters.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "Hindustan Times", "analysis_type": "count_issues"}, "purpose": "Count all issues of Hindustan Times across the archive"}]}
+
+Query: "Compare all the newspaper available on 1/8/2026"
+Output: {"thought_process": "User is asking to compare all newspapers published on 2026-08-01 without naming specific brands. Schedule sql_analytics issue_summary for 2026-08-01 without newspaper_name to retrieve all issue manifests on that date, and hybrid_search for comparative news excerpts.", "archetype": "cross_newspaper_comparison", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"issue_date": "2026-08-01", "analysis_type": "issue_summary"}, "purpose": "Retrieve manifests of all newspapers published on 2026-08-01"}, {"tool_name": "hybrid_search", "arguments": {"query": "top lead stories headlines front page", "date_from": "2026-08-01", "date_to": "2026-08-01", "top_k": 10}, "purpose": "Retrieve comparative news excerpts across available publications on 2026-08-01"}]}
+
 Query: "How many advertisements are there in The Times of India on 2026-06-15?"
 Output: {"thought_process": "Quantitative count of advertisements in The Times of India on 2026-06-15. Schedule sql_analytics count_advertisements.", "archetype": "quantitative_trend", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Times of India", "issue_date": "2026-06-15", "analysis_type": "count_advertisements"}, "purpose": "Count total advertisements in The Times of India on 2026-06-15"}]}
 
@@ -939,6 +948,32 @@ class QueryPlanner:
                         )
                         assigned_nps.add(req_np.lower())
 
+            # Unnamed cross-newspaper comparison check on a specific date (e.g. "COMPARE ALL THE NEWSPAPER AVAILABLE ON 1/8/2026")
+            if archetype == "cross_newspaper_comparison" and len(target_nps) < 2 and (extracted.get("issue_date") or active_issue_date):
+                target_dt = extracted.get("issue_date") or active_issue_date
+                has_summary = any(
+                    c.tool_name == "sql_analytics" and c.arguments.get("analysis_type") == "issue_summary"
+                    for c in tool_calls
+                )
+                if not has_summary:
+                    sql_calls = [c for c in tool_calls if c.tool_name == "sql_analytics"]
+                    if sql_calls:
+                        sql_calls[0].arguments["analysis_type"] = "issue_summary"
+                        sql_calls[0].arguments["issue_date"] = target_dt
+                        sql_calls[0].arguments.pop("newspaper_name", None)
+                        sql_calls[0].purpose = f"Retrieve manifests for all newspapers on {target_dt}"
+                    else:
+                        tool_calls.insert(
+                            0,
+                            build_sql_summary_tool(
+                                newspaper_name=None,
+                                issue_date=target_dt,
+                                page_filter=extracted.get("page_filter"),
+                                query=query,
+                                purpose=f"Retrieve manifests for all newspapers on {target_dt}",
+                            ),
+                        )
+
             # Multi-page completeness check: ensure all targeted pages have an issue_summary call scheduled
             target_pages: list[str] = [str(p).strip() for p in extracted.get("target_pages", []) if str(p).strip()]
             if len(target_pages) >= 2:
@@ -996,22 +1031,53 @@ class QueryPlanner:
                     if c.tool_name == "hybrid_search" and "page_filter" in c.arguments:
                         c.arguments.pop("page_filter", None)
 
-            # Quantitative trend count safety: ensure sql_analytics is scheduled for count queries
-            if archetype == "quantitative_trend" and not any(c.tool_name == "sql_analytics" for c in tool_calls):
-                named_brand = extracted.get("newspaper_name")
-                analysis_t = "count_articles" if "article" in q_lower else "count_issues"
-                tool_calls.insert(
-                    0,
-                    build_sql_summary_tool(
-                        analysis_type=analysis_t,
-                        newspaper_name=named_brand,
-                        issue_date=extracted.get("issue_date"),
-                        date_from=extracted.get("date_from"),
-                        date_to=extracted.get("date_to"),
-                        query=query,
-                        purpose=f"Count verified {analysis_t.split('_')[-1]} in archive",
-                    ),
-                )
+            # Quantitative trend count safety: ensure sql_analytics is scheduled with count_issues for count queries
+            is_volume_q = (not is_comparative) and bool(
+                re.search(r"\b(?:how\s+many|total|count\s+of|number\s+of|volume\s+of)\s+.*(?:issues?|newspapers?|editions?|papers?)\b", q_lower)
+                or ("issue" in q_lower and any(w in q_lower for w in ["how many", "total", "count", "number of", "list all"]))
+                or is_archive_wide_newspaper_query(query)
+            )
+            if (archetype == "quantitative_trend" or is_volume_q) and archetype != "cross_newspaper_comparison":
+                sql_found = False
+                for c in tool_calls:
+                    if c.tool_name == "sql_analytics":
+                        sql_found = True
+                        if is_volume_q and c.arguments.get("analysis_type") in ("issue_summary", None, ""):
+                            c.arguments["analysis_type"] = "count_issues"
+                            if not extracted.get("issue_date"):
+                                c.arguments.pop("issue_date", None)
+                                c.arguments.pop("date_from", None)
+                                c.arguments.pop("date_to", None)
+                if not sql_found:
+                    named_brand = extracted.get("newspaper_name")
+                    analysis_t = "count_articles" if "article" in q_lower and not is_volume_q else "count_issues"
+                    iss_dt = extracted.get("issue_date") if not is_volume_q else None
+                    tool_calls.insert(
+                        0,
+                        build_sql_summary_tool(
+                            analysis_type=analysis_t,
+                            newspaper_name=named_brand,
+                            issue_date=iss_dt,
+                            date_from=extracted.get("date_from") if not is_volume_q else None,
+                            date_to=extracted.get("date_to") if not is_volume_q else None,
+                            query=query,
+                            purpose=f"Count verified {analysis_t.split('_')[-1]} in archive",
+                        ),
+                    )
+
+            # Clean conversational meta-phrases from hybrid_search queries to maximize vector recall
+            for c in tool_calls:
+                if c.tool_name == "hybrid_search" and c.arguments.get("query"):
+                    q_val = str(c.arguments["query"]).strip()
+                    cleaned_q = re.sub(
+                        r"^(?:please\s+)?(?:compare|contrast|difference\s+between|list|show\s+me)\s+(?:all\s+)?(?:the\s+)?(?:available\s+)?(?:newspapers?|broadsheets?|dailies|papers?)\s+(?:available\s+)?(?:on|dated|for)?\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})?\s*(?:regarding|about|on)?\s*",
+                        "",
+                        q_val,
+                        flags=re.I,
+                    ).strip()
+                    if not cleaned_q or len(cleaned_q) < 3:
+                        cleaned_q = "top lead stories front page headlines news"
+                    c.arguments["query"] = cleaned_q
 
         # 2. Legacy adapter: if mock/legacy caller provided primary_tool or arguments without tool_calls
         elif plan_obj.primary_tool or plan_obj.arguments:
@@ -1463,6 +1529,10 @@ class QueryPlanner:
             re.search(r"\b(?:no|number|count|how many|all|total|which|list)\s+(?:of\s+)?newspapers?\b", q_lower)
             or any(w in q_lower for w in ["all available", "all newspaper", "both newspaper", "across newspaper"])
         )
+        is_volume_query = bool(
+            re.search(r"\b(?:how\s+many|total|count\s+of|number\s+of|volume\s+of)\s+.*(?:issues?|newspapers?|editions?|papers?)\b", q_lower)
+            or ("issue" in q_lower and any(w in q_lower for w in ["how many", "total", "count", "number of", "list all"]))
+        )
         raw_np = params.get("newspaper_name")
         brand_in_q = False
         if raw_np:
@@ -1473,7 +1543,11 @@ class QueryPlanner:
         issue_id = params.get("issue_id") if newspaper else None
 
         has_explicit_range = bool(params.get("date_from") and params.get("date_to"))
-        issue_date = params.get("issue_date") or (None if has_explicit_range else active_issue_date)
+        has_explicit_date = bool(params.get("issue_date"))
+        if is_archive_np or is_volume_query:
+            issue_date = params.get("issue_date") if has_explicit_date else None
+        else:
+            issue_date = params.get("issue_date") or (None if has_explicit_range else active_issue_date)
         date_from = params.get("date_from") or issue_date
         date_to = params.get("date_to") or issue_date
         target_dates = params.get("target_dates") or ([issue_date] if issue_date else [])

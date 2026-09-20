@@ -876,6 +876,7 @@ class SQLAnalyticsEngine:
             count = res.scalar() or 0
 
             matching_newspapers: list[str] = []
+            publication_summary: list[dict[str, Any]] = []
             matching_issues: list[dict[str, Any]] = []
             archive_range: dict[str, str] | None = None
             archive_newspapers: list[str] = []
@@ -912,7 +913,7 @@ class SQLAnalyticsEngine:
                         stmt_detail = stmt_detail.where(Issue.issue_date >= norm_from)
                     if norm_to:
                         stmt_detail = stmt_detail.where(Issue.issue_date <= norm_to)
-                stmt_detail = stmt_detail.order_by(Issue.issue_date.desc(), Newspaper.name).limit(20)
+                stmt_detail = stmt_detail.order_by(Issue.issue_date.desc(), Newspaper.name).limit(500)
                 res_det = await db.execute(stmt_detail)
                 for r in res_det.all():
                     matching_issues.append({
@@ -920,6 +921,23 @@ class SQLAnalyticsEngine:
                         "issue_date": str(r[1]),
                         "newspaper": r[2],
                         "pages": r[3] or 1,
+                    })
+
+                pub_map: dict[str, list[str]] = {}
+                for iss in matching_issues:
+                    np = iss["newspaper"]
+                    dt = iss["issue_date"]
+                    pub_map.setdefault(np, []).append(dt)
+
+                for np in matching_newspapers:
+                    raw_dates = pub_map.get(np, [])
+                    dates = sorted(list(set(raw_dates)))
+                    publication_summary.append({
+                        "newspaper": np,
+                        "issue_count": len(raw_dates) if not newspaper_name else count,
+                        "min_date": dates[0] if dates else None,
+                        "max_date": dates[-1] if dates else None,
+                        "dates": dates,
                     })
             else:
                 res_rng = await db.execute(select(func.min(Issue.issue_date), func.max(Issue.issue_date)))
@@ -932,6 +950,7 @@ class SQLAnalyticsEngine:
             return {
                 "count": count,
                 "newspapers": matching_newspapers,
+                "publication_summary": publication_summary,
                 "issues": matching_issues,
                 "archive_range": archive_range,
                 "archive_newspapers": archive_newspapers,

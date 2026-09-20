@@ -497,6 +497,36 @@ class EvidenceEvaluator:
                         corrective_hints={"is_archive_wide": True},
                     )
 
+            # Publication-wide issue volume audit: query asked for total issues of a newspaper without specifying a date,
+            # but evidence only summarized a single day's issue manifest instead of an archive-wide issue count
+            is_issue_vol_q = bool(
+                re.search(r"\b(?:how\s+many|total|count\s+of|number\s+of|volume\s+of)\s+.*(?:issues?|newspapers?|editions?|papers?)\b", query.lower())
+                or ("issue" in query.lower() and any(w in query.lower() for w in ["how many", "total", "count", "number of"]))
+            )
+            has_explicit_date_in_q = bool(params.get("issue_date") or params.get("target_dates") or re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", query))
+            if is_issue_vol_q and not has_explicit_date_in_q:
+                # Evidence is insufficient if it is merely a single-issue daily manifest rather than a relational issue count audit
+                has_issue_count_audit = any(
+                    "=== RELATIONAL ISSUE COUNT" in str(it.get("snippet", ""))
+                    or "Total Matching Issues:" in str(it.get("snippet", ""))
+                    or (it.get("metadata", {}).get("total_issues") is not None and it.get("metadata", {}).get("target_date") == "Overview")
+                    for it in evidence
+                )
+                if not has_issue_count_audit:
+                    detected_gaps.append("single_issue_scope_mismatch")
+                    gap_msg = (
+                        "Query requested total issues of a publication across the archive, but retrieved evidence only returned a single day's issue manifest. "
+                        "Dynamic tool synthesis required to inspect schema and compute exact aggregate counts across all issues."
+                    )
+                    return EvaluationVerdict(
+                        is_sufficient=False,
+                        quality_score=0.30,
+                        gap_reason=gap_msg,
+                        detected_gaps=detected_gaps,
+                        recommended_action="synthesize_dynamic_tool",
+                        corrective_hints={"analysis_type": "count_issues", "is_archive_wide": True},
+                    )
+
         # 3. Semantic Relevance Floor Audit
         raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower())
         query_tokens = [w for w in raw_query_words if w not in _STOP_WORDS]

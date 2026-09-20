@@ -160,6 +160,8 @@ class ArchiveMetadata:
     publications: list[str]
     categories: list[str]
     context_str: str
+    total_issues: int = 0
+    publication_roster: tuple[tuple[str, int, str, str], ...] = ()
 
 
 def get_fallback_archive_metadata() -> ArchiveMetadata:
@@ -220,6 +222,8 @@ async def get_archive_metadata(
     max_date = STATIC_ARCHIVE_DATE_MAX
     publications = list(STATIC_CANONICAL_PUBLICATIONS)
     categories = list(STATIC_CANONICAL_CATEGORIES)
+    total_issues = 0
+    pub_roster: list[tuple[str, int, str, str]] = []
 
     if session_factory is not None:
         try:
@@ -229,34 +233,51 @@ async def get_archive_metadata(
             from app.models.newspaper import Issue, Newspaper
 
             async with session_factory() as db:
-                # Query date range and distinct publications
+                # Query date range and total completed issues
                 stmt = select(
                     func.min(Issue.issue_date),
                     func.max(Issue.issue_date),
+                    func.count(Issue.id),
                 ).where(Issue.ingestion_status.in_(("completed", "indexed", "ready")))
                 res = await db.execute(stmt)
                 row = res.one_or_none()
                 if inspect.isawaitable(row):
                     row = await row
-                d_min, d_max = row or (None, None)
+                d_min, d_max, total_cnt = row or (None, None, 0)
                 if d_min:
                     min_date = str(d_min)
                 if d_max:
                     max_date = str(d_max)
+                if total_cnt:
+                    total_issues = int(total_cnt)
 
-                # Query distinct active newspapers
-                np_stmt = (
-                    select(Newspaper.name)
+                # Query publication-level grouped roster (name, issue count, min date, max date)
+                roster_stmt = (
+                    select(
+                        Newspaper.name,
+                        func.count(Issue.id),
+                        func.min(Issue.issue_date),
+                        func.max(Issue.issue_date),
+                    )
                     .join(Issue, Issue.newspaper_id == Newspaper.id)
                     .where(Issue.ingestion_status.in_(("completed", "indexed", "ready")))
-                    .distinct()
+                    .group_by(Newspaper.id, Newspaper.name)
                     .order_by(Newspaper.name)
                 )
-                np_res = await db.execute(np_stmt)
-                scalars = np_res.scalars()
-                if inspect.isawaitable(scalars):
-                    scalars = await scalars
-                db_pubs = list(scalars.all() if hasattr(scalars, "all") else [])
+                roster_res = await db.execute(roster_stmt)
+                roster_rows = roster_res.all()
+                if inspect.isawaitable(roster_rows):
+                    roster_rows = await roster_rows
+
+                db_pubs: list[str] = []
+                for r in roster_rows:
+                    p_name = str(r[0])
+                    p_cnt = int(r[1])
+                    p_min = str(r[2]) if r[2] else ""
+                    p_max = str(r[3]) if r[3] else ""
+                    pub_roster.append((p_name, p_cnt, p_min, p_max))
+                    db_pubs.append(p_name)
+
                 if db_pubs:
                     publications = db_pubs
 
@@ -277,10 +298,16 @@ async def get_archive_metadata(
         STATIC_BROADSHEET_SCHEMA,
         "",
         "### 📅 ACTIVE ARCHIVE COVERAGE & BOUNDARIES",
-        f"- Verified Date Range: {min_date} to {max_date}",
-        f"- Available Broadsheet Publications ({len(publications)}): {', '.join(publications)}",
-        f"- Active Taxonomy Categories: {', '.join(categories)}",
+        f"- Total Issues in Archive: {total_issues or len(pub_roster)} across {len(publications)} publications ({min_date} to {max_date})",
+        "- Publications & Verified Dates:",
     ]
+    if pub_roster:
+        for p_name, p_cnt, p_min, p_max in pub_roster:
+            span_str = f"{p_min} to {p_max}" if p_min != p_max else p_min
+            context_lines.append(f"  * {p_name}: {p_cnt} issue{'s' if p_cnt != 1 else ''} ({span_str})")
+    else:
+        context_lines.append(f"  * Available Publications: {', '.join(publications)}")
+    context_lines.append(f"- Active Taxonomy Categories: {', '.join(categories)}")
 
     context_str = "\n".join(context_lines)
     meta = ArchiveMetadata(
@@ -289,6 +316,8 @@ async def get_archive_metadata(
         publications=publications,
         categories=categories,
         context_str=context_str,
+        total_issues=total_issues or len(pub_roster),
+        publication_roster=tuple(pub_roster),
     )
     _ARCHIVE_CACHE["cached_at"] = now
     _ARCHIVE_CACHE["context_str"] = context_str
