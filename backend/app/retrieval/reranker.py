@@ -77,14 +77,18 @@ class CrossEncoderReranker:
         self,
         model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
         device: str | None = None,
+        model: Any = None,
     ) -> None:
         self.model_name = model_name
         self.device = device or _detect_best_device()
         self._fallback = HeuristicReranker()
         self._load_lock = asyncio.Lock()
+        self._model = model
 
     def _load_model_sync(self) -> Any:
         """Load cross-encoder model synchronously with process-wide caching."""
+        if self._model is not None:
+            return self._model
         global _SHARED_CROSS_ENCODERS
         if self.model_name in _SHARED_CROSS_ENCODERS:
             return _SHARED_CROSS_ENCODERS[self.model_name]
@@ -110,7 +114,7 @@ class CrossEncoderReranker:
         """Synchronously compute raw cross-encoder relevance scores for query-document pairs."""
         if not pairs:
             return []
-        model = self._load_model_sync()
+        model = self._model if self._model is not None else self._load_model_sync()
         if model is not None:
             try:
                 raw_scores = model.predict(pairs, batch_size=32, show_progress_bar=False)
@@ -127,6 +131,8 @@ class CrossEncoderReranker:
         return results
 
     async def _get_model(self) -> Any:
+        if self._model is not None:
+            return self._model
         global _SHARED_CROSS_ENCODERS
         if self.model_name in _SHARED_CROSS_ENCODERS:
             return _SHARED_CROSS_ENCODERS[self.model_name]
