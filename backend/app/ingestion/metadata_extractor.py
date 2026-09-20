@@ -227,14 +227,19 @@ class MetadataExtractor:
                     db_entity_id = db_entity.id
                 self._entity_cache[ent_key] = db_entity_id
 
-            # Link article entity
-            art_ent = ArticleEntity(
-                article_id=article_id,
-                entity_id=db_entity_id,
-                mention_count=ent.mention_count,
-                salience_score=ent.salience_score,
-            )
-            self._db.add(art_ent)
+            # Link article entity (with deduplication / conflict protection)
+            existing_ent = await self._db.get(ArticleEntity, (article_id, db_entity_id))
+            if existing_ent:
+                existing_ent.mention_count = max(existing_ent.mention_count or 0, ent.mention_count)
+                existing_ent.salience_score = max(existing_ent.salience_score or 0.0, ent.salience_score)
+            else:
+                art_ent = ArticleEntity(
+                    article_id=article_id,
+                    entity_id=db_entity_id,
+                    mention_count=ent.mention_count,
+                    salience_score=ent.salience_score,
+                )
+                self._db.add(art_ent)
 
         # 3. Persist Topics & ArticleTopic junction using in-memory cache
         for top in topics:
@@ -250,12 +255,16 @@ class MetadataExtractor:
                     topic_id = topic_record.id
                 self._topic_cache[top.name] = topic_id
 
-            art_top = ArticleTopic(
-                article_id=article_id,
-                topic_id=topic_id,
-                confidence=top.confidence,
-            )
-            self._db.add(art_top)
+            existing_top = await self._db.get(ArticleTopic, (article_id, topic_id))
+            if existing_top:
+                existing_top.confidence = max(existing_top.confidence or 0.0, top.confidence)
+            else:
+                art_top = ArticleTopic(
+                    article_id=article_id,
+                    topic_id=topic_id,
+                    confidence=top.confidence,
+                )
+                self._db.add(art_top)
 
         await self._db.flush()
 
@@ -325,7 +334,25 @@ class MetadataExtractor:
                     await self._db.flush()
                     self._topic_cache[top.name] = new_top.id
 
-        # 4. Link all ArticleEntity and ArticleTopic records in batch
+        # 4. Link all ArticleEntity and ArticleTopic records in batch with deduplication and conflict protection
+        article_ids = [aid for aid, _, _, _ in all_extracted]
+        existing_topic_links: set[tuple[int, int]] = set()
+        existing_entity_links: set[tuple[int, int]] = set()
+        if article_ids:
+            at_res = await self._db.execute(
+                select(ArticleTopic.article_id, ArticleTopic.topic_id).where(
+                    ArticleTopic.article_id.in_(article_ids)
+                )
+            )
+            existing_topic_links = {(r[0], r[1]) for r in at_res.all()}
+
+            ae_res = await self._db.execute(
+                select(ArticleEntity.article_id, ArticleEntity.entity_id).where(
+                    ArticleEntity.article_id.in_(article_ids)
+                )
+            )
+            existing_entity_links = {(r[0], r[1]) for r in ae_res.all()}
+
         for article_id, ents, tops, summ in all_extracted:
             art_stmt = select(Article).where(Article.id == article_id)
             art_res = await self._db.execute(art_stmt)
@@ -333,24 +360,32 @@ class MetadataExtractor:
             if article:
                 article.summary = summ
 
+            seen_ent_ids: set[int] = set()
             for ent in ents:
-                ent_id = self._entity_cache[(ent.name, ent.type)]
-                art_ent = ArticleEntity(
-                    article_id=article_id,
-                    entity_id=ent_id,
-                    mention_count=ent.mention_count,
-                    salience_score=ent.salience_score,
-                )
-                self._db.add(art_ent)
+                ent_id = self._entity_cache.get((ent.name, ent.type))
+                if ent_id and ent_id not in seen_ent_ids and (article_id, ent_id) not in existing_entity_links:
+                    seen_ent_ids.add(ent_id)
+                    existing_entity_links.add((article_id, ent_id))
+                    art_ent = ArticleEntity(
+                        article_id=article_id,
+                        entity_id=ent_id,
+                        mention_count=ent.mention_count,
+                        salience_score=ent.salience_score,
+                    )
+                    self._db.add(art_ent)
 
+            seen_top_ids: set[int] = set()
             for top in tops:
-                top_id = self._topic_cache[top.name]
-                art_top = ArticleTopic(
-                    article_id=article_id,
-                    topic_id=top_id,
-                    confidence=top.confidence,
-                )
-                self._db.add(art_top)
+                top_id = self._topic_cache.get(top.name)
+                if top_id and top_id not in seen_top_ids and (article_id, top_id) not in existing_topic_links:
+                    seen_top_ids.add(top_id)
+                    existing_topic_links.add((article_id, top_id))
+                    art_top = ArticleTopic(
+                        article_id=article_id,
+                        topic_id=top_id,
+                        confidence=top.confidence,
+                    )
+                    self._db.add(art_top)
 
         await self._db.flush()
         return results

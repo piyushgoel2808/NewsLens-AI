@@ -603,6 +603,7 @@ async def _execute_ingestion_pipeline(
 
             # Save Multi-Topic Secondary Categories if present
             if class_res.secondary_categories:
+                seen_sec_topics: set[int] = set()
                 for sec_cat_name, sec_conf in class_res.secondary_categories:
                     t_fetch = await db.execute(
                         select(Topic.id).where(Topic.name == sec_cat_name)
@@ -613,12 +614,18 @@ async def _execute_ingestion_pipeline(
                         db.add(new_t)
                         await db.flush()
                         t_id = new_t.id
-                    art_topic = ArticleTopic(
-                        article_id=article_record.id,
-                        topic_id=t_id,
-                        confidence=sec_conf,
-                    )
-                    db.add(art_topic)
+                    if t_id not in seen_sec_topics:
+                        seen_sec_topics.add(t_id)
+                        existing_at = await db.get(ArticleTopic, (article_record.id, t_id))
+                        if existing_at:
+                            existing_at.confidence = max(existing_at.confidence or 0.0, sec_conf)
+                        else:
+                            art_topic = ArticleTopic(
+                                article_id=article_record.id,
+                                topic_id=t_id,
+                                confidence=sec_conf,
+                            )
+                            db.add(art_topic)
 
             persisted_articles.append((article_record, assembled, class_res))
 

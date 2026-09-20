@@ -49,6 +49,10 @@ def main() -> None:
     health_thread.start()
 
     # 2. Build Celery worker command using the active Python interpreter
+    concurrency = os.environ.get("CELERY_CONCURRENCY", "1")
+    time_limit = os.environ.get("CELERY_TIME_LIMIT", "3600")
+    soft_time_limit = os.environ.get("CELERY_SOFT_TIME_LIMIT", "3300")
+
     cmd = [
         sys.executable,
         "-m",
@@ -57,10 +61,10 @@ def main() -> None:
         "app.ingestion.celery_app",
         "worker",
         "--loglevel=info",
-        "--concurrency=2",
+        f"--concurrency={concurrency}",
         "--max-tasks-per-child=10",
-        "--time-limit=600",
-        "--soft-time-limit=540",
+        f"--time-limit={time_limit}",
+        f"--soft-time-limit={soft_time_limit}",
     ]
 
     # If any CLI arguments are forwarded, append or override
