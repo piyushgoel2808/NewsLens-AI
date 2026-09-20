@@ -186,8 +186,8 @@ jobs:
               --image=${{ steps.meta.outputs.registry }}/worker:${{ steps.meta.outputs.sha }} \
               --command="python" \
               --args="-m,app.run_worker" \
-              --cpu=1 \
-              --memory=2Gi \
+              --cpu=2 \
+              --memory=4Gi \
               --min-instances=1 \
               --no-cpu-throttling \
               --timeout=1800 \
