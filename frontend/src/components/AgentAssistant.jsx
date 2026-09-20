@@ -23,6 +23,8 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
+import { deduplicatedFetch } from '../utils/apiDeduplicator';
+
 import ModelSelector from './ModelSelector';
 
 // Custom dark-mode theme components for ReactMarkdown
@@ -258,15 +260,15 @@ export default function AgentAssistant() {
 
   // Fetch configured model providers
   useEffect(() => {
-    fetch('/api/models/available')
-      .then((res) => res.json())
+    deduplicatedFetch('/api/models/available')
       .then((data) => {
-        if (data.models) {
+        if (data && data.models) {
           setAvailableModels(data.models);
         }
       })
       .catch((err) => console.error('Failed to load models:', err));
   }, []);
+
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

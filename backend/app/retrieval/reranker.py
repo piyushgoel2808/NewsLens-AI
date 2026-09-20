@@ -67,6 +67,9 @@ class HeuristicReranker:
         return [c for _, c in scored[:top_k]]
 
 
+_SHARED_CROSS_ENCODERS: dict[str, Any] = {}
+
+
 class CrossEncoderReranker:
     """Production Cross-Encoder Neural Reranker utilizing sentence-transformers or fast fallback."""
 
@@ -77,12 +80,15 @@ class CrossEncoderReranker:
     ) -> None:
         self.model_name = model_name
         self.device = device or _detect_best_device()
-        self._model: Any = None
         self._fallback = HeuristicReranker()
         self._load_lock = asyncio.Lock()
 
     def _load_model_sync(self) -> Any:
-        """Load cross-encoder model synchronously."""
+        """Load cross-encoder model synchronously with process-wide caching."""
+        global _SHARED_CROSS_ENCODERS
+        if self.model_name in _SHARED_CROSS_ENCODERS:
+            return _SHARED_CROSS_ENCODERS[self.model_name]
+
         try:
             from sentence_transformers import CrossEncoder
 
@@ -90,7 +96,9 @@ class CrossEncoderReranker:
                 "Loading Cross-Encoder model on device",
                 extra={"model": self.model_name, "device": self.device},
             )
-            return CrossEncoder(self.model_name, device=self.device)
+            model = CrossEncoder(self.model_name, device=self.device)
+            _SHARED_CROSS_ENCODERS[self.model_name] = model
+            return model
         except Exception as ex:
             logger.warning(
                 "Failed to load sentence_transformers CrossEncoder, using heuristic fallback",
@@ -102,7 +110,7 @@ class CrossEncoderReranker:
         """Synchronously compute raw cross-encoder relevance scores for query-document pairs."""
         if not pairs:
             return []
-        model = self._model or self._load_model_sync()
+        model = self._load_model_sync()
         if model is not None:
             try:
                 raw_scores = model.predict(pairs, batch_size=32, show_progress_bar=False)
@@ -119,12 +127,14 @@ class CrossEncoderReranker:
         return results
 
     async def _get_model(self) -> Any:
-        if self._model is not None:
-            return self._model
+        global _SHARED_CROSS_ENCODERS
+        if self.model_name in _SHARED_CROSS_ENCODERS:
+            return _SHARED_CROSS_ENCODERS[self.model_name]
         async with self._load_lock:
-            if self._model is None:
-                self._model = await asyncio.to_thread(self._load_model_sync)
-        return self._model
+            if self.model_name in _SHARED_CROSS_ENCODERS:
+                return _SHARED_CROSS_ENCODERS[self.model_name]
+            return await asyncio.to_thread(self._load_model_sync)
+
 
     async def rerank(
         self,

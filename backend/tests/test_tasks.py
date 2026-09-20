@@ -146,4 +146,26 @@ class TestTaskIngestionStorageKey:
                 dpi=150,
             )
 
+    def test_cross_encoder_process_wide_cache(self) -> None:
+        from unittest.mock import MagicMock, patch
+        from app.retrieval.reranker import CrossEncoderReranker, _SHARED_CROSS_ENCODERS
+
+        _SHARED_CROSS_ENCODERS.clear()
+
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [0.95]
+
+        with patch("sentence_transformers.CrossEncoder", return_value=mock_model) as mock_cls:
+            r1 = CrossEncoderReranker(model_name="test-cross-encoder-model")
+            scores1 = r1.predict([("query", "doc")])
+            assert scores1 == [0.95]
+
+            # Second instance must reuse cached model without calling CrossEncoder again
+            r2 = CrossEncoderReranker(model_name="test-cross-encoder-model")
+            scores2 = r2.predict([("query2", "doc2")])
+            assert scores2 == [0.95]
+
+            assert mock_cls.call_count == 1
+
+
 

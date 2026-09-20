@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { deduplicatedFetch, clearApiCache } from '../utils/apiDeduplicator';
+
 
 export const DEFAULT_CLOUD_FULL_BINDINGS = {
   query_planner: 'gemini_flash',
@@ -48,30 +50,28 @@ export function ActiveHighlightProvider({ children }) {
   // Refresh and synchronize task bindings from backend on mount
   const refreshTaskBindings = useCallback(async () => {
     try {
-      const res = await fetch('/api/settings/model-bindings');
-      if (res.ok) {
-        const json = await res.json();
-        if (json.task_bindings) {
-          setTaskBindings(json.task_bindings);
-          try {
-            localStorage.setItem('newslens_task_bindings', JSON.stringify(json.task_bindings));
-          } catch {
-            // ignore
-          }
+      const json = await deduplicatedFetch('/api/settings/model-bindings');
+      if (json && json.task_bindings) {
+        setTaskBindings(json.task_bindings);
+        try {
+          localStorage.setItem('newslens_task_bindings', JSON.stringify(json.task_bindings));
+        } catch {
+          // ignore
+        }
 
-          // If no explicitly saved model in localStorage, bind to backend answerer
-          const activeLlm = json.task_bindings.answerer || json.task_bindings.query_planner;
-          const storedModel = localStorage.getItem('newslens_selected_model');
-          if (!storedModel && activeLlm) {
-            setSelectedModelState(activeLlm);
-            localStorage.setItem('newslens_selected_model', activeLlm);
-          }
+        // If no explicitly saved model in localStorage, bind to backend answerer
+        const activeLlm = json.task_bindings.answerer || json.task_bindings.query_planner;
+        const storedModel = localStorage.getItem('newslens_selected_model');
+        if (!storedModel && activeLlm) {
+          setSelectedModelState(activeLlm);
+          localStorage.setItem('newslens_selected_model', activeLlm);
         }
       }
     } catch (err) {
       console.warn('Failed to load initial model bindings in context:', err);
     }
   }, []);
+
 
   useEffect(() => {
     refreshTaskBindings();

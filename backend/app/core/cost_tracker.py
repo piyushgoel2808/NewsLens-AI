@@ -40,6 +40,24 @@ PRICING_CATALOG: dict[str, ModelPrice] = {
     "llama-3.3-70b-versatile": ModelPrice(0.59, 0.79),
     "llama-3.1-8b-instant": ModelPrice(0.05, 0.08),
     "mixtral-8x7b-32768": ModelPrice(0.24, 0.24),
+    # Google Gemini (Official Google AI Studio Pricing Rates)
+    "gemini-2.5-flash": ModelPrice(0.075, 0.30),
+    "gemini-2.0-flash": ModelPrice(0.075, 0.30),
+    "gemini-1.5-flash": ModelPrice(0.075, 0.30),
+    "gemini-3.8-flash": ModelPrice(0.075, 0.30),
+    "gemini-3.5-flash": ModelPrice(0.075, 0.30),
+    "gemini-flash": ModelPrice(0.075, 0.30),
+    "gemini-2.5-pro": ModelPrice(1.25, 5.00),
+    "gemini-1.5-pro": ModelPrice(1.25, 5.00),
+    "gemini-3.1-pro": ModelPrice(1.25, 5.00),
+    "gemini-pro": ModelPrice(1.25, 5.00),
+    "gemini-2.5-flash-lite": ModelPrice(0.0375, 0.15),
+    "gemini-2.0-flash-lite": ModelPrice(0.0375, 0.15),
+    "gemini-3.1-flash-lite": ModelPrice(0.0375, 0.15),
+    "gemini-flash-lite": ModelPrice(0.0375, 0.15),
+    "gemini-embedding-001": ModelPrice(0.025, 0.0),
+    "text-embedding-004": ModelPrice(0.025, 0.0),
+    "gemini-embedding": ModelPrice(0.025, 0.0),
 }
 
 # Maximum default budget per single query ($0.50)
@@ -59,11 +77,16 @@ def resolve_model_price(provider: str, model: str) -> ModelPrice:
         if pattern in m_lower:
             return price
 
-    # Default fallback pricing for cloud models if unlisted ($1.00 / $3.00 per MTok)
-    if p_lower in ("anthropic", "openai", "groq"):
+    # Default fallback pricing for cloud models if unlisted
+    if p_lower in ("anthropic", "openai"):
         return ModelPrice(1.00, 3.00)
+    if p_lower in ("gemini", "google", "google_genai", "vertex_ai"):
+        return ModelPrice(0.075, 0.30)
+    if p_lower in ("groq",):
+        return ModelPrice(0.59, 0.79)
 
     return ModelPrice(0.0, 0.0)
+
 
 
 def calculate_cost_usd(

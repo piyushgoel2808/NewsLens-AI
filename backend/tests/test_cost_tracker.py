@@ -30,10 +30,24 @@ def test_resolve_model_prices() -> None:
     assert groq_p.input_usd_per_million == 0.59
     assert groq_p.output_usd_per_million == 0.79
 
+    # Google Gemini
+    gemini_flash_p = resolve_model_price("gemini", "gemini-3.8-flash")
+    assert gemini_flash_p.input_usd_per_million == 0.075
+    assert gemini_flash_p.output_usd_per_million == 0.30
+
+    gemini_pro_p = resolve_model_price("gemini", "gemini-2.5-pro")
+    assert gemini_pro_p.input_usd_per_million == 1.25
+    assert gemini_pro_p.output_usd_per_million == 5.00
+
+    gemini_embed_p = resolve_model_price("gemini", "gemini-embedding-001")
+    assert gemini_embed_p.input_usd_per_million == 0.025
+    assert gemini_embed_p.output_usd_per_million == 0.0
+
     # Local zero cost
     local_p = resolve_model_price("ollama", "llama3.2:3b")
     assert local_p.input_usd_per_million == 0.0
     assert local_p.output_usd_per_million == 0.0
+
 
 
 def test_calculate_cost_usd() -> None:

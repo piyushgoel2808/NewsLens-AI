@@ -28,6 +28,8 @@ const CORE_MODELS = {
   ],
 };
 
+import { deduplicatedFetch } from '../utils/apiDeduplicator';
+
 export default function ModelSelector({
   value,
   onChange,
@@ -40,16 +42,16 @@ export default function ModelSelector({
 
   useEffect(() => {
     if (!propModels || propModels.length === 0) {
-      fetch('/api/models/available')
-        .then((r) => r.json())
+      deduplicatedFetch('/api/models/available')
         .then((data) => {
-          if (data.models || data.providers) {
+          if (data && (data.models || data.providers)) {
             setFetchedModels(data.models || data.providers || []);
           }
         })
         .catch((err) => console.error('ModelSelector failed to fetch models:', err));
     }
   }, [propModels]);
+
 
   const allAvailable = propModels && propModels.length > 0 ? propModels : fetchedModels;
 

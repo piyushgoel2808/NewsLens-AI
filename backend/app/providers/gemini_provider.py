@@ -21,7 +21,9 @@ import base64
 import contextlib
 import io
 import json
+import os
 import time
+
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -280,12 +282,14 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
                 "Set GOOGLE_API_KEY, GEMINI_API_KEY, or GCP_SERVICE_ACCOUNT_KEY in your .env file."
             )
 
+        use_vertex = os.environ.get("USE_VERTEX_AI", "false").lower() in ("true", "1")
         if base_url:
             self._base_url = base_url.rstrip("/")
-        elif self.is_express_mode or self._sa_credentials:
+        elif self.is_express_mode or (use_vertex and self._sa_credentials):
             self._base_url = VERTEX_AI_EXPRESS_BASE
         else:
             self._base_url = AI_STUDIO_BASE
+
 
         # Auto-detect reasoning model capabilities (e.g. Gemini 2.5 Flash / Pro with thinking)
         is_reasoning = (
@@ -362,18 +366,25 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         headers: dict[str, str] = {"Content-Type": "application/json"}
         params: dict[str, str] = {}
 
-        if self._sa_credentials:
+        use_vertex = os.environ.get("USE_VERTEX_AI", "false").lower() in ("true", "1")
+        if use_vertex and self._sa_credentials:
             import google.auth.transport.requests
             request = google.auth.transport.requests.Request()
             self._sa_credentials.refresh(request)
             headers["Authorization"] = f"Bearer {self._sa_credentials.token}"
         elif self._api_key:
-            if self.is_express_mode:
+            if self.is_express_mode or "aiplatform" in self._base_url:
                 headers["x-goog-api-key"] = self._api_key
             else:
                 params["key"] = self._api_key
+        elif self._sa_credentials:
+            import google.auth.transport.requests
+            request = google.auth.transport.requests.Request()
+            self._sa_credentials.refresh(request)
+            headers["Authorization"] = f"Bearer {self._sa_credentials.token}"
 
         return headers, params
+
 
     @property
     def capability(self) -> ProviderCapability:

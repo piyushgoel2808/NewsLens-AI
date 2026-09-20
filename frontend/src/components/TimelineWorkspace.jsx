@@ -18,7 +18,9 @@ import {
 } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
+import { deduplicatedFetch } from '../utils/apiDeduplicator';
 import ModelSelector from './ModelSelector';
+
 
 const PHASE_STYLES = {
   Breaking: {
@@ -92,24 +94,23 @@ export default function TimelineWorkspace() {
   const [availableModels, setAvailableModels] = useState([]);
 
   useEffect(() => {
-    fetch('/api/models/available')
-      .then((res) => res.json())
+    deduplicatedFetch('/api/models/available')
       .then((data) => {
-        if (data.models) {
+        if (data && data.models) {
           setAvailableModels(data.models);
         }
       })
       .catch((err) => console.error('Failed to load models in Timeline:', err));
 
-    fetch('/api/query/timeline/suggestions')
-      .then((res) => res.json())
+    deduplicatedFetch('/api/query/timeline/suggestions')
       .then((data) => {
-        if (data.suggestions && Array.isArray(data.suggestions)) {
+        if (data && data.suggestions && Array.isArray(data.suggestions)) {
           setSuggestions(data.suggestions);
         }
       })
       .catch((err) => console.error('Failed to load timeline suggestions:', err));
   }, []);
+
 
   // Sync external timelineQuery from context (e.g. from chat button)
   useEffect(() => {

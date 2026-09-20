@@ -171,9 +171,11 @@ jobs:
         run: |
           gcloud run services update newslens-backend \
             --image=${{ steps.meta.outputs.registry }}/backend:${{ steps.meta.outputs.sha }} \
+            --cpu=1 \
+            --memory=2Gi \
             --min-instances=1 \
+            --cpu-throttling \
             --timeout=1800 \
-            --no-cpu-throttling \
             --region=asia-south1 \
             --project=${{ secrets.GCP_PROJECT_ID }}
 
@@ -184,6 +186,8 @@ jobs:
               --image=${{ steps.meta.outputs.registry }}/worker:${{ steps.meta.outputs.sha }} \
               --command="python" \
               --args="-m,app.run_worker" \
+              --cpu=1 \
+              --memory=2Gi \
               --min-instances=1 \
               --no-cpu-throttling \
               --timeout=1800 \
@@ -193,6 +197,7 @@ jobs:
           else
             echo "newslens-worker service not yet provisioned. Skipping worker update."
           fi
+
 
 
       - name: Deploy Frontend to Cloud Run
