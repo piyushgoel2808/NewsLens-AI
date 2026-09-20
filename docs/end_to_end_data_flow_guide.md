@@ -346,7 +346,7 @@ VALUES (
 
 ### 1.5 Visual Intelligence & Single-Pass Extractor: Deep Thinking, Spatial Grounding & Infographic Reasoning
 
-Newspapers are rich visual artifacts: broadsheets embed critical investigative findings inside complex multi-column layouts, financial charts, sector breakdown infographics, and editorial photojournalism. NewsLens-AI does not treat images as passive blobs; it integrates **Gemini 3.8 Flash** (`gemini-3.8-flash`) and **Qwen-VL** (`ollama_qwen3vl: qwen3-vl:latest` / `qwen2.5vl:7b` via [`backend/app/ingestion/single_pass_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/single_pass_extractor.py), [`backend/app/ingestion/visual_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/visual_extractor.py) and [`backend/app/ingestion/media_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/media_extractor.py)) to perform **multimodal thinking, single-pass unified extraction, spatial coordinate grounding, numerical transcription, and cross-modal validation**.
+Newspapers are rich visual artifacts: broadsheets embed critical investigative findings inside complex multi-column layouts, financial charts, sector breakdown infographics, and editorial photojournalism. NewsLens-AI does not treat images as passive blobs; it integrates **Gemini 2.5 Flash** (`gemini-2.5-flash`) and **Qwen-VL** (`ollama_qwen3vl: qwen3-vl:latest` / `qwen2.5vl:7b` via [`backend/app/ingestion/single_pass_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/single_pass_extractor.py), [`backend/app/ingestion/visual_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/visual_extractor.py) and [`backend/app/ingestion/media_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/media_extractor.py)) to perform **multimodal thinking, single-pass unified extraction, spatial coordinate grounding, numerical transcription, and cross-modal validation**.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -354,7 +354,7 @@ Newspapers are rich visual artifacts: broadsheets embed critical investigative f
 │                                                                                                  │
 │   Master 150 DPI Page      Docling Layout Harvest            Dual Extraction Pathways            │
 │  ┌────────────────┐      ┌─────────────────────────┐         ┌─────────────────────────────────┐ │
-│  │ Lossless Page  │ ───> │ Normalized JSON         │ ──────> │ Cloud: Gemini-3.8-Flash (1-Pass)│ │
+│  │ Lossless Page  │ ───> │ Normalized JSON         │ ──────> │ Cloud: Gemini-2.5-Flash (1-Pass)│ │
 │  │ PNG (150 DPI)  │      │ Manifest [x0,y0,x1,y1]  │         │ Local: Qwen3-VL (Semaphore 2)   │ │
 │  └────────────────┘      └─────────────────────────┘         └────────────────┬────────────────┘ │
 │                                                                               │                  │
@@ -369,7 +369,7 @@ Newspapers are rich visual artifacts: broadsheets embed critical investigative f
 ```
 
 #### A. Unified Single-Pass vs. Concurrent Per-Crop Architecture (`single_pass_extractor.py`)
-1. **Cloud Vision (`gemini-3.8-flash`) — Unified Single-Pass**:
+1. **Cloud Vision (`gemini-2.5-flash`) — Unified Single-Pass**:
    - Instead of slicing 30 individual sub-images and issuing 30 sequential API requests, `SinglePassVisualExtractor` sends the master 150 DPI page image along with a normalized JSON manifest of target visual regions (`[x0, y0, x1, y1]` in normalized $0.0 \dots 1.0$ coordinates).
    - Gemini analyzes the entire broadsheet in a single turn, providing structured analysis items keyed by `region_id`. Ingestion latency drops from minutes to 10–30 seconds per broadsheet page.
 2. **Local VLMs (`qwen3-vl:latest` via Ollama) — Concurrent Per-Crop**:
@@ -520,7 +520,7 @@ Vision-Language Models during broadsheet ingestion encounter intermittent cloud 
 │            [Quota & Rate-Limit Cooldown Tracker]                                                 │
 │                 │                                                                                │
 │                 ├─► Candidate Model Failover ────────────────► Transparent Fallback Model        │
-│                 │   (gemini-3.8-flash ➔ gemini-3.5-flash ➔ gemini-3.6-flash)                     │
+│                 │   (gemini-2.5-flash ➔ gemini-2.5-pro ➔ gemini-2.0-flash)                        │
 │                 │                                                                                │
 │                 └─► All Cloud Model Candidates Exhausted                                         │
 │                           │                                                                      │
@@ -546,7 +546,7 @@ Vision-Language Models during broadsheet ingestion encounter intermittent cloud 
 Provider instances track API health and quota limits using automatic cooldown timers:
 * When an upstream provider returns `HTTP 429` or quota exhaustion, the provider records:
   $$\text{cooldown\_until} = \text{now}() + \text{retry\_after\_seconds}$$
-* For Google Gemini Cloud, the engine first transparently tests secondary candidates in its model pool (`gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.6-flash`).
+* For Google Gemini Cloud, the engine first transparently tests secondary candidates in its model pool (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash`).
 * If all cloud candidates or keys enter cooldown (`provider.are_all_keys_rate_limited() == True`), the pipeline signals the visual extractor.
 
 ##### 2. Dynamic Circuit Breaker (`VisualDataExtractor.trip_circuit_breaker`)
@@ -1030,7 +1030,8 @@ NewsLens-AI decouples cognitive reasoning and vision tasks from hardcoded LLM ve
    - Zero outbound cloud network egress. Broadsheet texts, investigative queries, and visual crops remain strictly on-premises.
 
 2. **Google Gemini Cloud Tier (Vertex AI & AI Studio Primary)**:
-   - Powered by Google Gemini endpoints: `gemini_flash` (`gemini-2.5-flash` / `gemini-3.8-flash`), `gemini_live` (`gemini-3.8-live`), and `gemini-3.5-flash` fallback.
+   - Powered by Google Gemini endpoints: `gemini_flash` (`gemini-2.5-flash`), `gemini_pro` (`gemini-2.5-pro`), and `gemini-2.0-flash`.
+   - **Calibrated Thinking Budgets (`thinking_budget: 0`)**: Enforces explicit zero thinking budgets on structured JSON planning, CRAG evaluations, dynamic tool maker, and response synthesis, eliminating 15–20s of hidden chain-of-thought tokens while keeping Time-to-First-Token in 1.8s–2.4s.
    - **`gemini_embedding` (`gemini-embedding-001`)**: 768-dimensional Matryoshka Representation Learning (MRL) dense embeddings targeting collection `article_chunks_v2` with asymmetric retrieval task types (`RETRIEVAL_DOCUMENT` vs `RETRIEVAL_QUERY`), saving 2.4 GB PyTorch RAM in Cloud Run.
    - Serves as the primary cloud workhorse for VLM visual extraction, cognitive query planning, broadsheet synthesis, and answer verification with automatic transparent model failover.
 
@@ -1069,7 +1070,7 @@ Returns current task bindings, provider capability schemas (`supports_vision`, `
     {
       "id": "gemini_flash",
       "provider": "gemini",
-      "model": "gemini-3.8-flash",
+      "model": "gemini-2.5-flash",
       "context_window": 1048576,
       "supports_vision": true,
       "supports_tool_use": true
@@ -1077,7 +1078,7 @@ Returns current task bindings, provider capability schemas (`supports_vision`, `
     {
       "id": "gemini_pro",
       "provider": "gemini",
-      "model": "gemini-3.8-flash",
+      "model": "gemini-2.5-pro",
       "context_window": 1048576,
       "supports_vision": true,
       "supports_tool_use": true

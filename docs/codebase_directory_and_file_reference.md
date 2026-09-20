@@ -144,10 +144,10 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **LLM / VLM / Embedding Models**: Configures `gemma4:12b`, `qwen3-vl:latest`, `nemotron-3.5-lightning`, `llama3.1:8b`, `deepseek-r1:14b`, `BAAI/bge-m3`, `gemini-3.7-flash`, `gpt-4o`, `text-embedding-3-large`.
 
 ##### [`model_config.prod.yaml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/model_config.prod.yaml)
-* **What It Has**: Production-hardened Google Gemini Cloud provider definitions (`gemini_flash` with `gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.6-flash` failover candidates; `gemini_vision`, `gemini_pro`) and primary cloud task bindings.
+* **What It Has**: Production-hardened Google Gemini Cloud provider definitions (`gemini_flash` with `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash` failover candidates; `gemini_vision`, `gemini_pro`) and primary cloud task bindings.
 * **Work It Is Doing**: Serves as the authoritative model configuration in live GCP production deployments (Cloud Run backend and worker). Binds all core agentic tasks (`query_planner`, `answerer`, `answer_verifier`, `visual_extraction`, `layout_analysis`, `metadata_extraction`, `classification`) directly to Google Gemini Flash for sub-second responses and high concurrency without requiring local GPU infrastructure.
 * **Important Tools / Frameworks**: YAML 1.2, Google GenAI SDK (`google-genai`).
-* **LLM / VLM / Embedding Models**: `gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-2.5-pro`, `BAAI/bge-m3`.
+* **LLM / VLM / Embedding Models**: `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash`, `gemini-embedding-001`, `BAAI/bge-m3`.
 
 ##### [`docker-compose.yml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docker-compose.yml)
 * **What It Has**: Production-grade orchestration for all 8 microservices: `mysql`, `qdrant`, `minio`, `redis`, `backend`, `frontend`, `worker`, and optional `ollama`.
@@ -817,12 +817,12 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Work It Is Doing**:
   - Implements the unified single-pass visual extraction architecture.
   - Generates normalized bounding box manifests `[x0, y0, x1, y1] \in [0.0, 1.0]` from Docling layout items.
-  - Sends master 150 DPI broadsheet image with manifest to `gemini-3.8-flash` in a single LLM request.
+  - Sends master 150 DPI broadsheet image with manifest to `gemini-2.5-flash` in a single LLM request.
   - Automatically routes local models (`qwen3-vl:latest` via Ollama) to concurrent per-crop extraction gated by `asyncio.Semaphore(2)`.
   - Cleans VLM thinking tags and monologue preambles via `clean_vlm_text()`.
   - Provides deterministic fallbacks (`_fallback_extract_region()`) ensuring 0 empty descriptions.
 * **Important Tools / Frameworks**: Google GenAI SDK, Asyncio Semaphore, Pillow, Pydantic.
-* **LLM / VLM / Embedding Models**: `gemini-3.8-flash` or `qwen3-vl:latest`.
+* **LLM / VLM / Embedding Models**: `gemini-2.5-flash` or `qwen3-vl:latest`.
 
 ##### [`backend/app/ingestion/intake.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/intake.py)
 * **What It Has**: `IntakeService` class, `IntakeResult` dataclass.
@@ -844,8 +844,8 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
   - Stage 2: Prompts vision model with `STRUCTURED_EXTRACTION_PROMPT` to transcribe complex charts/infographics into executive summaries, GitHub-flavored Markdown tables, and key metrics.
   - Stage 3: Numerical Cross-Validation verifying extracted numbers against OCR tokens; triggers deterministic spatial OCR fallback if match ratio < 0.40.
   - Cleans unclosed `<think>` reasoning tags, conversational preambles (*"Got it, let's analyze..."*), and extraneous markdown fences.
-* **Important Tools / Frameworks**: Gemini 3.8 Flash, Qwen-VL Vision Provider, PyTesseract, PIL, JSON Repair algorithms.
-* **LLM / VLM / Embedding Models**: Bound to `visual_extraction` (`gemini-3.8-flash` or `qwen3-vl:latest`).
+* **Important Tools / Frameworks**: Gemini 2.5 Flash, Qwen-VL Vision Provider, PyTesseract, PIL, JSON Repair algorithms.
+* **LLM / VLM / Embedding Models**: Bound to `visual_extraction` (`gemini-2.5-flash` or `qwen3-vl:latest`).
 
 ##### [`backend/app/ingestion/media_extractor.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/media_extractor.py)
 * **What It Has**: `MediaExtractor` class, `extract_grounded_boxes_from_thinking()`, `parse_grounded_boxes()`.
@@ -984,7 +984,7 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 ##### Concrete Provider Implementations:
 - [`backend/app/providers/ollama_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/ollama_provider.py): Local inference via Ollama HTTP API (`/api/chat`, `/api/generate`, `/api/embeddings`). Supports Qwen-VL, Gemma4-12B, Nemotron, Llama 3.1.
 - [`backend/app/providers/groq_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/groq_provider.py): Ultra-low-latency LPU inference via Groq SDK (`llama-3.3-70b-versatile`, `qwen-2.5-32b`).
-- [`backend/app/providers/gemini_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/gemini_provider.py): Google Gemini API (`gemini-3.8-flash`, `gemini-3.8-live`, `gemini-3.5-flash`, `gemini-3.1-pro-preview`) supporting native multimodal vision, structured JSON outputs with recursive Pydantic schema sanitization (stripping titles, descriptions, and `$defs`), and transparent multi-candidate model failover.
+- [`backend/app/providers/gemini_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/gemini_provider.py): Google Gemini API (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash`) supporting native Vertex AI Service Account IAM Bearer authentication (`aiplatform.googleapis.com`), native multimodal vision, structured JSON outputs with recursive Pydantic schema sanitization, calibrated thinking budgets (`thinking_budget: 0`), and transparent multi-candidate model failover.
 - [`backend/app/providers/google_vision_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/google_vision_provider.py): Google Cloud Vision API integration for OCR and document text detection.
 - [`backend/app/providers/openai_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/openai_provider.py): OpenAI API (`gpt-4o`, `gpt-4o-mini`, `text-embedding-3-large`).
 - [`backend/app/providers/nvidia_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/nvidia_provider.py): NVIDIA NIM hosted inference via OpenAI-compatible endpoint (`https://integrate.api.nvidia.com/v1`). Supports `nvidia/nemotron-3.5-lightning-30b-a3b` with progressive `<think>` reasoning streaming and `meta/llama-3.2-11b-vision-instruct` for multimodal vision.

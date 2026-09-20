@@ -306,7 +306,7 @@ NewsLens-AI cleanly separates concerns across storage tiers:
 | `citations_json` | `JSON` | YES | `[{"newspaper": "The Daily Chronicle", "date": "2026-08-20", "page": 1, "article_id": 9012}]` | Structured citations backing every factual claim with exact page and article IDs. |
 | `latency_ms` | `INT` | YES | `850` | Total wall-clock time in milliseconds to plan, retrieve, and synthesize the answer. |
 | `cost_usd` | `FLOAT` | YES | `0.0034` | Estimated USD cost incurred across LLM API tokens for the query. |
-| `model_provider` | `VARCHAR(100)` | YES | `"gemini-3.8-flash"` | Provider and model that handled query planning and response generation. |
+| `model_provider` | `VARCHAR(100)` | YES | `"gemini-2.5-flash"` | Provider and model that handled query planning and response generation. |
 | `created_at` | `DATETIME` | NO | `"2026-08-31 01:25:00"` | Timestamp when the query was executed (indexed for telemetry dashboards). |
 
 ---

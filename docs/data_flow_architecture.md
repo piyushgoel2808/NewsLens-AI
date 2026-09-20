@@ -201,7 +201,7 @@ flowchart TD
 
     Manifest --> EngineRouter{"Vision Provider Check<br/>(Is Cloud Gemini vs Local Ollama?)"}
 
-    EngineRouter -->|Cloud Vision: gemini-3.8-flash| SinglePass["Single-Pass Extraction<br/>(Master Page + JSON Manifest in 1 LLM Turn)"]
+    EngineRouter -->|Cloud Vision: gemini-2.5-flash| SinglePass["Single-Pass Extraction<br/>(Master Page + JSON Manifest in 1 LLM Turn)"]
     EngineRouter -->|Local VLM: qwen3-vl:latest| ConcurrentCrops["Concurrent Per-Crop Extraction<br/>(asyncio.Semaphore(2) Gated)"]
 
     SinglePass --> ParseResponse["JSON Response Parsing<br/>(Structured analyses by region_id)"]
@@ -220,7 +220,7 @@ flowchart TD
 ```
 
 ### Unified Single-Pass vs. Concurrent Per-Crop Routing
-- **Cloud Models (`gemini-3.8-flash`)**: Sends the entire 150 DPI page image and normalized region coordinates in a single call. Eliminates 30+ separate network roundtrips, completing full-page visual extraction in 10–30 seconds.
+- **Cloud Models (`gemini-2.5-flash`)**: Sends the entire 150 DPI page image and normalized region coordinates in a single call. Eliminates 30+ separate network roundtrips, completing full-page visual extraction in 10–30 seconds.
 - **Local Models (`qwen3-vl:latest` via Ollama)**: Processes image crops concurrently with `asyncio.Semaphore(2)` concurrency limit, avoiding Ollama VLM context saturation and monologue loops while preventing memory spikes.
 - **Preamble & Thinking Token Sanitizer (`clean_vlm_text`)**: Strips unclosed `<think>` tags, system reasoning chatter, and monologue greetings before database persistence.
 - **On-Demand Query Time (`inspect_visual_asset`)**: When an agent query or attached asset (`attached_photo_id`) targets a photo where `vlm_description` is a placeholder, the system streams raw crop bytes from MinIO, executes on-demand VLM transcription, and caches the result back into MySQL.

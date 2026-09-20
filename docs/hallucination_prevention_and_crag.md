@@ -239,15 +239,15 @@ flowchart TD
     EvidenceIn["Raw Evidence Items from ToolExecutor<br/>(ToolExecutionRecord Collection)"] --> FastFloor
 
     subgraph FastFloorCheck ["1. Deterministic Fast-Floor Evaluation (<5ms)"]
-        FastFloor{"Fast-Floor Gate Check:<br/>• >= 1 Broadsheet Record?<br/>• Clean Editorial Text >= 100 Words?<br/>• Prominence Score >= 0.65?"}
-        ImmediateBypass["High-Confidence Immediate Bypass<br/>• is_sufficient = True<br/>• quality_score = 1.0<br/>• Bypasses LLM Evaluator Latency Overhead"]
+        FastFloor{"Dual-Signal Fast-Floor Gate:<br/>• >= 1 Broadsheet Record?<br/>• Clean Editorial Text >= 100 Words<br/>  OR Neural Rerank >= 0.30 / RRF >= 0.015?<br/>• Prominence Score >= 0.65?"}
+        ImmediateBypass["High-Confidence Immediate Bypass<br/>• is_sufficient = True<br/>• quality_score = 1.0<br/>• Bypasses LLM Evaluator Latency Overhead (<5ms)"]
     end
 
-    FastFloor -->|"Pass (Rich Editorial Text)"| ImmediateBypass
+    FastFloor -->|"Pass (Rich Text / High Neural Confidence)"| ImmediateBypass
     FastFloor -->|"Fail (Sparse / Analytical / Edge Case)"| LLM_Judge
 
-    subgraph LLM_Judge ["2. Multi-Dimensional Quality Evaluation Audit"]
-        JudgeAudit["EvidenceEvaluator (Reflexive LLM-as-Judge)<br/>Audits Evidence Against User Query Intent"]
+    subgraph LLM_Judge ["2. Multi-Dimensional Quality Evaluation Audit (thinking_budget: 0)"]
+        JudgeAudit["EvidenceEvaluator (Reflexive LLM-as-Judge)<br/>Audits Evidence Against User Query Intent<br/>(thinking_budget=0: Sub-Second Completion)"]
         
         CheckAbsence{"Check 1: Legitimate Absence Invariant?<br/>(Query asks about availability AND DB returns 0 issues?)"}
         PassAbsence["Verdict: Sufficient (Score: 0.85)<br/>Proceed with Truthful Absence Grounding"]
