@@ -176,6 +176,20 @@ export default function UploadTrigger() {
       await new Promise((r) => setTimeout(r, 3000));
       try {
         const res = await fetch(`/api/issues/${issueId}`);
+        if (res.status === 404) {
+          setUploadQueue((prev) =>
+            prev.map((q, idx) =>
+              idx === queueIndex
+                ? {
+                    ...q,
+                    status: 'failed',
+                    detail: 'Issue was removed or does not exist.',
+                  }
+                : q
+            )
+          );
+          return;
+        }
         if (!res.ok) continue;
         const issue = await res.json();
 
