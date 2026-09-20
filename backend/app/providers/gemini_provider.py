@@ -240,7 +240,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
 
     def __init__(
         self,
-        model: str = "gemini-3.8-flash",
+        model: str = "gemini-2.5-flash",
         api_key: str | None = None,
         service_account_info: dict[str, Any] | str | None = None,
         base_url: str | None = None,
@@ -248,7 +248,10 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         is_reasoning_model: bool | None = None,
         reasoning_headroom: int | None = None,
     ) -> None:
-        self._model = model.replace("models/", "") if model else "gemini-3.8-flash"
+        m = model.replace("models/", "") if model else "gemini-2.5-flash"
+        if m == "gemini-3.8-flash":
+            m = "gemini-2.5-flash"
+        self._model = m
         self._api_key = api_key
         self._sa_credentials: Any = None
 
@@ -360,38 +363,31 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
 
     def _get_model_candidates(self) -> list[str]:
         """Return prioritized list of model candidates starting with requested model."""
-        candidates = [self._model]
+        candidates = [self._model] if self._model else ["gemini-2.5-flash"]
         lower = self._model.lower()
         if "pro" in lower:
             fallbacks = [
-                "gemini-3.8-flash",
-                "gemini-3.1-pro-preview",
-                "gemini-pro-latest",
-                "gemini-3.5-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-1.5-pro",
+                "gemini-1.5-flash",
             ]
         elif "lite" in lower:
             fallbacks = [
-                "gemini-3.8-flash",
-                "gemini-3.5-flash-lite",
-                "gemini-3.1-flash-lite",
-                "gemini-3.5-flash",
-                "gemini-flash-lite-latest",
+                "gemini-2.5-flash",
+                "gemini-1.5-flash",
+                "gemini-2.0-flash-lite",
             ]
         elif "live" in lower:
             fallbacks = [
-                "gemini-3.8-live",
-                "gemini-3.5-transcribe-live",
+                "gemini-2.0-flash-exp",
                 "gemini-2.5-flash-native-audio-latest",
             ]
         else:
             fallbacks = [
                 "gemini-2.5-flash",
-                "gemini-3.8-flash",
-                "gemini-3.5-flash",
-                "gemini-3.1-flash-lite",
-                "gemini-3.6-flash",
-                "gemini-3.7-flash",
-                "gemini-flash-latest",
+                "gemini-1.5-flash",
+                "gemini-2.0-flash",
             ]
 
         for fb in fallbacks:
@@ -706,7 +702,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
                                 if candidates:
                                     parts = candidates[0].get("content", {}).get("parts", [])
                                     for p in parts:
-                                        if "text" in p:
+                                        if "text" in p and not p.get("thought", False):
                                             yield p["text"]
                             except json.JSONDecodeError:
                                 continue

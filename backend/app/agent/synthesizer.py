@@ -1139,7 +1139,12 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
                     answer_blueprint=answer_blueprint,
                     query=query,
                 )
-                response = await provider.complete(messages=messages, max_tokens=effective_max_tokens, temperature=0.1)
+                response = await provider.complete(
+                    messages=messages,
+                    max_tokens=effective_max_tokens,
+                    temperature=0.1,
+                    thinking_budget=0,
+                )
                 th_trace, cleaned_answer = parse_thought_and_answer(response.text)
                 answer_text = cleaned_answer if cleaned_answer else ("" if th_trace else response.text)
                 p_name = getattr(provider, "provider_name", "llm")
@@ -1231,7 +1236,12 @@ STRICT SIMILARITY & SHARED STORY INTEGRITY:
                     answer_blueprint=answer_blueprint,
                     query=query,
                 )
-                stream_gen = provider.complete_stream(messages=messages, max_tokens=effective_max_tokens, temperature=0.1)
+                stream_gen = provider.complete_stream(
+                    messages=messages,
+                    max_tokens=effective_max_tokens,
+                    temperature=0.1,
+                    thinking_budget=0,
+                )
                 streamed_any = False
                 async for chunk in stream_gen:
                     streamed_any = True

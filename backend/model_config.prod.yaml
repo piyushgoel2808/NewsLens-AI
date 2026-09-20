@@ -1,14 +1,14 @@
 providers:
   gemini_flash:
     provider: gemini
-    model: gemini-3.8-flash
+    model: gemini-2.5-flash
     context_window: 1048576
     max_output_tokens: 8192
     supports_vision: true
     supports_tool_use: true
   gemini_vision:
     provider: gemini
-    model: gemini-3.8-flash
+    model: gemini-2.5-flash
     context_window: 1048576
     max_output_tokens: 8192
     supports_vision: true

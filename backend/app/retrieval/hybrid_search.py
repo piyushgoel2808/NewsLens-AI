@@ -441,9 +441,9 @@ class HybridSearchEngine:
             )
 
         # Second-Stage Neural Reranking:
-        # Pass capped candidate pool into CrossEncoder to compute interaction scores and extract Top K
+        # Pass adaptive candidate pool into CrossEncoder to compute interaction scores and extract Top K
         if rerank and final_results:
-            max_rerank_candidates = min(len(final_results), 20)
+            max_rerank_candidates = min(len(final_results), min(16, max(8, top_k * 2)))
             candidates_data = [
                 {
                     "result_obj": r,

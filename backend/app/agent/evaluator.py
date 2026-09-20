@@ -500,10 +500,20 @@ class EvidenceEvaluator:
         # 3. Semantic Relevance Floor Audit
         raw_query_words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", query.lower())
         query_tokens = [w for w in raw_query_words if w not in _STOP_WORDS]
-        scores = [
-            (1.0 if is_structural_or_relevant_evidence(it, archetype, target_date=norm_target) else _score_relevance(it, query_tokens))
-            for it in evidence
-        ]
+        scores: list[float] = []
+        for it in evidence:
+            if is_structural_or_relevant_evidence(it, archetype, target_date=norm_target):
+                scores.append(1.0)
+            else:
+                lex_score = _score_relevance(it, query_tokens)
+                rr_score = float(it.get("rerank_score") or 0.0)
+                rrf_score = float(it.get("rrf_score") or 0.0)
+                # Boost confidence if neural reranker or vector search confirmed strong semantic match
+                if rr_score >= 0.30 or rrf_score >= 0.015:
+                    scores.append(max(lex_score, 0.85))
+                else:
+                    scores.append(lex_score)
+
         avg_score = sum(scores) / max(1, len(scores))
         max_score = max(scores) if scores else 0.0
 
@@ -673,6 +683,7 @@ class EvidenceEvaluator:
                     ],
                     max_tokens=350,
                     temperature=0.0,
+                    thinking_budget=0,
                 )
                 raw_text = (resp.text or "").strip()
                 json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)

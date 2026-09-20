@@ -338,6 +338,7 @@ class AnswerVerifier:
                     ],
                     max_tokens=600,
                     temperature=0.0,
+                    thinking_budget=0,
                 )
                 raw_text = (resp.text or "").strip()
                 json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)

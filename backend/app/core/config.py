@@ -149,14 +149,14 @@ class RedisSettings(BaseModel):
 DEFAULT_PROVIDERS = {
     "gemini_vision": ProviderConfig(
         provider="gemini",
-        model="gemini-3.8-flash",
+        model="gemini-2.5-flash",
         context_window=1048576,
         supports_vision=True,
         supports_tool_use=True,
     ),
     "gemini_flash": ProviderConfig(
         provider="gemini",
-        model="gemini-3.8-flash",
+        model="gemini-2.5-flash",
         context_window=1048576,
         supports_vision=True,
         supports_tool_use=True,

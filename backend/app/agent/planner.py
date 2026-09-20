@@ -722,6 +722,7 @@ class QueryPlanner:
                     response_schema=AgentPlan.model_json_schema(),
                     temperature=0.0,
                     max_tokens=2048,
+                    thinking_budget=0,
                 )
 
                 parsed_dict = resp.parsed if isinstance(resp.parsed, dict) else self._parse_json_plan(resp.text)
@@ -1317,6 +1318,7 @@ class QueryPlanner:
                     ],
                     max_tokens=400,
                     temperature=0.0,
+                    thinking_budget=0,
                 )
                 raw_text = (resp.text or "").strip()
                 json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)

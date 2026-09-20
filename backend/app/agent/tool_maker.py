@@ -658,6 +658,7 @@ class ToolMaker:
                     messages=messages,
                     temperature=0.1,
                     max_tokens=4096,
+                    thinking_budget=0,
                 )
                 raw_code = self._extract_code(resp.text)
                 raw_code = ensure_standard_imports(raw_code)
