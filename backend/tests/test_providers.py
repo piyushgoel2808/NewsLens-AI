@@ -370,6 +370,51 @@ class TestGeminiProvider:
         provider = GeminiProvider(model="gemini-3.8-flash", api_key="AQ.CustomKey", base_url=custom_url)
         assert provider._base_url == custom_url
 
+    def test_vertex_ai_service_account_routing_and_auth(self, monkeypatch: Any) -> None:
+        from unittest.mock import MagicMock
+        from app.providers.gemini_provider import GeminiProvider, VERTEX_AI_EXPRESS_BASE
+
+        mock_creds = MagicMock()
+        mock_creds.token = "mock-sa-bearer-token-12345"
+
+        with monkeypatch.context() as m:
+            m.setattr("google.oauth2.service_account.Credentials.from_service_account_info", MagicMock(return_value=mock_creds))
+            provider = GeminiProvider(
+                model="gemini-2.5-flash",
+                service_account_info={"client_email": "newslens-runner@newslens-ai-prod.iam.gserviceaccount.com"},
+            )
+            assert provider._base_url == VERTEX_AI_EXPRESS_BASE
+
+            headers, params = provider._get_auth_headers_and_params()
+            assert headers.get("Authorization") == "Bearer mock-sa-bearer-token-12345"
+            assert "key" not in params
+
+    def test_vertex_ai_use_vertex_ai_override(self, monkeypatch: Any) -> None:
+        from unittest.mock import MagicMock
+        from app.providers.gemini_provider import GeminiProvider, VERTEX_AI_EXPRESS_BASE, AI_STUDIO_BASE
+
+        mock_creds = MagicMock()
+        mock_creds.token = "mock-sa-token"
+
+        with monkeypatch.context() as m:
+            m.setattr("google.oauth2.service_account.Credentials.from_service_account_info", MagicMock(return_value=mock_creds))
+            m.setenv("USE_VERTEX_AI", "false")
+            # Forcing USE_VERTEX_AI=false routes to AI Studio even if SA is present
+            provider = GeminiProvider(
+                model="gemini-2.5-flash",
+                api_key="AIzaKey",
+                service_account_info={"client_email": "runner@project.iam.gserviceaccount.com"},
+            )
+            assert provider._base_url == AI_STUDIO_BASE
+
+            m.setenv("USE_VERTEX_AI", "true")
+            provider_vertex = GeminiProvider(
+                model="gemini-2.5-flash",
+                api_key="AIzaKey",
+                service_account_info={"client_email": "runner@project.iam.gserviceaccount.com"},
+            )
+            assert provider_vertex._base_url == VERTEX_AI_EXPRESS_BASE
+
 
 
 # ---------------------------------------------------------------------------

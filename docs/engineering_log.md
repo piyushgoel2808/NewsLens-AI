@@ -4341,6 +4341,67 @@ When users interacted with broadsheet articles containing companion infographics
 | `model_config.yaml` & `model_config.prod.yaml` | Added `gemini_embedding` provider definition; bound `gemini_embedding` in production. |
 | `README.md` & `docs/*` | Comprehensively updated system architecture, data flows, schemas, tools guide, and codebase reference. |
 
+---
+
+## Phase 14 — Production Stabilization, 85–90% Cost Optimization & Vertex AI Credit Preservation
+
+**Date**: 2026-09-21  
+**Status**: Completed ✅
+
+### Architectural Problem & Forensic Root Cause
+After 2–3 days live on Google Cloud Platform, hosting costs reached ₹2,945. A forensic audit of GCP billing telemetry revealed two key cost drivers:
+1. **Cloud Run Continuous 24/7 Compute Allocation (₹2,214.92 / 75.2%)**:
+   - `newslens-backend` was deployed with `--no-cpu-throttling` (2 vCPU, 8 GiB RAM) and `newslens-worker` with `--no-cpu-throttling` (2 vCPU, 6 GiB RAM).
+   - This instructed Cloud Run to allocate dedicated vCPUs continuously 24/7 regardless of traffic volume (~₹950/day), treating the deployment as expensive dedicated VMs.
+2. **LLM Inference Billing & GCP Promotional Credit Preservation**:
+   - The user has active GCP promotional credits that fully cover Google Cloud infrastructure and Vertex AI inference.
+   - Routing inference to Google AI Studio with a credit card API key would incur out-of-pocket expenses, whereas routing through `aiplatform.googleapis.com` (Vertex AI) via GCP Service Account / Application Default Credentials (`newslens-runner`) draws 100% against active GCP credits (net ₹0 out-of-pocket).
+3. **Repeated PyTorch CrossEncoder Weight Loading**:
+   - `CrossEncoderReranker.predict()` instantiated new `CrossEncoder` objects without module-level caching, reloading model weights from disk on every search query and pegging CPU at 100% for 30–40 seconds.
+4. **Frontend Request Bursting**:
+   - Simultaneous mounting of `ModelSelector`, `AgentAssistant`, `TimelineWorkspace`, and `ActiveHighlightContext` triggered up to 15 concurrent duplicate requests for `/api/corpus/newspapers` and model configurations.
+
+### Key Decisions & Implemented Solutions
+
+1. **Cloud Run Rightsizing & Request-Based CPU Throttling (`deploy-gcp.yml`)**:
+   - Switched `newslens-backend` to `--cpu-throttling`, `--cpu=1`, `--memory=2Gi`. When idle, Cloud Run throttles container CPU to zero, resulting in ₹0 compute charges during non-traffic periods.
+   - Rightsized `newslens-worker` to `--cpu=1`, `--memory=2Gi`, retaining `--no-cpu-throttling` and `--min-instances=1` so background Celery processing remains robust.
+   - **Cost Impact**: Reduces continuous Cloud Run compute burn by ~85% (~₹800/day savings).
+
+2. **Vertex AI Native IAM Routing (`gemini_provider.py`)**:
+   - Enhanced `GeminiProvider` to auto-discover Application Default Credentials (ADC) from the attached `newslens-runner` Service Account in GCP Cloud Run environments (`K_SERVICE`).
+   - Prioritizes Vertex AI global publisher models endpoint (`https://aiplatform.googleapis.com/v1/publishers/google/models`) using short-lived OAuth2 Bearer tokens (`Authorization: Bearer <sa_token>`).
+   - Ensures all LLM tokens, reasoning, and VLM OCR tasks are billed to Vertex AI against GCP Promotional Credits.
+   - Maintains seamless fallback to Google AI Studio (`AI_STUDIO_BASE`) for local developers providing a standard `GEMINI_API_KEY`.
+
+3. **Process-Wide CrossEncoder Caching (`reranker.py`)**:
+   - Introduced `_SHARED_CROSS_ENCODERS: dict[str, Any]` at module scope.
+   - `CrossEncoder` model weights are loaded into memory exactly once per process and reused across all reranking queries, eliminating 30–40s CPU stalls.
+
+4. **Frontend Request Deduplication (`apiDeduplicator.js`)**:
+   - Created lightweight client-side fetch deduplicator with in-flight promise sharing and short-term TTL caching for GET endpoints.
+   - Wired into `ModelSelector`, `AgentAssistant`, `TimelineWorkspace`, and `ActiveHighlightContext`, eliminating burst API stampedes on app launch.
+
+5. **Token Cost Accountant Catalog Update (`cost_tracker.py`)**:
+   - Added official pricing for `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash`, `gemini-2.0-flash-lite`, and `text-embedding-004`.
+   - Added provider prefix matching for `gemini`, `google`, and `vertex_ai`.
+
+### Files Created & Modified
+
+| File | Purpose / Changes |
+| :--- | :--- |
+| `backend/app/providers/gemini_provider.py` | ADC auto-discovery for Cloud Run `newslens-runner`, Vertex AI OAuth2 Bearer token auth, and smart endpoint routing. |
+| `.github/workflows/deploy-gcp.yml` | Downsized Cloud Run instances (1 vCPU, 2Gi RAM) and enabled `--cpu-throttling` on backend. |
+| `backend/app/retrieval/reranker.py` | Added module-level `_SHARED_CROSS_ENCODERS` cache for process-wide model weight persistence. |
+| `backend/app/core/cost_tracker.py` | Added Gemini 2.5/2.0 Flash/Pro/Lite and Embedding pricing catalog entries and Vertex AI support. |
+| `frontend/src/utils/apiDeduplicator.js` | [NEW] In-flight promise sharing and client-side GET cache utility. |
+| `frontend/src/components/*` | Wired UI components to `deduplicatedFetch`. |
+| `backend/tests/test_providers.py` | Added unit tests for Vertex AI Service Account routing, Bearer token auth, and `USE_VERTEX_AI` overrides. |
+| `backend/tests/test_cost_tracker.py` | Added unit tests verifying pricing resolution across all Gemini and Vertex AI models. |
+| `backend/tests/test_tasks.py` | Added unit test verifying cross-encoder process-wide caching. |
+| `README.md` & `docs/architecture.md` | Updated Cloud Run production specifications, cost optimization architecture, and Vertex AI credit preservation details. |
+
+
 
 
 

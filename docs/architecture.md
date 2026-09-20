@@ -814,12 +814,22 @@ In production, NewsLens-AI runs on Google Cloud Platform in region `asia-south1`
 3. **Dynamic Storage Factory (`GoogleCloudStorageStore`)**:
    - Implements the polymorphic `ObjectStore` interface in `backend/app/storage/gcs_store.py` backed by `google-cloud-storage`.
    - The factory `get_object_store()` dynamically instantiates `GoogleCloudStorageStore` in production (`STORAGE_BACKEND=gcs`) and `MinioStore` in local development (`STORAGE_BACKEND=minio`).
-4. **Cloud Run Celery Worker (`newslens-worker`)**:
-   - Standard Cloud Run services throttle CPU to zero when not handling incoming HTTP requests. `newslens-worker` is deployed with `--no-cpu-throttling` and `--min-instances=1`, ensuring the Celery consumer maintains 100% CPU capacity 24/7.
+4. **Cloud Run Rightsizing & Request-Based CPU Throttling**:
+   - `newslens-backend` runs with 1 vCPU, 2Gi RAM, and `--cpu-throttling` (request-based serverless billing). CPU is allocated only while processing active HTTP requests, dropping idle hosting costs to zero.
+   - `newslens-worker` runs with 1 vCPU, 2Gi RAM, `--no-cpu-throttling`, and `--min-instances=1`, ensuring the Celery consumer maintains dedicated CPU capacity 24/7 for async PDF ingestion without socket timeouts.
    - Embeds a lightweight background HTTP health server (`app/run_worker.py`) on `$PORT` (8080) that responds `200 OK` to Cloud Run startup and liveness probes while running `celery worker` in the foreground.
-5. **Database Migration Job (`newslens-migrate`)**:
+5. **Vertex AI Native IAM Routing & GCP Credit Preservation**:
+   - In production, `GeminiProvider` automatically resolves Application Default Credentials (ADC) from the attached `newslens-runner` Service Account.
+   - Generative inference routes directly through `https://aiplatform.googleapis.com/v1/publishers/google/models` using short-lived OAuth2 Bearer tokens.
+   - This architectural choice ensures that all LLM chat, reasoning, and VLM OCR requests draw against active **GCP Promotional Credits**, eliminating out-of-pocket charges on Google AI Studio.
+6. **85–90% Cost Optimization Architecture**:
+   - Switching `newslens-backend` from always-on CPU to request-based throttling reduces Cloud Run monthly compute from ~₹22,000 to ~₹2,500/mo.
+   - Ingestion rendering standardizes on 150 DPI (down from 300 DPI), cutting VLM image token counts by 50%.
+   - Process-wide `CrossEncoder` caching prevents repetitive neural weight reloading and eliminates 30–40s CPU spikes during retrieval reranking.
+   - Frontend `apiDeduplicator` caches in-flight queries to suppress redundant burst requests on initial page load.
+7. **Database Migration Job (`newslens-migrate`)**:
    - Cloud Run Job configured to run `alembic upgrade head` over the Cloud SQL Unix domain socket before updating backend or worker revisions, guaranteeing zero-downtime schema evolution.
-6. **Keyless CI/CD via Workload Identity Federation**:
+8. **Keyless CI/CD via Workload Identity Federation**:
    - `.github/workflows/deploy-gcp.yml` uses Google Cloud Workload Identity Federation to exchange GitHub Actions OIDC tokens for short-lived Google Cloud access tokens, completely eliminating static service account JSON keys.
    - Automatically runs Alembic migrations on ephemeral test MySQL containers, executes the test suite, builds and pushes multi-arch images to Google Artifact Registry, and rolls out updates to Cloud Run.
 

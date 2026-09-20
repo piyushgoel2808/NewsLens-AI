@@ -289,6 +289,7 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Background Vector Migration CLI (`scripts/reindex_embeddings.py`)**:
   * Seamlessly backfills existing relational MySQL article chunks into `article_chunks_v2` using `gemini-embedding-001` with batched processing, rate-limit backoff, and progress reporting.
 * **Task Capability Validation**: Validates that assigned providers satisfy required capabilities (e.g. vision support for layout analysis and chart extraction).
+* **Token Cost Accountant & Budget Guardrails (`cost_tracker.py`)**: Real-time token usage accounting and pricing catalog across Google Vertex AI, Google AI Studio, Anthropic Claude, OpenAI, and Groq with Prometheus metrics export (`record_llm_tokens_and_cost`) and per-query budget guardrails.
 
 ---
 

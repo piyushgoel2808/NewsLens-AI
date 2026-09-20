@@ -22,6 +22,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import time
 
 from collections.abc import AsyncIterator
@@ -276,16 +277,53 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
             except Exception as e:
                 logger.warning("Failed to initialize GCP Service Account credentials in GeminiProvider", extra={"error": str(e)})
 
+        # Auto-discover Application Default Credentials (ADC) if no explicit SA and no express key.
+        # (Allows Cloud Run service account 'newslens-runner' to authenticate automatically).
+        # We avoid auto-discovering ambient ADC during test runs when no credentials were passed.
+        is_testing = os.environ.get("TESTING", "").lower() in ("true", "1") or "pytest" in sys.modules
+        if not self._sa_credentials and not self.is_express_mode and not is_testing:
+            in_gcp = bool(
+                os.environ.get("K_SERVICE")
+                or os.environ.get("USE_VERTEX_AI", "").lower() in ("true", "1")
+                or (not self._api_key and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
+            )
+            if in_gcp:
+                try:
+                    import google.auth
+
+                    creds, _ = google.auth.default(
+                        scopes=[
+                            "https://www.googleapis.com/auth/cloud-platform",
+                            "https://www.googleapis.com/auth/generative-language",
+                        ]
+                    )
+                    self._sa_credentials = creds
+                except Exception as e:
+                    logger.debug("ADC not initialized in GeminiProvider", extra={"error": str(e)})
+
         if not self._api_key and not self._sa_credentials:
             raise ProviderError(
                 "Google Gemini API key or GCP Service Account credentials are required. "
                 "Set GOOGLE_API_KEY, GEMINI_API_KEY, or GCP_SERVICE_ACCOUNT_KEY in your .env file."
             )
 
-        use_vertex = os.environ.get("USE_VERTEX_AI", "false").lower() in ("true", "1")
+        use_vertex_env = os.environ.get("USE_VERTEX_AI", "").lower()
         if base_url:
             self._base_url = base_url.rstrip("/")
-        elif self.is_express_mode or (use_vertex and self._sa_credentials):
+        elif use_vertex_env in ("false", "0"):
+            self._base_url = AI_STUDIO_BASE
+        elif self.is_express_mode:
+            self._base_url = VERTEX_AI_EXPRESS_BASE
+        elif self._sa_credentials and (
+            not self._api_key
+            or use_vertex_env in ("true", "1")
+            or os.environ.get("K_SERVICE")
+        ):
+            # Prioritize Vertex AI whenever Service Account credentials / ADC exist on GCP or via explicit env
+            self._base_url = VERTEX_AI_EXPRESS_BASE
+        elif self._api_key:
+            self._base_url = AI_STUDIO_BASE
+        elif self._sa_credentials:
             self._base_url = VERTEX_AI_EXPRESS_BASE
         else:
             self._base_url = AI_STUDIO_BASE
@@ -366,9 +404,10 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         headers: dict[str, str] = {"Content-Type": "application/json"}
         params: dict[str, str] = {}
 
-        use_vertex = os.environ.get("USE_VERTEX_AI", "false").lower() in ("true", "1")
-        if use_vertex and self._sa_credentials:
+        use_vertex_env = os.environ.get("USE_VERTEX_AI", "").lower()
+        if self._sa_credentials and use_vertex_env not in ("false", "0"):
             import google.auth.transport.requests
+
             request = google.auth.transport.requests.Request()
             self._sa_credentials.refresh(request)
             headers["Authorization"] = f"Bearer {self._sa_credentials.token}"
@@ -379,6 +418,7 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
                 params["key"] = self._api_key
         elif self._sa_credentials:
             import google.auth.transport.requests
+
             request = google.auth.transport.requests.Request()
             self._sa_credentials.refresh(request)
             headers["Authorization"] = f"Bearer {self._sa_credentials.token}"

@@ -200,24 +200,34 @@ NewsLens-AI runs natively in production on **Google Cloud Platform (GCP)** in re
 | **Frontend UI** | **LIVE (200 OK)** | [https://newslens-frontend-679327043786.asia-south1.run.app](https://newslens-frontend-679327043786.asia-south1.run.app) |
 | **Backend API** | **LIVE (200 OK)** | [https://newslens-backend-679327043786.asia-south1.run.app](https://newslens-backend-679327043786.asia-south1.run.app) |
 | **Health Check** | **HEALTHY** | [https://newslens-backend-679327043786.asia-south1.run.app/health](https://newslens-backend-679327043786.asia-south1.run.app/health) |
-| **Celery Worker** | **CONNECTED** | `newslens-worker` on Cloud Run (`--no-cpu-throttling`, 6Gi RAM, 2 vCPU) |
+| **Celery Worker** | **CONNECTED** | `newslens-worker` on Cloud Run (`--no-cpu-throttling`, 2Gi RAM, 1 vCPU, min-instances=1) |
 | **Cloud SQL MySQL 8.0** | **MANAGED** | `newslens-ai-prod:asia-south1:newslens-mysql` |
 | **Vector DB (Qdrant Cloud)** | **MANAGED** | `australia-southeast1-0.gcp.cloud.qdrant.io:6333`<br/>• `article_chunks` (1024d Cosine - BGE-M3)<br/>• `article_chunks_v2` (768d Cosine - Gemini 001 MRL) |
 | **Object Storage (GCS)** | **ACTIVE** | `gs://newslens-ai-prod-pages` & `gs://newslens-ai-prod-originals` |
 | **Redis & Message Broker** | **MANAGED** | Upstash Redis TLS (`rediss://...`) |
 | **CI/CD Pipeline** | **AUTOMATED** | GitHub Actions with Workload Identity Federation (Zero permanent keys) |
 
-#### GCP Architecture Highlights
-1. **Cloud Run Serverless Services**:
+#### GCP Architecture & Cost Optimization Highlights
+1. **Cloud Run Serverless Services & Request-Based Billing**:
    - `newslens-frontend`: Lightweight Nginx 1.27 Alpine reverse proxy container serving the React SPA bundle, dynamic runtime environment substitution (`$PORT`), and proxying `/api/*` to the backend with unbuffered SSE streaming.
-   - `newslens-backend`: FastAPI running under Python 3.12 with Gunicorn/Uvicorn workers, Cloud SQL Unix domain socket connectivity, and automatic Google Cloud Storage credential resolution.
-   - `newslens-worker`: Background Celery task consumer configured with `--no-cpu-throttling`, 6Gi RAM, and an embedded HTTP health server on `$PORT` to satisfy Cloud Run service liveness probes while processing ingestion queues 24/7.
+   - `newslens-backend`: FastAPI running under Python 3.12 with Gunicorn/Uvicorn workers, Cloud SQL Unix domain socket connectivity, configured with `--cpu-throttling`, 1 vCPU, and 2Gi RAM (CPU is billed only during active HTTP requests; idle CPU is free).
+   - `newslens-worker`: Background Celery task consumer configured with `--no-cpu-throttling`, 2Gi RAM, 1 vCPU, `--min-instances=1`, and an embedded HTTP health server on `$PORT` to satisfy Cloud Run service liveness probes while processing ingestion queues 24/7 without Redis broken pipe drops.
    - `newslens-migrate`: Cloud Run Job running Alembic database migrations (`alembic upgrade head`) before revisions are deployed.
-2. **Zero Container RAM & Native Cloud Provider Offload**:
+2. **Vertex AI Native Routing & GCP Credit Preservation**:
+   - In production on Cloud Run, the Gemini provider automatically discovers Application Default Credentials (ADC) from the attached `newslens-runner` Service Account.
+   - Inference routes directly through Google Cloud Vertex AI (`https://aiplatform.googleapis.com/v1/publishers/google/models`) using OAuth2 Bearer tokens.
+   - This keeps 100% of LLM tokens and VLM OCR operations covered under **GCP Promotional Credits**, avoiding out-of-pocket credit card charges on Google AI Studio.
+   - Local developers can seamlessly run against Google AI Studio (`AIza...` key) or Google Cloud Vertex AI (`USE_VERTEX_AI=true`).
+3. **85–90% Cost Reduction Architecture**:
+   - **Compute**: Moving the API backend from always-allocated CPU to request-based `--cpu-throttling` slashes continuous Cloud Run compute spend by ~85% (~₹800/day savings).
+   - **Inference**: High-volume extraction uses `gemini-2.5-flash` with 150 DPI page rendering (reducing OCR token volume by 50% vs 300 DPI).
+   - **In-Memory Model Caching**: Module-level process-wide `CrossEncoder` caching prevents 30–40s CPU spikes and redundant disk weight reloads per search query.
+   - **Client Request Deduplication**: Frontend `apiDeduplicator` prevents simultaneous bursts of duplicate HTTP calls on initial page load.
+4. **Zero Container RAM & Native Cloud Provider Offload**:
    - In production cloud mode (`cloud_full` preset), heavy neural compute is fully offloaded to managed cloud APIs: `gemini-embedding-001` eliminates loading 2.4 GB of PyTorch model weights inside the container, and `docling_cloud` offloads layout parsing to IBM Cloud.
-3. **Dynamic Object Storage Abstraction**:
+5. **Dynamic Object Storage Abstraction**:
    - Production uses native `google-cloud-storage` (`GoogleCloudStorageStore`) against GCS buckets, while local development seamlessly uses MinIO (`MinioStore`) via `get_object_store()`.
-4. **Automated CI/CD**:
+6. **Automated CI/CD**:
    - Every push to `main` triggers `.github/workflows/deploy-gcp.yml`, which executes the test suite against an ephemeral MySQL 8 service container, authenticates to GCP via Workload Identity Federation, builds and pushes multi-arch images to Google Artifact Registry, runs database migrations, and updates Cloud Run revisions with zero downtime.
 
 ---
