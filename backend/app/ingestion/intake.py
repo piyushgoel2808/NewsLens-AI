@@ -56,6 +56,7 @@ class IntakeResult:
     issues_created: list[int]
     skipped_duplicates: list[str]
     compressed_contents: dict[int, bytes] = field(default_factory=dict)
+    storage_keys: dict[int, str] = field(default_factory=dict)
 
 
 def compute_sha256(data: bytes) -> str:
@@ -204,6 +205,7 @@ class IntakeService:
         job.total_files = len(items_to_process)
         issues_created: list[int] = []
         compressed_contents: dict[int, bytes] = {}
+        storage_keys: dict[int, str] = {}
 
         # Fetch list of all known newspaper names from DB to aid matching
         all_news_res = await self._db.execute(select(Newspaper.name))
@@ -332,6 +334,7 @@ class IntakeService:
 
             issues_created.append(issue.id)
             compressed_contents[issue.id] = item.content
+            storage_keys[issue.id] = storage_key
             job.processed_files += 1
 
         if job.failed_files == 0:
@@ -350,4 +353,6 @@ class IntakeService:
             issues_created=issues_created,
             skipped_duplicates=skipped_duplicates,
             compressed_contents=compressed_contents,
+            storage_keys=storage_keys,
         )
+

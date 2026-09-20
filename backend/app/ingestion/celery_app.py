@@ -25,4 +25,23 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_time_limit=3600,  # 1 hour limit for huge archives
+    broker_connection_retry_on_startup=True,
+    broker_transport_options={
+        "socket_keepalive": True,
+        "socket_timeout": 10.0,
+        "socket_connect_timeout": 10.0,
+        "health_check_interval": 15,
+        "retry_on_timeout": True,
+        "max_connections": 20,
+    },
+    result_backend_transport_options={
+        "socket_keepalive": True,
+        "socket_timeout": 10.0,
+        "socket_connect_timeout": 10.0,
+        "health_check_interval": 15,
+        "retry_on_timeout": True,
+    },
+    worker_prefetch_multiplier=1,
+    worker_cancel_long_running_tasks_on_connection_loss=True,
 )
+

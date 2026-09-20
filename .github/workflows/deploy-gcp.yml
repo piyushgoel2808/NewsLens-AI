@@ -182,12 +182,18 @@ jobs:
           if gcloud run services describe newslens-worker --region=asia-south1 --project=${{ secrets.GCP_PROJECT_ID }} >/dev/null 2>&1; then
             gcloud run services update newslens-worker \
               --image=${{ steps.meta.outputs.registry }}/worker:${{ steps.meta.outputs.sha }} \
+              --command="python" \
+              --args="-m,app.run_worker" \
+              --min-instances=1 \
+              --no-cpu-throttling \
               --timeout=1800 \
+              --port=8080 \
               --region=asia-south1 \
               --project=${{ secrets.GCP_PROJECT_ID }}
           else
             echo "newslens-worker service not yet provisioned. Skipping worker update."
           fi
+
 
       - name: Deploy Frontend to Cloud Run
         run: |

@@ -211,3 +211,55 @@ class TestHealthEndpoint:
         ):
             response = await app_client.get("/health")
         assert "x-request-id" in response.headers
+
+    @pytest.mark.asyncio
+    async def test_check_celery_worker_up(self) -> None:
+        from app.api.routers.health import _check_celery
+
+        with patch(
+            "app.ingestion.celery_app.celery_app.control.ping",
+            return_value=[{"celery@worker1": {"ok": "pong"}}],
+        ):
+            result = await _check_celery()
+        assert result["status"] == "up"
+        assert result["active_workers"] == 1
+        assert "latency_ms" in result
+
+    @pytest.mark.asyncio
+    async def test_check_celery_worker_idle(self) -> None:
+        from app.api.routers.health import _check_celery
+
+        with patch(
+            "app.ingestion.celery_app.celery_app.control.ping",
+            return_value=[],
+        ):
+            result = await _check_celery()
+        assert result["status"] == "idle"
+        assert result["active_workers"] == 0
+
+    @pytest.mark.asyncio
+    async def test_check_celery_broken_pipe_handled_gracefully(self) -> None:
+        from app.api.routers.health import _check_celery
+
+        with (
+            patch(
+                "app.ingestion.celery_app.celery_app.control.ping",
+                side_effect=BrokenPipeError("Broken pipe"),
+            ),
+            patch("app.ingestion.celery_app.celery_app.close") as mock_close,
+        ):
+            result = await _check_celery()
+        assert result["status"] == "down"
+        assert "Broken pipe" in result["error"]
+        assert mock_close.called
+
+    def test_celery_transport_hardening_options(self) -> None:
+        from app.ingestion.celery_app import celery_app
+
+        conf = celery_app.conf
+        assert conf.broker_connection_retry_on_startup is True
+        assert conf.broker_transport_options["socket_keepalive"] is True
+        assert conf.broker_transport_options["health_check_interval"] == 15
+        assert conf.broker_transport_options["retry_on_timeout"] is True
+        assert conf.worker_prefetch_multiplier == 1
+

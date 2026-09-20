@@ -97,7 +97,8 @@ def detect_masthead_and_date(blocks: Sequence[Any], height_px: float) -> tuple[s
 
 async def _execute_ingestion_pipeline(
     issue_id: int,
-    pdf_bytes: bytes,
+    pdf_bytes: bytes | None = None,
+    storage_key: str | None = None,
     dpi: int = 150,
     parser_engine: str = "auto",
     minio: ObjectStore | None = None,
@@ -107,6 +108,21 @@ async def _execute_ingestion_pipeline(
     settings = get_settings()
     store = minio or get_object_store(settings)
     maker = session_factory or get_session_factory()
+
+    if not pdf_bytes:
+        if not storage_key:
+            async with maker() as db_lookup:
+                stmt = select(Issue).where(Issue.id == issue_id)
+                res = await db_lookup.execute(stmt)
+                lookup_issue = res.scalar_one_or_none()
+                if lookup_issue and lookup_issue.source_zip_id and lookup_issue.edition:
+                    storage_key = f"originals/{lookup_issue.source_zip_id}/{lookup_issue.edition}"
+
+        if storage_key:
+            logger.info("Streaming PDF from object store for issue %d (key: %s)", issue_id, storage_key)
+            pdf_bytes = await store.get(bucket=settings.minio.bucket_originals, key=storage_key)
+        else:
+            raise ValueError(f"No pdf_bytes provided and could not resolve storage_key for issue {issue_id}")
 
     async with maker() as db:
         # Step 1: Rasterize PDF pages to PNG (MinIO upload)
@@ -794,7 +810,8 @@ async def _execute_ingestion_pipeline(
 
 async def run_ingestion_pipeline(
     issue_id: int,
-    pdf_bytes: bytes,
+    pdf_bytes: bytes | None = None,
+    storage_key: str | None = None,
     dpi: int = 150,
     parser_engine: str = "auto",
     minio: ObjectStore | None = None,
@@ -806,6 +823,7 @@ async def run_ingestion_pipeline(
         return await _execute_ingestion_pipeline(
             issue_id=issue_id,
             pdf_bytes=pdf_bytes,
+            storage_key=storage_key,
             dpi=dpi,
             parser_engine=parser_engine,
             minio=minio,
@@ -835,10 +853,25 @@ async def run_ingestion_pipeline(
     retry_backoff_max=300,
     retry_jitter=True,
 )
-def process_issue_ingestion_task(self, issue_id: int, pdf_bytes: bytes, dpi: int = 150) -> dict[str, Any]:
+def process_issue_ingestion_task(
+    self,
+    issue_id: int,
+    pdf_bytes: bytes | None = None,
+    storage_key: str | None = None,
+    dpi: int = 150,
+    parser_engine: str = "auto",
+) -> dict[str, Any]:
     """Synchronous entry point for Celery worker with exponential backoff on total rate limit exhaustion."""
     try:
-        return asyncio.run(run_ingestion_pipeline(issue_id=issue_id, pdf_bytes=pdf_bytes, dpi=dpi))
+        return asyncio.run(
+            run_ingestion_pipeline(
+                issue_id=issue_id,
+                pdf_bytes=pdf_bytes,
+                storage_key=storage_key,
+                dpi=dpi,
+                parser_engine=parser_engine,
+            )
+        )
     except RateLimitExhaustedError as exc:
         retries = getattr(self.request, "retries", 0) if hasattr(self, "request") else 0
         logger.warning(
@@ -847,6 +880,7 @@ def process_issue_ingestion_task(self, issue_id: int, pdf_bytes: bytes, dpi: int
             retries + 1,
         )
         raise self.retry(exc=exc, countdown=min(60 * (2 ** retries), 300)) from exc
+
 
 
 __all__ = [

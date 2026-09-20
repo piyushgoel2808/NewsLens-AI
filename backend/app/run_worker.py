@@ -6,7 +6,9 @@ readiness/liveness probes while running the Celery task consumer loop in the for
 
 from __future__ import annotations
 
+import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -15,11 +17,17 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path in ("/", "/health", "/ready", "/live"):
+        clean_path = self.path.split("?")[0].rstrip("/")
+        if clean_path in ("", "/health", "/ready", "/live", "/healthz", "/_health"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"status":"up","service":"celery-worker"}')
+            payload = json.dumps({
+                "status": "up",
+                "service": "celery-worker",
+                "pid": os.getpid(),
+            }).encode("utf-8")
+            self.wfile.write(payload)
         else:
             self.send_response(404)
             self.end_headers()
@@ -40,8 +48,10 @@ def main() -> None:
     health_thread = threading.Thread(target=start_health_server, daemon=True)
     health_thread.start()
 
-    # 2. Build Celery worker command
+    # 2. Build Celery worker command using the active Python interpreter
     cmd = [
+        sys.executable,
+        "-m",
         "celery",
         "-A",
         "app.ingestion.celery_app",
@@ -57,10 +67,20 @@ def main() -> None:
     if len(sys.argv) > 1:
         cmd = sys.argv[1:]
 
-    # 3. Run Celery in foreground. If it exits, exit script so Cloud Run restarts instance.
-    exit_code = subprocess.call(cmd)
+    # 3. Spawn Celery worker and forward Cloud Run signals gracefully
+    proc = subprocess.Popen(cmd)
+
+    def _shutdown(signum: int, _frame: object) -> None:
+        if proc.poll() is None:
+            proc.send_signal(signum)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    exit_code = proc.wait()
     sys.exit(exit_code)
 
 
 if __name__ == "__main__":
     main()
+

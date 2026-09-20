@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
 from app.ingestion.intake import IntakeService
-from app.ingestion.tasks import run_ingestion_pipeline
+from app.ingestion.tasks import process_issue_ingestion_task, run_ingestion_pipeline
 from app.models.base import get_db
 from app.models.ingestion import IngestionJob
 from app.models.newspaper import Issue, Page
@@ -142,11 +142,13 @@ async def upload_newspaper_document(
     if filename.lower().endswith(".pdf") and intake_res.issues_created:
         for issue_id in intake_res.issues_created:
             pdf_payload = intake_res.compressed_contents.get(issue_id, content)
+            storage_key = intake_res.storage_keys.get(issue_id)
             if sync_processing:
                 try:
                     res = await run_ingestion_pipeline(
                         issue_id=issue_id,
                         pdf_bytes=pdf_payload,
+                        storage_key=storage_key,
                         parser_engine=parser_engine,
                     )
                     pipeline_results.append(res)
@@ -159,16 +161,44 @@ async def upload_newspaper_document(
                         {"issue_id": issue_id, "error": str(e), "status": "failed"}
                     )
             else:
-                asyncio.create_task(
-                    run_ingestion_pipeline(
+                task_dispatched = False
+                task_id = None
+                try:
+                    task = process_issue_ingestion_task.delay(
                         issue_id=issue_id,
-                        pdf_bytes=pdf_payload,
+                        storage_key=storage_key,
+                        dpi=150,
                         parser_engine=parser_engine,
                     )
-                )
+                    task_id = task.id
+                    task_dispatched = True
+                    logger.info(
+                        "Dispatched Celery ingestion task",
+                        extra={"issue_id": issue_id, "task_id": task_id, "storage_key": storage_key},
+                    )
+                except Exception as celery_err:
+                    logger.warning(
+                        "Celery dispatch failed; falling back to in-process background task",
+                        extra={"issue_id": issue_id, "error": str(celery_err)},
+                    )
+                    asyncio.create_task(
+                        run_ingestion_pipeline(
+                            issue_id=issue_id,
+                            pdf_bytes=pdf_payload,
+                            storage_key=storage_key,
+                            parser_engine=parser_engine,
+                        )
+                    )
+
                 pipeline_results.append(
-                    {"issue_id": issue_id, "status": "processing_in_background"}
+                    {
+                        "issue_id": issue_id,
+                        "status": "processing_in_background",
+                        "task_id": task_id,
+                        "mode": "celery" if task_dispatched else "in_process",
+                    }
                 )
+
 
     is_duplicate_skipped = bool(intake_res.skipped_duplicates and not intake_res.issues_created)
     return {

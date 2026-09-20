@@ -80,6 +80,64 @@ async def test_upload_endpoint(mock_db_session: AsyncMock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_upload_endpoint_dispatches_celery_task_when_async(mock_db_session: AsyncMock) -> None:
+    app = create_app()
+
+    async def override_get_db() -> AsyncGenerator[AsyncMock, None]:
+        yield mock_db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    pdf_path = FIXTURES_DIR / "sample_digital_frontpage.pdf"
+    pdf_bytes = pdf_path.read_bytes()
+
+    mock_celery_task = MagicMock()
+    mock_celery_task.id = "celery-task-12345"
+
+    with (
+        patch("app.api.main.init_db"),
+        patch("app.api.main.close_db", new_callable=AsyncMock),
+        patch("app.storage.minio_store.MinioStore.startup", new_callable=AsyncMock),
+        patch("app.storage.qdrant_store.QdrantStore._ensure_collection", new_callable=AsyncMock),
+        patch("app.ingestion.intake.IntakeService.process_upload", new_callable=AsyncMock) as mock_process,
+        patch("app.api.routers.ingest.process_issue_ingestion_task.delay", return_value=mock_celery_task) as mock_delay,
+    ):
+        mock_process.return_value = IntakeResult(
+            job_id=42,
+            total_files=1,
+            issues_created=[101],
+            skipped_duplicates=[],
+            storage_keys={101: "originals/42/frontpage.pdf"},
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            files = {"file": ("frontpage.pdf", pdf_bytes, "application/pdf")}
+            data = {
+                "newspaper_name": "The Daily Chronicle",
+                "issue_date": "1929-10-24",
+                "edition": "morning",
+                "language": "en",
+                "sync_processing": "false",
+            }
+            resp = await client.post("/api/ingest/upload", files=files, data=data)
+
+            assert resp.status_code == 201
+            body = resp.json()
+            assert body["job_id"] == 42
+            assert body["pipeline_results"][0]["status"] == "processing_in_background"
+            assert body["pipeline_results"][0]["task_id"] == "celery-task-12345"
+            assert body["pipeline_results"][0]["mode"] == "celery"
+
+            mock_delay.assert_called_once_with(
+                issue_id=101,
+                storage_key="originals/42/frontpage.pdf",
+                dpi=150,
+                parser_engine="auto",
+            )
+
+
+
+@pytest.mark.asyncio
 async def test_get_ingestion_job_not_found(mock_db_session: AsyncMock) -> None:
     app = create_app()
 

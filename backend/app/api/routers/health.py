@@ -93,12 +93,21 @@ async def _check_celery() -> dict[str, Any]:
 
         loop = asyncio.get_running_loop()
 
-        async def _ping_celery() -> list[Any] | None:
-            return await loop.run_in_executor(
-                None, lambda: celery_app.control.ping(timeout=0.5)
-            )
+        def _ping_worker() -> list[Any] | None:
+            try:
+                return celery_app.control.ping(timeout=0.5)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Connection dropped by Redis idle timeout; reset connection pool and retry once
+                try:
+                    celery_app.close()
+                except Exception:
+                    pass
+                return celery_app.control.ping(timeout=0.5)
 
-        ping_res = await asyncio.wait_for(_ping_celery(), timeout=1.5)
+        async def _ping_celery() -> list[Any] | None:
+            return await loop.run_in_executor(None, _ping_worker)
+
+        ping_res = await asyncio.wait_for(_ping_celery(), timeout=2.0)
         active_workers = len(ping_res) if ping_res else 0
         return {
             "status": "up" if active_workers > 0 else "idle",
@@ -106,7 +115,9 @@ async def _check_celery() -> dict[str, Any]:
             "latency_ms": round((time.monotonic() - t0) * 1000),
         }
     except Exception as e:
+        logger.warning("Celery health check failed", extra={"error": str(e)})
         return {"status": "down", "error": str(e)[:200]}
+
 
 
 @router.get("/health", summary="Health check", tags=["health"])
