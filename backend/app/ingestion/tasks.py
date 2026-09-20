@@ -896,8 +896,29 @@ async def run_ingestion_pipeline(
     minio: ObjectStore | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> dict[str, Any]:
-    """Top-level robust entrypoint for ingestion pipeline with automated DB failure tracking."""
-    maker = session_factory or get_session_factory()
+    """Top-level robust entrypoint for ingestion pipeline with automated DB failure tracking.
+    
+    When running under Celery (where each task executes inside asyncio.run()),
+    creates an isolated async engine with NullPool bound exclusively to the
+    current event loop to avoid cross-loop socket reuse and 'Future attached to different loop' errors.
+    """
+    local_engine = None
+    if session_factory is not None:
+        maker = session_factory
+    else:
+        from sqlalchemy.pool import NullPool
+        settings = get_settings()
+        local_engine = create_async_engine(
+            settings.database.async_url,
+            echo=False,
+            poolclass=NullPool,
+        )
+        maker = async_sessionmaker(
+            local_engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+
     try:
         return await _execute_ingestion_pipeline(
             issue_id=issue_id,
@@ -921,6 +942,9 @@ async def run_ingestion_pipeline(
         except Exception:
             logger.exception("Failed to mark issue %d as failed in error handler", issue_id)
         raise
+    finally:
+        if local_engine is not None:
+            await local_engine.dispose()
 
 
 @celery_app.task(
