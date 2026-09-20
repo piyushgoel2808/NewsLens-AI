@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.ingestion.metadata_extractor import MetadataExtractor
 
 
@@ -53,3 +55,29 @@ class TestMetadataExtractor:
         assert "historic trade pact" in summary
         assert len(summary) > 20
         assert len(summary) <= 500
+
+    @pytest.mark.asyncio
+    async def test_process_and_persist_bulk_metadata(self) -> None:
+        from unittest.mock import AsyncMock
+
+        mock_db = MagicMock()
+        mock_db.flush = AsyncMock()
+        mock_db.add = MagicMock()
+
+        mock_res = MagicMock()
+        mock_res.scalars.return_value.all.return_value = []
+        mock_res.scalar_one_or_none.return_value = None
+        mock_db.execute = AsyncMock(return_value=mock_res)
+
+        extractor = MetadataExtractor(db=mock_db)
+        articles_data = [
+            (1, "PM VISITS MUMBAI", "Prime Minister arrived in Mumbai yesterday for infrastructure summit."),
+            (2, "ELECTION COMMISSION MEETS", "Chief Election Commissioner reviewed security preparations in New Delhi."),
+        ]
+
+        results = await extractor.process_and_persist_bulk_metadata(articles_data)
+        assert len(results) == 2
+        assert 1 in results and 2 in results
+        assert len(results[1].entities) > 0
+        assert len(results[2].entities) > 0
+        assert mock_db.flush.called

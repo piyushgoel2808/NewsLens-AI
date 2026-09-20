@@ -94,3 +94,80 @@ class TestArticleEmbedder:
         assert points_arg[0].payload["article_id"] == 101
         assert points_arg[0].payload["headline"] == "TEST STORY"
         assert len(points_arg[0].vector) == 768
+
+    @pytest.mark.asyncio
+    async def test_bulk_embed_and_index_issue(self) -> None:
+        from app.ingestion.embedder import ChunkIndexingItem
+
+        mock_db = MagicMock()
+        mock_db.flush = AsyncMock()
+        mock_db.add = MagicMock()
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.upsert = AsyncMock()
+
+        embedder = ArticleEmbedder(
+            db=mock_db,
+            qdrant=mock_qdrant,
+            embed_provider=MockEmbedProvider(),
+        )
+
+        items = [
+            ChunkIndexingItem(
+                article_id=1,
+                issue_id=10,
+                newspaper_name="The Hindu",
+                issue_date="2026-09-20",
+                headline="Article 1 Headline",
+                section="National",
+                article_type="news",
+                prominence_score=0.9,
+                page_numbers=[1],
+                entities=["Delhi"],
+                topics=["Politics"],
+                chunk=DocumentChunk(
+                    chunk_index=0,
+                    text="Chunk text 1",
+                    token_count=10,
+                    header_context="",
+                    raw_text="Raw chunk 1",
+                ),
+            ),
+            ChunkIndexingItem(
+                article_id=2,
+                issue_id=10,
+                newspaper_name="The Hindu",
+                issue_date="2026-09-20",
+                headline="Article 2 Headline",
+                section="Economy",
+                article_type="news",
+                prominence_score=0.7,
+                page_numbers=[2],
+                entities=["RBI"],
+                topics=["Banking"],
+                chunk=DocumentChunk(
+                    chunk_index=0,
+                    text="Chunk text 2",
+                    token_count=12,
+                    header_context="",
+                    raw_text="Raw chunk 2",
+                ),
+                has_table=True,
+                chunk_type="visual",
+                has_visual_data=True,
+                visual_type="table",
+                photo_description="| Q1 | Q2 |\n| 10 | 20 |",
+            ),
+        ]
+
+        total_indexed = await embedder.bulk_embed_and_index_issue(items, batch_size=64)
+        assert total_indexed == 2
+        assert mock_qdrant.upsert.called
+        assert mock_db.add.call_count == 2
+        assert mock_db.flush.called
+
+        points = mock_qdrant.upsert.call_args[0][0]
+        assert len(points) == 2
+        assert points[0].payload["article_id"] == 1
+        assert points[1].payload["visual_type"] == "table"
+        assert points[1].payload["has_table"] is True

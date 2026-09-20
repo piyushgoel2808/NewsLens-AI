@@ -104,6 +104,8 @@ class MetadataExtractor:
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
+        self._entity_cache: dict[tuple[str, str], int] = {}
+        self._topic_cache: dict[str, int] = {}
 
     def extract_entities_from_text(self, text: str, headline: str = "") -> list[ExtractedEntity]:
         """Extract Named Entities using patterns and heuristic clustering."""
@@ -210,54 +212,50 @@ class MetadataExtractor:
         if article:
             article.summary = summary
 
-        # 2. Persist Entities & ArticleEntity junction
+        # 2. Persist Entities & ArticleEntity junction using in-memory cache
         for ent in entities:
-            # Check if canonical entity exists
-            stmt = select(Entity).where(Entity.name == ent.name, Entity.type == ent.type)
-            res = await self._db.execute(stmt)
-            db_entity = res.scalar_one_or_none()
-            if not db_entity:
-                db_entity = Entity(name=ent.name, type=ent.type)
-                self._db.add(db_entity)
-                await self._db.flush()
+            ent_key = (ent.name, ent.type)
+            db_entity_id = self._entity_cache.get(ent_key)
+            if not db_entity_id:
+                stmt = select(Entity.id).where(Entity.name == ent.name, Entity.type == ent.type)
+                res = await self._db.execute(stmt)
+                db_entity_id = res.scalar_one_or_none()
+                if not db_entity_id:
+                    db_entity = Entity(name=ent.name, type=ent.type)
+                    self._db.add(db_entity)
+                    await self._db.flush()
+                    db_entity_id = db_entity.id
+                self._entity_cache[ent_key] = db_entity_id
 
             # Link article entity
-            link_stmt = select(ArticleEntity).where(
-                ArticleEntity.article_id == article_id,
-                ArticleEntity.entity_id == db_entity.id,
+            art_ent = ArticleEntity(
+                article_id=article_id,
+                entity_id=db_entity_id,
+                mention_count=ent.mention_count,
+                salience_score=ent.salience_score,
             )
-            link_res = await self._db.execute(link_stmt)
-            if not link_res.scalar_one_or_none():
-                art_ent = ArticleEntity(
-                    article_id=article_id,
-                    entity_id=db_entity.id,
-                    mention_count=ent.mention_count,
-                    salience_score=ent.salience_score,
-                )
-                self._db.add(art_ent)
+            self._db.add(art_ent)
 
-        # 3. Persist Topics & ArticleTopic junction
+        # 3. Persist Topics & ArticleTopic junction using in-memory cache
         for top in topics:
-            top_stmt = select(Topic).where(Topic.name == top.name)
-            top_res = await self._db.execute(top_stmt)
-            topic_record = top_res.scalar_one_or_none()
-            if not topic_record:
-                topic_record = Topic(name=top.name, taxonomy_path=top.taxonomy_path)
-                self._db.add(topic_record)
-                await self._db.flush()
+            topic_id = self._topic_cache.get(top.name)
+            if not topic_id:
+                top_stmt = select(Topic.id).where(Topic.name == top.name)
+                top_res = await self._db.execute(top_stmt)
+                topic_id = top_res.scalar_one_or_none()
+                if not topic_id:
+                    topic_record = Topic(name=top.name, taxonomy_path=top.taxonomy_path)
+                    self._db.add(topic_record)
+                    await self._db.flush()
+                    topic_id = topic_record.id
+                self._topic_cache[top.name] = topic_id
 
-            link_top_stmt = select(ArticleTopic).where(
-                ArticleTopic.article_id == article_id,
-                ArticleTopic.topic_id == topic_record.id,
+            art_top = ArticleTopic(
+                article_id=article_id,
+                topic_id=topic_id,
+                confidence=top.confidence,
             )
-            link_top_res = await self._db.execute(link_top_stmt)
-            if not link_top_res.scalar_one_or_none():
-                art_top = ArticleTopic(
-                    article_id=article_id,
-                    topic_id=topic_record.id,
-                    confidence=top.confidence,
-                )
-                self._db.add(art_top)
+            self._db.add(art_top)
 
         await self._db.flush()
 
@@ -275,3 +273,84 @@ class MetadataExtractor:
             topics=topics,
             summary=summary,
         )
+
+    async def process_and_persist_bulk_metadata(
+        self,
+        articles_data: list[tuple[int, str, str]],  # [(article_id, headline, full_text)]
+    ) -> dict[int, ArticleMetadataResult]:
+        """Extract and persist metadata for an entire issue in high-speed bulk batches."""
+        if not articles_data:
+            return {}
+
+        results: dict[int, ArticleMetadataResult] = {}
+        all_extracted: list[tuple[int, list[ExtractedEntity], list[ExtractedTopic], str]] = []
+
+        # 1. In-memory extraction for all articles
+        for article_id, headline, full_text in articles_data:
+            ents = self.extract_entities_from_text(full_text, headline=headline)
+            tops = self.extract_topics_from_text(full_text, headline=headline)
+            summ = self.generate_summary(full_text, headline=headline)
+            all_extracted.append((article_id, ents, tops, summ))
+            results[article_id] = ArticleMetadataResult(entities=ents, topics=tops, summary=summ)
+
+        # 2. Warm caches in single bulk queries
+        distinct_entity_names = list({e.name for _, ents, _, _ in all_extracted for e in ents if (e.name, e.type) not in self._entity_cache})
+        if distinct_entity_names:
+            ents_stmt = select(Entity).where(Entity.name.in_(distinct_entity_names))
+            ents_res = await self._db.execute(ents_stmt)
+            for db_e in ents_res.scalars().all():
+                self._entity_cache[(db_e.name, db_e.type)] = db_e.id
+
+        distinct_topic_names = list({t.name for _, _, tops, _ in all_extracted for t in tops if t.name not in self._topic_cache})
+        if distinct_topic_names:
+            tops_stmt = select(Topic).where(Topic.name.in_(distinct_topic_names))
+            tops_res = await self._db.execute(tops_stmt)
+            for db_t in tops_res.scalars().all():
+                self._topic_cache[db_t.name] = db_t.id
+
+        # 3. Create missing entities/topics
+        for _, ents, tops, _ in all_extracted:
+            for ent in ents:
+                key = (ent.name, ent.type)
+                if key not in self._entity_cache:
+                    new_ent = Entity(name=ent.name, type=ent.type)
+                    self._db.add(new_ent)
+                    await self._db.flush()
+                    self._entity_cache[key] = new_ent.id
+
+            for top in tops:
+                if top.name not in self._topic_cache:
+                    new_top = Topic(name=top.name, taxonomy_path=top.taxonomy_path)
+                    self._db.add(new_top)
+                    await self._db.flush()
+                    self._topic_cache[top.name] = new_top.id
+
+        # 4. Link all ArticleEntity and ArticleTopic records in batch
+        for article_id, ents, tops, summ in all_extracted:
+            art_stmt = select(Article).where(Article.id == article_id)
+            art_res = await self._db.execute(art_stmt)
+            article = art_res.scalar_one_or_none()
+            if article:
+                article.summary = summ
+
+            for ent in ents:
+                ent_id = self._entity_cache[(ent.name, ent.type)]
+                art_ent = ArticleEntity(
+                    article_id=article_id,
+                    entity_id=ent_id,
+                    mention_count=ent.mention_count,
+                    salience_score=ent.salience_score,
+                )
+                self._db.add(art_ent)
+
+            for top in tops:
+                top_id = self._topic_cache[top.name]
+                art_top = ArticleTopic(
+                    article_id=article_id,
+                    topic_id=top_id,
+                    confidence=top.confidence,
+                )
+                self._db.add(art_top)
+
+        await self._db.flush()
+        return results

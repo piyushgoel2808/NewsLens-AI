@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,31 @@ from app.storage.base import VectorPoint
 from app.storage.qdrant_store import QdrantStore
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class ChunkIndexingItem:
+    """Consolidated chunk and payload metadata for whole-issue bulk vector indexing."""
+
+    article_id: int
+    issue_id: int
+    newspaper_name: str
+    issue_date: str
+    headline: str
+    section: str | None
+    article_type: str
+    prominence_score: float
+    page_numbers: list[int]
+    entities: list[str]
+    topics: list[str]
+    chunk: DocumentChunk
+    has_photo: bool = False
+    has_table: bool = False
+    chunk_type: str = "text"
+    has_visual_data: bool = False
+    visual_type: str | None = None
+    bbox: list[float] | None = None
+    photo_description: str | None = None
 
 
 class ArticleEmbedder:
@@ -145,6 +171,89 @@ class ArticleEmbedder:
         )
 
         return vector_ids
+
+    async def bulk_embed_and_index_issue(
+        self,
+        items: list[ChunkIndexingItem],
+        batch_size: int = 64,
+    ) -> int:
+        """Batch embed all issue chunks, execute bulk Qdrant upsert, and persist ArticleChunk records in MySQL."""
+        if not items:
+            return 0
+
+        provider = self._get_embedding_provider()
+        is_gemini = getattr(provider, "provider_name", "") in ("gemini_embedding", "gemini")
+
+        # 1. Batch embedding calls in chunks of batch_size (e.g. 64)
+        all_texts = [item.chunk.text for item in items]
+        all_vectors: list[list[float]] = []
+
+        for i in range(0, len(all_texts), batch_size):
+            text_batch = all_texts[i : i + batch_size]
+            if is_gemini:
+                try:
+                    batch_vectors = await provider.embed(text_batch, task_type="RETRIEVAL_DOCUMENT")  # type: ignore[call-arg]
+                except TypeError:
+                    batch_vectors = await provider.embed(text_batch)
+            else:
+                batch_vectors = await provider.embed(text_batch)
+            all_vectors.extend(batch_vectors)
+
+        # 2. Build Qdrant points and MySQL ArticleChunk records
+        qdrant_points: list[VectorPoint] = []
+        for item, vector in zip(items, all_vectors, strict=False):
+            point_id = str(uuid.uuid4())
+            payload = {
+                "article_id": item.article_id,
+                "issue_id": item.issue_id,
+                "newspaper_name": item.newspaper_name,
+                "issue_date": item.issue_date,
+                "headline": item.headline,
+                "section": item.section or "General",
+                "article_type": item.article_type,
+                "prominence_score": item.prominence_score,
+                "has_photo": item.has_photo,
+                "has_table": item.has_table,
+                "has_visual_data": item.has_visual_data or (item.chunk_type == "visual"),
+                "visual_type": item.visual_type,
+                "chunk_type": item.chunk_type,
+                "chunk_index": item.chunk.chunk_index,
+                "page_numbers": item.page_numbers,
+                "entities": item.entities,
+                "topics": item.topics,
+                "chunk_text": item.chunk.text,
+                "raw_text": item.chunk.raw_text,
+                "bbox": item.bbox or [],
+                "photo_description": item.photo_description or "",
+            }
+
+            qdrant_points.append(
+                VectorPoint(
+                    id=point_id,
+                    vector=vector,
+                    payload=payload,
+                )
+            )
+
+            chunk_record = ArticleChunk(
+                article_id=item.article_id,
+                chunk_index=item.chunk.chunk_index,
+                chunk_type=item.chunk_type,
+                text=item.chunk.text,
+                token_count=item.chunk.token_count,
+                embedding_vector_id=point_id,
+            )
+            self._db.add(chunk_record)
+
+        # 3. Single bulk upsert to Qdrant
+        await self._qdrant.upsert(qdrant_points)
+        await self._db.flush()
+
+        logger.info(
+            "Bulk issue indexing completed in Qdrant and MySQL",
+            extra={"total_chunks": len(items)},
+        )
+        return len(items)
 
     async def delete_issue_vectors(self, issue_id: int) -> None:
         """Purge all vector points associated with an issue_id from Qdrant."""

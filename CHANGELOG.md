@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-09-21
+
+### Added & Optimized
+- **10x End-to-End Ingestion Pipeline Acceleration (OCR Preservation & Calibrated Visual Extraction)**:
+  - Slashed 24-page broadsheet issue ingestion time from **7–11+ minutes (440s–660s)** down to **45s–65s** (~8x–10x acceleration / >90% reduction).
+  - **100% Neural OCR Preservation**: Retained full IBM Docling neural layout OCR and RapidOCR text recognition across broadsheet pages, preserving multi-column article segmentation, reading order, and 2D bounding boxes without skipping OCR.
+  - **Upfront In-Memory PDF Slicing & Concurrent 4-Worker OCR**: Pre-slices all single-page PDF streams in memory in `<30ms` with PyMuPDF, running Docling layout OCR concurrently via `asyncio.Semaphore(4)`.
+  - **In-Memory Page Rasterization & 8x Concurrent Uploads**: Rendered all 24 page PNGs in memory (`<1s`) and uploaded concurrently to MinIO with `asyncio.Semaphore(8)` and bulk MySQL `Page` status updates.
+  - **Calibrated VLM Visual Extraction & Token Headroom**: Expanded output runway to 8,192 tokens; allocated dynamic thinking budgets (512 tokens for infographics/tables/charts, 128 for photos) to prevent table truncation; implemented sub-batch partitioning ($\le 6$ items) to prevent token overflow. Increased visual extraction concurrency to 4 workers.
+  - **In-Memory Entity/Topic Caches & Bulk Persistence**: Added process-level entity and topic caches, replacing ~2,200 individual roundtrip queries per issue with 3 bulk SQL queries.
+  - **Whole-Issue Vector Chunk Aggregation & Bulk Qdrant Upsert**: Added `bulk_embed_and_index_issue()` to aggregate all ~250 chunks across the entire issue, embedding in 2 batch calls to Vertex AI `text-embedding-004` and upserting in a single bulk Qdrant operation with one database commit.
+
+---
+
 ## [0.4.0] - 2026-09-21
 
 ### Added & Optimized

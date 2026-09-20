@@ -281,18 +281,7 @@ class SinglePassVisualExtractor:
             )
             return []
 
-        # 2. Build JSON manifest with normalized coordinates
-        manifest = self.build_manifest(
-            regions=filtered_regions,
-            page_width_px=page_width_px,
-            page_height_px=page_height_px,
-        )
-        manifest_json = json.dumps(manifest, indent=2)
-
-        prompt = SINGLE_PASS_PROMPT.format(manifest_json=manifest_json)
-        schema = PageVisualAnalysis.model_json_schema()
-
-        # 3. Call Vision Model Provider (1 call per page)
+        # 2. Resolve Vision Model Provider
         provider = self._get_provider()
         results: list[VisualRegionResult] = []
         parsed_regions_map: dict[str, RegionAnalysis] = {}
@@ -334,70 +323,116 @@ class SinglePassVisualExtractor:
             crop_results = await asyncio.gather(*[_extract_single(r) for r in filtered_regions])
             return list(crop_results)
 
-        # Token budgeting: ~350 tokens per region, capped at 3072 to avoid runaway local VLM loops
-        token_budget = min(3072, max(1024, len(filtered_regions) * 350))
+        # Token budgeting & partition safeguard:
+        # If an atypical page has >8 regions, partition into batches of <=6 to guarantee zero token overflow.
+        region_batches = (
+            [filtered_regions[i : i + 6] for i in range(0, len(filtered_regions), 6)]
+            if len(filtered_regions) > 8
+            else [filtered_regions]
+        )
 
-        try:
-            logger.info(
-                "Executing single-pass visual extraction",
-                extra={
-                    "page_number": page_number,
-                    "regions_count": len(filtered_regions),
-                    "model": provider_model,
-                },
+        for batch in region_batches:
+            # Build JSON manifest with normalized coordinates
+            manifest = self.build_manifest(
+                regions=batch,
+                page_width_px=page_width_px,
+                page_height_px=page_height_px,
             )
+            manifest_json = json.dumps(manifest, indent=2)
 
-            resp = await provider.analyze_image(
-                image_bytes=page_image_bytes,
-                prompt=prompt,
-                response_schema=schema,
-                max_tokens=token_budget,
-            )
+            prompt = SINGLE_PASS_PROMPT.format(manifest_json=manifest_json)
+            schema = PageVisualAnalysis.model_json_schema()
 
-            # Parse structured response
-            parsed_data: dict[str, Any] | None = None
-            if resp.parsed and isinstance(resp.parsed, dict):
-                parsed_data = resp.parsed
-            elif resp.text:
-                parsed_data = repair_and_parse_json(resp.text)
-
-            # Resilient structure normalization: support direct list or alternate keys
-            if isinstance(parsed_data, list):
-                parsed_data = {"regions": parsed_data}
-            elif isinstance(parsed_data, dict):
-                for alt_key in ("items", "elements", "data", "results"):
-                    if "regions" not in parsed_data and alt_key in parsed_data and isinstance(parsed_data[alt_key], list):
-                        parsed_data["regions"] = parsed_data[alt_key]
-                        break
-
-            if parsed_data:
-                try:
-                    analysis = PageVisualAnalysis.model_validate(parsed_data)
-                    for item in analysis.regions:
-                        parsed_regions_map[item.id] = item
-                except Exception as val_err:
-                    logger.warning(
-                        "Validation error on PageVisualAnalysis, attempting loose parsing",
-                        extra={"page_number": page_number, "error": str(val_err)},
+            # Inspect candidate regions for complex data markers (tables, data charts, infographics)
+            has_complex_visuals = any(
+                (
+                    r.caption_hint
+                    and any(
+                        kw in r.caption_hint.lower()
+                        for kw in (
+                            "table", "chart", "graph", "percent", "%", "crore",
+                            "lakh", "rs", "$", "quarter", "index", "map", "data",
+                            "figure", "rate", "share", "points", "trend",
+                        )
                     )
-                    raw_items = parsed_data.get("regions", [])
-                    if isinstance(raw_items, list):
-                        for r_raw in raw_items:
-                            if isinstance(r_raw, dict) and "id" in r_raw:
-                                with_fallback = RegionAnalysis(
-                                    id=str(r_raw["id"]),
-                                    visual_type=str(r_raw.get("visual_type", "photo")),  # type: ignore[arg-type]
-                                    description=str(r_raw.get("description", "")),
-                                    key_metrics=[str(m) for m in r_raw.get("key_metrics", [])],
-                                    confidence=float(r_raw.get("confidence", 0.9)),
-                                    )
-                                parsed_regions_map[with_fallback.id] = with_fallback
-
-        except Exception as ex:
-            logger.warning(
-                "Single-pass Gemini visual extraction failed or timed out",
-                extra={"page_number": page_number, "error": str(ex)},
+                )
+                for r in batch
             )
+            # Calibrated thinking budget: 512 for tables/infographics/charts to allow visual
+            # grounding and row/column alignment; 128 for standard photos/portraits.
+            thinking_budget = 512 if has_complex_visuals else 128
+
+            # Generous output runway (up to 8192 tokens) to guarantee zero JSON truncation
+            token_budget = min(8192, max(2048, len(batch) * 750))
+
+            try:
+                import inspect
+                call_kwargs: dict[str, Any] = {
+                    "image_bytes": page_image_bytes,
+                    "prompt": prompt,
+                    "response_schema": schema,
+                    "max_tokens": token_budget,
+                }
+                if "thinking_budget" in inspect.signature(provider.analyze_image).parameters:
+                    call_kwargs["thinking_budget"] = thinking_budget
+
+                logger.info(
+                    "Executing single-pass visual extraction",
+                    extra={
+                        "page_number": page_number,
+                        "regions_count": len(batch),
+                        "model": provider_model,
+                        "thinking_budget": thinking_budget,
+                        "token_budget": token_budget,
+                    },
+                )
+
+                resp = await provider.analyze_image(**call_kwargs)
+
+                # Parse structured response
+                parsed_data: dict[str, Any] | None = None
+                if resp.parsed and isinstance(resp.parsed, dict):
+                    parsed_data = resp.parsed
+                elif resp.text:
+                    parsed_data = repair_and_parse_json(resp.text)
+
+                # Resilient structure normalization: support direct list or alternate keys
+                if isinstance(parsed_data, list):
+                    parsed_data = {"regions": parsed_data}
+                elif isinstance(parsed_data, dict):
+                    for alt_key in ("items", "elements", "data", "results"):
+                        if "regions" not in parsed_data and alt_key in parsed_data and isinstance(parsed_data[alt_key], list):
+                            parsed_data["regions"] = parsed_data[alt_key]
+                            break
+
+                if parsed_data:
+                    try:
+                        analysis = PageVisualAnalysis.model_validate(parsed_data)
+                        for item in analysis.regions:
+                            parsed_regions_map[item.id] = item
+                    except Exception as val_err:
+                        logger.warning(
+                            "Validation error on PageVisualAnalysis, attempting loose parsing",
+                            extra={"page_number": page_number, "error": str(val_err)},
+                        )
+                        raw_items = parsed_data.get("regions", [])
+                        if isinstance(raw_items, list):
+                            for r_raw in raw_items:
+                                if isinstance(r_raw, dict) and "id" in r_raw:
+                                    with_fallback = RegionAnalysis(
+                                        id=str(r_raw["id"]),
+                                        visual_type=str(r_raw.get("visual_type", "photo")),  # type: ignore[arg-type]
+                                        description=str(r_raw.get("description", "")),
+                                        key_metrics=[str(m) for m in r_raw.get("key_metrics", [])],
+                                        confidence=float(r_raw.get("confidence", 0.9)),
+                                    )
+                                    parsed_regions_map[with_fallback.id] = with_fallback
+
+            except Exception as ex:
+                logger.warning(
+                    "Single-pass Gemini visual extraction failed or timed out",
+                    extra={"page_number": page_number, "error": str(ex)},
+                )
 
         # 4. Assemble results and trigger fallback for any missing regions or empty descriptions
         for reg in filtered_regions:

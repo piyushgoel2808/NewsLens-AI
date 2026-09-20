@@ -718,7 +718,9 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         image_bytes: bytes | Image.Image,
         prompt: str,
         response_schema: dict[str, Any] | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
+        thinking_budget: int | None = 512,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Analyze an image using multimodal Gemini vision."""
         if hasattr(image_bytes, "save"):
@@ -744,6 +746,12 @@ class GeminiProvider(ChatModelProvider, VisionModelProvider, DocumentLayoutProvi
         if response_schema:
             generation_config["responseMimeType"] = "application/json"
             generation_config["responseSchema"] = _clean_schema_for_gemini(response_schema)
+
+        # Calibrated thinking budget for reasoning vision models (Gemini 2.5 Flash on Vertex AI)
+        # Allocating 512 tokens gives reasoning headroom for complex infographics and table alignments
+        # while preventing the default 2,500-token runaway monologue (25s delay).
+        if thinking_budget is not None and any(k in self._model.lower() for k in ("2.5", "flash", "pro")):
+            generation_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
 
         payload: dict[str, Any] = {
             "contents": contents,

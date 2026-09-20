@@ -7,6 +7,7 @@ bucket and synchronizes page metadata (dimensions, object key, status) in MySQL.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import pymupdf
@@ -80,34 +81,41 @@ class PDFRasterizer:
             extra={"issue_id": issue_id, "total_pages": total_pages, "dpi": dpi},
         )
 
-        results: list[RasterizedPage] = []
-
+        # 1. Fast in-memory rendering with PyMuPDF
+        rendered_data: list[tuple[int, bytes, int, int, str]] = []
+        edition_slug = (issue.edition or "default").lower().replace(" ", "_")
         for page_idx in range(total_pages):
             page_num = page_idx + 1
             img_bytes, width_px, height_px = self.render_page(doc, page_idx, dpi=dpi)
-
-            # MinIO key: pages/{newspaper_id}/{issue_date}/{edition}/page_{num}.png
-            edition_slug = (issue.edition or "default").lower().replace(" ", "_")
             object_key = (
                 f"pages/{issue.newspaper_id}/{issue.issue_date}/{edition_slug}/page_{page_num}.png"
             )
+            rendered_data.append((page_num, img_bytes, width_px, height_px, object_key))
+        doc.close()
 
-            # Upload to MinIO
-            await self._minio.put(
-                bucket=self._settings.minio.bucket_pages,
-                key=object_key,
-                data=img_bytes,
-                content_type="image/png",
-            )
+        # 2. Bounded concurrent upload to MinIO/GCS (Semaphore=8)
+        upload_semaphore = asyncio.Semaphore(8)
 
-            # Get or create Page record
-            page_stmt = select(Page).where(
-                Page.issue_id == issue.id,
-                Page.page_number == page_num,
-            )
-            page_res = await self._db.execute(page_stmt)
-            page = page_res.scalar_one_or_none()
+        async def _upload_page(key: str, data: bytes) -> None:
+            async with upload_semaphore:
+                await self._minio.put(
+                    bucket=self._settings.minio.bucket_pages,
+                    key=key,
+                    data=data,
+                    content_type="image/png",
+                )
 
+        upload_tasks = [_upload_page(item[4], item[1]) for item in rendered_data]
+        await asyncio.gather(*upload_tasks)
+
+        # 3. Batch query and bulk update/create Page records in MySQL
+        page_stmt = select(Page).where(Page.issue_id == issue.id)
+        page_res = await self._db.execute(page_stmt)
+        existing_pages = {p.page_number: p for p in page_res.scalars().all()}
+
+        results: list[RasterizedPage] = []
+        for page_num, img_bytes, width_px, height_px, object_key in rendered_data:
+            page = existing_pages.get(page_num)
             if not page:
                 page = Page(
                     issue_id=issue.id,
@@ -137,7 +145,6 @@ class PDFRasterizer:
 
         issue.ingestion_status = "rasterized"
         await self._db.flush()
-        doc.close()
 
         logger.info(
             "PDF rasterization completed",
