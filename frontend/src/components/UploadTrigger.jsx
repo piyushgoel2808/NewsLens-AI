@@ -18,6 +18,7 @@ import {
   Calendar,
 } from 'lucide-react';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
+import InspectionViewer from './InspectionViewer';
 
 export default function UploadTrigger() {
   const { openIssueInReader, taskBindings } = useActiveHighlight();
@@ -727,6 +728,11 @@ export default function UploadTrigger() {
           </div>
         </div>
       )}
+
+      {/* Ingestion & Chunking Transparency Inspector */}
+      <div className="mt-8 border-t border-slate-800/80 pt-6">
+        <InspectionViewer />
+      </div>
 
       {/* Manage Newspapers Modal */}
       {showManageModal && (

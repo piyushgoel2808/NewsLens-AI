@@ -20,11 +20,15 @@ import {
   Plus,
   X,
   RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
+import InspectionViewer from './InspectionViewer';
 
 export default function ArchiveExplorer() {
   const { openIssueInReader, setActiveTab } = useActiveHighlight();
+
+  const [inspectingIssueId, setInspectingIssueId] = useState(null);
 
   const [newspapers, setNewspapers] = useState([]);
   const [issues, setIssues] = useState([]);
@@ -455,9 +459,23 @@ export default function ArchiveExplorer() {
 
                 {/* Action Buttons Footer */}
                 <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-800/80 text-xs">
-                  <span className="text-emerald-400 group-hover:translate-x-1 transition-transform flex items-center gap-1 font-semibold">
-                    Read Issue <ChevronRight className="w-3.5 h-3.5" />
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400 group-hover:translate-x-1 transition-transform flex items-center gap-1 font-semibold">
+                      Read Issue <ChevronRight className="w-3.5 h-3.5" />
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setInspectingIssueId(iss.id);
+                      }}
+                      className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-300 border border-slate-700 font-mono text-[10px] flex items-center gap-1 transition-colors"
+                      title="Inspect chunks, raw MinIO pages, and OCR details"
+                    >
+                      <Sparkles className="w-3 h-3 text-emerald-400" />
+                      Chunks
+                    </button>
+                  </div>
 
                   <button
                     onClick={(e) => handleDeleteIssue(iss.id, e)}
@@ -642,6 +660,18 @@ export default function ArchiveExplorer() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Live Inspection & Chunks Modal */}
+      {inspectingIssueId && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <InspectionViewer
+              initialIssueId={inspectingIssueId}
+              onClose={() => setInspectingIssueId(null)}
+            />
           </div>
         </div>
       )}
