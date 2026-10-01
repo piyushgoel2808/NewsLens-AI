@@ -54,6 +54,7 @@ out/
 # --- Environment & Secrets (NEVER commit these) ---
 .env
 .env.local
+.env.cloud
 .env.*.local
 *.pem
 *.key
