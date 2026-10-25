@@ -209,4 +209,4 @@ task_bindings:
   query_condenser: gemini_flash
   document_parser: docling_parser
   ocr: docling_parser
-  embedding: embedding_gemma2
+  embedding: local_embed_bge

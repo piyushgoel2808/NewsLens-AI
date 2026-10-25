@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import hmac
+from pathlib import Path
+import re
 from typing import Any
 
 import httpx
@@ -230,6 +233,18 @@ async def get_laptop_node_status(
     }
 
 
+def _detect_auto_tunnel_url() -> str | None:
+    """Auto-detect active Cloudflare tunnel URL from local daemon logs if available."""
+    log_p = Path.home() / ".cloudflared_newslens.log"
+    if log_p.exists():
+        with contextlib.suppress(Exception):
+            content = log_p.read_text(encoding="utf-8")
+            matches = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", content)
+            if matches:
+                return matches[-1]
+    return None
+
+
 @router.post("/laptop-node/toggle", summary="Toggle Sovereign Laptop Node ON or OFF (Admin PIN Protected)")
 async def toggle_laptop_node(
     payload: LaptopNodeToggleRequest,
@@ -245,10 +260,12 @@ async def toggle_laptop_node(
         raise HTTPException(status_code=403, detail="Forbidden: Invalid or missing X-Admin-Pin")
 
     tunnel: str | None = None
-    if payload.tunnel_url:
+    if payload.tunnel_url and payload.tunnel_url.strip().lower() not in ("auto", "default", ""):
         tunnel = payload.tunnel_url.strip().rstrip("/")
         if not (tunnel.startswith("http://") or tunnel.startswith("https://")):
             raise HTTPException(status_code=400, detail="Invalid tunnel URL: must start with http:// or https://")
+    else:
+        tunnel = _detect_auto_tunnel_url()
 
     state = get_laptop_node_runtime_state()
     state["enabled"] = payload.enabled

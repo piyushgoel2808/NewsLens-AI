@@ -13,11 +13,11 @@ services:
       - key: STORAGE_BACKEND
         value: "minio"
       - key: LAPTOP_ADMIN_PIN
-        sync: false
+        value: "1234"
       - key: LAPTOP_TUNNEL_URL
-        sync: false
+        value: "https://wesley-xbox-nations-decision.trycloudflare.com"
       - key: LAPTOP_BRIDGE_SECRET
-        sync: false
+        value: ""
       - key: DATABASE_URL
         sync: false
       - key: QDRANT_URL
@@ -25,23 +25,23 @@ services:
       - key: QDRANT_API_KEY
         sync: false
       - key: REDIS_URL
-        sync: false
+        value: "redis://localhost:6379/0"
       - key: MINIO_ENDPOINT
-        sync: false
+        value: "localhost:9000"
       - key: MINIO_ACCESS_KEY
-        sync: false
+        value: "minioadmin"
       - key: MINIO_SECRET_KEY
-        sync: false
+        value: "minioadmin123"
       - key: HF_API_TOKEN
         sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: CLOUD_S3_ENDPOINT
-        sync: false
+        value: ""
       - key: CLOUD_S3_ACCESS_KEY
-        sync: false
+        value: ""
       - key: CLOUD_S3_SECRET_KEY
-        sync: false
+        value: ""
       - key: CLOUD_S3_SECURE
         value: "true"
       - key: ENVIRONMENT

@@ -85,23 +85,42 @@ class DatabaseSettings(BaseModel):
     db: str = "newslens"
     socket_path: str | None = None
     ssl: bool = False
+    url: str | None = None
 
     @property
     def async_url(self) -> str:
         """Async SQLAlchemy URL (aiomysql driver)."""
+        if self.url:
+            u = self.url
+            if u.startswith("mysql://"):
+                u = u.replace("mysql://", "mysql+aiomysql://", 1)
+            elif u.startswith("mysql+pymysql://"):
+                u = u.replace("mysql+pymysql://", "mysql+aiomysql://", 1)
+            if self.ssl and "ssl=" not in u.lower():
+                sep = "&" if "?" in u else "?"
+                u = f"{u}{sep}ssl=true"
+            return u
         if self.socket_path:
             return (
                 f"mysql+aiomysql://{self.user}:{self.password}"
                 f"@/{self.db}?unix_socket={self.socket_path}&charset=utf8mb4"
             )
+        ssl_param = "&ssl=true" if self.ssl else ""
         return (
             f"mysql+aiomysql://{self.user}:{self.password}"
-            f"@{self.host}:{self.port}/{self.db}?charset=utf8mb4"
+            f"@{self.host}:{self.port}/{self.db}?charset=utf8mb4{ssl_param}"
         )
 
     @property
     def sync_url(self) -> str:
         """Sync SQLAlchemy URL (pymysql driver) — for Alembic migrations."""
+        if self.url:
+            u = self.url
+            if u.startswith("mysql://"):
+                u = u.replace("mysql://", "mysql+pymysql://", 1)
+            elif u.startswith("mysql+aiomysql://"):
+                u = u.replace("mysql+aiomysql://", "mysql+pymysql://", 1)
+            return u
         if self.socket_path:
             return (
                 f"mysql+pymysql://{self.user}:{self.password}"
@@ -367,6 +386,8 @@ class Settings(BaseSettings):
     mysql_readonly_user: str | None = None
     mysql_readonly_password: str | None = None
     mysql_socket_path: str | None = None
+    mysql_ssl: bool = False
+    database_url: str | None = Field(default=None, validation_alias="DATABASE_URL")
 
     # --- Dynamic Tool Generation ---
     enable_dynamic_tools: bool = True
@@ -406,6 +427,7 @@ class Settings(BaseSettings):
     qdrant_collection_name: str = "article_chunks"
     qdrant_collection_name_v2: str = "article_chunks_v2"
     qdrant_https: bool = False
+    qdrant_url: str | None = Field(default=None, validation_alias="QDRANT_URL")
 
     # --- MinIO ---
     minio_endpoint: str = "localhost:9000"
@@ -498,11 +520,15 @@ class Settings(BaseSettings):
             password=self.mysql_password,
             db=self.mysql_db,
             socket_path=self.mysql_socket_path,
+            ssl=self.mysql_ssl,
+            url=self.database_url,
         )
 
     @property
     def mysql_readonly_url(self) -> str:
         """Async connection string for read-only dynamic tool execution."""
+        if self.database_url:
+            return self.database.async_url
         user = self.mysql_readonly_user or self.mysql_user
         pwd = self.mysql_readonly_password or self.mysql_password
         if self.mysql_socket_path:
@@ -510,20 +536,23 @@ class Settings(BaseSettings):
                 f"mysql+aiomysql://{user}:{pwd}"
                 f"@/{self.mysql_db}?unix_socket={self.mysql_socket_path}&charset=utf8mb4"
             )
+        ssl_param = "&ssl=true" if self.mysql_ssl else ""
         return (
             f"mysql+aiomysql://{user}:{pwd}"
-            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
+            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4{ssl_param}"
         )
 
     @property
     def qdrant(self) -> QdrantSettings:
+        host = self.qdrant_url or self.qdrant_host
+        https = self.qdrant_https or (bool(self.qdrant_url) and self.qdrant_url.startswith("https://"))
         return QdrantSettings(
-            host=self.qdrant_host,
+            host=host,
             port=self.qdrant_port,
             api_key=self.qdrant_api_key,
             collection_name=self.qdrant_collection_name,
             collection_name_v2=self.qdrant_collection_name_v2,
-            https=self.qdrant_https,
+            https=https,
         )
 
     @property
