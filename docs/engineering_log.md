@@ -4557,6 +4557,49 @@ Ingestion of a full 24-page broadsheet newspaper issue was taking 7–11+ minute
 | `backend/tests/test_embedder.py` | Added unit tests for `bulk_embed_and_index_issue()`. |
 | `backend/tests/test_metadata_extractor.py` | Added unit tests for `process_and_persist_bulk_metadata()`. |
 
+---
+
+## Phase 14 — Free Render Hosting, Sovereign Laptop Node, Gemma 4 Models & RAG Context Optimization
+
+**Date**: 2026-10-26
+**Status**: Completed ✅
+
+### Architectural Overview & Enhancements
+
+1. **Free Cloud Hosting on Render (`render.yaml`)**:
+   - Packaged backend FastAPI and Vite frontend for free-tier Render deployment.
+   - Configured Docker build with slim Python base, async gunicorn/uvicorn workers, and persistent environment secrets.
+   - Connected free cloud persistence: TiDB Cloud Serverless (MySQL 8), Qdrant Cloud Free Tier, and Cloudflare R2 (10 GB free S3-compatible storage).
+
+2. **Dual-Sync Object Store (`dual_store.py`)**:
+   - Implemented `DualSyncObjectStore` implementing `ObjectStore` interface.
+   - Concurrently mirrors PDF pages and extracted visual assets across local Docker MinIO and Cloudflare R2.
+   - Local-first low-latency read caching with transparent cloud fallback.
+   - Degraded write handling: purges stale copies if one tier write fails; verifies object existence prior to presigning URLs.
+
+3. **Sovereign Laptop Node & Ollama Tunnel Bridge (`laptop_node.sh`, `settings.py`)**:
+   - Enables host laptop Ollama models to serve backend queries across secure HTTPS tunnels (Ngrok / Cloudflare Tunnel).
+   - Admin-authenticated On/Off switch in Web UI (`ModelSettingsStudio.jsx`) protected by PIN and shared bridge secrets.
+   - Enforces `asyncio.Semaphore(1)` concurrency limit on laptop node to prevent host GPU/CPU thrashing.
+
+4. **Gemma 4 Models & EmbeddingGemma 2 (`model_config.yaml`, `config.py`)**:
+   - Integrated `gemma4:e4b` (131k context, multimodal) and `gemma4:12b` (131k context) local Ollama models.
+   - Updated default `visual_extraction` task binding to `ollama_gemma4_e4b`.
+   - Implemented `EmbeddingGemma2Provider` (768d Matryoshka truncation + L2 normalization) auto-routed to `article_chunks_v2` collection in Qdrant.
+
+5. **RAG Conversational Context Retention & Anti-Hallucination Planning (`planner.py`, `graph.py`, `condenser.py`)**:
+   - Fixed conversational context loss where active issue date and newspaper were wiped across turns in `_classify_and_plan_node`.
+   - Wired chat history into `plan_query_async` and included the last 4 turns in the planner prompt to eliminate tool hallucinations.
+   - Added `coverage_comparison` archetype to `PLANNER_SYSTEM_PROMPT`.
+   - Added regex and brand deduplication helpers (`find_matching_brand`, `has_named_brand`) across `extractor.py`, `tool_factory.py`, `evaluator.py`, and `answer_verifier.py`.
+   - Fixed fatal `NameError: name 'has_date_range' is not defined` in `sql_dispatcher.py` and missing `ArticleMetadataResult` import in `tasks.py`.
+
+6. **CodeRabbit Automated Code Review Verification**:
+   - Executed `coderabbit review --plain` on local commits.
+   - Resolved all major and minor findings including storage consistency, degraded-mode purges, and presigned URL verification.
+   - Verified 621/621 backend pytest suite passing and Vite frontend building cleanly.
+
+
 
 
 
