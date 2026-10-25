@@ -19,6 +19,13 @@ def _detect_best_device() -> str:
     compilation lag and memory synchronization stalls inherent to MPS.
     """
     try:
+        from app.core.config import get_settings
+        if getattr(get_settings(), "render_free_tier", False):
+            return "cpu"
+    except Exception:
+        pass
+
+    try:
         import torch
 
         if torch.cuda.is_available():

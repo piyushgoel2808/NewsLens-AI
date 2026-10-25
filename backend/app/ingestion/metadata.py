@@ -17,7 +17,6 @@ from datetime import date
 from typing import Any
 
 import pymupdf
-from rapidocr import RapidOCR
 
 from app.core.logging import get_logger
 
@@ -195,10 +194,12 @@ class MastheadVerifier:
     """Fast, visual OCR-based masthead and publication date verifier for broadsheets."""
 
     def __init__(self) -> None:
-        self._ocr: RapidOCR | None = None
+        self._ocr: Any | None = None
 
-    def _get_ocr(self) -> RapidOCR:
+    def _get_ocr(self) -> Any:
         if self._ocr is None:
+            from rapidocr import RapidOCR
+
             self._ocr = RapidOCR()
         return self._ocr
 

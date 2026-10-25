@@ -6,8 +6,10 @@ services:
     rootDir: backend
     plan: free
     buildCommand: pip install uv && uv sync --frozen --no-dev
-    startCommand: uv run uvicorn app.api.main:app --host 0.0.0.0 --port $PORT --workers 1
+    startCommand: .venv/bin/uvicorn app.api.main:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
+      - key: PYTHONPATH
+        value: "."
       - key: RENDER_FREE_TIER
         value: "true"
       - key: STORAGE_BACKEND

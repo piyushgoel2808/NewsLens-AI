@@ -14,10 +14,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pymupdf
-from docling.datamodel.base_models import DocumentStream
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter
-from docling_core.types.doc import CoordOrigin
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -179,6 +175,9 @@ class DoclingLayoutParser(DocumentLayoutProvider):
     def _init_local(self) -> None:
         """Lazily initialize the local DocumentConverter pipeline."""
         if self._converter is None:
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter
+
             self._options = PdfPipelineOptions()
             self._options.do_ocr = self._do_ocr
             self._options.do_table_structure = self._do_table_structure
@@ -214,10 +213,16 @@ class DoclingLayoutParser(DocumentLayoutProvider):
         if not bbox:
             return (0.0, 0.0, float(width_px), float(height_px))
 
-        orig = getattr(bbox, "coord_origin", CoordOrigin.BOTTOMLEFT)
+        try:
+            from docling_core.types.doc import CoordOrigin
+            orig = getattr(bbox, "coord_origin", CoordOrigin.BOTTOMLEFT)
+            is_bottom_left = (orig == CoordOrigin.BOTTOMLEFT)
+        except Exception:
+            is_bottom_left = getattr(bbox, "coord_origin", "BOTTOMLEFT") in ("BOTTOMLEFT", 1, None)
+
         box_l, box_t, box_r, box_b = bbox.l, bbox.t, bbox.r, bbox.b
 
-        if orig == CoordOrigin.BOTTOMLEFT:
+        if is_bottom_left:
             y0_pts = page_h_pts - box_t
             y1_pts = page_h_pts - box_b
             x0_pts = box_l
@@ -279,6 +284,8 @@ class DoclingLayoutParser(DocumentLayoutProvider):
         height_px: int,
     ) -> list[DoclingParsedItem]:
         """Convert a single-page PDF slice using Docling and extract parsed items."""
+        from docling.datamodel.base_models import DocumentStream
+
         stream = DocumentStream(name=f"page_{page_number}.pdf", stream=io.BytesIO(pdf_bytes))
         docling_doc = None
 
