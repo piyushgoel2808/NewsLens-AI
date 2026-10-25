@@ -28,7 +28,7 @@ NewsLens-AI employs a decoupled, agentic tool orchestration layer located in [`b
 ### 2.1. `hybrid_search`
 
 #### Purpose & Capabilities
-`hybrid_search` is the primary workhorse for textual information retrieval across broadsheet newsprint archives. It combines dense semantic embeddings with sparse lexical full-text search, eliminating vocabulary mismatch while preserving precise keyword recall (e.g. statutory acts, bill numbers, names). Dense retrieval dynamically routes to the appropriate Qdrant collection based on the bound embedding model: queries embedded via `gemini-embedding-001` (768d Matryoshka MRL with `task_type="RETRIEVAL_QUERY"`) query **`article_chunks_v2`**, while queries embedded via `BAAI/bge-m3` (1024d) query **`article_chunks`**.
+`hybrid_search` is the primary workhorse for textual information retrieval across broadsheet newsprint archives. It combines dense semantic embeddings with sparse lexical full-text search, eliminating vocabulary mismatch while preserving precise keyword recall (e.g. statutory acts, bill numbers, names). Dense retrieval dynamically routes to the appropriate Qdrant collection based on the bound embedding model: queries embedded via `gemini-embedding-001` or `embedding_gemma2` (768d Matryoshka MRL with asymmetric query prefixes) query **`article_chunks_v2`**, while queries embedded via `BAAI/bge-m3` (1024d) query **`article_chunks`**.
 
 ```mermaid
 flowchart LR

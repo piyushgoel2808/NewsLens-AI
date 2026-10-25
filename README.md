@@ -94,9 +94,10 @@
 
 ## 🚀 Quick Start & Deployment Options
 
-NewsLens-AI supports dual-track execution out-of-the-box:
+NewsLens-AI supports three deployment tracks out-of-the-box:
 1. **Track A: Local Sovereign Mode (100% Free / On-Premise)**: Runs completely offline using Ollama, local Docling, and BAAI/bge-m3 embeddings. Zero external API keys required.
 2. **Track B: Full Cloud Mode (GCP Production / Cloud Run)**: Offloads all heavy parsing to IBM Docling Cloud SaaS and vector embeddings to Google Gemini 001 MRL (768d), achieving zero container RAM overhead (~350 MB) and instant sub-2s cold starts.
+3. **Track C: 100% Free Cloud Tier (Render + Sovereign Laptop LLM Node)**: Free hosting on Render with remote database persistence on TiDB Cloud Serverless (MySQL 8, 5 GB free) and Qdrant Cloud Free Tier (1 GB free), Dual-Sync Object Storage (MinIO + Cloudflare R2 10 GB free forever), and an admin-controlled bridge to run any Ollama model on your personal laptop (`sovereign_laptop_node`).
 
 ---
 
@@ -131,8 +132,10 @@ docker compose up -d --build
 | :--- | :--- | :--- |
 | **Frontend (Docker Stack)** | [http://localhost:3000](http://localhost:3000) | Production Nginx SPA with real-time SSE streaming |
 | **Frontend (Vite Dev)** | [http://localhost:5173](http://localhost:5173) | Development server with instant HMR (`make frontend-dev`) |
+| **Model Settings Studio** | [http://localhost:5173/settings/models](http://localhost:5173/settings/models) | Manage AI models, hot-swap providers, toggle Laptop Node |
 | **Backend API & Swagger** | [http://localhost:8000/api/docs](http://localhost:8000/api/docs) | Interactive OpenAPI / Swagger documentation |
-| **Backend Health Check** | [http://localhost:8000/api/health](http://localhost:8000/api/health) | Live service connectivity status (DB, Qdrant, Redis, MinIO) |
+| **Backend Health Check** | [http://localhost:8000/health](http://localhost:8000/health) | Live service connectivity status (DB, Qdrant, Redis, MinIO) |
+| **Laptop Node Status** | [http://localhost:8000/api/settings/laptop-node/status](http://localhost:8000/api/settings/laptop-node/status) | Sovereign Laptop Node discovery and live health |
 | **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin123` (broadsheet PDF & visual crops storage) |
 | **Qdrant Vector Dashboard** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Broadsheet neural dense vector index |
 | **Ollama Local LLM** | [http://localhost:11434](http://localhost:11434) | Local inference engine |
@@ -231,6 +234,90 @@ NewsLens-AI runs natively in production on **Google Cloud Platform (GCP)** in re
    - Production uses native `google-cloud-storage` (`GoogleCloudStorageStore`) against GCS buckets, while local development seamlessly uses MinIO (`MinioStore`) via `get_object_store()`.
 6. **Automated CI/CD**:
    - Every push to `main` triggers `.github/workflows/deploy-gcp.yml`, which executes the test suite against an ephemeral MySQL 8 service container, authenticates to GCP via Workload Identity Federation, builds and pushes multi-arch images to Google Artifact Registry, runs database migrations, and updates Cloud Run revisions with zero downtime.
+
+---
+
+### Option 5: 100% Free Cloud Deployment (Render Free Tier + Sovereign Laptop Node)
+
+You can host NewsLens-AI **100% free forever** for yourself and your users by combining **Render Free Tier**, free-tier serverless databases, free object storage, and your personal laptop's local Ollama models:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│                             100% FREE FOREVER CLOUD TOPOLOGY                                │
+├──────────────────────────┬──────────────────────────┬───────────────────────────────────────┤
+│ Tier / Component         │ Provider / Service       │ Free Allocation & Notes               │
+├──────────────────────────┼──────────────────────────┼───────────────────────────────────────┤
+│ **Web Backend & Worker** │ **Render Free Tier**     │ Free Web Service (FastAPI + Vite)     │
+│ **Relational Database**  │ **TiDB Cloud Serverless**│ 5 GB MySQL 8 Free Forever             │
+│ **Vector Database**      │ **Qdrant Cloud**         │ 1 GB Free Cluster (768d Cosine)       │
+│ **Object Storage (Dual)**│ **Cloudflare R2**        │ 10 GB/month Free S3-Compatible Storage│
+│ **Local Inference Node** │ **Your Personal Laptop** │ Runs Ollama models via HTTPS tunnel   │
+│ **Cloud Fallback Embed** │ **HuggingFace Inference**│ EmbeddingGemma 2 768d free fallback   │
+└──────────────────────────┴──────────────────────────┴───────────────────────────────────────┘
+```
+
+#### How the Sovereign Laptop Node & Toggle Works
+
+The **Sovereign Laptop Node** (`sovereign_laptop_node`) allows your free cloud-hosted instance on Render to run queries using models running locally on your laptop (`llama3.1:8b`, `gemma4:e4b`, `gemma4:12b`, `deepseek-r1:14b`, `qwen3-vl:latest`) without paying a cent for cloud GPUs!
+
+```mermaid
+flowchart LR
+    User["End User Browser"] --> Render["Render Free Backend<br/>(FastAPI / React)"]
+    Render -->|Admin PIN Verified| Bridge{"Laptop Bridge<br/>On / Off Toggle"}
+    Bridge -->|Bridge: ON| Tunnel["Secure HTTPS Tunnel<br/>(Cloudflare / Ngrok)"]
+    Bridge -->|Bridge: OFF| Fallback["Cloud AI / Standby"]
+    Tunnel --> Laptop["Host Laptop (Ollama)<br/>Semaphore(1) Protected"]
+    Laptop --> Models["gemma4:e4b / 12b<br/>llama3.1:8b / deepseek"]
+```
+
+1. **Laptop Tunnel Script**:
+   On your laptop, start your local Ollama models and expose them over a secure tunnel:
+   ```bash
+   # Launch Ollama tunnel using Cloudflare (no account required):
+   ./scripts/laptop_node.sh start --tunnel cloudflare
+
+   # Or using a free static Ngrok domain:
+   ./scripts/laptop_node.sh start --tunnel ngrok
+   ```
+
+2. **Web UI Toggle (Model Settings Studio)**:
+   - Navigate to **Model Settings Studio** (`http://localhost:5173/settings/models` locally, or `/settings/models` on Render).
+   - Under **Sovereign Laptop Node (Ollama Bridge)**, enter your **Admin PIN** (default: `1234`) and your tunnel URL (e.g. `https://your-tunnel.trycloudflare.com` or `http://localhost:11434` for local dev).
+   - Toggle the switch to **ON**.
+   - The UI automatically checks connectivity, probes your laptop's installed Ollama models, and shows a green **Active & Online** badge.
+
+3. **Hardware & Battery Protection**:
+   - Protected by an `asyncio.Semaphore(1)` concurrency lock on the backend so multiple simultaneous requests queue cleanly without crashing or overheating your laptop.
+   - When you close your laptop lid or leave your desk, flip the toggle to **OFF** via the Web UI or run `./scripts/laptop_node.sh stop`. The backend gracefully falls back without dropping user sessions.
+
+4. **Deploying on Render with Blueprint**:
+   - Push your repository to GitHub.
+   - Log in to your Render Dashboard at [dashboard.render.com](https://dashboard.render.com).
+   - Click **New +** ➔ **Blueprint**.
+   - Connect your `NewsLens-AI` GitHub repository. Render reads [`render.yaml`](render.yaml) and automatically creates `newslens-backend` and `newslens-frontend`.
+   - Set the following environment secrets in Render:
+     ```env
+     MYSQL_HOST=<your-tidb-host>
+     MYSQL_PORT=4000
+     MYSQL_USER=<your-tidb-user>
+     MYSQL_PASSWORD=<your-tidb-password>
+     MYSQL_DB=newslens
+     MYSQL_SSL=true
+
+     QDRANT_HOST=<your-qdrant-cloud-cluster>.cloud.qdrant.io
+     QDRANT_PORT=6333
+     QDRANT_API_KEY=<your-qdrant-api-key>
+     QDRANT_HTTPS=true
+
+     STORAGE_BACKEND=dual
+     CLOUD_S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+     CLOUD_S3_ACCESS_KEY=<your-r2-access-key>
+     CLOUD_S3_SECRET_KEY=<your-r2-secret-key>
+
+     LAPTOP_NODE_ENABLED=false
+     LAPTOP_ADMIN_PIN=1234
+     LAPTOP_TUNNEL_URL=https://your-tunnel.trycloudflare.com
+     ```
 
 ---
 

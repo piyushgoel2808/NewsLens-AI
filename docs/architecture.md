@@ -42,7 +42,8 @@ NewsLens-AI is an **Enterprise-Grade Agentic Intelligence Platform** purpose-bui
 | **Task Queue** | **Celery + Redis** | Celery+RabbitMQ, RQ, Dramatiq | Distributed background processing for multi-page broadsheet OCR and VLM extraction with Redis serving dual roles (Celery broker and query cache). |
 | **System of Record** | **MySQL 8** (`aiomysql` + `pymysql`) | PostgreSQL / pgvector | Strict relational schema, battle-tested `FULLTEXT` indexing on broadsheet text, native JSON payload columns, and high-throughput async connections via `aiomysql`. |
 | **Vector Database** | **Qdrant** | Pinecone, Milvus, Chroma, Weaviate | Self-hostable, Rust-powered vector search with rich payload filtering (`newspaper_name`, `issue_date`, `section`, `has_visual_data`). Employs a strict **dual-collection architecture**: `article_chunks` (1024d BGE-M3) and `article_chunks_v2` (768d Gemini 001 MRL) with automatic dimension-aware routing. |
-| **Object Store** | **MinIO / GCS** | Local Filesystem, AWS S3 only | Polymorphic storage architecture (`get_object_store()`): Google Cloud Storage (`gs://...`) in production, local MinIO (S3-compatible) in development for 150/300 DPI page scans and high-res image crops. |
+| **Object Store** | **DualSync (MinIO + Cloudflare R2) / GCS** | Local Filesystem, AWS S3 only | Polymorphic storage architecture (`get_object_store()`): Google Cloud Storage (`gs://...`) in production, DualSyncObjectStore (concurrent write to local MinIO + free Cloudflare R2 S3) in development/Render mode for 150/300 DPI page scans and high-res image crops. |
+| **Local LLM Bridge** | **Sovereign Laptop Node (Ollama Tunnel)** | Hosted GPUs only | Allows free Render-hosted backend to execute queries across local Ollama models on the developer's laptop via secure tunnel with `asyncio.Semaphore(1)` hardware protection and admin PIN authentication. |
 | **PDF Extraction & Layout** | **PyMuPDF + IBM Docling (Local & Cloud SaaS)** | PDFMiner, Poppler, naive OCR | PyMuPDF provides ultra-fast digital text/font extraction and high-res rasterization; IBM Docling (DocLayNet) provides 2D spatial layout and reading-order tree analysis, supporting both local in-container parsing and offloaded **IBM Cloud Docling SaaS API** (`docling_cloud`). |
 | **OCR Engines** | **Tesseract + RapidOCR** | Tesseract alone, Cloud Vision only | RapidOCR (ONNX) and Tesseract provide high-speed local character transcription, token coordinate bounding boxes, and multi-language support (English + Indic scripts). |
 | **Frontend Framework** | **React 18 + Vite** | Next.js, Nuxt, Angular | Lightweight client-side Single Page Application (SPA), instant HMR development with Vite, zero unnecessary server-rendering overhead for desktop analytical tools. |
@@ -88,6 +89,11 @@ NewsLens-AI employs a **Hot-Swappable Provider Registry Architecture** (`model_c
 4. **Resilient Dynamic Provider Failover (`ModelRegistry.get_chat_failover_candidates`)**:
    - Computes an ordered, filtered candidate list of active providers capable of chat/tool-calling.
    - Automatically prioritizes cloud endpoints (`gemini_flash`, `gemini_pro`, `groq_compound`, `openai_gpt4o_mini`, `groq_qwen`, `openrouter_nemotron`, etc.) or sovereign local Ollama instances based on `prefer_local` policy, ensuring uninterrupted agent execution during external rate limits or transient outages.
+5. **Sovereign Laptop Node & Gemma 4 Local Model Integrations**:
+   - **Sovereign Laptop LLM Node (`sovereign_laptop_node`)**: Bridges cloud-hosted backends (e.g., on Render Free Tier) to any local Ollama model on the developer's laptop across an encrypted HTTPS tunnel (Cloudflare Tunnel or Ngrok). Protected by admin PIN authentication (`LAPTOP_ADMIN_PIN`), shared secret verification (`LAPTOP_BRIDGE_SECRET`), and an `asyncio.Semaphore(1)` hardware protection ceiling to avoid laptop thermal throttling.
+   - **Gemma 4 E4B (`gemma4:e4b`)**: 131,072-token context window with multimodal vision capabilities, bound as default for `visual_extraction`.
+   - **Gemma 4 12B (`gemma4:12b`)**: 131,072-token context window for sovereign high-capacity broadsheet reasoning and query planning.
+   - **EmbeddingGemma 2 (`embedding_gemma2`)**: 768-dimensional asymmetric Matryoshka embeddings (`task: search result | query:` for search and `title: broadsheet article | text:` for documents) with L2 normalization, auto-routing to Qdrant's `article_chunks_v2` collection with HuggingFace Inference API fallback.
 
 ---
 
@@ -885,6 +891,34 @@ For offline development, NewsLens-AI provides a containerized infrastructure orc
    - Reuses backend container image to process asynchronous broadsheet PDF ingestion, OCR rasterization, and vector indexing.
 4. **`mysql`, `qdrant`, `minio`, `redis`, `ollama`**:
    - Production Docker images configured with health checks, persistent volumes, and custom network bridging (`newslens-network`).
+
+### C. 100% Free Cloud Deployment Topology (Render Free Tier + Sovereign Laptop Node)
+
+For developers and independent researchers seeking a **100% free cloud deployment** without recurring infrastructure fees:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                              RENDER FREE TIER ARCHITECTURE                             │
+├────────────────────────────┬─────────────────────────────┬─────────────────────────────┤
+│ Service / Subsystem        │ Cloud Service / Free Tier   │ Purpose & Capabilities      │
+├────────────────────────────┼─────────────────────────────┼─────────────────────────────┤
+│ **Web Backend & Frontend** │ **Render Web Service**      │ FastAPI + Vite SPA Bundle   │
+│ **Relational Database**    │ **TiDB Cloud Serverless**   │ 5 GB MySQL 8 Free Forever   │
+│ **Vector Database**        │ **Qdrant Cloud Free Tier**  │ 1 GB Free (article_chunks_v2)│
+│ **Dual Object Storage**    │ **Cloudflare R2**           │ 10 GB/mo Free S3 Storage    │
+│ **Sovereign Local LLM**    │ **Host Laptop (Ollama)**    │ HTTPS Tunnel (Cloudflare/Ng)│
+└────────────────────────────┴─────────────────────────────┴─────────────────────────────┘
+```
+
+1. **Render Blueprint (`render.yaml`)**:
+   - Packaged with multi-stage build that compiles the React Vite frontend into static assets and launches FastAPI under Uvicorn.
+   - Includes health checks (`/health`) and automatic deployment on git push.
+2. **Dual-Sync Object Storage (`DualSyncObjectStore`)**:
+   - Mirrors broadsheet page scans and extracted photo crops concurrently to local MinIO and Cloudflare R2 Free Tier.
+   - Verifies object existence on the cloud tier prior to emitting presigned URLs to guarantee external client accessibility.
+3. **Sovereign Laptop Node & Admin Toggle**:
+   - Integrates `sovereign_laptop_node` with admin PIN protection (`POST /api/settings/laptop-node/toggle`).
+   - Limits concurrent LLM invocations to `asyncio.Semaphore(1)` to safeguard laptop hardware.
 
 ### Unified Developer Interface (`Makefile`)
 - `make setup`: Single command onboarding (checks `.env`, spins up database & storage, runs `uv sync` & `alembic upgrade`, installs frontend).

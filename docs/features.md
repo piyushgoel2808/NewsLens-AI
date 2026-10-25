@@ -610,5 +610,34 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
 * **Whole-Issue Vector Chunk Aggregation & Bulk Qdrant Upsert**:
   * Aggregates all ~250 chunks across the entire issue, embedding them in 2 batch calls (batch size 64/128) to Vertex AI `text-embedding-004`, followed by a single bulk Qdrant upsert and a single database commit.
 
+---
+
+## 28. 100% Free Cloud Hosting on Render & Sovereign Laptop Node Bridge
+
+* **Render Free Tier Hosting (`render.yaml`)**:
+  * Production-ready Render Blueprint configuring the FastAPI application, background workers, and Vite static assets.
+  * Connects with free-forever managed databases: TiDB Cloud Serverless (5 GB free MySQL 8) and Qdrant Cloud Free Tier (1 GB free vector cluster).
+* **Dual-Sync Object Storage (`DualSyncObjectStore`)**:
+  * Simultaneously writes broadsheet page scans and extracted photo crops to local Docker MinIO and Cloudflare R2 Free Tier (10 GB/month free forever).
+  * Fast local-first reads with automatic cloud fallback, degraded-mode stale copy purges, and existence verification before presigning URLs.
+* **Sovereign Laptop LLM Node (`sovereign_laptop_node`)**:
+  * Bridges any local Ollama model running on the user's laptop (`llama3.1:8b`, `gemma4:e4b`, `gemma4:12b`, `deepseek-r1:14b`, `qwen3-vl:latest`) to the cloud-hosted Render backend.
+  * Controlled via an interactive toggle in the Web UI (`/settings/models`) and automated CLI script (`./scripts/laptop_node.sh`).
+  * Protected by admin PIN authentication (`LAPTOP_ADMIN_PIN`), shared secret verification, and an `asyncio.Semaphore(1)` hardware protection ceiling.
+
+---
+
+## 29. Gemma 4 Local Model Integrations & EmbeddingGemma 2
+
+* **Gemma 4 E4B Multimodal (`ollama_gemma4_e4b`)**:
+  * 131,072-token context window with native visual capabilities for broadsheet photo, infographic, and editorial analysis.
+  * Bound as the default provider for `visual_extraction`, replacing legacy Qwen3-VL.
+* **Gemma 4 12B Deep Broadsheet Reasoning (`ollama_gemma4_12b`)**:
+  * 131,072-token context window engineered for long-form synthesis, cross-newspaper comparison matrices, and multi-issue historical analysis.
+* **EmbeddingGemma 2 (`embedding_gemma2`)**:
+  * 768-dimensional Matryoshka Representation Learning (MRL) embeddings with L2 normalization.
+  * Uses asymmetric prompt formatting (`task: search result | query:` for search, `title: broadsheet article | text:` for documents) auto-routed to Qdrant's `article_chunks_v2` collection with HuggingFace Inference API fallback.
+
+
 
 

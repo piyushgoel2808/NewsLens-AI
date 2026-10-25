@@ -992,6 +992,7 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 - [`backend/app/providers/anthropic_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/anthropic_provider.py): Anthropic Claude API (`claude-3-5-sonnet`).
 - [`backend/app/providers/gemini_embedding_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/gemini_embedding_provider.py): Google Gemini embedding provider for `gemini-embedding-001` supporting Matryoshka Representation Learning (MRL, downscalable to 768d), asymmetric retrieval task types (`RETRIEVAL_DOCUMENT` vs `RETRIEVAL_QUERY`), and multi-modal authentication (Vertex Express API key, regional GCP Service Account IAM, Google AI Studio).
 - [`backend/app/providers/local_embedding_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/local_embedding_provider.py): PyTorch & SentenceTransformers client for local `BAAI/bge-m3` embedding computation.
+- [`backend/app/providers/embedding_gemma_provider.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/embedding_gemma_provider.py): EmbeddingGemma 2 provider supporting 768-dimensional Matryoshka Representation Learning (MRL), asymmetric task formatting (`task: search result | query:` and `title: broadsheet article | text:`), L2 normalization, auto-routing to Qdrant's `article_chunks_v2` collection, and serverless HuggingFace Inference API fallback.
 - [`backend/app/providers/cascade.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/providers/cascade.py): Automatic fallback cascade (e.g. Groq -> Ollama -> Gemini) handling rate limits and timeouts transparently.
 
 ---
@@ -1147,6 +1148,12 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 * **What It Has**: `MinioStore` class implementing the `ObjectStore` protocol.
 * **Work It Is Doing**: Stores and retrieves raw newspaper PDFs, high-resolution 150 DPI page PNG renders, and cropped photo image assets in S3-compatible MinIO buckets for local developer environments.
 * **Important Tools / Frameworks**: `miniopy_async` / MinIO Python Client.
+* **LLM / VLM / Embedding Models**: None.
+
+##### [`backend/app/storage/dual_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/dual_store.py)
+* **What It Has**: `DualSyncObjectStore` class implementing the `ObjectStore` protocol.
+* **Work It Is Doing**: Concurrently writes newspaper PDFs and page PNG renders to both local Docker MinIO and Cloudflare R2 Free Tier (10 GB free S3-compatible storage). Implements local-first reads with cloud fallback, stale local copy purge on partial failure, retry logic, and existence checking prior to generating presigned URLs.
+* **Important Tools / Frameworks**: `asyncio.gather`, MinioStore.
 * **LLM / VLM / Embedding Models**: None.
 
 ##### [`backend/app/storage/qdrant_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/qdrant_store.py)
