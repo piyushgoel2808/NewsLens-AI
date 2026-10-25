@@ -9,6 +9,7 @@ Cost is always 0.0 (local inference).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import io
@@ -35,6 +36,9 @@ from app.providers.base import (
 
 logger = get_logger(__name__)
 
+# Concurrency protection for host laptop local LLM node
+_LAPTOP_SEMAPHORE = asyncio.Semaphore(1)
+
 
 class OllamaProvider:
     """Local LLM and VLM provider backed by Ollama."""
@@ -47,9 +51,11 @@ class OllamaProvider:
         max_output_tokens: int | None = None,
         is_reasoning_model: bool | None = None,
         reasoning_headroom: int | None = None,
+        is_laptop_node: bool = False,
     ) -> None:
         self._model = model
         self._base_url = base_url
+        self._is_laptop_node = is_laptop_node
         self._client = ollama.AsyncClient(host=base_url)
 
         is_vision_model = (
@@ -128,6 +134,26 @@ class OllamaProvider:
             for t in tools
         ]
 
+    def _get_effective_client(self) -> ollama.AsyncClient:
+        if not self._is_laptop_node:
+            return self._client
+
+        from app.api.routers.settings import get_laptop_node_runtime_state
+        from app.core.config import get_settings
+
+        state = get_laptop_node_runtime_state()
+        if not state.get("enabled"):
+            raise ProviderError(
+                "Sovereign Laptop Node is turned OFF by admin. Local Ollama models are currently unavailable."
+            )
+        url = str(state.get("tunnel_url") or self._base_url).rstrip("/")
+        settings = get_settings()
+        headers = {
+            "ngrok-skip-browser-warning": "true",
+            "X-Laptop-Bridge-Secret": settings.laptop_bridge_secret,
+        }
+        return ollama.AsyncClient(host=url, headers=headers)
+
     async def complete(
         self,
         messages: list[Message],
@@ -137,7 +163,35 @@ class OllamaProvider:
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> ModelResponse:
-        """Run a chat completion via Ollama."""
+        """Run a chat completion via Ollama, protected by semaphore if laptop node."""
+        if self._is_laptop_node:
+            async with _LAPTOP_SEMAPHORE:
+                return await self._execute_complete(
+                    messages=messages,
+                    tools=tools,
+                    response_schema=response_schema,
+                    stream=stream,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+        return await self._execute_complete(
+            messages=messages,
+            tools=tools,
+            response_schema=response_schema,
+            stream=stream,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    async def _execute_complete(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None = None,
+        response_schema: dict[str, Any] | None = None,
+        stream: bool = False,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> ModelResponse:
         t0 = time.monotonic()
 
         # If structured output requested, append concise instruction to system message
@@ -182,13 +236,14 @@ class OllamaProvider:
         if tools:
             kwargs["tools"] = self._to_ollama_tools(tools)
 
+        client = self._get_effective_client()
         try:
-            response = await self._client.chat(**kwargs)
+            response = await client.chat(**kwargs)
         except Exception as e:
             if "format" in kwargs and kwargs["format"] != "json":
                 try:
                     kwargs["format"] = "json"
-                    response = await self._client.chat(**kwargs)
+                    response = await client.chat(**kwargs)
                 except Exception:
                     raise ProviderError(f"Ollama API error: {e}") from e
             else:
@@ -306,11 +361,26 @@ class OllamaProvider:
         max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> AsyncIterator[str]:
-        """Streaming text completion via Ollama."""
+        """Streaming text completion via Ollama, protected by semaphore if laptop node."""
+        if self._is_laptop_node:
+            async with _LAPTOP_SEMAPHORE:
+                async for chunk in self._execute_complete_stream(messages, max_tokens, temperature):
+                    yield chunk
+        else:
+            async for chunk in self._execute_complete_stream(messages, max_tokens, temperature):
+                yield chunk
+
+    async def _execute_complete_stream(
+        self,
+        messages: list[Message],
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+    ) -> AsyncIterator[str]:
         ollama_messages = self._to_ollama_messages(messages)
         ctx_size = max(max_tokens * 2, 16384)
+        client = self._get_effective_client()
         try:
-            async for chunk in await self._client.chat(
+            async for chunk in await client.chat(
                 model=self._model,
                 messages=ollama_messages,
                 stream=True,

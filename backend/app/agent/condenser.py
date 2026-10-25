@@ -15,6 +15,7 @@ from typing import Any
 from app.agent.extractor import (
     _KNOWN_BRANDS_PATTERNS,
     extract_parameters_from_query,
+    find_matching_brand,
     is_archive_wide_newspaper_query,
 )
 from app.core.logging import get_logger
@@ -188,11 +189,8 @@ def parse_inline_citation(text: str) -> dict[str, Any]:
         re.IGNORECASE,
     )
     if m:
-        np = m.group(1).strip()
-        for pat, brand in _KNOWN_BRANDS_PATTERNS:
-            if pat.search(np):
-                np = brand
-                break
+        raw_np = m.group(1).strip()
+        np = find_matching_brand(raw_np) or raw_np
         res: dict[str, Any] = {"newspaper_name": np, "target_newspapers": [np]}
         if m.group(2):
             res["issue_date"] = m.group(2).strip()
@@ -381,10 +379,9 @@ def extract_active_issue_from_history(
             detected_pub = summary_m.group(1).strip().replace("⚡", "").replace("EXECUTIVE SUMMARY", "").strip()
             detected_pub = re.sub(r"^[\s\*\#\-\:]+", "", detected_pub).strip()
             if detected_pub and len(detected_pub) >= 3 and not res.get("newspaper_name"):
-                for pat, brand in _KNOWN_BRANDS_PATTERNS:
-                    if pat.search(detected_pub):
-                        res["newspaper_name"] = brand
-                        break
+                matched_b = find_matching_brand(detected_pub)
+                if matched_b:
+                    res["newspaper_name"] = matched_b
             if summary_m.group(2) and not res.get("issue_id"):
                 with contextlib.suppress(ValueError):
                     res["issue_id"] = int(summary_m.group(2))

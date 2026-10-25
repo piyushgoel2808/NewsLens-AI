@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from app.core.logging import get_logger
 from app.ingestion.detector import is_noise_or_promo_text, sanitize_block_text

@@ -86,7 +86,7 @@ class ObjectStore(Protocol):
         key: str,
         data: bytes,
         content_type: str = "application/octet-stream",
-    ) -> None:
+    ) -> Any:
         """Upload an object."""
         ...
 
@@ -96,6 +96,14 @@ class ObjectStore(Protocol):
 
     async def delete(self, bucket: str, key: str) -> None:
         """Delete an object."""
+        ...
+
+    async def delete_prefix(self, bucket: str, prefix: str) -> int:
+        """Delete all objects matching a prefix."""
+        ...
+
+    async def list_objects(self, bucket: str, prefix: str = "") -> list[str]:
+        """List object keys matching prefix."""
         ...
 
     async def presign_url(
@@ -113,6 +121,14 @@ class ObjectStore(Protocol):
 
     async def ensure_bucket(self, bucket: str) -> None:
         """Create the bucket if it doesn't exist."""
+        ...
+
+    async def ping(self) -> bool:
+        """Check if object store is reachable."""
+        ...
+
+    async def startup(self) -> None:
+        """Ensure buckets exist and prepare connections."""
         ...
 
 

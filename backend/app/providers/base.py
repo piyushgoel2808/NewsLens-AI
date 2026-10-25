@@ -46,6 +46,7 @@ class ProviderType(StrEnum):
     MINERU = "mineru"
     DOCLING = "docling"
     GEMINI_EMBEDDING = "gemini_embedding"
+    EMBEDDING_GEMMA2 = "embedding_gemma2"
 
 
 # ---------------------------------------------------------------------------

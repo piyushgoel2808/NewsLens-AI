@@ -41,7 +41,7 @@ from app.ingestion.layout import (
 )
 from app.ingestion.media_extractor import MediaExtractor
 from app.ingestion.metadata import ConsensusExtractor
-from app.ingestion.metadata_extractor import MetadataExtractor
+from app.ingestion.metadata_extractor import ArticleMetadataResult, MetadataExtractor
 from app.ingestion.parsers import (
     DoclingLayoutParser,
     ExtractedPhotoData,

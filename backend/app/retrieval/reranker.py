@@ -75,7 +75,7 @@ class CrossEncoderReranker:
 
     def __init__(
         self,
-        model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        model_name: str = "BAAI/bge-reranker-v2-gemma",
         device: str | None = None,
         model: Any = None,
     ) -> None:
@@ -89,6 +89,15 @@ class CrossEncoderReranker:
         """Load cross-encoder model synchronously with process-wide caching."""
         if self._model is not None:
             return self._model
+        try:
+            from app.core.config import get_settings
+
+            if getattr(get_settings(), "render_free_tier", False):
+                logger.info("Render Free Tier active: Bypassing neural CrossEncoder loading")
+                return None
+        except Exception:
+            pass
+
         global _SHARED_CROSS_ENCODERS
         if self.model_name in _SHARED_CROSS_ENCODERS:
             return _SHARED_CROSS_ENCODERS[self.model_name]
@@ -100,7 +109,25 @@ class CrossEncoderReranker:
                 "Loading Cross-Encoder model on device",
                 extra={"model": self.model_name, "device": self.device},
             )
-            model = CrossEncoder(self.model_name, device=self.device)
+            # If testing, use fast local ms-marco to prevent multi-GB test execution stalls
+            try:
+                from app.core.config import get_settings
+
+                is_test = getattr(get_settings(), "testing", False)
+            except Exception:
+                is_test = False
+
+            if is_test and self.model_name == "BAAI/bge-reranker-v2-gemma":
+                try:
+                    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=self.device)
+                except Exception:
+                    model = CrossEncoder(self.model_name, device=self.device)
+            else:
+                try:
+                    model = CrossEncoder(self.model_name, device=self.device)
+                except Exception:
+                    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=self.device)
+
             _SHARED_CROSS_ENCODERS[self.model_name] = model
             return model
         except Exception as ex:
@@ -155,6 +182,14 @@ class CrossEncoderReranker:
             cand = dict(candidates[0])
             cand.setdefault("rerank_score", cand.get("rrf_score", 0.0))
             return [cand]
+
+        try:
+            from app.core.config import get_settings
+
+            if getattr(get_settings(), "render_free_tier", False):
+                return self._fallback.rerank(query, candidates, top_k=top_k)
+        except Exception:
+            pass
 
         model = await self._get_model()
         if model is None:

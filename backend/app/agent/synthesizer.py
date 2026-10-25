@@ -613,8 +613,9 @@ class AnswerSynthesizer:
             try:
                 from sqlalchemy import select
                 from sqlalchemy.orm import selectinload
+
                 from app.models.article import Article
-                from app.models.newspaper import Issue, Newspaper
+                from app.models.newspaper import Issue
 
                 async with self._session_factory() as db:
                     stmt = (

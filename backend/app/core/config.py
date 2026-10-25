@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import BaseModel, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
-from pydantic import BaseModel, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
 # Sub-models for model_config.yaml
@@ -190,6 +190,24 @@ DEFAULT_PROVIDERS = {
         supports_vision=False,
         supports_tool_use=True,
     ),
+    "ollama_gemma4_e4b": ProviderConfig(
+        provider="ollama",
+        model="gemma4:e4b",
+        base_url="http://localhost:11434",
+        context_window=131072,
+        max_output_tokens=4096,
+        supports_vision=True,
+        supports_tool_use=True,
+    ),
+    "ollama_gemma4_12b": ProviderConfig(
+        provider="ollama",
+        model="gemma4:12b",
+        base_url="http://localhost:11434",
+        context_window=131072,
+        max_output_tokens=4096,
+        supports_vision=False,
+        supports_tool_use=True,
+    ),
     "ollama_qwen3vl": ProviderConfig(
         provider="ollama",
         model="qwen3-vl:latest",
@@ -264,19 +282,36 @@ DEFAULT_PROVIDERS = {
         supports_tool_use=False,
         embedding_dim=768,
     ),
+    "sovereign_laptop_node": ProviderConfig(
+        provider="ollama",
+        model="llama3.1:8b",
+        base_url="http://localhost:11434",
+        context_window=131072,
+        max_output_tokens=4096,
+        supports_vision=False,
+        supports_tool_use=True,
+    ),
+    "embedding_gemma2": ProviderConfig(
+        provider="embedding_gemma2",
+        model="google/embeddinggemma-2",
+        base_url="http://localhost:11434",
+        supports_vision=False,
+        supports_tool_use=False,
+        embedding_dim=768,
+    ),
 }
 
 DEFAULT_TASK_BINDINGS = {
     "layout_analysis": "docling_parser",
     "document_parser": "docling_parser",
     "ocr": "docling_parser",
-    "embedding": "local_embed_bge",
+    "embedding": "embedding_gemma2",
     "query_planner": "ollama_llama3",
     "answerer": "ollama_llama3",
     "metadata_extraction": "ollama_llama3",
     "classification": "ollama_llama3",
     "article_segmentation": "ollama_deepseek",
-    "visual_extraction": "ollama_qwen3vl",
+    "visual_extraction": "ollama_gemma4_e4b",
 }
 
 
@@ -339,11 +374,30 @@ class Settings(BaseSettings):
     dynamic_tool_max_memory_mb: int = 256
     dynamic_tool_max_retries: int = 2
 
-    # --- Storage Backend (minio or gcs) ---
+    # --- Storage Backend (minio, gcs, or dual) ---
     storage_backend: str = "minio"
     gcs_project_id: str | None = None
     gcs_bucket_pages: str = "newslens-pages"
     gcs_bucket_originals: str = "newslens-originals"
+
+    # --- Render Free Tier Mode ---
+    render_free_tier: bool = Field(default=False, validation_alias="RENDER_FREE_TIER")
+
+    # --- Sovereign Laptop Node & Tunnel Controls ---
+    laptop_node_enabled: bool = Field(default=False, validation_alias="LAPTOP_NODE_ENABLED")
+    laptop_tunnel_url: str = Field(default="http://localhost:11434", validation_alias="LAPTOP_TUNNEL_URL")
+    laptop_bridge_secret: str = Field(default="", validation_alias="LAPTOP_BRIDGE_SECRET")
+    laptop_admin_pin: str = Field(default="1234", validation_alias="LAPTOP_ADMIN_PIN")
+    laptop_default_model: str = Field(default="llama3.1:8b", validation_alias="LAPTOP_DEFAULT_MODEL")
+
+    # --- HuggingFace Free Inference Fallback for EmbeddingGemma 2 when Laptop is OFF ---
+    hf_api_token: str | None = Field(default=None, validation_alias="HF_API_TOKEN")
+
+    # --- Cloud S3 / Cloudflare R2 Settings for Dual Object Storage ---
+    cloud_s3_endpoint: str | None = Field(default=None, validation_alias="CLOUD_S3_ENDPOINT")
+    cloud_s3_access_key: str | None = Field(default=None, validation_alias="CLOUD_S3_ACCESS_KEY")
+    cloud_s3_secret_key: str | None = Field(default=None, validation_alias="CLOUD_S3_SECRET_KEY")
+    cloud_s3_secure: bool = Field(default=True, validation_alias="CLOUD_S3_SECURE")
 
     # --- Qdrant ---
     qdrant_host: str = "localhost"
@@ -414,6 +468,7 @@ class Settings(BaseSettings):
         "qdrant_api_key",
         "hf_token",
         "huggingface_token",
+        "hf_api_token",
         "docling_api_key",
         mode="before",
     )

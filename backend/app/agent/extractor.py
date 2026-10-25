@@ -72,6 +72,45 @@ def get_brand_patterns() -> list[tuple[re.Pattern[str], str]]:
     return patterns
 
 
+def find_matching_brand(text: str) -> str | None:
+    """Find the first matching newspaper brand in text."""
+    if not text:
+        return None
+    patterns = get_brand_patterns()
+    for pat, brand in patterns:
+        if pat.search(text):
+            return brand
+    return None
+
+
+def has_named_brand(text: str) -> bool:
+    """Check if text contains any recognized broadsheet brand."""
+    if not text:
+        return False
+    patterns = get_brand_patterns()
+    return any(pat.search(text) for pat, _ in patterns)
+
+
+def find_all_matching_brands(text: str) -> list[str]:
+    """Find all unique matching newspaper brands in text preserving appearance order."""
+    if not text:
+        return []
+    patterns = get_brand_patterns()
+    matches: list[tuple[int, str]] = []
+    for pat, brand in patterns:
+        m = pat.search(text)
+        if m:
+            matches.append((m.start(), brand))
+    matches.sort(key=lambda x: x[0])
+    seen: set[str] = set()
+    result: list[str] = []
+    for _, brand in matches:
+        if brand.lower() not in seen:
+            seen.add(brand.lower())
+            result.append(brand)
+    return result
+
+
 _SECTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(sports?|athletics?|cricket|tennis|football|soccer|olympics?|tournaments?|ipl|bcci|icc|grand\s+slam|badminton|golf)\b", re.I), "Sports"),
     (re.compile(r"\b(entertainment|cinema|movies?|films?|bollywood|hollywood|arts?|music|concerts?|theatre|ott|actors?|actress(?:es)?)\b", re.I), "Entertainment"),
@@ -264,9 +303,8 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
     target_pages: list[str] = []
 
     # Check for front page / cover page
-    if re.search(r"\b(?:front[\s-]*page|cover[\s-]*page|page\s*(?:1|one))\b", query, re.I):
-        if "1" not in target_pages:
-            target_pages.append("1")
+    if re.search(r"\b(?:front[\s-]*page|cover[\s-]*page|page\s*(?:1|one))\b", query, re.I) and "1" not in target_pages:
+        target_pages.append("1")
 
     # Match compound page specifications e.g. "pages 1, 2 and 4", "pages 1 and 3", "pg 2 and pg 4"
     for m in re.finditer(r"\b(?:pages?|pgs?|p\.?)\s*(\d{1,3}(?:\s*(?:,|and|&|\/)\s*\d{1,3})*)\b", query, re.I):
@@ -348,7 +386,10 @@ __all__ = [
     "_build_targeted_web_query",
     "build_targeted_web_query",
     "extract_parameters_from_query",
+    "find_all_matching_brands",
+    "find_matching_brand",
     "get_brand_patterns",
+    "has_named_brand",
     "is_archive_wide_newspaper_query",
 ]
 

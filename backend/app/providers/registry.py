@@ -62,6 +62,7 @@ class ModelRegistry:
         model = cfg.model or ""
 
         if provider_type == "ollama":
+            is_laptop = provider_id == "sovereign_laptop_node" or "laptop" in provider_id
             return OllamaProvider(
                 model=model,
                 base_url=cfg.base_url or self._settings.ollama_base_url,
@@ -69,6 +70,7 @@ class ModelRegistry:
                 max_output_tokens=cfg.max_output_tokens,
                 is_reasoning_model=cfg.is_reasoning_model,
                 reasoning_headroom=cfg.reasoning_headroom,
+                is_laptop_node=is_laptop,
             )
         elif provider_type == "groq":
             return GroqProvider(
@@ -147,6 +149,15 @@ class ModelRegistry:
             )
         elif provider_type == "local_sentence_transformers":
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
+        elif provider_type in ("embedding_gemma2", "gemma_embedding"):
+            from app.providers.embedding_gemma_provider import EmbeddingGemma2Provider
+
+            return EmbeddingGemma2Provider(
+                model_name=model or "google/embeddinggemma-2",
+                ollama_model=getattr(cfg, "ollama_model", "embeddinggemma-2") or "embeddinggemma-2",
+                base_url=cfg.base_url or self._settings.ollama_base_url,
+                dimensions=cfg.embedding_dim or 768,
+            )
         elif provider_type in ("gemini_embedding", "google_embedding", "gemini_embed"):
             from app.providers.gemini_embedding_provider import GeminiEmbeddingProvider
 
@@ -225,6 +236,28 @@ class ModelRegistry:
             raise ProviderError("Bound 'answerer' provider does not implement ChatModelProvider")
 
         target_id = model_name_or_id.strip()
+
+        # Handle Sovereign Laptop Node dynamic sub-model overrides (e.g. laptop:deepseek-r1:14b)
+        if target_id.startswith("laptop:") or target_id == "sovereign_laptop_node":
+            from app.api.routers.settings import get_laptop_node_runtime_state
+            from app.providers.ollama_provider import OllamaProvider
+
+            state = get_laptop_node_runtime_state()
+            if not state.get("enabled"):
+                raise ProviderError("Host Laptop Local LLM is currently turned OFF by the administrator.")
+
+            if target_id.startswith("laptop:"):
+                sub_model = target_id.split("laptop:", 1)[1].strip() or state.get("default_model", "llama3.1:8b")
+            else:
+                sub_model = state.get("default_model") or "llama3.1:8b"
+
+            tunnel_url = state.get("tunnel_url") or self._settings.laptop_tunnel_url or self._settings.ollama_base_url
+            return OllamaProvider(
+                model=sub_model,
+                base_url=tunnel_url,
+                supports_vision=True,
+                is_laptop_node=True,
+            )
 
         # 1. Exact match in configured providers
         if target_id in self._model_config.providers:

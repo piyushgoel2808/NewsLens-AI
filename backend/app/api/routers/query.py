@@ -19,22 +19,20 @@ from app.agent.condenser import (
     is_ambiguous_standalone_query,
     is_in_context_meta_query,
 )
-from app.agent.fallback_presenter import EMPTY_EVIDENCE_RESPONSE
 from app.agent.graph import AgentWorkflow, _can_bypass_llm_planner
 from app.agent.planner import QueryPlanner
 from app.agent.synthesizer import parse_thought_and_answer
 from app.core.logging import get_logger
 from app.core.metrics import record_agent_query
-
-logger = get_logger(__name__)
 from app.models.base import get_db, get_session_factory
 from app.models.query import QueryLog
 from app.retrieval import (
-    resolve_attached_asset_context,
     resolve_conversation_working_context,
 )
 from app.retrieval.timeline_builder import NarrativeTrajectoryResponse, TimelineBuilder
 from app.storage.cache_store import compute_query_cache_key
+
+logger = get_logger(__name__)
 
 REASONING_START_REGEX = re.compile(
     r"^\s*(?:<think>|Here'?s a thinking process:?|Thinking Process:?|Thought:?)",

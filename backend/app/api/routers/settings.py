@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+import httpx
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
@@ -142,3 +144,142 @@ async def reset_model_bindings() -> dict[str, Any]:
             "Verify host volume mount permissions."
         )
     return result
+
+
+class LaptopNodeToggleRequest(BaseModel):
+    enabled: bool
+    tunnel_url: str | None = None
+    default_model: str | None = None
+
+
+_LAPTOP_NODE_RUNTIME: dict[str, Any] = {
+    "enabled": False,
+    "tunnel_url": "",
+    "default_model": "llama3.1:8b",
+    "available_models": [],
+    "online": False,
+    "_initialized": False,
+}
+
+
+def get_laptop_node_runtime_state() -> dict[str, Any]:
+    """Retrieve global in-memory runtime state for Sovereign Laptop Node."""
+    settings = get_settings()
+    if not _LAPTOP_NODE_RUNTIME["_initialized"]:
+        _LAPTOP_NODE_RUNTIME["_initialized"] = True
+        _LAPTOP_NODE_RUNTIME["tunnel_url"] = settings.laptop_tunnel_url
+        _LAPTOP_NODE_RUNTIME["enabled"] = settings.laptop_node_enabled
+        _LAPTOP_NODE_RUNTIME["default_model"] = settings.laptop_default_model
+    return _LAPTOP_NODE_RUNTIME
+
+
+@router.get("/laptop-node/status", summary="Get Sovereign Laptop Node status and discovered local models")
+async def get_laptop_node_status(
+    x_admin_pin: str | None = Header(None, alias="X-Admin-Pin"),
+) -> dict[str, Any]:
+    """Public status endpoint to check if host laptop is online and list installed Ollama models."""
+    settings = get_settings()
+    state = get_laptop_node_runtime_state()
+
+    is_admin = bool(
+        x_admin_pin
+        and settings.laptop_admin_pin.strip()
+        and hmac.compare_digest(x_admin_pin.strip().encode(), settings.laptop_admin_pin.strip().encode())
+    )
+
+    if not state["enabled"]:
+        return {
+            "enabled": False,
+            "online": False,
+            "available_models": [],
+            "default_model": state.get("default_model", "llama3.1:8b"),
+            "tunnel_url": state.get("tunnel_url", "") if is_admin else None,
+        }
+
+    tunnel_url = str(state.get("tunnel_url") or settings.laptop_tunnel_url).rstrip("/")
+    headers = {
+        "ngrok-skip-browser-warning": "true",
+        "X-Laptop-Bridge-Secret": settings.laptop_bridge_secret,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=2.5, headers=headers) as client:
+            resp = await client.get(f"{tunnel_url}/api/tags")
+            if resp.status_code == 200:
+                data = resp.json()
+                models = [m["name"] for m in data.get("models", []) if "name" in m]
+                state["available_models"] = models
+                state["online"] = True
+                return {
+                    "enabled": True,
+                    "online": True,
+                    "available_models": models,
+                    "default_model": state.get("default_model", "llama3.1:8b"),
+                    "tunnel_url": tunnel_url if is_admin else None,
+                }
+    except Exception as exc:
+        logger.debug("Laptop node health check failed", extra={"error": str(exc), "tunnel_url": tunnel_url})
+
+    state["online"] = False
+    return {
+        "enabled": True,
+        "online": False,
+        "available_models": [],
+        "default_model": state.get("default_model", "llama3.1:8b"),
+        "tunnel_url": tunnel_url if is_admin else None,
+    }
+
+
+@router.post("/laptop-node/toggle", summary="Toggle Sovereign Laptop Node ON or OFF (Admin PIN Protected)")
+async def toggle_laptop_node(
+    payload: LaptopNodeToggleRequest,
+    x_admin_pin: str | None = Header(None, alias="X-Admin-Pin"),
+) -> dict[str, Any]:
+    """Toggle laptop node access and update tunnel URL. Requires admin PIN."""
+    settings = get_settings()
+    expected_pin = settings.laptop_admin_pin.strip()
+
+    if not expected_pin or not x_admin_pin or not hmac.compare_digest(
+        x_admin_pin.strip().encode(), expected_pin.encode()
+    ):
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid or missing X-Admin-Pin")
+
+    tunnel: str | None = None
+    if payload.tunnel_url:
+        tunnel = payload.tunnel_url.strip().rstrip("/")
+        if not (tunnel.startswith("http://") or tunnel.startswith("https://")):
+            raise HTTPException(status_code=400, detail="Invalid tunnel URL: must start with http:// or https://")
+
+    state = get_laptop_node_runtime_state()
+    state["enabled"] = payload.enabled
+    if tunnel:
+        state["tunnel_url"] = tunnel
+    if payload.default_model:
+        state["default_model"] = payload.default_model.strip()
+
+    # Clear provider cache so newly activated tunnel settings take immediate effect
+    registry = get_registry()
+    registry.invalidate_all()
+
+    # If enabled, refresh status and discover models
+    if state["enabled"]:
+        status_res = await get_laptop_node_status(x_admin_pin=x_admin_pin)
+        return {
+            "status": "updated",
+            "enabled": state["enabled"],
+            "online": status_res.get("online", False),
+            "available_models": status_res.get("available_models", []),
+            "default_model": state["default_model"],
+            "tunnel_url": state["tunnel_url"],
+        }
+
+    state["online"] = False
+    state["available_models"] = []
+    return {
+        "status": "updated",
+        "enabled": False,
+        "online": False,
+        "available_models": [],
+        "default_model": state["default_model"],
+        "tunnel_url": state["tunnel_url"],
+    }

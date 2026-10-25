@@ -133,7 +133,7 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
             # Round-robin interleave article items across publications
             max_articles = max(len(items) for items in pub_buckets.values())
             for i in range(max_articles):
-                for pub_name, pub_items in pub_buckets.items():
+                for pub_items in pub_buckets.values():
                     if i < len(pub_items) and i < per_pub_cap:
                         budgeted_items.append(pub_items[i])
 
@@ -176,9 +176,8 @@ def build_evidence_context(evidence_items: list[dict[str, Any]], query: str = ""
                 for i in range(max_page_articles):
                     for p_num in sorted(page_buckets.keys()):
                         p_items = page_buckets[p_num]
-                        if i < len(p_items) and i < per_page_cap:
-                            if p_items[i] not in budgeted_items:
-                                budgeted_items.append(p_items[i])
+                        if i < len(p_items) and i < per_page_cap and p_items[i] not in budgeted_items:
+                            budgeted_items.append(p_items[i])
 
                 for git in general_items:
                     if len(budgeted_items) < item_cap and git not in budgeted_items:

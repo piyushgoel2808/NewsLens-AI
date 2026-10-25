@@ -61,6 +61,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Pre-warm embedding & neural reranker in background to absorb cold-start latency
     async def _prewarm_models() -> None:
+        if getattr(settings, "render_free_tier", False):
+            logger.info("Render Free Tier active: Skipping heavy PyTorch model pre-warming to protect 512MB RAM")
+            return
+
         try:
             from app.providers.registry import get_registry
             from app.retrieval.reranker import CrossEncoderReranker

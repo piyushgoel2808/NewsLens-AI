@@ -21,10 +21,10 @@ logger = get_logger(__name__)
 
 
 async def _check_mysql() -> dict[str, Any]:
-    settings = get_settings()
     t0 = time.monotonic()
     try:
         from sqlalchemy import text
+
         from app.models.base import get_session_factory
 
         factory = get_session_factory()

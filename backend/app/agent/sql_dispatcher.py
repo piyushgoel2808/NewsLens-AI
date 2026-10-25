@@ -166,6 +166,7 @@ class SQLAnalyticsDispatcher:
         d_to = args.get("date_to")
         has_multi_day_range = bool(d_from and d_to and d_from != d_to)
         has_single_date = bool(args.get("issue_date") or (d_from and d_to and d_from == d_to))
+        has_date_range = bool(d_from or d_to or has_multi_day_range)
         is_archive_np = is_archive_wide_newspaper_query(state.get("query", "")) or is_archive_wide_newspaper_query(args.get("query", ""))
 
         # Redirect multi-day date range or archive-wide requests without a specific date or newspaper to count_issues
@@ -199,11 +200,10 @@ class SQLAnalyticsDispatcher:
             from app.agent.extractor import extract_parameters_from_query
             extracted = extract_parameters_from_query(args.get("query") or state.get("query") or "")
             target_nps = extracted.get("target_newspapers", [])
-            if not np_arg and extracted.get("newspaper_name"):
+            if not np_arg and extracted.get("newspaper_name") and len(target_nps) < 2:
                 # If multiple newspapers are targeted (e.g. comparative queries), do NOT collapse
                 # np_arg to only the first one so is_multi_issue_date fetches all targeted papers on that date
-                if len(target_nps) < 2:
-                    np_arg = extracted["newspaper_name"]
+                np_arg = extracted["newspaper_name"]
             if not page_filter and extracted.get("page_filter"):
                 page_filter = str(extracted["page_filter"]).strip()
             if not iss_d_arg and extracted.get("issue_date"):

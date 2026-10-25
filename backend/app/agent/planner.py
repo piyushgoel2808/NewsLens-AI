@@ -101,7 +101,7 @@ _PROMPT_BODY = """### 🛠️ STRICT OPERATIONAL TOOL CONTRACTS & BOUNDARIES
 
 1. `sql_analytics`: Relational system of record for FIXED, PRE-COMPILED routines.
    - Arguments: {"analysis_type": "issue_summary" | "count_articles" | "count_advertisements" | "count_photos" | "count_issues" | "coverage_difference" | "shared_coverage", "newspaper_name": str, "comparison_newspaper": str, "issue_date": "YYYY-MM-DD", "date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "category_filter": str, "page_filter": str, "query": str}
-   - STRICT ENUM REQUIREMENT: `analysis_type` MUST be one of these 7 exact literals:
+   - STRICT ENUM REQUIREMENT: `analysis_type` MUST be one of these 8 exact literals:
      * `count_issues`: Issue availability, publication rosters, and issue volume (e.g. 'list available newspapers in September 2026', 'is any newspaper available on 2026-04-28', 'total issues of a publication').
      * `count_articles`: Total article count for a newspaper or date range.
      * `count_advertisements`: Advertisement and commercial notices count.
@@ -109,6 +109,7 @@ _PROMPT_BODY = """### 🛠️ STRICT OPERATIONAL TOOL CONTRACTS & BOUNDARIES
      * `issue_summary`: Manifest catalog / section breakdown of a single broadsheet issue.
      * `coverage_difference`: Exclusive stories published by one newspaper but omitted by another.
      * `shared_coverage`: Common/syndicated wire stories published across two newspapers.
+     * `coverage_comparison`: Cross-publication coverage matrix and audit across all newspapers on a date.
    - ⚠️ NEGATIVE CONSTRAINT: `sql_analytics` CANNOT generate custom SQL, CANNOT calculate averages, CANNOT compute word lengths, ratios, medians, or custom groupings. Calling `sql_analytics` for anything other than these 7 fixed enum values is a fatal tool error!
 
 2. `dynamic_analysis`: LLM-synthesized custom Python & SQL analysis engine.
@@ -689,6 +690,7 @@ class QueryPlanner:
         active_newspapers: list[str] | None = None,
         attached_article_id: int | None = None,
         attached_photo_id: int | None = None,
+        chat_history: list[dict[str, Any]] | None = None,
     ) -> PlanResult:
         """Plan query using true direct agentic tool calling with graceful heuristic fallback."""
         providers = self._get_provider_candidates(model_override)
@@ -709,6 +711,18 @@ class QueryPlanner:
                 user_content = f"Analyze and plan the following broadsheet research query:\nQuery: \"{query}\"\n"
                 if archive_context:
                     user_content += f"\nACTIVE ARCHIVE STATE:\n{archive_context}\n"
+                if chat_history:
+                    recent = chat_history[-4:]
+                    hist_lines = []
+                    for turn in recent:
+                        role = str(turn.get("role", "user")).capitalize()
+                        content = str(turn.get("content", "")).strip()
+                        if len(content) > 300:
+                            content = content[:300] + "..."
+                        if content:
+                            hist_lines.append(f"{role}: {content}")
+                    if hist_lines:
+                        user_content += "\nRECENT CONVERSATION HISTORY:\n" + "\n".join(hist_lines) + "\n"
                 if active_issue_date or active_newspapers or attached_article_id:
                     ctx_lines = []
                     if active_issue_date:
@@ -775,6 +789,7 @@ class QueryPlanner:
         active_newspapers: list[str] | None = None,
         attached_article_id: int | None = None,
         attached_photo_id: int | None = None,
+        chat_history: list[dict[str, Any]] | None = None,
     ) -> PlanResult:
         """Synchronous planning interface."""
         return self._plan_query_heuristic(
@@ -923,16 +938,15 @@ class QueryPlanner:
 
                 # Reassign duplicates or empty calls to uncovered target_nps
                 for req_np in target_nps:
-                    if not any(req_np.lower() in an or an in req_np.lower() for an in assigned_nps):
-                        if calls_to_reassign:
-                            call_to_fix = calls_to_reassign.pop(0)
-                            call_to_fix.arguments["newspaper_name"] = req_np
-                            if target_dt and "issue_date" not in call_to_fix.arguments:
-                                call_to_fix.arguments["issue_date"] = target_dt
-                            if p_filt and "page_filter" not in call_to_fix.arguments:
-                                call_to_fix.arguments["page_filter"] = str(p_filt)
-                            call_to_fix.purpose = f"Retrieve manifest for {req_np}"
-                            assigned_nps.add(req_np.lower())
+                    if not any(req_np.lower() in an or an in req_np.lower() for an in assigned_nps) and calls_to_reassign:
+                        call_to_fix = calls_to_reassign.pop(0)
+                        call_to_fix.arguments["newspaper_name"] = req_np
+                        if target_dt and "issue_date" not in call_to_fix.arguments:
+                            call_to_fix.arguments["issue_date"] = target_dt
+                        if p_filt and "page_filter" not in call_to_fix.arguments:
+                            call_to_fix.arguments["page_filter"] = str(p_filt)
+                        call_to_fix.purpose = f"Retrieve manifest for {req_np}"
+                        assigned_nps.add(req_np.lower())
 
                 # 3. For any remaining target newspaper still uncovered, insert a new sql_analytics call
                 for req_np in target_nps:
@@ -1001,16 +1015,15 @@ class QueryPlanner:
 
                 # Reassign duplicates or empty calls to uncovered target_pages
                 for req_p in target_pages:
-                    if req_p not in assigned_pages:
-                        if calls_to_reassign:
-                            call_to_fix = calls_to_reassign.pop(0)
-                            call_to_fix.arguments["page_filter"] = req_p
-                            if target_dt and "issue_date" not in call_to_fix.arguments:
-                                call_to_fix.arguments["issue_date"] = target_dt
-                            if req_np and "newspaper_name" not in call_to_fix.arguments:
-                                call_to_fix.arguments["newspaper_name"] = req_np
-                            call_to_fix.purpose = f"Retrieve manifest for Page {req_p}"
-                            assigned_pages.add(req_p)
+                    if req_p not in assigned_pages and calls_to_reassign:
+                        call_to_fix = calls_to_reassign.pop(0)
+                        call_to_fix.arguments["page_filter"] = req_p
+                        if target_dt and "issue_date" not in call_to_fix.arguments:
+                            call_to_fix.arguments["issue_date"] = target_dt
+                        if req_np and "newspaper_name" not in call_to_fix.arguments:
+                            call_to_fix.arguments["newspaper_name"] = req_np
+                        call_to_fix.purpose = f"Retrieve manifest for Page {req_p}"
+                        assigned_pages.add(req_p)
 
                 # 3. For any remaining target page still uncovered, insert a new sql_analytics call
                 for req_p in target_pages:

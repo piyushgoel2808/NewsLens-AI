@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.extractor import (
-    _KNOWN_BRANDS_PATTERNS,
     extract_parameters_from_query,
+    has_named_brand,
     is_archive_wide_newspaper_query,
 )
 from app.agent.state import AgentState, ToolExecutionRecord
@@ -473,7 +473,7 @@ class EvidenceEvaluator:
 
             # Archive-wide publication scope audit: query asked for total/distinct newspapers across archive, but evidence narrowed to single publication
             is_archive_np = is_archive_wide_newspaper_query(query)
-            named_in_q = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+            named_in_q = has_named_brand(query)
             if is_archive_np and not named_in_q:
                 only_single_np = False
                 for it in evidence:

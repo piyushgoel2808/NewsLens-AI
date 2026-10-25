@@ -11,6 +11,7 @@ from typing import Any
 
 from app.agent.extractor import (
     _KNOWN_BRANDS_PATTERNS,
+    has_named_brand,
     is_archive_wide_newspaper_query,
 )
 from app.agent.models import PlannedToolCall
@@ -25,6 +26,11 @@ _GENERIC_FILLER_QUERIES: frozenset[str] = frozenset({
     "all newspaper",
     "cross newspaper comparison",
     "cross-edition frontpage and lead story comparison",
+    "news articles",
+    "stories reporting headlines",
+    "top lead stories headlines front page",
+    "front page lead stories headlines",
+    "stories reporting",
 })
 
 
@@ -85,7 +91,7 @@ def reconcile_and_sanitize_arguments(
     # Archive-wide newspaper inquiry: clear publication filter if query doesn't name a brand
     is_archive_np = is_archive_wide_newspaper_query(query)
     has_date_in_query = bool(extracted.get("issue_date") or extracted.get("date_from"))
-    named_brand_in_query = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+    named_brand_in_query = has_named_brand(query)
     is_volume_query = bool(
         re.search(r"\b(?:how\s+many|total|count\s+of|number\s+of|volume\s+of)\s+.*(?:issues?|newspapers?|editions?|papers?)\b", q_lower)
         or ("issue" in q_lower and any(w in q_lower for w in ["how many", "total", "count", "number of", "list all"]))
@@ -158,9 +164,10 @@ def reconcile_and_sanitize_arguments(
         elif tool_name == "hybrid_search" and len(valid_brands) >= 2:
             # For cross-newspaper comparative queries, leave hybrid_search unconstrained to search across editions
             pass
-        elif extracted.get("newspaper_name") and named_brand_in_query and len(valid_brands) <= 1:
-            sanitized["newspaper_name"] = extracted["newspaper_name"]
-        elif tool_name == "sql_analytics" and extracted.get("newspaper_name") and len(valid_brands) == 1:
+        elif (
+            (extracted.get("newspaper_name") and named_brand_in_query and len(valid_brands) <= 1)
+            or (tool_name == "sql_analytics" and extracted.get("newspaper_name") and len(valid_brands) == 1)
+        ):
             sanitized["newspaper_name"] = extracted["newspaper_name"]
 
     for np_field in ("comparison_newspaper", "source_newspaper"):
@@ -184,9 +191,10 @@ def reconcile_and_sanitize_arguments(
             sanitized["analysis_type"] = "shared_coverage"
         elif not is_comparative and ((is_volume_query and not has_date_in_query) or (is_archive_np and not named_brand_in_query and not has_date_in_query)):
             sanitized["analysis_type"] = "count_issues"
-        elif not sanitized.get("analysis_type"):
-            if sanitized.get("issue_date") or extracted.get("issue_date") or sanitized.get("page_filter") or extracted.get("page_filter"):
-                sanitized["analysis_type"] = "issue_summary"
+        elif not sanitized.get("analysis_type") and (
+            sanitized.get("issue_date") or extracted.get("issue_date") or sanitized.get("page_filter") or extracted.get("page_filter")
+        ):
+            sanitized["analysis_type"] = "issue_summary"
 
     if sanitized.get("analysis_type") in ("shared_coverage", "coverage_difference"):
         if not sanitized.get("comparison_newspaper") and extracted.get("comparison_newspaper"):

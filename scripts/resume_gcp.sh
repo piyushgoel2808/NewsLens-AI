@@ -19,22 +19,28 @@ echo " Resuming NewsLens-AI GCP Infrastructure ($PROJECT_ID)"
 echo "============================================================"
 
 # 1. Start Cloud SQL Instance
-echo "--> [1/2] Starting Cloud SQL Database ($DB_INSTANCE)..."
+echo "--> [1/3] Starting Cloud SQL Database ($DB_INSTANCE)..."
 gcloud sql instances patch "$DB_INSTANCE" \
   --project="$PROJECT_ID" \
   --activation-policy=ALWAYS \
   --quiet
 
 echo "--> Waiting for Cloud SQL to become RUNNABLE..."
+READY=false
 for i in {1..30}; do
   STATUS=$(gcloud sql instances describe "$DB_INSTANCE" --project="$PROJECT_ID" --format="value(state)" || echo "UNKNOWN")
   if [ "$STATUS" = "RUNNABLE" ]; then
     echo "    Cloud SQL is RUNNABLE!"
+    READY=true
     break
   fi
   echo "    Status: $STATUS (waiting 5s... attempt $i/30)"
   sleep 5
 done
+if [ "$READY" != "true" ]; then
+  echo "Cloud SQL did not become RUNNABLE in time" >&2
+  exit 1
+fi
 
 # 2. Restore Cloud Run Worker & Backend Instances
 echo "--> [2/3] Restoring Cloud Run Worker (min-instances=1, no-cpu-throttling)..."
@@ -57,15 +63,22 @@ gcloud run services update newslens-backend \
 echo "--> Checking Cloud Run Backend availability..."
 BACKEND_URL=$(gcloud run services describe newslens-backend --project="$PROJECT_ID" --region="$REGION" --format="value(status.url)")
 echo "    Pinging ${BACKEND_URL}/health..."
+HEALTHY=false
 for i in {1..6}; do
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${BACKEND_URL}/health" || true)
+  HTTP_CODE=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "${BACKEND_URL}/health" || true)
   if [ "$HTTP_CODE" = "200" ]; then
     echo "    Backend responded with HTTP 200 OK!"
+    HEALTHY=true
     break
   fi
   echo "    Waiting for container warm-up (attempt $i/6, HTTP $HTTP_CODE)..."
   sleep 5
 done
+
+if [ "$HEALTHY" != "true" ]; then
+  echo "Backend did not become healthy in time" >&2
+  exit 1
+fi
 
 echo ""
 echo "============================================================"

@@ -23,6 +23,7 @@ from app.agent.archive_context import (
 )
 from app.agent.extractor import (
     _KNOWN_BRANDS_PATTERNS,
+    has_named_brand,
     is_archive_wide_newspaper_query,
 )
 from app.core.logging import get_logger
@@ -166,7 +167,7 @@ class AnswerVerifier:
         # 1. Publication scope mismatch check: query asked about archive-wide newspapers, but draft answer narrowed to a single brand
         if query:
             is_archive_np = is_archive_wide_newspaper_query(query)
-            named_brand_in_query = any(pat.search(query) for pat, _ in _KNOWN_BRANDS_PATTERNS)
+            named_brand_in_query = has_named_brand(query)
             if is_archive_np and not named_brand_in_query:
                 for _pat, brand in _KNOWN_BRANDS_PATTERNS:
                     if (

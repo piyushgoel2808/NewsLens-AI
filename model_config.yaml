@@ -35,6 +35,22 @@ providers:
     is_reasoning_model: false
     supports_vision: false
     supports_tool_use: true
+  ollama_gemma4_e4b:
+    provider: ollama
+    model: gemma4:e4b
+    base_url: http://localhost:11434
+    context_window: 131072
+    max_output_tokens: 4096
+    supports_vision: true
+    supports_tool_use: true
+  ollama_gemma4_12b:
+    provider: ollama
+    model: gemma4:12b
+    base_url: http://localhost:11434
+    context_window: 131072
+    max_output_tokens: 4096
+    supports_vision: false
+    supports_tool_use: true
   ollama_qwen3vl:
     provider: ollama
     model: qwen3-vl:latest
@@ -167,10 +183,25 @@ providers:
     model: docling-ibm-cloud
     supports_vision: true
     supports_tool_use: false
+  sovereign_laptop_node:
+    provider: ollama
+    model: llama3.1:8b
+    base_url: http://localhost:11434
+    context_window: 131072
+    max_output_tokens: 4096
+    supports_vision: false
+    supports_tool_use: true
+  embedding_gemma2:
+    provider: embedding_gemma2
+    model: google/embeddinggemma-2
+    base_url: http://localhost:11434
+    supports_vision: false
+    supports_tool_use: false
+    embedding_dim: 768
 task_bindings:
   query_planner: ollama_llama3
   answerer: ollama_llama3
-  visual_extraction: ollama_qwen3vl
+  visual_extraction: ollama_gemma4_e4b
   layout_analysis: docling_parser
   metadata_extraction: ollama_llama3
   classification: ollama_llama3
@@ -178,4 +209,4 @@ task_bindings:
   query_condenser: gemini_flash
   document_parser: docling_parser
   ocr: docling_parser
-  embedding: local_embed_bge
+  embedding: embedding_gemma2

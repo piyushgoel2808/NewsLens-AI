@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Cpu, Cloud, Laptop, Sparkles, ShieldCheck } from 'lucide-react';
 
 // Hardcoded reference models for clean display labels
@@ -21,6 +21,8 @@ const CORE_MODELS = {
     { id: 'openrouter_nemotron', label: 'Nemotron 3.5 Lightning (OpenRouter)', hint: 'Reasoning' },
   ],
   local: [
+    { id: 'ollama_gemma4_e4b', label: 'Gemma 4 E4B (Local)', hint: 'Vision + Multimodal Extraction' },
+    { id: 'ollama_gemma4_12b', label: 'Gemma 4 12B (Local)', hint: 'High-Fidelity Reasoning (~8GB)' },
     { id: 'ollama_llama3', label: 'Llama 3.1 8B (Local)', hint: 'Fast General (~5GB)' },
     { id: 'ollama_deepseek', label: 'DeepSeek R1 14B (Local)', hint: 'Local Reasoning' },
     { id: 'ollama_qwen3vl', label: 'Qwen 3 VL (Local)', hint: 'Vision & Multimodal' },
@@ -39,6 +41,39 @@ export default function ModelSelector({
   showLabel = true,
 }) {
   const [fetchedModels, setFetchedModels] = useState([]);
+  const [laptopStatus, setLaptopStatus] = useState({
+    enabled: false,
+    online: false,
+    available_models: [],
+    default_model: 'llama3.1:8b',
+  });
+
+  const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => {
+    valueRef.current = value;
+    onChangeRef.current = onChange;
+  });
+
+  useEffect(() => {
+    const checkLaptop = () => {
+      fetch('/api/settings/laptop-node/status')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data) {
+            setLaptopStatus(data);
+            const v = valueRef.current;
+            if (v && v.startsWith('laptop:') && (!data.enabled || !data.online)) {
+              onChangeRef.current && onChangeRef.current('gemini_flash');
+            }
+          }
+        })
+        .catch((err) => console.debug('Laptop node status poll failed:', err));
+    };
+    checkLaptop();
+    const interval = setInterval(checkLaptop, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (!propModels || propModels.length === 0) {
@@ -59,6 +94,13 @@ export default function ModelSelector({
   const getModelEnv = (modelId) => {
     if (!modelId) return { type: 'cloud_gemini', label: 'Google Gemini Cloud', color: 'sky' };
     const lower = modelId.toLowerCase();
+    if (lower.startsWith('laptop:') || lower === 'sovereign_laptop_node') {
+      return {
+        type: 'laptop_node',
+        label: laptopStatus.online ? "Host's Laptop (ONLINE)" : "Host's Laptop (OFFLINE)",
+        color: laptopStatus.online ? 'emerald' : 'amber',
+      };
+    }
     if (lower.startsWith('gemini')) {
       return { type: 'cloud_gemini', label: 'Google Gemini Cloud', color: 'sky' };
     }
@@ -140,6 +182,29 @@ export default function ModelSelector({
           }`}
           title={`Active inference model: ${value}`}
         >
+          {/* Sovereign Laptop Node: Live Local Models */}
+          {laptopStatus.enabled && laptopStatus.online ? (
+            <optgroup label="🟢 💻 Host's Laptop Local LLMs (Live & Free)" className="bg-slate-900 text-emerald-400 font-semibold">
+              {laptopStatus.available_models && laptopStatus.available_models.length > 0 ? (
+                laptopStatus.available_models.map((m) => (
+                  <option key={`laptop:${m}`} value={`laptop:${m}`} className="bg-slate-900 text-emerald-300 font-normal">
+                    💻 {m} (Host's Laptop)
+                  </option>
+                ))
+              ) : (
+                <option value="laptop:llama3.1:8b" className="bg-slate-900 text-emerald-300 font-normal">
+                  💻 Llama 3.1 8B (Host's Laptop)
+                </option>
+              )}
+            </optgroup>
+          ) : (
+            <optgroup label="💻 Host's Laptop Local LLM" className="bg-slate-900 text-slate-500 font-semibold">
+              <option disabled value="laptop_offline" className="bg-slate-900 text-slate-500 font-normal">
+                🔴 💻 Host's Laptop Local AI (Turned Off by Host)
+              </option>
+            </optgroup>
+          )}
+
           {/* Group 1: Google Gemini Cloud */}
           <optgroup label="☁️ Google Gemini Cloud (Google AI Studio)" className="bg-slate-900 text-slate-400 font-semibold">
             {CORE_MODELS.gemini_cloud.map((m) => (
@@ -223,6 +288,7 @@ export default function ModelSelector({
               : 'Runs locally on device hardware via Ollama'
           }
         >
+          {currentEnv.type === 'laptop_node' && <Laptop className="w-3 h-3 text-emerald-400" />}
           {currentEnv.type === 'cloud_gemini' && <Sparkles className="w-3 h-3 text-sky-400" />}
           {currentEnv.type === 'cloud' && <Cloud className="w-3 h-3 text-sky-400" />}
           {currentEnv.type === 'cloud_or' && <ShieldCheck className="w-3 h-3 text-emerald-400" />}

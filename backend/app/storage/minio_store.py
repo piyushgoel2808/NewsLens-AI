@@ -26,13 +26,37 @@ T = TypeVar("T")
 class MinioStore:
     """ObjectStore backed by MinIO / S3-compatible storage."""
 
-    def __init__(self, settings: MinioSettings) -> None:
-        self._settings = settings
+    def __init__(
+        self,
+        settings: MinioSettings | None = None,
+        endpoint: str | None = None,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        secure: bool | None = None,
+    ) -> None:
+        if settings is None:
+            from app.core.config import get_settings
+
+            settings = get_settings().minio
+
+        ep = endpoint if endpoint is not None else settings.endpoint
+        ak = access_key if access_key is not None else settings.access_key
+        sk = secret_key if secret_key is not None else settings.secret_key
+        sec = secure if secure is not None else settings.secure
+
+        self._settings = MinioSettings(
+            endpoint=ep,
+            access_key=ak,
+            secret_key=sk,
+            secure=sec,
+            bucket_pages=settings.bucket_pages,
+            bucket_originals=settings.bucket_originals,
+        )
         self._client = Minio(
-            endpoint=settings.endpoint,
-            access_key=settings.access_key,
-            secret_key=settings.secret_key,
-            secure=settings.secure,
+            endpoint=ep,
+            access_key=ak,
+            secret_key=sk,
+            secure=sec,
         )
 
     async def _run(self, fn: Callable[[], T]) -> T:

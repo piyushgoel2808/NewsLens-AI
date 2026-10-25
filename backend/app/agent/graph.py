@@ -299,10 +299,19 @@ class AgentWorkflow:
 
         archive_context_str = await get_archive_and_schema_context(self._session_factory)
 
-        # Only pass active_issue_date and active_newspapers to planner if an asset is attached,
-        # or if this is an active follow-up query. Do NOT constrain standalone text queries.
-        planner_active_date = active_issue_date if (has_attached_asset or is_followup) else None
-        planner_active_newspapers = active_newspapers if (has_attached_asset or is_followup) else []
+        # Check if the condensed query explicitly overrides the date or newspaper
+        q_params = extract_parameters_from_query(condensed_query)
+        explicit_q_date = q_params.get("issue_date")
+        explicit_q_nps = q_params.get("target_newspapers") or ([q_params["newspaper_name"]] if q_params.get("newspaper_name") else [])
+
+        # Preserve active issue date and newspapers if an asset is attached, if this is a follow-up,
+        # or if conversation history exists with active working context, unless explicitly overridden.
+        planner_active_date = explicit_q_date or (
+            active_issue_date if (has_attached_asset or is_followup or bool(chat_history and active_issue_date)) else None
+        )
+        planner_active_newspapers = explicit_q_nps or (
+            active_newspapers if (has_attached_asset or is_followup or bool(chat_history and active_newspapers)) else []
+        )
 
         plan_res = await self._planner.plan_query_async(
             condensed_query,
@@ -313,6 +322,7 @@ class AgentWorkflow:
             active_newspapers=planner_active_newspapers,
             attached_article_id=state.get("attached_article_id"),
             attached_photo_id=state.get("attached_photo_id"),
+            chat_history=chat_history,
         )
 
         planned_calls = [

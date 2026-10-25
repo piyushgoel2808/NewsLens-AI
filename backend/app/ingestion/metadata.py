@@ -13,7 +13,6 @@ import asyncio
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
@@ -21,8 +20,6 @@ import pymupdf
 from rapidocr import RapidOCR
 
 from app.core.logging import get_logger
-from app.ingestion.detector import DigitalTextBlock
-from app.providers.base import OCRBlock
 
 logger = get_logger(__name__)
 

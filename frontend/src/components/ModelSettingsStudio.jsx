@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Sliders,
   Cpu,
@@ -133,7 +133,7 @@ const PRESET_PROFILES = [
       metadata_extraction: 'ollama_llama3',
       classification: 'ollama_llama3',
       article_segmentation: 'ollama_deepseek',
-      visual_extraction: 'ollama_qwen3vl',
+      visual_extraction: 'ollama_gemma4_e4b',
       layout_analysis: 'docling_parser',
       document_parser: 'docling_parser',
       ocr: 'docling_parser',
@@ -313,6 +313,18 @@ export default function ModelSettingsStudio() {
   // Navigation Sub-views: 'presets' | 'pipeline' | 'providers' | 'api'
   const [activeSubView, setActiveSubView] = useState('presets');
 
+  // Sovereign Laptop Node State
+  const [laptopState, setLaptopState] = useState({
+    enabled: false,
+    online: false,
+    available_models: [],
+    default_model: 'llama3.1:8b',
+    tunnel_url: '',
+  });
+  const [adminPin, setAdminPin] = useState('');
+  const [tunnelUrlInput, setTunnelUrlInput] = useState('');
+  const [laptopLoading, setLaptopLoading] = useState(false);
+
   // Backend Data State
   const [configuredProviders, setConfiguredProviders] = useState([]);
   const [reachabilityList, setReachabilityList] = useState([]);
@@ -348,6 +360,74 @@ export default function ModelSettingsStudio() {
       setStagedBindings((prev) => ({ ...taskBindings, ...prev }));
     }
   }, [taskBindings]);
+
+  const adminPinRef = useRef(adminPin);
+  useEffect(() => {
+    adminPinRef.current = adminPin;
+  }, [adminPin]);
+
+  const loadLaptopState = useCallback(async () => {
+    try {
+      const headers = adminPinRef.current ? { 'X-Admin-Pin': adminPinRef.current } : {};
+      const res = await fetch('/api/settings/laptop-node/status', { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setLaptopState(data);
+        if (data.tunnel_url) {
+          setTunnelUrlInput((prev) => prev || data.tunnel_url);
+        }
+      }
+    } catch (err) {
+      console.debug('Failed to fetch laptop node status:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadLaptopState();
+    const interval = setInterval(loadLaptopState, 15000);
+    return () => clearInterval(interval);
+  }, [loadLaptopState]);
+
+  const handleToggleLaptopNode = async (targetEnabled) => {
+    setLaptopLoading(true);
+    try {
+      const res = await fetch('/api/settings/laptop-node/toggle', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Pin': adminPin,
+        },
+        body: JSON.stringify({
+          enabled: targetEnabled,
+          tunnel_url: tunnelUrlInput || undefined,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setLaptopState((prev) => ({ ...prev, ...data }));
+        setStatusNotification({
+          type: 'success',
+          message: targetEnabled
+            ? '✅ Sovereign Laptop Node is now LIVE for website visitors!'
+            : '🛑 Sovereign Laptop Node has been turned OFF.',
+        });
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setStatusNotification({
+          type: 'error',
+          message: `Failed to toggle laptop node: ${errJson.detail || res.statusText}`,
+        });
+      }
+    } catch (err) {
+      setStatusNotification({
+        type: 'error',
+        message: `Network error toggling laptop node: ${err.message}`,
+      });
+    } finally {
+      setLaptopLoading(false);
+      loadLaptopState();
+    }
+  };
 
   // Load Model Settings and Provider Status from backend
   const loadSystemSettings = useCallback(async (isSilent = false) => {
@@ -878,6 +958,128 @@ export default function ModelSettingsStudio() {
             </button>
           );
         })}
+      </div>
+
+      {/* ------------------------------------------------------------------- */}
+      {/* SOVEREIGN LAPTOP LOCAL LLM BRIDGE CARD (HOST ON/OFF CONTROL)        */}
+      {/* ------------------------------------------------------------------- */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+          <div className="flex items-center gap-3">
+            <div
+              className={`p-2.5 rounded-xl border ${
+                laptopState.enabled && laptopState.online
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
+                  : laptopState.enabled
+                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                  : 'bg-slate-800 border-slate-700 text-slate-400'
+              }`}
+            >
+              <Laptop className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-100">
+                  Sovereign Laptop Local LLM Bridge
+                </h3>
+                <span
+                  className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+                    laptopState.enabled && laptopState.online
+                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 animate-pulse'
+                      : laptopState.enabled
+                      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                >
+                  {laptopState.enabled && laptopState.online
+                    ? '🟢 Online & Live'
+                    : laptopState.enabled
+                    ? '🟡 Host Offline'
+                    : '🔴 Turned Off'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Expose your laptop&apos;s Ollama models to Render website visitors through a secure HTTPS tunnel with concurrency protection.
+              </p>
+            </div>
+          </div>
+
+          {/* Master Toggle Action */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={laptopLoading}
+              onClick={() => handleToggleLaptopNode(!laptopState.enabled)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md ${
+                laptopState.enabled
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950/40'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/40'
+              } disabled:opacity-50`}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>{laptopLoading ? 'Updating...' : laptopState.enabled ? 'Turn OFF Laptop Node' : 'Turn ON Laptop Node'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={loadLaptopState}
+              className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white border border-slate-700"
+              title="Refresh status"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Configuration Row: Tunnel URL, Admin PIN, and Detected Models */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1 text-xs">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+              Tunnel URL (Ngrok / Cloudflare / Local):
+            </label>
+            <input
+              type="text"
+              value={tunnelUrlInput}
+              onChange={(e) => setTunnelUrlInput(e.target.value)}
+              placeholder="http://localhost:11434"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono text-[11px] outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+              Admin PIN (X-Admin-Pin):
+            </label>
+            <input
+              type="password"
+              value={adminPin}
+              onChange={(e) => setAdminPin(e.target.value)}
+              placeholder="1234"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono text-[11px] outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+              Detected Laptop Models:
+            </label>
+            <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto">
+              {laptopState.available_models && laptopState.available_models.length > 0 ? (
+                laptopState.available_models.map((m) => (
+                  <span
+                    key={m}
+                    className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-mono text-[10px]"
+                  >
+                    {m}
+                  </span>
+                ))
+              ) : (
+                <span className="text-slate-500 italic text-[11px]">
+                  {laptopState.enabled ? 'No models detected or host offline' : 'Bridge is off'}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* ------------------------------------------------------------------- */}
