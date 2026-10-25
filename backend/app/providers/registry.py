@@ -148,6 +148,26 @@ class ModelRegistry:
                 api_key=self._settings.google_api_key or self._settings.gemini_api_key,
             )
         elif provider_type == "local_sentence_transformers":
+            if getattr(self._settings, "render_free_tier", False):
+                # On Render Free Tier (512MB RAM), local PyTorch SentenceTransformer cannot be loaded.
+                # Auto-fallback to EmbeddingGemma2 (remote Ollama / HF Cloud API) or GeminiEmbeddingProvider.
+                if self._settings.laptop_node_enabled or self._settings.hf_api_token:
+                    from app.providers.embedding_gemma_provider import EmbeddingGemma2Provider
+                    logger.info("Render Free Tier: Rerouting local_sentence_transformers to EmbeddingGemma2 remote/cloud provider")
+                    return EmbeddingGemma2Provider(
+                        model_name="google/embeddinggemma-2",
+                        ollama_model="embeddinggemma-2",
+                        base_url=self._settings.laptop_tunnel_url or self._settings.ollama_base_url,
+                        dimensions=768,
+                    )
+                if self._settings.gemini_api_key:
+                    from app.providers.gemini_embedding_provider import GeminiEmbeddingProvider
+                    logger.info("Render Free Tier: Rerouting local_sentence_transformers to GeminiEmbeddingProvider")
+                    return GeminiEmbeddingProvider(
+                        model="gemini-embedding-001",
+                        embedding_dim=768,
+                        api_key=self._settings.gemini_api_key or self._settings.google_api_key,
+                    )
             return LocalEmbeddingProvider(model=model or "BAAI/bge-m3")
         elif provider_type in ("embedding_gemma2", "gemma_embedding"):
             from app.providers.embedding_gemma_provider import EmbeddingGemma2Provider

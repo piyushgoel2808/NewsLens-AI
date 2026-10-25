@@ -121,6 +121,7 @@ class AnthropicProvider:
         stream: bool = False,
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Run a chat completion via the Anthropic Messages API."""
         t0 = time.monotonic()
@@ -220,6 +221,7 @@ class AnthropicProvider:
         messages: list[Message],
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Streaming text completion via Anthropic."""
         system, anthro_messages = self._to_anthropic_messages(messages)

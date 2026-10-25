@@ -162,6 +162,7 @@ class OllamaProvider:
         stream: bool = False,
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Run a chat completion via Ollama, protected by semaphore if laptop node."""
         if self._is_laptop_node:
@@ -173,6 +174,7 @@ class OllamaProvider:
                     stream=stream,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    **kwargs,
                 )
         return await self._execute_complete(
             messages=messages,
@@ -181,6 +183,7 @@ class OllamaProvider:
             stream=stream,
             max_tokens=max_tokens,
             temperature=temperature,
+            **kwargs,
         )
 
     async def _execute_complete(
@@ -191,6 +194,7 @@ class OllamaProvider:
         stream: bool = False,
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> ModelResponse:
         t0 = time.monotonic()
 
@@ -360,14 +364,15 @@ class OllamaProvider:
         messages: list[Message],
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Streaming text completion via Ollama, protected by semaphore if laptop node."""
         if self._is_laptop_node:
             async with _LAPTOP_SEMAPHORE:
-                async for chunk in self._execute_complete_stream(messages, max_tokens, temperature):
+                async for chunk in self._execute_complete_stream(messages, max_tokens, temperature, **kwargs):
                     yield chunk
         else:
-            async for chunk in self._execute_complete_stream(messages, max_tokens, temperature):
+            async for chunk in self._execute_complete_stream(messages, max_tokens, temperature, **kwargs):
                 yield chunk
 
     async def _execute_complete_stream(
@@ -375,6 +380,7 @@ class OllamaProvider:
         messages: list[Message],
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> AsyncIterator[str]:
         ollama_messages = self._to_ollama_messages(messages)
         ctx_size = max(max_tokens * 2, 16384)
@@ -401,6 +407,7 @@ class OllamaProvider:
         prompt: str,
         response_schema: dict[str, Any] | None = None,
         max_tokens: int = 4096,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Analyze an image using an Ollama vision model."""
         if not self._capability.supports_vision:

@@ -124,6 +124,7 @@ class OpenAIProvider:
         stream: bool = False,
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Run a chat completion via the OpenAI Chat API."""
         t0 = time.monotonic()
@@ -210,6 +211,7 @@ class OpenAIProvider:
         messages: list[Message],
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Streaming completion via OpenAI."""
         oai_messages = self._to_openai_messages(messages)

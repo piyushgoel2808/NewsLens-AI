@@ -90,6 +90,13 @@ class LocalEmbeddingProvider:
         memory synchronization stalls, and MPS concurrency lockups.
         """
         try:
+            from app.core.config import get_settings
+            if getattr(get_settings(), "render_free_tier", False):
+                return "cpu"
+        except Exception:
+            pass
+
+        try:
             import torch
 
             if torch.cuda.is_available():
@@ -100,6 +107,13 @@ class LocalEmbeddingProvider:
 
     def _load_model(self) -> object:
         try:
+            from app.core.config import get_settings
+            if getattr(get_settings(), "render_free_tier", False):
+                raise ProviderError(
+                    "Local sentence-transformers loading is disabled on Render Free Tier (512MB RAM limit). "
+                    "Please bind embedding to EmbeddingGemma2 (via Laptop Ollama or Hugging Face Free API) or Gemini."
+                )
+
             # Suppress noisy HF Hub warnings and progress bars
             try:
                 import huggingface_hub.constants

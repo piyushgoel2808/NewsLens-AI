@@ -166,6 +166,7 @@ class ChatModelProvider(Protocol):
         stream: bool = False,
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Run a chat completion.
 
@@ -193,6 +194,7 @@ class ChatModelProvider(Protocol):
         messages: list[Message],
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Streaming text completion. Yields text chunks as they arrive."""
         ...
