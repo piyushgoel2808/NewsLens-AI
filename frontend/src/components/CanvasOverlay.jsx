@@ -37,6 +37,7 @@ export default function CanvasOverlay({
   hoveredArticleId = null,
   pulsingArticleId = null,
   customHighlightBboxes = [],
+  layers = { editorial: true, photos: true, tables: true, ads: true },
   onSelectArticle,
   onHoverArticle,
 }) {
@@ -152,6 +153,17 @@ export default function CanvasOverlay({
         {/* Render Article Bounding Boxes */}
         {(Array.isArray(articles) ? articles : []).map((art) => {
           if (!art) return null;
+          const type = (art.article_type || '').toLowerCase();
+          const isAd = type.includes('ad') || type.includes('notice');
+          const isTable = type.includes('table') || type.includes('data');
+          const isPhoto = type.includes('photo') || type.includes('image') || type.includes('diagram');
+          const isEditorial = !isAd && !isTable && !isPhoto;
+
+          if (isAd && layers && layers.ads === false) return null;
+          if (isTable && layers && layers.tables === false) return null;
+          if (isPhoto && layers && layers.photos === false) return null;
+          if (isEditorial && layers && layers.editorial === false) return null;
+
           const isSelected = selectedArticleId === art.id;
           const isHovered = hoveredArticleId === art.id;
           const isPulse = pulsingArticleId === art.id;

@@ -4,15 +4,15 @@ import { Cpu, Cloud, Laptop, Sparkles, ShieldCheck } from 'lucide-react';
 // Hardcoded reference models for clean display labels
 const CORE_MODELS = {
   gemini_cloud: [
-    { id: 'gemini_flash', label: 'Gemini 3.8 Flash (Google Cloud)', hint: 'Vision + Fast Reasoning (Canonical)' },
-    { id: 'gemini_pro', label: 'Gemini 3.8 Flash (Deep Synthesis)', hint: 'Frontier Broadsheet Synthesis' },
-    { id: 'gemini_flash_lite', label: 'Gemini 3.8 Flash (Condenser)', hint: 'Conversational Coreference' },
+    { id: 'gemini_flash', label: 'Gemini 2.5 Flash (Google Cloud)', hint: 'Vision + Fast Reasoning (Canonical)' },
+    { id: 'gemini_pro', label: 'Gemini 2.5 Pro (Deep Synthesis)', hint: 'Frontier Broadsheet Synthesis' },
+    { id: 'gemini_flash_lite', label: 'Gemini 2.5 Flash-Lite (Condenser)', hint: 'Conversational Coreference' },
     { id: 'gemini_live', label: 'Gemini 3.8 Live', hint: 'Real-time Audio Streaming' },
   ],
   cloud_direct: [
     { id: 'groq_compound', label: 'Groq Compound AI', hint: 'Ultra-Fast' },
-    { id: 'groq_qwen', label: 'Groq Qwen 3.6 27B', hint: 'Fast Reasoning' },
-    { id: 'groq_gpt_oss', label: 'Groq GPT-OSS 120B', hint: 'Open Weight' },
+    { id: 'groq_qwen', label: 'Groq Qwen 2.5 72B', hint: 'Fast Reasoning' },
+    { id: 'groq_gpt_oss', label: 'Groq Llama 3.3 70B', hint: 'Open Weight' },
     { id: 'openai_gpt4o', label: 'OpenAI GPT-4o', hint: 'Omni Multimodal' },
     { id: 'openai_gpt4o_mini', label: 'OpenAI GPT-4o Mini', hint: 'Lightweight' },
   ],

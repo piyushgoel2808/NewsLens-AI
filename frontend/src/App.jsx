@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   Newspaper,
   Bot,
@@ -9,11 +9,20 @@ import {
   GitMerge,
   Network,
   Compass,
+  Moon,
+  Sun,
+  Laptop,
+  Cloud,
+  Zap,
 } from 'lucide-react';
 import {
   ActiveHighlightProvider,
   useActiveHighlight,
 } from './context/ActiveHighlightContext';
+import {
+  ModelConfigProvider,
+  useModelConfig,
+} from './context/ModelConfigContext';
 import HomePage from './components/HomePage';
 import BroadsheetReader from './components/BroadsheetReader';
 import AgentAssistant from './components/AgentAssistant';
@@ -24,49 +33,110 @@ import UploadTrigger from './components/UploadTrigger';
 import ModelSettingsStudio from './components/ModelSettingsStudio';
 
 function MainApp() {
-  const { activeTab, setActiveTab, selectedModel, taskBindings } = useActiveHighlight();
+  const { activeTab, setActiveTab } = useActiveHighlight();
+  const {
+    theme,
+    toggleTheme,
+    selectedModel,
+    taskBindings,
+    activePreset,
+    configuredProviders,
+  } = useModelConfig();
 
+  // Navigation items with keyboard shortcuts
   const navigationTabs = [
-    { id: 'home', label: 'Overview', icon: Compass },
-    { id: 'reader', label: 'Broadsheet Reader', icon: Newspaper },
-    { id: 'agent', label: 'Agent Assistant', icon: Bot },
-    { id: 'graph', label: 'Entity Graph', icon: Network },
-    { id: 'timeline', label: 'Storyline Trajectory', icon: GitMerge },
-    { id: 'archive', label: 'Archive Explorer', icon: Layers },
-    { id: 'ingest', label: 'Ingestion Console', icon: UploadCloud },
-    { id: 'settings', label: 'Model Settings & API', icon: Sliders },
+    { id: 'home', label: 'Overview', icon: Compass, keyHint: '⌘1' },
+    { id: 'reader', label: 'Broadsheet Reader', icon: Newspaper, keyHint: '⌘2' },
+    { id: 'agent', label: 'AI Newsroom', icon: Bot, keyHint: '⌘3' },
+    { id: 'timeline', label: 'Storyline Trajectory', icon: GitMerge, keyHint: '⌘4' },
+    { id: 'graph', label: 'Entity Graph', icon: Network, keyHint: '⌘5' },
+    { id: 'archive', label: 'Archive Explorer', icon: Layers, keyHint: '⌘6' },
+    { id: 'ingest', label: 'Ingestion Console', icon: UploadCloud, keyHint: '⌘7' },
+    { id: 'settings', label: 'Model Studio', icon: Sliders },
   ];
 
-  // Derive active execution tier for global status badge
-  const activeLlm = selectedModel || taskBindings?.answerer || taskBindings?.query_planner || '';
-  const isCloudGemini = activeLlm.startsWith('gemini');
-  const isCloudOR = activeLlm.startsWith('openrouter');
-  const isCloudDirect =
-    activeLlm.startsWith('groq') ||
-    activeLlm.startsWith('openai');
-  const isLocal = activeLlm.startsWith('ollama') || activeLlm.startsWith('local');
+  // Global Keyboard Shortcuts ⌘1–⌘7 / Ctrl+1–Ctrl+7
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+        const keyMap = {
+          '1': 'home',
+          '2': 'reader',
+          '3': 'agent',
+          '4': 'timeline',
+          '5': 'graph',
+          '6': 'archive',
+          '7': 'ingest',
+        };
+        if (keyMap[e.key]) {
+          e.preventDefault();
+          setActiveTab(keyMap[e.key]);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [setActiveTab]);
+
+  // Derive model display name & architecture badge
+  const activeLlm = selectedModel || taskBindings?.answerer || taskBindings?.query_planner || 'gemini_flash';
+  const providerDetails = configuredProviders?.find((p) => p.id === activeLlm);
+  const activeModelName =
+    activeLlm === 'gemini_flash'
+      ? 'Gemini 2.5 Flash'
+      : activeLlm === 'gemini_pro'
+      ? 'Gemini 2.5 Pro'
+      : activeLlm === 'ollama_llama3'
+      ? 'Llama 3.1 8B'
+      : activeLlm === 'ollama_deepseek'
+      ? 'DeepSeek R1 14B'
+      : activeLlm === 'ollama_gemma4_e4b'
+      ? 'Gemma 4 E4B'
+      : providerDetails?.model || activeLlm;
+
+  const isLocal = activeLlm.startsWith('ollama') || activeLlm.startsWith('local') || activeLlm.startsWith('laptop:');
+  const isHybrid = activePreset === 'cloud_hybrid';
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col font-sans">
-      {/* Top Main Navigation Bar */}
-      <nav className="h-16 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-4 md:px-6 flex items-center justify-between sticky top-0 z-30 shadow-md">
-        {/* Brand & Logo */}
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center text-white shadow-lg shadow-emerald-900/30">
-            <Newspaper className="w-5 h-5" />
+    <div className="min-h-screen bg-canvas text-primary flex flex-col font-sans transition-colors duration-200">
+      {/* Top Editorial Masthead & Navigation Bar */}
+      <nav className="h-16 bg-surface/90 backdrop-blur-md border-b border-border-subtle px-3 md:px-6 flex items-center justify-between sticky top-0 z-30 shadow-sm">
+        {/* Left Masthead & Custom Geometric Emblem */}
+        <div
+          onClick={() => setActiveTab('home')}
+          className="flex items-center gap-3 cursor-pointer select-none group"
+          title="Return to Overview (⌘1)"
+        >
+          {/* Custom Geometric Broadsheet-Lens SVG Emblem */}
+          <div className="w-9 h-9 rounded-xl bg-elevated border border-border-subtle flex items-center justify-center text-accent-primary shadow-sm group-hover:border-accent-primary/60 transition-all">
+            <svg
+              className="w-5 h-5 text-accent-primary"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" className="stroke-accent-primary/50" />
+              <path d="M7 7h10M7 11h6M7 15h8" className="stroke-text-secondary" />
+              <circle cx="16" cy="14" r="3.5" className="stroke-accent-editorial fill-accent-editorial/20" />
+              <path d="M18.5 16.5L21 19" className="stroke-accent-editorial" />
+            </svg>
           </div>
+
           <div>
-            <span className="font-serif font-bold text-lg text-slate-50 tracking-tight flex items-center gap-1.5">
-              NewsLens<span className="text-emerald-400 font-sans font-extrabold text-sm">AI</span>
+            <span className="font-serif font-bold text-lg text-primary tracking-tight flex items-center gap-1.5 leading-none">
+              NewsLens<span className="text-accent-primary font-sans font-extrabold text-xs px-1 py-0.5 rounded bg-accent-primary/10 border border-accent-primary/30">AI</span>
             </span>
-            <span className="text-[10px] text-slate-400 tracking-wider uppercase block font-mono -mt-0.5">
-              Newspaper Intelligence RAG
+            <span className="text-[9px] text-muted tracking-widest uppercase block font-mono mt-0.5">
+              BROADSHEET INTELLIGENCE
             </span>
           </div>
         </div>
 
-        {/* Center Tab Navigation */}
-        <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+        {/* Center Segmented Workspace Switcher */}
+        <div className="hidden lg:flex items-center gap-1 bg-elevated/70 p-1 rounded-xl border border-border-subtle">
           {navigationTabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -75,48 +145,92 @@ function MainApp() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
                   isActive
-                    ? 'bg-emerald-500 text-white shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                    ? 'bg-accent-primary text-white shadow-sm'
+                    : 'text-secondary hover:text-primary hover:bg-surface'
                 }`}
+                title={tab.keyHint ? `${tab.label} (${tab.keyHint})` : tab.label}
               >
-                <Icon className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{tab.label}</span>
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span>{tab.label}</span>
+                {tab.keyHint && (
+                  <span
+                    className={`text-[9px] font-mono px-1 rounded ${
+                      isActive ? 'bg-white/20 text-white' : 'text-muted'
+                    }`}
+                  >
+                    {tab.keyHint}
+                  </span>
+                )}
               </button>
             );
           })}
         </div>
 
-        {/* Dynamic Global Execution Status Pill */}
-        <div
-          className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono shadow-sm transition-all duration-200 ${
-            isCloudGemini
-              ? 'bg-sky-950/40 border-sky-500/40 text-sky-300 shadow-[0_0_10px_rgba(56,189,248,0.1)]'
-              : isCloudOR
-              ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
-              : isCloudDirect
-              ? 'bg-sky-950/40 border-sky-500/40 text-sky-300'
-              : 'bg-amber-950/40 border-amber-500/40 text-amber-300'
-          }`}
-          title={`Active Model Pipeline: ${activeLlm}`}
-        >
-          <span
-            className={`w-2 h-2 rounded-full animate-pulse ${
-              isCloudGemini ? 'bg-sky-400' : isCloudOR ? 'bg-emerald-400' : isCloudDirect ? 'bg-sky-400' : 'bg-amber-400'
+        {/* Right Status Cluster: Architecture Pill & Dual Theme Toggle */}
+        <div className="flex items-center gap-2.5">
+          {/* Active Architecture Pill */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('settings')}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono shadow-sm transition-all hover:scale-[1.02] cursor-pointer ${
+              isLocal
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                : isHybrid
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : 'bg-sky-500/10 border-sky-500/30 text-sky-300'
             }`}
-          />
-          <span>
-            {isCloudGemini
-              ? '☁️ Google Gemini Cloud Active'
-              : isCloudOR
-              ? '☁️ OpenRouter Cloud Active'
-              : isCloudDirect
-              ? '☁️ Cloud Direct Active'
-              : '🖥️ Local Hardware Active'}
-          </span>
+            title={`Active Architecture: Click to configure in Model Studio`}
+          >
+            <span
+              className={`w-2 h-2 rounded-full animate-pulse ${
+                isLocal ? 'bg-amber-400' : isHybrid ? 'bg-emerald-400' : 'bg-sky-400'
+              }`}
+            />
+            <span className="font-semibold truncate max-w-[150px] sm:max-w-[200px]">
+              {isLocal ? `● Local Sovereign · ${activeModelName}` : isHybrid ? `● Hybrid · ${activeModelName}` : `● Cloud · ${activeModelName}`}
+            </span>
+          </button>
+
+          {/* Dual-Theme Toggle Button */}
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="p-2 rounded-xl bg-elevated border border-border-subtle text-text-secondary hover:text-text-primary hover:border-slate-500 transition-colors shadow-sm"
+            title={`Switch to ${theme === 'midnight' ? 'Archival Newsprint (Light)' : 'Midnight Newsroom (Dark)'} theme`}
+            aria-label="Toggle visual theme"
+          >
+            {theme === 'midnight' ? (
+              <Sun className="w-4 h-4 text-amber-400" />
+            ) : (
+              <Moon className="w-4 h-4 text-sky-500" />
+            )}
+          </button>
         </div>
       </nav>
+
+      {/* Mobile/Tablet Sub-Navigation Bar for Viewports < 1024px */}
+      <div className="lg:hidden flex items-center overflow-x-auto bg-surface border-b border-border-subtle px-2 py-1.5 gap-1 text-xs">
+        {navigationTabs.map((tab) => {
+          const Icon = tab.icon;
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+                isActive
+                  ? 'bg-accent-primary text-white font-semibold'
+                  : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
 
       {/* Main View Container (Preserves tab state across switching) */}
       <main className="flex-1 overflow-hidden relative">
@@ -171,8 +285,10 @@ class ErrorBoundary extends React.Component {
             <div className="w-12 h-12 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center mx-auto mb-4">
               <Sparkles className="w-6 h-6" />
             </div>
-            <h2 className="text-xl font-bold text-slate-100 mb-2">Application Interface Encountered an Error</h2>
-            <p className="text-xs text-slate-400 mb-4">
+            <h2 className="text-xl font-bold text-slate-100 mb-2 font-serif">
+              Interface Encountered an Issue
+            </h2>
+            <p className="text-xs text-slate-400 mb-4 font-mono">
               {this.state.error?.message || 'An unexpected rendering error occurred.'}
             </p>
             <button
@@ -195,9 +311,11 @@ class ErrorBoundary extends React.Component {
 export default function App() {
   return (
     <ErrorBoundary>
-      <ActiveHighlightProvider>
-        <MainApp />
-      </ActiveHighlightProvider>
+      <ModelConfigProvider>
+        <ActiveHighlightProvider>
+          <MainApp />
+        </ActiveHighlightProvider>
+      </ModelConfigProvider>
     </ErrorBoundary>
   );
 }

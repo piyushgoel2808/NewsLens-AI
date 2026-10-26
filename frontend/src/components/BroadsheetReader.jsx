@@ -21,6 +21,16 @@ import {
   RefreshCw,
   CheckCircle2,
   Bot,
+  Sliders,
+  Eye,
+  Database,
+  BarChart3,
+  FileText,
+  Table,
+  Check,
+  Minimize2,
+  X,
+  Compass,
 } from 'lucide-react';
 import CanvasOverlay from './CanvasOverlay';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
@@ -41,6 +51,7 @@ export default function BroadsheetReader() {
     attachAssetForAgent,
     taskBindings,
     selectedModel,
+    activePreset,
   } = useActiveHighlight();
 
   const [issues, setIssues] = useState([]);
@@ -48,6 +59,31 @@ export default function BroadsheetReader() {
   const [loading, setLoading] = useState(false);
   const [articleDetails, setArticleDetails] = useState(null);
   const [articleLoading, setArticleLoading] = useState(false);
+
+  // Inspector Drawer Active Tab: 'articles' | 'visuals' | 'chunks'
+  const [activeInspectorTab, setActiveInspectorTab] = useState('articles');
+  const [visualsCurrentPageOnly, setVisualsCurrentPageOnly] = useState(true);
+  const [chunkSearchTerm, setChunkSearchTerm] = useState('');
+
+  // Filmstrip Bottom Drawer
+  const [showFilmstrip, setShowFilmstrip] = useState(false);
+
+  // Canvas Viewport Controls
+  const [zoom, setZoom] = useState(1);
+  const [showOverlays, setShowOverlays] = useState(true);
+  const [layers, setLayers] = useState({
+    editorial: true,
+    photos: true,
+    tables: true,
+    ads: true,
+  });
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedSection, setSelectedSection] = useState('ALL');
+  const [analyzingPhotoIds, setAnalyzingPhotoIds] = useState({});
+
+  const canvasContainerRef = useRef(null);
+  const articleListRef = useRef(null);
 
   const currentIssue = useMemo(() => {
     if (issueData?.issue) return issueData.issue;
@@ -57,12 +93,14 @@ export default function BroadsheetReader() {
     return null;
   }, [issueData, issues, selectedIssueId]);
 
-  // Canvas Viewport Controls: Overlays off by default
-  const [zoom, setZoom] = useState(1);
-  const [showOverlays, setShowOverlays] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedSection, setSelectedSection] = useState('ALL');
-  const [analyzingPhotoIds, setAnalyzingPhotoIds] = useState({});
+  // Derive active vector collection
+  const isCloudCollection =
+    taskBindings?.embedding === 'gemini_embedding' ||
+    activePreset === 'cloud_full' ||
+    (!taskBindings?.embedding && (selectedModel || '').startsWith('gemini'));
+  const vectorCollectionBadge = isCloudCollection
+    ? 'article_chunks_v2 · 768d MRL'
+    : 'article_chunks · 1024d BGE-M3';
 
   // Active VLM model derivation
   const activeVlmModel = taskBindings?.visual_extraction || selectedModel || 'gemini_flash';
@@ -178,7 +216,7 @@ export default function BroadsheetReader() {
 
       setReingestStatus({
         type: 'success',
-        message: `Page ${selectedPageNumber} successfully re-ingested with ${activeParserName} & ${activeEmbedName}! (${data.articles_count} articles, ${data.chunks_count} chunks re-indexed into Qdrant).`,
+        message: `Page ${selectedPageNumber} successfully re-ingested with ${activeParserName} & ${activeEmbedName}! (${data.articles_count} articles, ${data.chunks_count} chunks re-indexed).`,
       });
       setTimeout(() => setReingestStatus(null), 7000);
     } catch (err) {
@@ -192,9 +230,6 @@ export default function BroadsheetReader() {
       setIsReingestingPage(false);
     }
   };
-
-  const canvasContainerRef = useRef(null);
-  const articleListRef = useRef(null);
 
   // 1. Fetch Issues Catalog
   useEffect(() => {
@@ -216,7 +251,7 @@ export default function BroadsheetReader() {
       });
   }, [selectedIssueId, setSelectedIssueId]);
 
-  // 2. Fetch Issue Inspection Data (pages, articles, extraction modes)
+  // 2. Fetch Issue Inspection Data
   useEffect(() => {
     if (!selectedIssueId) return;
     setLoading(true);
@@ -297,7 +332,66 @@ export default function BroadsheetReader() {
       });
   }, [issueData, currentPage]);
 
-  // Sections on the current page for filtering
+  // All Visual Assets in the current issue
+  const allVisualAssets = useMemo(() => {
+    if (!issueData || !Array.isArray(issueData.articles)) return [];
+    const assets = [];
+    issueData.articles.forEach((art) => {
+      if (Array.isArray(art.photos)) {
+        art.photos.forEach((ph) => {
+          assets.push({
+            ...ph,
+            articleId: art.id,
+            articleHeadline: art.headline,
+            page_number: ph.page_number || art.pages?.[0] || 1,
+          });
+        });
+      }
+    });
+    return assets;
+  }, [issueData]);
+
+  // Filtered Visual Assets (Page only vs All issue)
+  const filteredVisualAssets = useMemo(() => {
+    if (visualsCurrentPageOnly) {
+      return allVisualAssets.filter((a) => a.page_number === selectedPageNumber);
+    }
+    return allVisualAssets;
+  }, [allVisualAssets, visualsCurrentPageOnly, selectedPageNumber]);
+
+  // All Chunks on the current page (if no article selected)
+  const pageChunks = useMemo(() => {
+    if (selectedArticleId && articleDetails?.chunks) {
+      return articleDetails.chunks;
+    }
+    if (!issueData || !Array.isArray(issueData.articles) || !currentPage) return [];
+    const chunks = [];
+    pageArticles.forEach((art) => {
+      if (Array.isArray(art.chunks)) {
+        art.chunks.forEach((chk) => {
+          chunks.push({
+            ...chk,
+            articleHeadline: art.headline,
+            articleId: art.id,
+          });
+        });
+      }
+    });
+    return chunks;
+  }, [selectedArticleId, articleDetails, issueData, currentPage, pageArticles]);
+
+  // Filtered Chunks by search term
+  const filteredChunks = useMemo(() => {
+    if (!chunkSearchTerm.trim()) return pageChunks;
+    const term = chunkSearchTerm.toLowerCase();
+    return pageChunks.filter(
+      (c) =>
+        (c.text && c.text.toLowerCase().includes(term)) ||
+        (c.articleHeadline && c.articleHeadline.toLowerCase().includes(term))
+    );
+  }, [pageChunks, chunkSearchTerm]);
+
+  // Available sections for filtering
   const availableSections = useMemo(() => {
     const set = new Set();
     pageArticles.forEach((a) => {
@@ -309,8 +403,7 @@ export default function BroadsheetReader() {
   // Filtered articles
   const filteredArticles = useMemo(() => {
     return pageArticles.filter((art) => {
-      const matchSection =
-        selectedSection === 'ALL' || art.section === selectedSection;
+      const matchSection = selectedSection === 'ALL' || art.section === selectedSection;
       const matchSearch =
         !searchTerm ||
         (art.headline && art.headline.toLowerCase().includes(searchTerm.toLowerCase())) ||
@@ -325,14 +418,55 @@ export default function BroadsheetReader() {
   const handleZoomOut = () => setZoom((prev) => Math.max(prev - 0.25, 0.5));
   const handleResetZoom = () => setZoom(1);
 
+  const handleFitWidth = () => {
+    if (canvasContainerRef.current) {
+      const containerWidth = canvasContainerRef.current.clientWidth - 48;
+      const targetScale = Math.min(containerWidth / 900, 1.6);
+      setZoom(Math.max(targetScale, 0.7));
+    }
+  };
+
+  // Prominence heatmap helper
+  const getProminenceBadge = (score) => {
+    if (score === undefined || score === null) return null;
+    const num = Number(score);
+    if (num >= 0.7) {
+      return (
+        <span
+          className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30"
+          title={`Lead Story Prominence: ${(num * 100).toFixed(0)}%`}
+        >
+          Gold · {(num * 100).toFixed(0)}%
+        </span>
+      );
+    }
+    if (num >= 0.3) {
+      return (
+        <span
+          className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 border border-sky-500/30"
+          title={`Secondary Story Prominence: ${(num * 100).toFixed(0)}%`}
+        >
+          Blue · {(num * 100).toFixed(0)}%
+        </span>
+      );
+    }
+    return (
+      <span
+        className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-400 border border-teal-500/30"
+        title={`Standard Story Prominence: ${(num * 100).toFixed(0)}%`}
+      >
+        Teal · {(num * 100).toFixed(0)}%
+      </span>
+    );
+  };
+
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 overflow-hidden">
-      {/* Top Header & Reader Toolbar */}
-      <header className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-slate-900 border-b border-slate-800 gap-3 z-20">
-        {/* Issue Selector & Publication Info */}
+    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary overflow-hidden font-sans transition-colors duration-200">
+      {/* Top Header & Issue Selector Ribbon */}
+      <header className="flex flex-wrap items-center justify-between px-4 py-2 bg-surface border-b border-border-subtle gap-3 z-20">
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700">
-            <Newspaper className="w-4 h-4 text-emerald-400" />
+          <div className="flex items-center gap-2 bg-elevated px-3 py-1.5 rounded-xl border border-border-subtle">
+            <Newspaper className="w-4 h-4 text-accent-primary" />
             <select
               value={selectedIssueId || ''}
               onChange={(e) => {
@@ -340,16 +474,16 @@ export default function BroadsheetReader() {
                 setSelectedPageNumber(1);
                 setSelectedArticleId(null);
               }}
-              className="bg-transparent text-sm font-semibold text-slate-100 outline-none cursor-pointer"
+              className="bg-transparent text-sm font-semibold text-text-primary outline-none cursor-pointer"
             >
               {Array.isArray(issues) && issues.length > 0 ? (
                 issues.map((iss) => (
-                  <option key={iss.id} value={iss.id} className="bg-slate-900 text-slate-200">
+                  <option key={iss.id} value={iss.id} className="bg-surface text-text-primary">
                     {iss.newspaper_name} — {iss.issue_date} (Issue #{iss.id})
                   </option>
                 ))
               ) : (
-                <option value="" className="bg-slate-900 text-slate-400">
+                <option value="" className="bg-surface text-text-muted">
                   No issues archived yet
                 </option>
               )}
@@ -357,13 +491,13 @@ export default function BroadsheetReader() {
           </div>
 
           {issueData?.issue && (
-            <div className="hidden md:flex items-center gap-2 text-xs text-slate-400">
+            <div className="hidden md:flex items-center gap-2 text-xs text-text-muted font-mono">
               <span className="flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                <Calendar className="w-3.5 h-3.5" />
                 {issueData.issue.issue_date}
               </span>
               <span>•</span>
-              <span className="bg-slate-800 px-2 py-0.5 rounded text-emerald-400 font-medium">
+              <span className="bg-elevated px-2 py-0.5 rounded text-accent-primary font-medium">
                 {issueData.issue.edition || 'Main Edition'}
               </span>
               <span>•</span>
@@ -372,124 +506,42 @@ export default function BroadsheetReader() {
           )}
         </div>
 
-        {/* Page Switcher & Canvas Zoom Controls */}
-        <div className="flex items-center gap-3">
-          {/* Page Carousel / Stepper */}
-          <div className="flex items-center gap-1 bg-slate-800/80 px-2 py-1 rounded-lg border border-slate-700">
-            <button
-              onClick={() => setSelectedPageNumber((p) => Math.max(p - 1, 1))}
-              disabled={selectedPageNumber <= 1}
-              className="p-1 hover:bg-slate-700 rounded disabled:opacity-30 disabled:hover:bg-transparent"
-              title="Previous Page"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-xs font-semibold px-2">
-              Page {selectedPageNumber}
-              <span className="text-slate-500 font-normal"> / {issueData?.issue?.total_pages || 1}</span>
-            </span>
-            <button
-              onClick={() =>
-                setSelectedPageNumber((p) =>
-                  Math.min(p + 1, issueData?.issue?.total_pages || p)
-                )
-              }
-              disabled={selectedPageNumber >= (issueData?.issue?.total_pages || 1)}
-              className="p-1 hover:bg-slate-700 rounded disabled:opacity-30 disabled:hover:bg-transparent"
-              title="Next Page"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Zoom Controls */}
-          <div className="flex items-center gap-1 bg-slate-800/80 px-2 py-1 rounded-lg border border-slate-700">
-            <button
-              onClick={handleZoomOut}
-              className="p-1 hover:bg-slate-700 rounded text-slate-300"
-              title="Zoom Out"
-            >
-              <ZoomOut className="w-4 h-4" />
-            </button>
-            <span className="text-xs font-mono w-10 text-center text-slate-300">
-              {Math.round(zoom * 100)}%
-            </span>
-            <button
-              onClick={handleZoomIn}
-              className="p-1 hover:bg-slate-700 rounded text-slate-300"
-              title="Zoom In"
-            >
-              <ZoomIn className="w-4 h-4" />
-            </button>
-            <button
-              onClick={handleResetZoom}
-              className="p-1 hover:bg-slate-700 rounded text-slate-300 ml-1 border-l border-slate-700 pl-1.5"
-              title="Reset View"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          {/* Toggle Spatial Overlays */}
-          <button
-            onClick={() => setShowOverlays((prev) => !prev)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
-              showOverlays
-                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                : 'bg-slate-800 border-slate-700 text-slate-400'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Overlays</span>
-          </button>
-
-          {/* Re-Ingest Single Page Button */}
-          <button
-            onClick={handleReingestCurrentPage}
-            disabled={isReingestingPage || loading}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all shadow-sm ${
-              isReingestingPage
-                ? 'bg-amber-500/20 border-amber-500/60 text-amber-300 ring-1 ring-amber-500/40'
-                : 'bg-slate-800 hover:bg-slate-700/80 border-slate-700 hover:border-slate-600 text-slate-300 hover:text-white'
-            }`}
-            title="Re-run layout analysis, OCR, VLM scene extraction, and vector indexing for this single page"
-          >
-            <RefreshCw
-              className={`w-3.5 h-3.5 ${
-                isReingestingPage ? 'animate-spin text-amber-400' : 'text-amber-400/90'
-              }`}
-            />
-            <span className="hidden sm:inline">
-              {isReingestingPage ? 'Re-ingesting...' : 'Re-ingest Page'}
-            </span>
-          </button>
+        {/* Vector Space & Model Badges */}
+        <div className="flex items-center gap-2 font-mono text-xs">
+          <span className="text-[11px] px-2.5 py-1 rounded-full bg-elevated border border-border-subtle text-text-secondary">
+            Vector Space: <strong className="text-accent-editorial">{vectorCollectionBadge}</strong>
+          </span>
+          <span className="text-[11px] px-2.5 py-1 rounded-full bg-elevated border border-border-subtle text-text-secondary">
+            VLM: <strong className="text-accent-visual">{activeVlmShort}</strong>
+          </span>
         </div>
       </header>
 
       {/* Re-ingestion Live Status Banner */}
       {reingestStatus && (
         <div
-          className={`px-4 py-2 text-xs flex items-center justify-between border-b transition-colors ${
+          className={`px-4 py-2 text-xs flex items-center justify-between border-b transition-colors font-mono ${
             reingestStatus.type === 'loading'
-              ? 'bg-amber-950/40 border-amber-800/50 text-amber-200'
+              ? 'bg-amber-500/15 border-amber-500/30 text-amber-300'
               : reingestStatus.type === 'success'
-              ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-200'
-              : 'bg-red-950/40 border-red-800/50 text-red-200'
+              ? 'bg-accent-primary/15 border-accent-primary/30 text-accent-primary'
+              : 'bg-red-500/15 border-red-500/30 text-red-400'
           }`}
         >
           <div className="flex items-center gap-2">
             {reingestStatus.type === 'loading' ? (
               <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
             ) : reingestStatus.type === 'success' ? (
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <CheckCircle2 className="w-3.5 h-3.5 text-accent-primary" />
             ) : (
               <Info className="w-3.5 h-3.5 text-red-400" />
             )}
             <span>{reingestStatus.message}</span>
           </div>
           <button
+            type="button"
             onClick={() => setReingestStatus(null)}
-            className="text-[11px] opacity-70 hover:opacity-100 underline ml-3"
+            className="text-[11px] opacity-70 hover:opacity-100 underline ml-3 cursor-pointer"
           >
             Dismiss
           </button>
@@ -501,27 +553,27 @@ export default function BroadsheetReader() {
         {/* LEFT PANE: Broadsheet Canvas & Raster Viewer */}
         <section
           ref={canvasContainerRef}
-          className="flex-1 bg-slate-950/80 overflow-auto p-4 flex items-start justify-center relative select-none"
+          className="flex-1 bg-canvas overflow-auto p-4 flex items-start justify-center relative select-none"
         >
           {loading ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-3">
-              <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm font-medium">Loading high-resolution broadsheet...</p>
+            <div className="flex flex-col items-center justify-center h-full text-text-muted gap-3">
+              <div className="w-8 h-8 border-2 border-accent-primary border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm font-medium">Loading high-resolution 150 DPI broadsheet...</p>
             </div>
           ) : currentPage ? (
             <div
-              className="relative shadow-2xl rounded-sm transition-transform duration-100 ease-out origin-top"
+              className="relative shadow-2xl rounded-sm transition-transform duration-100 ease-out origin-top mb-20"
               style={{
                 transform: `scale(${zoom})`,
                 width: '100%',
                 maxWidth: '900px',
               }}
             >
-              {/* Raster Image from MinIO Proxy */}
+              {/* Raster Image */}
               <img
                 src={currentPage.image_url}
                 alt={`Broadsheet Page ${currentPage.page_number}`}
-                className="w-full h-auto block rounded-sm pointer-events-none"
+                className="w-full h-auto block rounded-sm pointer-events-none border border-border-subtle"
                 loading="eager"
               />
 
@@ -535,545 +587,715 @@ export default function BroadsheetReader() {
                   hoveredArticleId={hoveredArticleId}
                   pulsingArticleId={isPulsing ? selectedArticleId : null}
                   customHighlightBboxes={highlightedBboxes}
+                  layers={layers}
                   onSelectArticle={(artId) => setSelectedArticleId(artId)}
                   onHoverArticle={(artId) => setHoveredArticleId(artId)}
                 />
               )}
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-full text-slate-500">
+            <div className="flex flex-col items-center justify-center h-full text-text-muted">
               <p className="text-sm">No page available for this issue.</p>
+            </div>
+          )}
+
+          {/* ---------------------------------------------------------------- */}
+          {/* FLOATING GLASSMORPHIC CANVAS HUD (Centered at bottom) */}
+          {/* ---------------------------------------------------------------- */}
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 backdrop-blur-md bg-surface/90 border border-border-subtle rounded-full px-4 py-2 flex items-center gap-3 shadow-2xl z-30 font-mono text-xs text-text-primary">
+            {/* Page Stepper */}
+            <div className="flex items-center gap-1 bg-elevated px-2 py-1 rounded-full border border-border-subtle">
+              <button
+                type="button"
+                onClick={() => setSelectedPageNumber((p) => Math.max(p - 1, 1))}
+                disabled={selectedPageNumber <= 1}
+                className="p-1 hover:text-accent-primary disabled:opacity-30 disabled:hover:text-inherit cursor-pointer"
+                title="Previous Page"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span className="text-[11px] font-bold px-1.5">
+                Page {selectedPageNumber}
+                <span className="text-text-muted font-normal"> / {issueData?.issue?.total_pages || 1}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedPageNumber((p) =>
+                    Math.min(p + 1, issueData?.issue?.total_pages || p)
+                  )
+                }
+                disabled={selectedPageNumber >= (issueData?.issue?.total_pages || 1)}
+                className="p-1 hover:text-accent-primary disabled:opacity-30 disabled:hover:text-inherit cursor-pointer"
+                title="Next Page"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Quick Filmstrip Drawer Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowFilmstrip(!showFilmstrip)}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full border transition-all cursor-pointer ${
+                showFilmstrip
+                  ? 'bg-accent-primary text-white border-accent-primary shadow-xs'
+                  : 'bg-elevated text-text-secondary hover:text-text-primary border-border-subtle'
+              }`}
+              title="Toggle All Pages Filmstrip Drawer"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline text-[11px]">Pages</span>
+            </button>
+
+            {/* Zoom Controls */}
+            <div className="flex items-center gap-1 bg-elevated px-2 py-1 rounded-full border border-border-subtle">
+              <button
+                type="button"
+                onClick={handleZoomOut}
+                className="p-1 hover:text-accent-primary text-text-secondary cursor-pointer"
+                title="Zoom Out"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+              <span className="text-[11px] w-9 text-center font-bold">
+                {Math.round(zoom * 100)}%
+              </span>
+              <button
+                type="button"
+                onClick={handleZoomIn}
+                className="p-1 hover:text-accent-primary text-text-secondary cursor-pointer"
+                title="Zoom In"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleResetZoom}
+                className="p-1 hover:text-accent-primary text-text-secondary border-l border-border-subtle pl-1.5 cursor-pointer"
+                title="Reset (100%)"
+              >
+                <RotateCcw className="w-3 h-3" />
+              </button>
+              <button
+                type="button"
+                onClick={handleFitWidth}
+                className="p-1 hover:text-accent-primary text-text-secondary cursor-pointer"
+                title="Fit Width"
+              >
+                <Maximize2 className="w-3 h-3" />
+              </button>
+            </div>
+
+            {/* Layer Visibility Toggles */}
+            <div className="hidden md:flex items-center gap-1 bg-elevated px-2 py-1 rounded-full border border-border-subtle">
+              <span className="text-[10px] text-text-muted px-1">LAYERS:</span>
+              <button
+                type="button"
+                onClick={() => setLayers((l) => ({ ...l, editorial: !l.editorial }))}
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-all cursor-pointer ${
+                  layers.editorial
+                    ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/40'
+                    : 'text-text-muted line-through'
+                }`}
+                title="Toggle Editorial Articles Layer"
+              >
+                Editorial
+              </button>
+              <button
+                type="button"
+                onClick={() => setLayers((l) => ({ ...l, photos: !l.photos }))}
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-all cursor-pointer ${
+                  layers.photos
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                    : 'text-text-muted line-through'
+                }`}
+                title="Toggle Photos & Diagrams Layer"
+              >
+                Photos
+              </button>
+              <button
+                type="button"
+                onClick={() => setLayers((l) => ({ ...l, tables: !l.tables }))}
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-all cursor-pointer ${
+                  layers.tables
+                    ? 'bg-sky-500/20 text-sky-400 border border-sky-500/40'
+                    : 'text-text-muted line-through'
+                }`}
+                title="Toggle Tables & Infographics Layer"
+              >
+                Tables
+              </button>
+              <button
+                type="button"
+                onClick={() => setLayers((l) => ({ ...l, ads: !l.ads }))}
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold transition-all cursor-pointer ${
+                  layers.ads
+                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                    : 'text-text-muted line-through'
+                }`}
+                title="Toggle Advertisements Layer"
+              >
+                Ads
+              </button>
+            </div>
+
+            {/* Re-Ingest Single Page Trigger */}
+            <button
+              type="button"
+              onClick={handleReingestCurrentPage}
+              disabled={isReingestingPage || loading}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-semibold transition-all cursor-pointer ${
+                isReingestingPage
+                  ? 'bg-amber-500/20 border-amber-500 text-amber-300 animate-pulse'
+                  : 'bg-elevated hover:bg-surface text-accent-editorial border-border-subtle hover:border-accent-editorial'
+              }`}
+              title="Re-ingest this page with active layout model"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isReingestingPage ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">
+                {isReingestingPage ? 'Re-ingesting...' : 'Re-ingest'}
+              </span>
+            </button>
+          </div>
+
+          {/* ---------------------------------------------------------------- */}
+          {/* BOTTOM FILMSTRIP DRAWER (Slide Up) */}
+          {/* ---------------------------------------------------------------- */}
+          {showFilmstrip && issueData?.pages && (
+            <div className="fixed bottom-20 left-4 right-4 lg:left-64 lg:right-96 bg-surface/95 backdrop-blur-md border border-border-subtle rounded-2xl p-3 shadow-2xl z-30">
+              <div className="flex items-center justify-between pb-2 mb-2 border-b border-border-subtle text-xs font-mono">
+                <span className="text-text-primary font-bold flex items-center gap-1.5">
+                  <BookOpen className="w-4 h-4 text-accent-primary" />
+                  Issue Pages Filmstrip ({issueData.pages.length} Pages)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowFilmstrip(false)}
+                  className="p-1 hover:bg-elevated rounded-lg text-text-muted hover:text-text-primary cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3 overflow-x-auto pb-2 scrollbar-thin">
+                {issueData.pages.map((p) => {
+                  const isCurrent = p.page_number === selectedPageNumber;
+                  return (
+                    <button
+                      key={p.page_number}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPageNumber(p.page_number);
+                        setSelectedArticleId(null);
+                      }}
+                      className={`flex flex-col items-center gap-1 p-1.5 rounded-xl border transition-all shrink-0 cursor-pointer ${
+                        isCurrent
+                          ? 'bg-accent-primary/20 border-accent-primary ring-2 ring-accent-primary/40'
+                          : 'bg-elevated border-border-subtle hover:border-text-secondary'
+                      }`}
+                    >
+                      <div className="w-20 h-28 bg-canvas rounded overflow-hidden relative border border-border-subtle">
+                        {p.image_url ? (
+                          <img
+                            src={p.image_url}
+                            alt={`Page ${p.page_number}`}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs text-text-muted font-mono">
+                            p.{p.page_number}
+                          </div>
+                        )}
+                        <span className="absolute bottom-1 right-1 text-[9px] font-mono px-1 rounded bg-black/70 text-white">
+                          p.{p.page_number}
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono font-semibold text-text-primary">
+                        {isCurrent ? '● Active' : `Page ${p.page_number}`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
         </section>
 
-        {/* RIGHT PANE: Article Explorer & Inspector */}
-        <aside className="w-full lg:w-[480px] xl:w-[540px] bg-slate-900 border-t lg:border-t-0 lg:border-l border-slate-800 flex flex-col h-full z-10">
-          {/* Article Inspector View when an article is selected */}
-          {selectedArticleId && articleDetails ? (
-            <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-900">
-              {/* Article Header & Navigation Back */}
-              <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/90 backdrop-blur-sm sticky top-0 z-10">
-                <button
-                  onClick={() => setSelectedArticleId(null)}
-                  className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-100 font-medium px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 transition-colors"
-                >
-                  <ChevronLeft className="w-3.5 h-3.5" />
-                  Back to Page Articles
-                </button>
-                <div className="flex items-center gap-2">
-                  {articleDetails.prominence_score !== undefined && (
-                    <span
-                      className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                      title="Page Prominence Score"
+        {/* ------------------------------------------------------------------ */}
+        {/* RIGHT PANE: SYNCHRONIZED 3-TAB INSPECTOR DRAWER */}
+        {/* ------------------------------------------------------------------ */}
+        <aside className="w-full lg:w-[480px] xl:w-[540px] bg-surface border-t lg:border-t-0 lg:border-l border-border-subtle flex flex-col h-full z-10">
+          {/* Top 3 Tabs Switcher */}
+          <div className="grid grid-cols-3 border-b border-border-subtle bg-elevated text-xs font-mono">
+            <button
+              type="button"
+              onClick={() => setActiveInspectorTab('articles')}
+              className={`p-3 flex items-center justify-center gap-1.5 font-bold transition-all border-b-2 cursor-pointer ${
+                activeInspectorTab === 'articles'
+                  ? 'border-accent-primary text-accent-primary bg-surface'
+                  : 'border-transparent text-text-muted hover:text-text-primary'
+              }`}
+            >
+              <FileText className="w-4 h-4" />
+              <span>Articles ({filteredArticles.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveInspectorTab('visuals')}
+              className={`p-3 flex items-center justify-center gap-1.5 font-bold transition-all border-b-2 cursor-pointer ${
+                activeInspectorTab === 'visuals'
+                  ? 'border-accent-visual text-accent-visual bg-surface'
+                  : 'border-transparent text-text-muted hover:text-text-primary'
+              }`}
+            >
+              <Eye className="w-4 h-4" />
+              <span>Visuals ({filteredVisualAssets.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveInspectorTab('chunks')}
+              className={`p-3 flex items-center justify-center gap-1.5 font-bold transition-all border-b-2 cursor-pointer ${
+                activeInspectorTab === 'chunks'
+                  ? 'border-accent-info text-accent-info bg-surface'
+                  : 'border-transparent text-text-muted hover:text-text-primary'
+              }`}
+            >
+              <Database className="w-4 h-4" />
+              <span>Chunks ({filteredChunks.length})</span>
+            </button>
+          </div>
+
+          {/* TAB 1: SEGMENTED ARTICLES */}
+          {activeInspectorTab === 'articles' && (
+            <div className="flex-1 flex flex-col h-full overflow-hidden">
+              {/* If an article is selected, display Article Deep-Dive */}
+              {selectedArticleId && articleDetails ? (
+                <div className="flex-1 flex flex-col h-full overflow-hidden bg-surface">
+                  {/* Article Detail Header */}
+                  <div className="p-3.5 border-b border-border-subtle flex items-center justify-between bg-elevated/70 backdrop-blur-sm sticky top-0 z-10">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedArticleId(null)}
+                      className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary font-medium px-2 py-1 rounded-lg bg-surface border border-border-subtle transition-colors cursor-pointer"
                     >
-                      Prominence: {Math.round(articleDetails.prominence_score * 100)}%
-                    </span>
-                  )}
-                  <span className="text-xs uppercase font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                    {articleDetails.section || articleDetails.article_type || 'News'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Article Content Body (Scrollable) */}
-              <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                {articleDetails.subheadline && (
-                  <p className="text-xs uppercase tracking-widest text-emerald-400 font-semibold font-mono">
-                    {articleDetails.subheadline}
-                  </p>
-                )}
-
-                <h1 className="text-xl md:text-2xl font-bold font-serif leading-tight text-slate-50">
-                  {articleDetails.headline || 'Untitled Article'}
-                </h1>
-
-                {/* Author & Issue Info */}
-                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 border-b border-slate-800 pb-3">
-                  {articleDetails.byline_author && (
-                    <span className="text-slate-200 font-medium">By {articleDetails.byline_author}</span>
-                  )}
-                  <span>•</span>
-                  <span>{articleDetails.word_count} words</span>
-                  <span>•</span>
-                  <span>
-                    Spans Page {articleDetails.pages?.map((p) => p.page_number).join(', ')}
-                  </span>
-                </div>
-
-                {/* AI Generated Summary Pill */}
-                {articleDetails.summary && (
-                  <div className="bg-slate-800/60 border border-slate-700/80 rounded-lg p-3 text-xs leading-relaxed text-slate-300">
-                    <div className="flex items-center gap-1.5 text-emerald-400 font-semibold mb-1">
-                      <Sparkles className="w-3.5 h-3.5" />
-                      Executive Summary
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                      Back to Page Articles
+                    </button>
+                    <div className="flex items-center gap-2">
+                      {getProminenceBadge(articleDetails.prominence_score)}
+                      <span className="text-xs uppercase font-mono px-2 py-0.5 rounded bg-surface text-text-secondary border border-border-subtle">
+                        {articleDetails.section || articleDetails.article_type || 'News'}
+                      </span>
                     </div>
-                    {articleDetails.summary}
                   </div>
-                )}
 
-                {/* Prominent Visual Assets & Data Charts Top Banner */}
-                {articleDetails.photos && articleDetails.photos.length > 0 && (
-                  <div className="bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-slate-900/60 border border-purple-800/40 rounded-xl p-3.5 shadow-lg shadow-purple-950/20 space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <div className="p-1.5 rounded-lg bg-purple-500/20 border border-purple-500/30 text-purple-300">
-                          <Tag className="w-4 h-4" />
+                  {/* Article Content Body (Scrollable) */}
+                  <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                    {articleDetails.subheadline && (
+                      <p className="text-xs uppercase tracking-widest text-accent-primary font-semibold font-mono">
+                        {articleDetails.subheadline}
+                      </p>
+                    )}
+
+                    <h1 className="text-xl md:text-2xl font-bold font-serif leading-tight text-text-primary">
+                      {articleDetails.headline || 'Untitled Article'}
+                    </h1>
+
+                    {/* Author & Issue Info */}
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted border-b border-border-subtle pb-3 font-mono">
+                      {articleDetails.byline_author && (
+                        <span className="text-text-primary font-medium">
+                          By {articleDetails.byline_author}
+                        </span>
+                      )}
+                      <span>•</span>
+                      <span>{articleDetails.word_count} words</span>
+                      <span>•</span>
+                      <span>
+                        Spans Page {articleDetails.pages?.map((p) => p.page_number).join(', ')}
+                      </span>
+                    </div>
+
+                    {/* AI Generated Executive Summary */}
+                    {articleDetails.summary && (
+                      <div className="bg-elevated border border-border-subtle rounded-xl p-3 text-xs leading-relaxed text-text-secondary">
+                        <div className="flex items-center gap-1.5 text-accent-primary font-semibold mb-1 font-mono">
+                          <Sparkles className="w-3.5 h-3.5" />
+                          Executive Summary
                         </div>
-                        <div>
-                          <span className="text-xs font-bold text-purple-200 block">
-                            {articleDetails.photos.length} Visual Asset{articleDetails.photos.length > 1 ? 's' : ''} Attached
-                          </span>
-                          <span className="text-[10px] text-purple-400">
-                            {articleDetails.photos.filter((p) => ['data_chart', 'infographic', 'table'].includes(p.visual_type)).length || articleDetails.photos.length} Charts & Infographics available for AI Interrogation
-                          </span>
+                        {articleDetails.summary}
+                      </div>
+                    )}
+
+                    {/* Full Article Text */}
+                    <div className="text-sm text-text-secondary leading-relaxed font-sans whitespace-pre-wrap">
+                      {articleDetails.full_text}
+                    </div>
+
+                    {/* Continuation Pages */}
+                    {articleDetails.pages && articleDetails.pages.length > 1 && (
+                      <div className="bg-elevated border border-border-subtle p-3 rounded-xl flex items-center justify-between text-xs mt-4 font-mono">
+                        <span className="text-text-secondary">Article spans multiple pages:</span>
+                        <div className="flex gap-1.5">
+                          {articleDetails.pages.map((p) => (
+                            <button
+                              key={p.page_number}
+                              type="button"
+                              onClick={() => setSelectedPageNumber(p.page_number)}
+                              className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                                selectedPageNumber === p.page_number
+                                  ? 'bg-accent-primary text-white'
+                                  : 'bg-surface text-text-secondary hover:bg-elevated'
+                              }`}
+                            >
+                              Page {p.page_number}
+                            </button>
+                          ))}
                         </div>
                       </div>
-                      <button
-                        onClick={() => {
-                          const primaryChart =
-                            articleDetails.photos.find((p) => ['data_chart', 'infographic', 'table'].includes(p.visual_type)) ||
-                            articleDetails.photos[0];
-                          attachAssetForAgent({
-                            photoId: primaryChart.id,
-                            articleId: articleDetails.id,
-                            headline: articleDetails.headline,
-                            caption: primaryChart.caption || `${articleDetails.photos.length} visual assets attached`,
-                            visualType: primaryChart.visual_type || 'data_chart',
-                            imageUrl: primaryChart.image_url,
-                            issueDate: currentIssue?.issue_date,
-                            newspaperName: currentIssue?.newspaper_name,
-                            issueId: currentIssue?.id || selectedIssueId,
-                            pageNumber: selectedPageNumber,
-                          });
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-xs flex items-center gap-1.5 transition-all shadow-md shadow-purple-900/30 hover:scale-[1.02] active:scale-[0.98] shrink-0"
-                      >
-                        <Bot className="w-3.5 h-3.5" />
-                        Ask Agent about Visuals
-                      </button>
-                    </div>
-
-                    <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
-                      {articleDetails.photos.map((ph, pIdx) => (
-                        <button
-                          key={ph.id || pIdx}
-                          onClick={() => {
-                            attachAssetForAgent({
-                              photoId: ph.id,
-                              articleId: articleDetails.id,
-                              headline: articleDetails.headline,
-                              caption: ph.caption || (ph.vlm_description ? ph.vlm_description.slice(0, 100) : `Visual Asset #${ph.id}`),
-                              visualType: ph.visual_type || 'data_chart',
-                              imageUrl: ph.image_url,
-                              issueDate: currentIssue?.issue_date,
-                              newspaperName: currentIssue?.newspaper_name,
-                              issueId: currentIssue?.id || selectedIssueId,
-                              pageNumber: selectedPageNumber,
-                            });
-                          }}
-                          className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900/90 hover:bg-purple-900/40 border border-slate-700/80 hover:border-purple-500/50 text-[11px] text-slate-300 hover:text-white transition-all whitespace-nowrap group shrink-0"
-                          title={ph.caption || ph.vlm_description || `Asset #${ph.id}`}
-                        >
-                          {ph.image_url ? (
-                            <img
-                              src={ph.image_url}
-                              alt=""
-                              className="w-5 h-5 rounded object-cover border border-slate-700 group-hover:border-purple-400"
-                            />
-                          ) : (
-                            <span className="text-xs">📊</span>
-                          )}
-                          <span className="font-medium">
-                            {ph.visual_type === 'data_chart'
-                              ? 'Data Chart'
-                              : ph.visual_type === 'infographic'
-                              ? 'Infographic'
-                              : ph.visual_type === 'table'
-                              ? 'Table'
-                              : 'Photo'} #{ph.id}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                    )}
                   </div>
-                )}
-
-                {/* Full Article Text */}
-                <div className="prose prose-invert prose-sm max-w-none text-slate-300 leading-relaxed font-sans whitespace-pre-wrap">
-                  {articleDetails.full_text}
                 </div>
-
-                {/* Page Jump / Continuation Links */}
-                {articleDetails.pages && articleDetails.pages.length > 1 && (
-                  <div className="bg-slate-800/80 border border-slate-700 p-3 rounded-lg flex items-center justify-between text-xs mt-4">
-                    <span className="text-slate-300">Article spans multiple pages:</span>
-                    <div className="flex gap-1.5">
-                      {articleDetails.pages.map((p) => (
-                        <button
-                          key={p.page_number}
-                          onClick={() => setSelectedPageNumber(p.page_number)}
-                          className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
-                            selectedPageNumber === p.page_number
-                              ? 'bg-emerald-500 text-white'
-                              : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                          }`}
-                        >
-                          Page {p.page_number}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Article Chunks & Vector Decomposition Breakdown */}
-                {articleDetails.chunks && articleDetails.chunks.length > 0 && (
-                  <div className="mt-6 border-t border-slate-800 pt-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
-                        <Sparkles className="w-4 h-4 text-emerald-400" />
-                        Indexed RAG Chunks ({articleDetails.chunks.length})
-                      </h3>
-                      <span className="text-[11px] text-slate-400 font-mono">
-                        Vector DB: Qdrant
+              ) : (
+                /* Segmented Articles List */
+                <div className="flex-1 flex flex-col h-full overflow-hidden">
+                  {/* Search and Section Filter */}
+                  <div className="p-3 border-b border-border-subtle space-y-2 bg-surface">
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <span className="text-text-secondary font-bold flex items-center gap-1.5">
+                        <BookOpen className="w-3.5 h-3.5 text-accent-primary" />
+                        Page {selectedPageNumber} Articles ({filteredArticles.length})
                       </span>
                     </div>
 
-                    <div className="space-y-2.5">
-                      {articleDetails.chunks.map((chk) => (
-                        <div
-                          key={chk.id || chk.chunk_index}
-                          className="bg-slate-950/80 border border-slate-800 hover:border-emerald-500/60 rounded-lg p-3 transition-colors text-xs"
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-text-muted" />
+                        <input
+                          type="text"
+                          placeholder="Filter articles..."
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          className="w-full pl-8 pr-3 py-1.5 bg-elevated border border-border-subtle rounded-lg text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent-primary font-sans"
+                        />
+                      </div>
+
+                      {availableSections.length > 1 && (
+                        <select
+                          value={selectedSection}
+                          onChange={(e) => setSelectedSection(e.target.value)}
+                          className="bg-elevated border border-border-subtle rounded-lg px-2 py-1.5 text-xs text-text-secondary outline-none cursor-pointer font-mono"
                         >
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className="font-mono text-[10px] uppercase font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/50">
-                              Chunk #{chk.chunk_index + 1}
-                            </span>
-                            <span className="text-[10px] text-slate-500 font-mono">
-                              {chk.token_count || '~'} tokens
-                            </span>
-                          </div>
-                          <p className="text-slate-300 font-mono text-[11px] leading-relaxed whitespace-pre-wrap bg-slate-900/60 p-2.5 rounded border border-slate-800/80">
-                            {chk.text}
-                          </p>
-                        </div>
-                      ))}
+                          {availableSections.map((sec) => (
+                            <option key={sec} value={sec} className="bg-surface">
+                              {sec}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </div>
                   </div>
-                )}
 
-                {/* Extracted Photos Section */}
-                {articleDetails.photos && articleDetails.photos.length > 0 && (
-                  <div className="mt-6 border-t border-slate-800 pt-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
-                        <Tag className="w-4 h-4 text-purple-400" />
-                        Associated Photos & Graphics ({articleDetails.photos.length})
-                      </h3>
-                      <span className="text-[10px] font-mono text-purple-400 bg-purple-950/40 px-2 py-0.5 rounded border border-purple-800/30">
-                        Qwen-VL Vision
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-1 gap-3.5">
-                      {[...articleDetails.photos]
-                        .sort((a, b) => {
-                          const aCur = a.page_number === selectedPageNumber ? 0 : 1;
-                          const bCur = b.page_number === selectedPageNumber ? 0 : 1;
-                          return aCur - bCur;
-                        })
-                        .map((ph, idx) => {
-                        const isAnalyzing = Boolean(analyzingPhotoIds[ph.id]);
+                  {/* Article Cards */}
+                  <div ref={articleListRef} className="flex-1 overflow-y-auto p-3 space-y-2.5">
+                    {filteredArticles.length === 0 ? (
+                      <div className="text-center py-12 px-4 text-text-muted text-xs flex flex-col items-center gap-2">
+                        <p className="font-semibold text-text-primary">No articles match your filter.</p>
+                      </div>
+                    ) : (
+                      filteredArticles.map((art) => {
+                        const isSelected = selectedArticleId === art.id;
+                        const isHovered = hoveredArticleId === art.id;
+
                         return (
-                          <div key={ph.id || idx} className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-xs overflow-hidden flex flex-col gap-3 shadow-lg shadow-black/20">
-                            {ph.image_url && (
-                              <div className="bg-slate-900/90 rounded-lg overflow-hidden flex items-center justify-center max-h-72 border border-slate-800 relative group">
-                                <img
-                                  src={ph.image_url}
-                                  alt={ph.caption || `Photo #${ph.id}`}
-                                  className="w-full h-auto object-contain max-h-72 rounded-lg"
-                                  loading="lazy"
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = 'none';
-                                  }}
-                                />
-                              </div>
-                            )}
-                            <div className="flex items-center justify-between gap-2 flex-wrap">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] text-purple-400 font-mono font-bold bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/40">
-                                  Asset #{ph.id}
+                          <div
+                            key={art.id}
+                            onClick={() => setSelectedArticleId(art.id)}
+                            onMouseEnter={() => setHoveredArticleId(art.id)}
+                            onMouseLeave={() => setHoveredArticleId(null)}
+                            className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                              isSelected
+                                ? 'bg-elevated border-accent-primary shadow-md ring-1 ring-accent-primary'
+                                : isHovered
+                                ? 'bg-elevated/70 border-border-subtle'
+                                : 'bg-surface border-border-subtle hover:border-text-secondary'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {getProminenceBadge(art.prominence_score)}
+                                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-elevated text-text-muted border border-border-subtle">
+                                  {art.section || art.article_type || 'News'}
                                 </span>
-                                {ph.page_number && (
-                                  <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
-                                    ph.page_number === selectedPageNumber
-                                      ? 'text-emerald-400 bg-emerald-950/60 border-emerald-800/40'
-                                      : 'text-slate-400 bg-slate-900 border-slate-700'
-                                  }`}>
-                                    Page {ph.page_number}
-                                  </span>
-                                )}
-                                {ph.visual_type && (
-                                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-950/80 text-blue-300 border border-blue-800/50">
-                                    {ph.visual_type === 'data_chart' ? '📊 Data Chart' :
-                                     ph.visual_type === 'table' ? '🔢 Table' :
-                                     ph.visual_type === 'infographic' ? '📈 Infographic' :
-                                     ph.visual_type === 'logo' ? '🏷️ Logo' : '📷 Editorial Photo'}
-                                  </span>
-                                )}
                               </div>
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  disabled={isAnalyzing}
-                                  onClick={() => handleAnalyzePhoto(ph.id)}
-                                  className={`text-[10px] font-medium flex items-center gap-1 px-2.5 py-1 rounded border transition-all ${
-                                    isAnalyzing
-                                      ? 'bg-purple-950/50 text-purple-300 border-purple-800/40 cursor-not-allowed'
-                                      : ph.vlm_description
-                                      ? 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700 hover:text-white'
-                                      : 'bg-purple-600 hover:bg-purple-500 text-white border-purple-500 shadow-md shadow-purple-950/50'
-                                  }`}
-                                  title={ph.vlm_description ? `Re-run ${activeVlmLabel} scene analysis` : `Analyze this photograph with ${activeVlmLabel}`}
-                                >
-                                  {isAnalyzing ? (
-                                    <>
-                                      <Loader2 className="w-3 h-3 animate-spin text-purple-300" />
-                                      <span>Analyzing Scene...</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Sparkles className="w-3 h-3 text-purple-300" />
-                                      <span>{ph.vlm_description ? 'Re-Analyze with VLM' : `⚡ Analyze with ${activeVlmShort}`}</span>
-                                    </>
-                                  )}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    attachAssetForAgent({
-                                      photoId: ph.id,
-                                      articleId: articleDetails?.id,
-                                      headline: articleDetails?.headline,
-                                      caption: ph.caption,
-                                      visualType: ph.visual_type,
-                                      imageUrl: ph.image_url,
-                                      issueDate: currentIssue?.issue_date,
-                                      newspaperName: currentIssue?.newspaper_name,
-                                      issueId: currentIssue?.id || selectedIssueId,
-                                      pageNumber: selectedPageNumber,
-                                    })
-                                  }
-                                  className="text-[10px] text-cyan-400 hover:text-cyan-300 font-medium flex items-center gap-1 bg-cyan-950/40 hover:bg-cyan-900/50 px-2.5 py-1 rounded border border-cyan-800/40 transition-colors shadow-sm"
-                                  title="Interrogate this infographic or chart in the Agent Assistant"
-                                >
-                                  <Bot className="w-3 h-3 text-cyan-400" />
-                                  <span>Ask Agent</span>
-                                </button>
-                                {ph.bbox && (
-                                  <button
-                                    onClick={() => {
-                                      if (ph.bbox) {
-                                        highlightArticle(
-                                          selectedIssueId,
-                                          selectedPageNumber,
-                                          articleDetails?.id,
-                                          [ph.bbox]
-                                        );
-                                      }
-                                    }}
-                                    className="text-[10px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 bg-emerald-950/40 px-2 py-1 rounded border border-emerald-800/40 transition-colors"
-                                  >
-                                    <Maximize2 className="w-3 h-3" />
-                                    Highlight
-                                  </button>
-                                )}
-                              </div>
+                              <span className="text-[11px] text-text-muted font-mono">
+                                {art.word_count} words
+                              </span>
                             </div>
-                            {ph.caption && (
-                              <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/60">
-                                <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400 block mb-1">
-                                  📰 Original Newspaper Caption:
-                                </span>
-                                <p className="text-slate-300 text-xs italic leading-relaxed">{ph.caption}</p>
-                              </div>
-                            )}
-                            {ph.vlm_description ? (
-                              <div className="p-3 bg-gradient-to-br from-slate-900 via-slate-900/90 to-purple-950/20 border border-purple-900/50 rounded-xl text-xs text-slate-200 font-sans leading-relaxed shadow-sm">
-                                <div className="flex items-center justify-between gap-2 mb-2 pb-1.5 border-b border-purple-900/30">
-                                  <span className="text-[11px] uppercase tracking-wider font-bold text-purple-300 flex items-center gap-1.5">
-                                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                                    {activeVlmLabel} Visual Scene Analysis
-                                  </span>
-                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-950 text-purple-400 border border-purple-800/40 font-mono">
-                                    AI Verified
-                                  </span>
-                                </div>
-                                <div className="text-slate-200 text-xs whitespace-pre-wrap leading-relaxed space-y-2">
-                                  {ph.vlm_description}
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="p-2.5 bg-slate-900/30 border border-dashed border-slate-800 rounded-lg text-center">
-                                <p className="text-[11px] text-slate-400 mb-1.5">
-                                  Detailed visual scene intelligence not yet generated for this photograph.
-                                </p>
-                                <button
-                                  disabled={isAnalyzing}
-                                  onClick={() => handleAnalyzePhoto(ph.id)}
-                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-purple-400 hover:text-purple-300 transition-colors"
-                                >
-                                  <Sparkles className="w-3 h-3" />
-                                  Click here to analyze with {activeVlmShort}
-                                </button>
-                              </div>
+
+                            <h3 className="text-sm font-bold font-serif leading-snug text-text-primary mb-1 line-clamp-2">
+                              {art.headline || 'Untitled Article'}
+                            </h3>
+
+                            {art.full_text_preview && (
+                              <p className="text-xs text-text-secondary line-clamp-2 leading-relaxed font-sans">
+                                {art.full_text_preview}
+                              </p>
                             )}
                           </div>
                         );
-                      })}
-                    </div>
+                      })
+                    )}
                   </div>
-                )}
-
-                {/* Extracted Tables Section */}
-                {articleDetails.tables && articleDetails.tables.length > 0 && (
-                  <div className="mt-6 border-t border-slate-800 pt-4">
-                    <h3 className="text-sm font-semibold text-slate-200 mb-3 flex items-center gap-1.5">
-                      <Layers className="w-4 h-4 text-blue-400" />
-                      Extracted Data Tables ({articleDetails.tables.length})
-                    </h3>
-                    {articleDetails.tables.map((tb, idx) => (
-                      <div key={tb.id || idx} className="bg-slate-950 border border-slate-800 rounded p-3 text-xs overflow-x-auto">
-                        <pre className="font-mono text-slate-300">
-                          {JSON.stringify(tb.extracted_json, null, 2)}
-                        </pre>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
-          ) : (
-            /* Page Article List View */
+          )}
+
+          {/* TAB 2: VISUAL ASSETS (Photos, Charts, Infographics & Markdown Tables) */}
+          {activeInspectorTab === 'visuals' && (
             <div className="flex-1 flex flex-col h-full overflow-hidden">
-              {/* Filter & Search Header */}
-              <div className="p-3 border-b border-slate-800 space-y-2 bg-slate-900">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
-                    Page {selectedPageNumber} Articles ({filteredArticles.length})
-                  </span>
-                </div>
+              {/* Filter Ribbon: Current Page vs All Issue */}
+              <div className="p-3 border-b border-border-subtle flex items-center justify-between bg-surface font-mono text-xs">
+                <span className="text-text-secondary font-bold flex items-center gap-1.5">
+                  <Eye className="w-3.5 h-3.5 text-accent-visual" />
+                  Visual Intelligence ({filteredVisualAssets.length})
+                </span>
 
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-500" />
-                    <input
-                      type="text"
-                      placeholder="Filter articles..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-md text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-emerald-500"
-                    />
-                  </div>
-
-                  {availableSections.length > 1 && (
-                    <select
-                      value={selectedSection}
-                      onChange={(e) => setSelectedSection(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 rounded-md px-2 py-1.5 text-xs text-slate-300 outline-none cursor-pointer"
-                    >
-                      {availableSections.map((sec) => (
-                        <option key={sec} value={sec}>
-                          {sec}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                <div className="flex items-center gap-1 bg-elevated p-0.5 rounded-lg border border-border-subtle">
+                  <button
+                    type="button"
+                    onClick={() => setVisualsCurrentPageOnly(true)}
+                    className={`px-2 py-1 rounded text-[10px] font-semibold transition-all cursor-pointer ${
+                      visualsCurrentPageOnly
+                        ? 'bg-surface text-accent-visual font-bold shadow-xs'
+                        : 'text-text-muted hover:text-text-primary'
+                    }`}
+                  >
+                    Page {selectedPageNumber} Only
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVisualsCurrentPageOnly(false)}
+                    className={`px-2 py-1 rounded text-[10px] font-semibold transition-all cursor-pointer ${
+                      !visualsCurrentPageOnly
+                        ? 'bg-surface text-accent-visual font-bold shadow-xs'
+                        : 'text-text-muted hover:text-text-primary'
+                    }`}
+                  >
+                    All Issue Assets
+                  </button>
                 </div>
               </div>
 
-              {/* Scrollable Article Cards */}
-              <div ref={articleListRef} className="flex-1 overflow-y-auto p-3 space-y-2.5">
-                {filteredArticles.length === 0 ? (
-                  <div className="text-center py-12 px-4 text-slate-400 text-xs flex flex-col items-center gap-2">
-                    <span className="p-3 bg-slate-900 border border-slate-800 rounded-full text-slate-400">
-                      <BookOpen className="w-5 h-5 text-emerald-400/80" />
-                    </span>
-                    <p className="font-semibold text-slate-300">
-                      {searchTerm || selectedSection !== 'ALL'
-                        ? 'No articles match your filters.'
-                        : 'Cover Flap / Full-Page Visual Display'}
+              {/* Assets List */}
+              <div className="flex-1 overflow-y-auto p-3 space-y-4">
+                {filteredVisualAssets.length === 0 ? (
+                  <div className="text-center py-12 px-4 text-text-muted text-xs flex flex-col items-center gap-2">
+                    <p className="font-semibold text-text-primary">
+                      No visual assets on Page {selectedPageNumber}.
                     </p>
-                    <p className="text-[11px] text-slate-500 max-w-[220px]">
-                      {searchTerm || selectedSection !== 'ALL'
-                        ? 'Try clearing the search term or section filter.'
-                        : 'This page consists of broadsheet display art, mastheads, or commercial advertisements.'}
-                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setVisualsCurrentPageOnly(false)}
+                      className="text-accent-visual underline cursor-pointer mt-1"
+                    >
+                      View all visual assets across this issue &rarr;
+                    </button>
                   </div>
                 ) : (
-                  filteredArticles.map((art) => {
-                    const isSelected = selectedArticleId === art.id;
-                    const isHovered = hoveredArticleId === art.id;
-
+                  filteredVisualAssets.map((asset, aIdx) => {
+                    const isAnalyzing = Boolean(analyzingPhotoIds[asset.id]);
                     return (
                       <div
-                        key={art.id}
-                        onClick={() => setSelectedArticleId(art.id)}
-                        onMouseEnter={() => setHoveredArticleId(art.id)}
-                        onMouseLeave={() => setHoveredArticleId(null)}
-                        className={`p-3.5 rounded-lg border cursor-pointer transition-all duration-150 ${
-                          isSelected
-                            ? 'bg-slate-800/90 border-emerald-500 shadow-md ring-1 ring-emerald-500'
-                            : isHovered
-                            ? 'bg-slate-800/60 border-slate-700'
-                            : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
-                        }`}
+                        key={asset.id || aIdx}
+                        className="bg-elevated border border-border-subtle rounded-2xl p-4 flex flex-col gap-3 shadow-md"
                       >
-                        <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span
-                              className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded font-semibold ${
-                                art.article_type === 'advertisement'
-                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                                  : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                              }`}
-                            >
-                              {art.section || art.article_type || 'News'}
-                            </span>
+                        {/* Image Preview */}
+                        {asset.image_url && (
+                          <div className="bg-canvas rounded-xl overflow-hidden flex items-center justify-center max-h-60 border border-border-subtle">
+                            <img
+                              src={asset.image_url}
+                              alt={asset.caption || `Visual Asset #${asset.id}`}
+                              className="w-full h-auto object-contain max-h-60 rounded-xl"
+                              loading="lazy"
+                            />
+                          </div>
+                        )}
 
-                            {/* Visual Badges for Photos & Infographics */}
-                            {art.has_infographic && (
-                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-cyan-950/90 text-cyan-300 border border-cyan-800/60 flex items-center gap-1 shadow-sm">
-                                📊 Infographic
-                              </span>
-                            )}
-                            {art.photo_count > 0 && !art.has_infographic && (
-                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-purple-950/90 text-purple-300 border border-purple-800/60 flex items-center gap-1 shadow-sm">
-                                📷 {art.photo_count > 1 ? `${art.photo_count} Photos` : 'Photo'}
-                              </span>
-                            )}
-                            {art.table_count > 0 && !art.has_infographic && (
-                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-950/90 text-blue-300 border border-blue-800/60 flex items-center gap-1 shadow-sm">
-                                🔢 Table
-                              </span>
+                        {/* Top Badges & Actions */}
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-accent-visual/20 text-accent-visual border border-accent-visual/30">
+                              Asset #{asset.id}
+                            </span>
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-surface text-text-secondary border border-border-subtle">
+                              Page {asset.page_number}
+                            </span>
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-surface text-text-secondary border border-border-subtle">
+                              {asset.visual_type ? asset.visual_type.replace('_', ' ') : 'Infographic'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                attachAssetForAgent({
+                                  photoId: asset.id,
+                                  articleId: asset.articleId,
+                                  headline: asset.articleHeadline,
+                                  caption: asset.caption,
+                                  visualType: asset.visual_type,
+                                  imageUrl: asset.image_url,
+                                  issueDate: currentIssue?.issue_date,
+                                  newspaperName: currentIssue?.newspaper_name,
+                                  issueId: currentIssue?.id || selectedIssueId,
+                                  pageNumber: asset.page_number,
+                                })
+                              }
+                              className="text-[10px] px-2.5 py-1 rounded-lg bg-accent-visual text-white font-semibold flex items-center gap-1 transition-all shadow-xs hover:opacity-90 cursor-pointer"
+                              title="Ask AI Newsroom Agent about this chart"
+                            >
+                              <Bot className="w-3 h-3" />
+                              <span>Ask Agent</span>
+                            </button>
+
+                            {asset.bbox && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedPageNumber(asset.page_number);
+                                  highlightArticle(
+                                    selectedIssueId,
+                                    asset.page_number,
+                                    asset.articleId,
+                                    [asset.bbox]
+                                  );
+                                }}
+                                className="text-[10px] px-2 py-1 rounded-lg bg-surface hover:bg-elevated text-accent-primary border border-border-subtle font-mono cursor-pointer"
+                              >
+                                Highlight
+                              </button>
                             )}
                           </div>
-                          <span className="text-[11px] text-slate-400">
-                            {art.word_count} words
-                          </span>
                         </div>
 
-                        <h3 className="text-sm font-bold font-serif leading-snug text-slate-100 mb-1.5 line-clamp-2">
-                          {art.headline || 'Untitled Article'}
-                        </h3>
+                        {/* Newspaper Caption */}
+                        {asset.caption && (
+                          <div className="bg-surface p-2.5 rounded-xl border border-border-subtle text-xs">
+                            <span className="text-[10px] uppercase font-mono font-bold text-text-muted block mb-1">
+                              📰 Original Caption:
+                            </span>
+                            <p className="text-text-secondary italic leading-relaxed">
+                              {asset.caption}
+                            </p>
+                          </div>
+                        )}
 
-                        {art.full_text_preview && (
-                          <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed font-sans">
-                            {art.full_text_preview}
-                          </p>
+                        {/* VLM Scene Description or Markdown Table */}
+                        {asset.vlm_description ? (
+                          <div className="bg-surface p-3 rounded-xl border border-border-subtle text-xs space-y-2">
+                            <div className="flex items-center justify-between border-b border-border-subtle pb-1.5">
+                              <span className="text-[11px] font-mono font-bold text-accent-visual flex items-center gap-1.5">
+                                <Sparkles className="w-3 h-3" />
+                                {activeVlmLabel} Single-Pass Extraction
+                              </span>
+                              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-elevated text-accent-visual">
+                                Markdown Grounded
+                              </span>
+                            </div>
+                            <div className="text-text-secondary text-xs whitespace-pre-wrap leading-relaxed font-sans">
+                              {asset.vlm_description}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="bg-surface p-3 rounded-xl border border-dashed border-border-subtle text-center">
+                            <p className="text-[11px] text-text-muted mb-2">
+                              VLM scene analysis not yet generated.
+                            </p>
+                            <button
+                              type="button"
+                              disabled={isAnalyzing}
+                              onClick={() => handleAnalyzePhoto(asset.id)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-visual/20 text-accent-visual border border-accent-visual/40 text-xs font-semibold cursor-pointer"
+                            >
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span>{isAnalyzing ? 'Analyzing Scene...' : `Analyze with ${activeVlmShort}`}</span>
+                            </button>
+                          </div>
                         )}
                       </div>
                     );
                   })
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: VECTOR CHUNKS (Qdrant Dense Embeddings) */}
+          {activeInspectorTab === 'chunks' && (
+            <div className="flex-1 flex flex-col h-full overflow-hidden">
+              {/* Chunks Header */}
+              <div className="p-3 border-b border-border-subtle space-y-2 bg-surface font-mono text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-text-secondary font-bold flex items-center gap-1.5">
+                    <Database className="w-3.5 h-3.5 text-accent-info" />
+                    Indexed Vector Chunks ({filteredChunks.length})
+                  </span>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-accent-info/20 text-accent-info border border-accent-info/30">
+                    {vectorCollectionBadge}
+                  </span>
+                </div>
+
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-text-muted" />
+                  <input
+                    type="text"
+                    placeholder="Search chunk embeddings..."
+                    value={chunkSearchTerm}
+                    onChange={(e) => setChunkSearchTerm(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 bg-elevated border border-border-subtle rounded-lg text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent-info font-sans"
+                  />
+                </div>
+              </div>
+
+              {/* Chunks List */}
+              <div className="flex-1 overflow-y-auto p-3 space-y-3 font-mono">
+                {filteredChunks.length === 0 ? (
+                  <div className="text-center py-12 px-4 text-text-muted text-xs">
+                    <p className="font-semibold text-text-primary">No vector chunks found.</p>
+                  </div>
+                ) : (
+                  filteredChunks.map((chk, cIdx) => (
+                    <div
+                      key={chk.id || cIdx}
+                      className="bg-elevated border border-border-subtle rounded-xl p-3 text-xs space-y-2"
+                    >
+                      <div className="flex items-center justify-between flex-wrap gap-1">
+                        <span className="font-bold text-accent-info text-[10px] uppercase bg-surface px-2 py-0.5 rounded border border-border-subtle">
+                          Chunk #{chk.chunk_index !== undefined ? chk.chunk_index + 1 : cIdx + 1}
+                        </span>
+                        <span className="text-[10px] text-text-muted">
+                          {chk.token_count || '~180'} tokens
+                        </span>
+                      </div>
+
+                      {chk.articleHeadline && (
+                        <div className="text-[11px] font-serif font-bold text-text-primary truncate">
+                          {chk.articleHeadline}
+                        </div>
+                      )}
+
+                      <p className="text-text-secondary text-[11px] leading-relaxed whitespace-pre-wrap bg-surface p-2.5 rounded-lg border border-border-subtle font-mono">
+                        {chk.text}
+                      </p>
+                    </div>
+                  ))
                 )}
               </div>
             </div>

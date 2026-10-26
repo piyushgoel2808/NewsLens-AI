@@ -53,12 +53,12 @@ const PRESET_PROFILES = [
       btn: 'bg-sky-600 hover:bg-sky-500 text-white',
     },
     pipelineHighlights: {
-      reasoning: 'Google Gemini 3.8 Flash (1M ctx)',
-      vision: 'Gemini 3.8 Flash + IBM Docling Cloud',
-      indexing: 'Google Gemini 001 (768d Cloud → article_chunks_v2)',
+      reasoning: 'Google Gemini 2.5 Flash (1M ctx, Vertex AI / AI Studio)',
+      vision: 'Gemini 2.5 Flash Single-Pass VLM + IBM Docling Cloud',
+      indexing: 'gemini-embedding-001 (768d MRL → article_chunks_v2)',
     },
     description:
-      'Routes all LLM reasoning, article segmentation, and visual extraction through Google Gemini 3.8 Flash, with document parsing and OCR powered by high-speed IBM Cloud Docling API, and vector indexing routed to Qdrant article_chunks_v2 via Gemini Embedding 001.',
+      'Routes all LLM reasoning, article segmentation, and visual extraction through Google Gemini 2.5 Flash, with document parsing and OCR powered by high-speed IBM Cloud Docling API, and vector indexing routed to Qdrant article_chunks_v2 via Gemini Embedding 001.',
     bindings: {
       query_planner: 'gemini_flash',
       answerer: 'gemini_flash',
@@ -87,12 +87,12 @@ const PRESET_PROFILES = [
       btn: 'bg-emerald-600 hover:bg-emerald-500 text-white',
     },
     pipelineHighlights: {
-      reasoning: 'Google Gemini 3.6 Flash + Nemotron',
-      vision: 'Gemini 3.6 Flash VLM + Docling 2D Layout',
-      indexing: 'BAAI BGE-M3 (1024d Local → article_chunks)',
+      reasoning: 'Gemini 2.5 Flash + NVIDIA Nemotron 3.5 Lightning',
+      vision: 'Gemini 2.5 Flash / Gemma 4 E4B + Local Docling 2D',
+      indexing: 'BAAI/bge-m3 (1024d → article_chunks) or EmbeddingGemma 2 (768d)',
     },
     description:
-      'Combines Google Gemini 3.6 Flash for vision and synthesis, paired with IBM Docling 2D for table & column geometry parsing.',
+      'Combines Google Gemini 2.5 Flash and NVIDIA Nemotron 3.5 Lightning for reasoning, paired with specialized 2D document parsing and local/cloud vector embeddings.',
     bindings: {
       query_planner: 'gemini_flash',
       answerer: 'gemini_flash',
@@ -121,12 +121,12 @@ const PRESET_PROFILES = [
       btn: 'bg-amber-600 hover:bg-amber-500 text-white',
     },
     pipelineHighlights: {
-      reasoning: 'Meta Llama 3.1 8B + DeepSeek R1 14B',
-      vision: 'Qwen 3 VL + Docling Layout',
-      indexing: 'BAAI BGE-M3 (1024d Local → article_chunks)',
+      reasoning: 'Gemma 4 12B / Llama 3.1 8B / DeepSeek-R1 14B (Ollama)',
+      vision: 'Gemma 4 E4B / Qwen3-VL + Local Docling DocLayNet',
+      indexing: 'BAAI/bge-m3 (1024d Local → article_chunks)',
     },
     description:
-      'Runs locally via Ollama hardware acceleration. Llama 3.1 8B handles fast planning and synthesis, DeepSeek R1 handles reasoning, Qwen 3 VL handles images, and Docling handles 2D layout.',
+      'Runs locally via Ollama hardware acceleration. Llama 3.1 8B, Gemma 4 12B, and DeepSeek R1 handle reasoning, Gemma 4 E4B / Qwen3-VL handle multimodal vision, and Docling handles 2D layout.',
     bindings: {
       query_planner: 'ollama_llama3',
       answerer: 'ollama_llama3',

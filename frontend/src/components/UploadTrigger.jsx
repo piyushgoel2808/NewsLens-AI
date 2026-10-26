@@ -475,24 +475,24 @@ export default function UploadTrigger() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 w-full max-w-6xl 2xl:max-w-7xl mx-auto px-4 md:px-8 py-6 overflow-y-auto">
+    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary w-full max-w-6xl 2xl:max-w-7xl mx-auto px-4 md:px-8 py-6 overflow-y-auto font-sans transition-colors duration-200">
       {/* Header */}
-      <div className="pb-5 mb-5 border-b border-slate-800 flex items-center justify-between">
+      <div className="pb-5 mb-5 border-b border-border-subtle flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold font-serif text-slate-100 flex items-center gap-2.5">
-            <UploadCloud className="w-6 h-6 text-emerald-400" />
+          <h1 className="text-2xl font-bold font-serif text-text-primary flex items-center gap-2.5">
+            <UploadCloud className="w-6 h-6 text-accent-primary" />
             Ingestion Console & Zero-Friction PDF Uploader
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-text-muted mt-1">
             Automated multi-page date consensus, masthead brand recognition, neural layout parsing, and vector indexing.
           </p>
         </div>
         <button
           type="button"
           onClick={() => setShowManageModal(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 transition-colors border border-slate-700"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-elevated hover:bg-surface text-xs text-text-secondary hover:text-text-primary transition-colors border border-border-subtle cursor-pointer font-mono"
         >
-          <Building2 className="w-3.5 h-3.5 text-emerald-400" />
+          <Building2 className="w-3.5 h-3.5 text-accent-primary" />
           <span>Manage Newspapers ({newspapers.length})</span>
         </button>
       </div>

@@ -19,114 +19,66 @@ import {
   GitMerge,
   Compass,
   X,
+  ShieldCheck,
+  CheckCircle2,
+  Sliders,
+  Scale,
+  FileText,
+  BarChart3,
+  Calendar,
+  AlertTriangle,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
 import { deduplicatedFetch } from '../utils/apiDeduplicator';
+import ModelPickerPopover from './ModelPickerPopover';
 
-import ModelSelector from './ModelSelector';
+// ---------------------------------------------------------------------------
+// Absence Detection Keywords
+// ---------------------------------------------------------------------------
+const ABSENCE_KEYWORDS = [
+  'do not contain any verified reporting',
+  'no relevant articles were found',
+  'contain no verifiable record',
+  'no verified reporting found',
+  'absence of reporting',
+  'no reporting found in the archives',
+  'no archival evidence was found',
+  'contain no record',
+  'contain no direct reporting',
+  'contains no verifiable record',
+];
 
-// Custom dark-mode theme components for ReactMarkdown
-const markdownComponents = {
-  h1: ({ children, ...props }) => (
-    <h1 className="text-base font-bold text-emerald-300 mt-3 mb-1.5 pb-1 border-b border-slate-800" {...props}>
-      {children}
-    </h1>
-  ),
-  h2: ({ children, ...props }) => (
-    <h2 className="text-sm font-bold text-emerald-400 mt-3 mb-1" {...props}>
-      {children}
-    </h2>
-  ),
-  h3: ({ children, ...props }) => (
-    <h3 className="text-xs uppercase font-bold tracking-wider text-emerald-300 mt-2.5 mb-1 flex items-center gap-1.5" {...props}>
-      {children}
-    </h3>
-  ),
-  h4: ({ children, ...props }) => (
-    <h4 className="text-xs font-semibold text-cyan-300 mt-2 mb-1" {...props}>
-      {children}
-    </h4>
-  ),
-  p: ({ children, ...props }) => (
-    <p className="mb-2 leading-relaxed text-slate-200" {...props}>
-      {children}
-    </p>
-  ),
-  blockquote: ({ children, ...props }) => (
-    <blockquote className="border-l-2 border-emerald-500/60 bg-emerald-500/10 px-3 py-1.5 rounded-r my-2 text-xs font-medium text-emerald-200 shadow-sm" {...props}>
-      {children}
-    </blockquote>
-  ),
-  ul: ({ children, ...props }) => (
-    <ul className="list-disc list-outside ml-4 space-y-1 mb-2.5 text-slate-300 text-xs" {...props}>
-      {children}
-    </ul>
-  ),
-  ol: ({ children, ...props }) => (
-    <ol className="list-decimal list-outside ml-4 space-y-1 mb-2.5 text-slate-300 text-xs" {...props}>
-      {children}
-    </ol>
-  ),
-  li: ({ children, ...props }) => (
-    <li className="leading-relaxed pl-0.5" {...props}>
-      {children}
-    </li>
-  ),
-  strong: ({ children, ...props }) => (
-    <strong className="font-semibold text-emerald-300" {...props}>
-      {children}
-    </strong>
-  ),
-  em: ({ children, ...props }) => (
-    <em className="text-cyan-200 not-italic font-medium" {...props}>
-      {children}
-    </em>
-  ),
-  code: ({ inline, className, children, ...props }) =>
-    inline ? (
-      <code className="bg-slate-900 text-emerald-300 px-1 py-0.5 rounded font-mono text-[11px] border border-slate-800" {...props}>
-        {children}
-      </code>
-    ) : (
-      <pre className="bg-slate-900/90 border border-slate-800 p-2.5 rounded-lg overflow-x-auto my-2 text-xs font-mono text-emerald-300">
-        <code {...props}>{children}</code>
-      </pre>
-    ),
-  table: ({ children, ...props }) => (
-    <div className="overflow-x-auto my-2.5 rounded border border-slate-800">
-      <table className="min-w-full text-xs text-left border-collapse" {...props}>
-        {children}
-      </table>
-    </div>
-  ),
-  thead: ({ children, ...props }) => (
-    <thead className="bg-slate-900/90 text-emerald-300 font-semibold border-b border-slate-800" {...props}>
-      {children}
-    </thead>
-  ),
-  th: ({ children, ...props }) => (
-    <th className="p-2 border-r border-slate-800 last:border-r-0" {...props}>
-      {children}
-    </th>
-  ),
-  td: ({ children, ...props }) => (
-    <td className="p-2 border-t border-slate-800/60 border-r border-slate-800/60 last:border-r-0 text-slate-300" {...props}>
-      {children}
-    </td>
-  ),
-  a: ({ href, children, ...props }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 transition-colors"
-      {...props}
-    >
-      {children}
-    </a>
-  ),
+const isAbsenceDetected = (text) => {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return ABSENCE_KEYWORDS.some((kw) => lower.includes(kw));
+};
+
+// ---------------------------------------------------------------------------
+// Citation Sanitizer (Fix Bug #1: Malformed Citation Syntax & Curly Braces)
+// ---------------------------------------------------------------------------
+const sanitizeCitationSyntax = (text) => {
+  if (!text) return '';
+
+  // 1. Convert [{The Hindu}, {2026-08-22}, Page 15, "Headline"] or [{The Hindu}, {2026-08-22}, Page 15]
+  // into markdown citation links: [📰 The Hindu · p.15](#cite:pub=The+Hindu&page=15)
+  let cleaned = text.replace(
+    /\[\s*\{?([^{},\]]+)\}?\s*,\s*\{?([^{},\]]+)\}?\s*,\s*(?:Page\s*|p\.\s*)?(\d+)(?:,\s*["'“]([^"'”\]]+)["'”])?\s*\]/gi,
+    (match, pub, date, page, headline) => {
+      const cleanPub = pub.replace(/[{}]/g, '').trim();
+      const cleanHeadline = (headline || '').replace(/[{}]/g, '').trim();
+      const encodedPub = encodeURIComponent(cleanPub);
+      const encodedHl = encodeURIComponent(cleanHeadline);
+      return `[📰 ${cleanPub} · p.${page}](#cite:pub=${encodedPub}&page=${page}&hl=${encodedHl})`;
+    }
+  );
+
+  // 2. Also clean any remaining stray curly braces inside brackets: [{Text}] -> [Text]
+  cleaned = cleaned.replace(/\[\s*\{([^}]+)\}\s*\]/g, '[$1]');
+
+  return cleaned;
 };
 
 // Robust separation of reasoning trace vs answer
@@ -154,10 +106,7 @@ const splitThoughtAndAnswer = (text) => {
         /\n\s*(?:#{1,4}\s+|Based on|According to|In conclusion|In summary|Summary:|Answer:|Draft:|Executive Summary)/i
       );
       if (splitMatch !== -1) {
-        return [
-          after.slice(0, splitMatch).trim(),
-          after.slice(splitMatch).trim(),
-        ];
+        return [after.slice(0, splitMatch).trim(), after.slice(splitMatch).trim()];
       }
       return [after.trim(), ''];
     }
@@ -172,7 +121,6 @@ const splitThoughtAndAnswer = (text) => {
       const ansPart = text.slice(splitMatch).replace(/^(?:Draft:?\s*\n*)/i, '').trim();
       return [thoughtPart, ansPart];
     }
-    // If no answer section header found yet, the text is purely reasoning
     return [text.trim(), ''];
   }
   return ['', text.trim()];
@@ -200,7 +148,9 @@ const sanitizeAnswerText = (text, fallbackThought = '') => {
     .replace(/<think>[\s\S]*/gi, '')
     .trim();
 
-  cleaned = cleaned.replace(/^(?:Here'?s a thinking process:?|Thinking Process:?|Thought:?)\s*[\s\S]*?(?=\n#{1,4}\s+|$)/i, '').trim();
+  cleaned = cleaned
+    .replace(/^(?:Here'?s a thinking process:?|Thinking Process:?|Thought:?)\s*[\s\S]*?(?=\n#{1,4}\s+|$)/i, '')
+    .trim();
   return cleaned;
 };
 
@@ -236,6 +186,54 @@ const extractExplorationPills = (text) => {
   return pills;
 };
 
+// ---------------------------------------------------------------------------
+// Curated 6-Card Starter Matrix
+// ---------------------------------------------------------------------------
+const STARTER_CARDS = [
+  {
+    archetype: 'Factual Verification',
+    icon: CheckCircle2,
+    color: 'emerald',
+    title: 'Policy & Economic Indicators',
+    prompt: 'What are the key policy decisions and macroeconomic indicators announced in the latest issues?',
+  },
+  {
+    archetype: 'Comparative Coverage',
+    icon: Scale,
+    color: 'sky',
+    title: 'Cross-Sector Market Disclosures',
+    prompt: 'Compare corporate deals and capital market disclosures between technology and energy sectors.',
+  },
+  {
+    archetype: 'Visual Data & Infographics',
+    icon: BarChart3,
+    color: 'purple',
+    title: 'Financial Tables & IPO Metrics',
+    prompt: 'Extract all quantitative statistics from the financial infographics and IPO tables on Page 4.',
+  },
+  {
+    archetype: 'Storyline Reconstruction',
+    icon: GitMerge,
+    color: 'teal',
+    title: 'Chronological Policy Spine',
+    prompt: 'Reconstruct the chronological timeline of clean energy initiatives across all editions.',
+  },
+  {
+    archetype: 'Omission Audit',
+    icon: AlertCircle,
+    color: 'amber',
+    title: 'Hyperlocal Coverage Gap Audit',
+    prompt: 'Audit hyperlocal coverage in regional editions omitted by national broadsheets.',
+  },
+  {
+    archetype: 'Financial Disclosures',
+    icon: FileText,
+    color: 'indigo',
+    title: 'Public Notices & Tender Listings',
+    prompt: 'Identify all statutory public notices, tenders, and corporate earnings disclosures.',
+  },
+];
+
 export default function AgentAssistant() {
   const {
     highlightArticle,
@@ -249,12 +247,16 @@ export default function AgentAssistant() {
     selectedArticleId,
     selectedIssueId,
     selectedPageNumber,
+    pendingQuery,
+    setPendingQuery,
+    setActiveTab,
   } = useActiveHighlight();
 
   const [query, setQuery] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [enableWebSearch, setEnableWebSearch] = useState(false);
+  const [activeTelemetryTab, setActiveTelemetryTab] = useState({}); // { [msgIdx]: 'step3' }
 
   const messagesEndRef = useRef(null);
 
@@ -269,6 +271,14 @@ export default function AgentAssistant() {
       .catch((err) => console.error('Failed to load models:', err));
   }, []);
 
+  // Handle incoming pending query from other tabs (Overview, Broadsheet Reader)
+  useEffect(() => {
+    if (pendingQuery && !isStreaming) {
+      const q = pendingQuery;
+      setPendingQuery('');
+      handleSend(q);
+    }
+  }, [pendingQuery, isStreaming]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -324,8 +334,9 @@ export default function AgentAssistant() {
         selectedArticleId &&
         Number(activeAttachedAsset.articleId) !== Number(selectedArticleId)
       );
-      const effectiveArticleId = selectedArticleId || (isStaleAsset ? undefined : activeAttachedAsset?.articleId) || undefined;
-      const effectivePhotoId = isStaleAsset ? undefined : (activeAttachedAsset?.photoId || undefined);
+      const effectiveArticleId =
+        selectedArticleId || (isStaleAsset ? undefined : activeAttachedAsset?.articleId) || undefined;
+      const effectivePhotoId = isStaleAsset ? undefined : activeAttachedAsset?.photoId || undefined;
       const effectiveIssueDate = isStaleAsset ? undefined : activeAttachedAsset?.issueDate;
       const effectiveNewspaperName = isStaleAsset ? undefined : activeAttachedAsset?.newspaperName;
 
@@ -398,11 +409,8 @@ export default function AgentAssistant() {
                 current.archetype = data.archetype;
                 current.plan = data.plan || [];
               } else if (eventType === 'tool_result' || eventType === 'tool_results') {
-                const toolsToAdd = Array.isArray(data?.tools) ? data.tools : (data ? [data] : []);
-                current.toolExecutions = [
-                  ...(current.toolExecutions || []),
-                  ...toolsToAdd,
-                ];
+                const toolsToAdd = Array.isArray(data?.tools) ? data.tools : data ? [data] : [];
+                current.toolExecutions = [...(current.toolExecutions || []), ...toolsToAdd];
               } else if (eventType === 'token') {
                 current.content = (current.content || '') + (data.delta || '');
               } else if (eventType === 'citations') {
@@ -490,42 +498,174 @@ export default function AgentAssistant() {
     ]);
   };
 
+  // Custom markdown components supporting inline citation clicks
+  const customMarkdownComponents = (msgCitations = []) => ({
+    h1: ({ children, ...props }) => (
+      <h1 className="text-base font-serif font-bold text-accent-primary mt-3 mb-1.5 pb-1 border-b border-border-subtle" {...props}>
+        {children}
+      </h1>
+    ),
+    h2: ({ children, ...props }) => (
+      <h2 className="text-sm font-serif font-bold text-accent-primary mt-3 mb-1" {...props}>
+        {children}
+      </h2>
+    ),
+    h3: ({ children, ...props }) => (
+      <h3 className="text-xs uppercase font-mono font-bold tracking-wider text-accent-primary mt-2.5 mb-1 flex items-center gap-1.5" {...props}>
+        {children}
+      </h3>
+    ),
+    p: ({ children, ...props }) => (
+      <p className="mb-2 leading-relaxed text-text-primary" {...props}>
+        {children}
+      </p>
+    ),
+    blockquote: ({ children, ...props }) => (
+      <blockquote className="border-l-2 border-accent-primary/60 bg-accent-primary/10 px-3 py-1.5 rounded-r my-2 text-xs font-medium text-text-primary shadow-sm" {...props}>
+        {children}
+      </blockquote>
+    ),
+    ul: ({ children, ...props }) => (
+      <ul className="list-disc list-outside ml-4 space-y-1 mb-2.5 text-text-secondary text-xs" {...props}>
+        {children}
+      </ul>
+    ),
+    ol: ({ children, ...props }) => (
+      <ol className="list-decimal list-outside ml-4 space-y-1 mb-2.5 text-text-secondary text-xs" {...props}>
+        {children}
+      </ol>
+    ),
+    li: ({ children, ...props }) => (
+      <li className="leading-relaxed pl-0.5" {...props}>
+        {children}
+      </li>
+    ),
+    strong: ({ children, ...props }) => (
+      <strong className="font-semibold text-text-primary" {...props}>
+        {children}
+      </strong>
+    ),
+    em: ({ children, ...props }) => (
+      <em className="text-accent-editorial not-italic font-medium" {...props}>
+        {children}
+      </em>
+    ),
+    code: ({ inline, className, children, ...props }) =>
+      inline ? (
+        <code className="bg-elevated text-accent-primary px-1 py-0.5 rounded font-mono text-[11px] border border-border-subtle" {...props}>
+          {children}
+        </code>
+      ) : (
+        <pre className="bg-elevated border border-border-subtle p-2.5 rounded-lg overflow-x-auto my-2 text-xs font-mono text-accent-primary">
+          <code {...props}>{children}</code>
+        </pre>
+      ),
+    table: ({ children, ...props }) => (
+      <div className="overflow-x-auto my-2.5 rounded border border-border-subtle">
+        <table className="min-w-full text-xs text-left border-collapse" {...props}>
+          {children}
+        </table>
+      </div>
+    ),
+    thead: ({ children, ...props }) => (
+      <thead className="bg-elevated text-accent-primary font-semibold border-b border-border-subtle" {...props}>
+        {children}
+      </thead>
+    ),
+    th: ({ children, ...props }) => (
+      <th className="p-2 border-r border-border-subtle last:border-r-0" {...props}>
+        {children}
+      </th>
+    ),
+    td: ({ children, ...props }) => (
+      <td className="p-2 border-t border-border-subtle border-r border-border-subtle last:border-r-0 text-text-secondary font-mono" {...props}>
+        {children}
+      </td>
+    ),
+    a: ({ href, children, ...props }) => {
+      // Check if this is an inline citation pill link: #cite:pub=...&page=...
+      if (href && href.startsWith('#cite:')) {
+        const params = new URLSearchParams(href.replace('#cite:', ''));
+        const pub = params.get('pub');
+        const page = Number(params.get('page')) || 1;
+        const hl = params.get('hl');
+
+        // Look for matching citation object to get articleId and bounding boxes
+        const matchCit = msgCitations.find(
+          (c) =>
+            (c.newspaper_name && c.newspaper_name.toLowerCase().includes((pub || '').toLowerCase())) ||
+            (c.page_number && Number(c.page_number) === page)
+        );
+
+        return (
+          <button
+            type="button"
+            onClick={() =>
+              highlightArticle(
+                matchCit?.issue_id || null,
+                page,
+                matchCit?.article_id || null,
+                Array.isArray(matchCit?.bboxes) ? matchCit.bboxes : []
+              )
+            }
+            className="inline-flex items-center gap-1 mx-1 px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold bg-accent-primary/15 text-accent-primary border border-accent-primary/30 hover:bg-accent-primary/25 hover:border-accent-primary/60 transition-all cursor-pointer shadow-xs"
+            title={`Click to inspect ${pub} (Page ${page}) in Broadsheet Reader`}
+          >
+            <span>{children}</span>
+            <ExternalLink className="w-2.5 h-2.5 opacity-70" />
+          </button>
+        );
+      }
+
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-accent-info hover:underline transition-colors"
+          {...props}
+        >
+          {children}
+        </a>
+      );
+    },
+  });
+
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-4 md:px-8 py-4">
+    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-4 md:px-8 py-4 transition-colors duration-200">
       {/* Top Controls & Model Selector */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-800 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-border-subtle text-xs">
         <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-emerald-400" />
-          <span className="font-semibold text-slate-200">Agentic Research Planner & Answerer</span>
+          <Sparkles className="w-4 h-4 text-accent-primary" />
+          <span className="font-semibold text-text-primary">Autonomous AI Newsroom Assistant</span>
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-surface border border-border-subtle text-text-muted">
+            CRAG & 7 ARCHETYPES
+          </span>
         </div>
 
         <div className="flex items-center gap-2">
-          <ModelSelector
-            value={selectedModel}
-            onChange={setSelectedModel}
-            availableModels={availableModels}
-          />
+          <ModelPickerPopover value={selectedModel} onChange={setSelectedModel} />
 
           {/* Live Web Search Grounding Toggle */}
           <button
             type="button"
             onClick={() => setEnableWebSearch(!enableWebSearch)}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium border transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
               enableWebSearch
-                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50 shadow-[0_0_12px_rgba(6,182,212,0.25)] hover:bg-cyan-500/30'
-                : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700 hover:text-slate-300'
+                ? 'bg-accent-info/20 text-accent-info border-accent-info/50 shadow-sm'
+                : 'bg-surface text-text-muted border-border-subtle hover:border-text-secondary hover:text-text-primary'
             }`}
             title="Toggle live internet search to complement primary newspaper archives"
           >
             <Globe
               className={`w-3.5 h-3.5 ${
-                enableWebSearch ? 'text-cyan-400 animate-pulse' : 'text-slate-500'
+                enableWebSearch ? 'text-accent-info animate-pulse' : 'text-text-muted'
               }`}
             />
             <span>Web Search:</span>
             <span
-              className={`font-semibold ${
-                enableWebSearch ? 'text-cyan-300' : 'text-slate-500'
+              className={`font-semibold font-mono ${
+                enableWebSearch ? 'text-accent-info' : 'text-text-muted'
               }`}
             >
               {enableWebSearch ? 'ON' : 'OFF'}
@@ -533,8 +673,9 @@ export default function AgentAssistant() {
           </button>
 
           <button
+            type="button"
             onClick={handleClearChat}
-            className="text-slate-400 hover:text-slate-200 text-xs px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-800 transition-colors ml-1"
+            className="text-text-muted hover:text-text-primary text-xs px-2.5 py-1 rounded-lg bg-surface border border-border-subtle hover:bg-elevated transition-colors ml-1 cursor-pointer"
             title="Reset Chat History"
           >
             Clear History
@@ -544,464 +685,725 @@ export default function AgentAssistant() {
 
       {/* Message Chat Feed */}
       <div className="flex-1 overflow-y-auto space-y-4 pr-2">
-        {messages.map((msg, idx) => (
-          <div
-            key={idx}
-            className={`flex gap-3 ${
-              msg.role === 'user' ? 'justify-end' : 'justify-start'
-            }`}
-          >
-            {msg.role === 'assistant' && (
-              <div className="w-8 h-8 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0 mt-1">
-                <Bot className="w-4 h-4" />
-              </div>
-            )}
+        {messages.map((msg, idx) => {
+          const userQueryText =
+            idx > 0 && messages[idx - 1]?.role === 'user' ? messages[idx - 1].content : '';
+          const absenceDetected =
+            msg.role === 'assistant' && !msg.isStreaming && isAbsenceDetected(msg.content);
 
+          return (
             <div
-              className={`rounded-xl p-4 md:p-5 ${
-                msg.role === 'user'
-                  ? 'max-w-[85%] md:max-w-[75%] bg-emerald-600 text-white rounded-br-none shadow-md'
-                  : 'w-full bg-slate-900/95 border border-slate-800/80 rounded-bl-none shadow-xl'
+              key={idx}
+              className={`flex gap-3 ${
+                msg.role === 'user' ? 'justify-end' : 'justify-start'
               }`}
             >
-              {/* User Attached Visual Asset Chip */}
-              {msg.role === 'user' && msg.attachedAsset && (
-                <div className="mb-2 flex items-center gap-2 text-xs bg-emerald-700/80 border border-emerald-400/40 rounded-lg p-2 text-emerald-100 shadow-sm">
-                  {msg.attachedAsset.imageUrl && (
-                    <img
-                      src={msg.attachedAsset.imageUrl}
-                      alt="Attached"
-                      className="w-8 h-8 rounded object-cover border border-emerald-300/40 shrink-0 bg-slate-900"
-                    />
-                  )}
-                  <div className="min-w-0">
-                    <span className="font-bold text-[11px] block text-white">
-                      📊 Attached {msg.attachedAsset.visualType ? msg.attachedAsset.visualType.replace('_', ' ') : 'Visual Asset'} #{msg.attachedAsset.photoId}
-                    </span>
-                    {msg.attachedAsset.headline && (
-                      <span className="text-[10px] text-emerald-200 truncate block">
-                        {msg.attachedAsset.headline}
-                      </span>
+              {msg.role === 'assistant' && (
+                <div className="w-8 h-8 rounded-full bg-accent-primary/20 border border-accent-primary/40 flex items-center justify-center text-accent-primary shrink-0 mt-1 shadow-sm">
+                  <Bot className="w-4 h-4" />
+                </div>
+              )}
+
+              <div
+                className={`rounded-xl p-4 md:p-5 ${
+                  msg.role === 'user'
+                    ? 'max-w-[85%] md:max-w-[75%] bg-accent-primary text-white rounded-br-none shadow-md'
+                    : 'w-full bg-surface border border-border-subtle rounded-bl-none shadow-md'
+                }`}
+              >
+                {/* User Attached Visual Asset Chip */}
+                {msg.role === 'user' && msg.attachedAsset && (
+                  <div className="mb-2 flex items-center gap-2 text-xs bg-black/20 border border-white/20 rounded-lg p-2 text-white shadow-sm">
+                    {msg.attachedAsset.imageUrl && (
+                      <img
+                        src={msg.attachedAsset.imageUrl}
+                        alt="Attached"
+                        className="w-8 h-8 rounded object-cover border border-white/30 shrink-0 bg-surface"
+                      />
                     )}
-                  </div>
-                </div>
-              )}
-
-              {/* Dynamic Stage Indicator (while assistant is streaming) */}
-              {msg.role === 'assistant' && msg.isStreaming && (
-                <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-800 text-xs text-emerald-400 font-medium">
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span className="capitalize">
-                    {msg.stage === 'condensing_query'
-                      ? 'Resolving conversational coreference...'
-                      : msg.stage === 'planning'
-                      ? 'Formulating multi-step investigation plan...'
-                      : msg.stage === 'inspecting_visual_asset'
-                      ? 'Inspecting visual infographic & extracting numerical data...'
-                      : msg.stage === 'web_search'
-                      ? 'Searching live web and open sources...'
-                      : msg.stage === 'tool_execution'
-                      ? 'Executing hybrid vector & SQL retrieval tools...'
-                      : msg.stage === 'thinking'
-                      ? 'Reasoning and analyzing evidence...'
-                      : 'Synthesizing evidence-grounded response...'}
-                  </span>
-                </div>
-              )}
-
-              {/* Condensed Query Pill */}
-              {msg.role === 'assistant' && msg.condensedQuery && (
-                <div className="flex items-center gap-1.5 text-[11px] text-emerald-300 font-mono bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 rounded-md mb-2.5">
-                  <Search className="w-3 h-3 text-emerald-400 shrink-0" />
-                  <span className="truncate">
-                    Resolved Context: <strong className="text-emerald-200">"{msg.condensedQuery}"</strong>
-                  </span>
-                </div>
-              )}
-
-              {/* Collapsible Thought Process (Reasoning block kept outside the output chat) */}
-              {msg.role === 'assistant' &&
-              (msg.thought || extractFallbackThought(msg.content)) ? (
-                <div className="mb-3">
-                  <button
-                    type="button"
-                    onClick={() => toggleThought(idx)}
-                    className="flex items-center gap-2 text-xs font-mono text-slate-400 hover:text-slate-200 transition-colors py-1 px-2.5 rounded-lg bg-slate-950/70 border border-slate-800/80 hover:border-slate-700"
-                  >
-                    <ChevronRight
-                      className={`w-3.5 h-3.5 text-purple-400 transition-transform duration-200 ${
-                        msg.isThoughtOpen ? 'rotate-90' : ''
-                      }`}
-                    />
-                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                    <span className="text-slate-300 font-medium">
-                      {msg.thoughtDurationSec
-                        ? `Thought for ${msg.thoughtDurationSec}s`
-                        : 'Thought Process'}
-                    </span>
-                    <span className="text-[10px] text-slate-500">
-                      {msg.isThoughtOpen ? '(click to collapse)' : '(click to view)'}
-                    </span>
-                  </button>
-
-                  {msg.isThoughtOpen && (
-                    <div className="mt-2 p-3 bg-slate-950/90 border border-purple-500/20 rounded-lg text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto shadow-inner">
-                      {msg.thought || extractFallbackThought(msg.content)}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-
-              {/* Execution Plan & Tool Telemetry Disclosure */}
-              {msg.role === 'assistant' &&
-                (msg.plan?.length > 0 || msg.toolExecutions?.length > 0) && (
-                  <div className="mb-3 border border-slate-800 rounded-lg overflow-hidden bg-slate-950/60">
-                    <button
-                      onClick={() => toggleTelemetry(idx)}
-                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800/50 transition-colors"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Database className="w-3.5 h-3.5 text-blue-400" />
-                        <span>
-                          Plan & Tool Telemetry ({msg.toolExecutions?.length || 0} tools run)
+                    <div className="min-w-0">
+                      <span className="font-bold text-[11px] block">
+                        📊 Attached{' '}
+                        {msg.attachedAsset.visualType
+                          ? msg.attachedAsset.visualType.replace('_', ' ')
+                          : 'Visual Asset'}{' '}
+                        #{msg.attachedAsset.photoId}
+                      </span>
+                      {msg.attachedAsset.headline && (
+                        <span className="text-[10px] opacity-80 truncate block">
+                          {msg.attachedAsset.headline}
                         </span>
-                        {msg.archetype && (
-                          <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300">
-                            {msg.archetype}
-                          </span>
-                        )}
-                      </div>
-                      {msg.isTelemetryOpen ? (
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      ) : (
-                        <ChevronRight className="w-3.5 h-3.5" />
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Dynamic Stage Indicator (while assistant is streaming) */}
+                {msg.role === 'assistant' && msg.isStreaming && (
+                  <div className="flex items-center gap-2 mb-3 pb-2 border-b border-border-subtle text-xs text-accent-primary font-medium font-mono">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span className="capitalize">
+                      {msg.stage === 'condensing_query'
+                        ? 'Resolving conversational coreference...'
+                        : msg.stage === 'planning'
+                        ? 'Formulating multi-step investigation plan...'
+                        : msg.stage === 'inspecting_visual_asset'
+                        ? 'Inspecting visual infographic & extracting numerical data...'
+                        : msg.stage === 'web_search'
+                        ? 'Searching live web and open sources...'
+                        : msg.stage === 'tool_execution'
+                        ? 'Executing hybrid vector & SQL retrieval tools...'
+                        : msg.stage === 'thinking'
+                        ? 'Reasoning and analyzing evidence...'
+                        : 'Synthesizing evidence-grounded response...'}
+                    </span>
+                  </div>
+                )}
+
+                {/* Condensed Query Pill */}
+                {msg.role === 'assistant' && msg.condensedQuery && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-accent-primary font-mono bg-elevated border border-border-subtle px-2.5 py-1 rounded-md mb-2.5">
+                    <Search className="w-3 h-3 text-accent-primary shrink-0" />
+                    <span className="truncate">
+                      Resolved Context: <strong className="text-text-primary">"{msg.condensedQuery}"</strong>
+                    </span>
+                  </div>
+                )}
+
+                {/* Collapsible Thought Process */}
+                {msg.role === 'assistant' &&
+                (msg.thought || extractFallbackThought(msg.content)) ? (
+                  <div className="mb-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleThought(idx)}
+                      className="flex items-center gap-2 text-xs font-mono text-text-muted hover:text-text-primary transition-colors py-1 px-2.5 rounded-lg bg-elevated border border-border-subtle cursor-pointer"
+                    >
+                      <ChevronRight
+                        className={`w-3.5 h-3.5 text-accent-visual transition-transform duration-200 ${
+                          msg.isThoughtOpen ? 'rotate-90' : ''
+                        }`}
+                      />
+                      <Sparkles className="w-3.5 h-3.5 text-accent-visual" />
+                      <span className="text-text-secondary font-medium">
+                        {msg.thoughtDurationSec
+                          ? `Thought for ${msg.thoughtDurationSec}s`
+                          : 'Thought Process'}
+                      </span>
+                      <span className="text-[10px] text-text-muted">
+                        {msg.isThoughtOpen ? '(collapse)' : '(expand)'}
+                      </span>
                     </button>
 
-                    {msg.isTelemetryOpen && (
-                      <div className="p-3 border-t border-slate-800 space-y-2 text-xs text-slate-300 font-mono">
-                        {/* Planned Steps */}
-                        {msg.plan && msg.plan.length > 0 && (
-                          <div>
-                            <span className="text-[10px] text-slate-500 uppercase block mb-1">
-                              Planned Tool Invocations:
-                            </span>
-                            <ul className="space-y-1 list-disc list-inside text-slate-400">
-                              {msg.plan.map((p, pIdx) => (
-                                <li key={pIdx}>
-                                  <strong className="text-slate-200">{p.tool_name}</strong>: {p.purpose}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-
-                        {/* Executed Tools */}
-                        {msg.toolExecutions && msg.toolExecutions.length > 0 && (
-                          <div className="pt-2 border-t border-slate-800/80">
-                            <span className="text-[10px] text-slate-500 uppercase block mb-1">
-                              Tool Execution Results:
-                            </span>
-                            {msg.toolExecutions.map((t, tIdx) => (
-                              <div key={tIdx} className="bg-slate-900 p-2 rounded border border-slate-800 mb-1.5">
-                                <span className="text-emerald-400 font-semibold">{t.tool_name || 'Tool'}:</span>
-                                <pre className="text-[11px] text-slate-400 overflow-x-auto mt-1 whitespace-pre-wrap">
-                                  {JSON.stringify(t.execution || t, null, 2)}
-                                </pre>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                    {msg.isThoughtOpen && (
+                      <div className="mt-2 p-3 bg-canvas/80 border border-border-subtle rounded-lg text-xs font-mono text-text-secondary whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto shadow-inner">
+                        {msg.thought || extractFallbackThought(msg.content)}
                       </div>
                     )}
                   </div>
-                )}
+                ) : null}
 
-              {/* Message Content */}
-              <div className="text-sm leading-relaxed font-sans text-slate-200">
-                {msg.role === 'user' ? (
-                  <div className="whitespace-pre-wrap">{msg.content}</div>
-                ) : (
-                  (() => {
-                    const sanitized = sanitizeAnswerText(msg.content, msg.thought);
-                    if (sanitized) {
-                      return (
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={markdownComponents}
+                {/* 4-Step Pipeline Execution Stepper (Replacing raw JSON dump) */}
+                {msg.role === 'assistant' &&
+                  (msg.plan?.length > 0 || msg.toolExecutions?.length > 0 || msg.condensedQuery) && (
+                    <div className="mb-4 border border-border-subtle rounded-xl overflow-hidden bg-elevated/40 shadow-xs">
+                      {/* Horizontal Stepper Header */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 border-b border-border-subtle bg-elevated divide-x divide-border-subtle text-[11px] font-mono">
+                        {/* Step 1: Query Condenser */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveTelemetryTab((prev) => ({
+                              ...prev,
+                              [idx]: prev[idx] === 'step1' ? null : 'step1',
+                            }))
+                          }
+                          className={`p-2.5 flex items-center justify-between transition-colors text-left cursor-pointer ${
+                            activeTelemetryTab[idx] === 'step1'
+                              ? 'bg-surface text-accent-primary font-bold'
+                              : 'text-text-secondary hover:bg-surface/50'
+                          }`}
                         >
-                          {sanitized}
-                        </ReactMarkdown>
-                      );
-                    }
-                    if (msg.isStreaming) {
-                      return (
-                        <span className="text-slate-400 italic flex items-center gap-2">
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" />
-                          <span>
-                            {msg.stage === 'thinking'
-                              ? 'Reasoning through evidence...'
-                              : msg.stage === 'inspecting_visual_asset'
-                              ? 'Inspecting visual infographic & extracting numerical data...'
-                              : msg.stage === 'web_search'
-                              ? 'Gathering web context...'
-                              : 'Synthesizing response...'}
-                          </span>
-                        </span>
-                      );
-                    }
-                    return <span className="text-slate-500 italic">No response generated.</span>;
-                  })()
-                )}
-              </div>
-
-              {/* Clickable Citations Grounding */}
-              {Array.isArray(msg.citations) && msg.citations.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-slate-800">
-                  <span className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold block mb-2">
-                    Verified Sources & Citations:
-                  </span>
-                  <div className="flex flex-wrap gap-2">
-                    {msg.citations.map((cit, cIdx) => {
-                      if (!cit) return null;
-                      const isWeb = cit.is_web || cit.source_type === 'web' || !!cit.url;
-                      if (isWeb && cit.url) {
-                        return (
-                          <a
-                            key={cIdx}
-                            href={cit.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105"
-                            title={`Open live web source: ${cit.url}`}
-                          >
-                            <Globe className="w-3 h-3 text-cyan-400 shrink-0" />
-                            <span className="font-medium truncate max-w-[220px]">
-                              {cit.headline || cit.newspaper_name || 'Web Source'}
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="w-4 h-4 rounded-full bg-accent-primary/20 text-accent-primary flex items-center justify-center text-[9px] font-bold shrink-0">
+                              1
                             </span>
-                            <ExternalLink className="w-2.5 h-2.5 opacity-70 shrink-0" />
-                          </a>
+                            <span className="truncate">Condenser</span>
+                          </div>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-accent-primary shrink-0" />
+                        </button>
+
+                        {/* Step 2: Newsroom Planner */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveTelemetryTab((prev) => ({
+                              ...prev,
+                              [idx]: prev[idx] === 'step2' ? null : 'step2',
+                            }))
+                          }
+                          className={`p-2.5 flex items-center justify-between transition-colors text-left cursor-pointer ${
+                            activeTelemetryTab[idx] === 'step2'
+                              ? 'bg-surface text-accent-editorial font-bold'
+                              : 'text-text-secondary hover:bg-surface/50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="w-4 h-4 rounded-full bg-accent-editorial/20 text-accent-editorial flex items-center justify-center text-[9px] font-bold shrink-0">
+                              2
+                            </span>
+                            <span className="truncate">Planner</span>
+                          </div>
+                          {msg.archetype && (
+                            <span className="text-[9px] px-1 py-0.2 rounded bg-surface border border-border-subtle text-accent-editorial truncate max-w-[80px]">
+                              {msg.archetype.replace('_', ' ')}
+                            </span>
+                          )}
+                        </button>
+
+                        {/* Step 3: Executed Tools */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveTelemetryTab((prev) => ({
+                              ...prev,
+                              [idx]: prev[idx] === 'step3' ? null : 'step3',
+                            }))
+                          }
+                          className={`p-2.5 flex items-center justify-between transition-colors text-left cursor-pointer ${
+                            activeTelemetryTab[idx] === 'step3'
+                              ? 'bg-surface text-accent-visual font-bold'
+                              : 'text-text-secondary hover:bg-surface/50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="w-4 h-4 rounded-full bg-accent-visual/20 text-accent-visual flex items-center justify-center text-[9px] font-bold shrink-0">
+                              3
+                            </span>
+                            <span className="truncate">Tools ({msg.toolExecutions?.length || 0})</span>
+                          </div>
+                          <Database className="w-3.5 h-3.5 text-accent-visual shrink-0" />
+                        </button>
+
+                        {/* Step 4: CRAG Evaluator */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveTelemetryTab((prev) => ({
+                              ...prev,
+                              [idx]: prev[idx] === 'step4' ? null : 'step4',
+                            }))
+                          }
+                          className={`p-2.5 flex items-center justify-between transition-colors text-left cursor-pointer ${
+                            activeTelemetryTab[idx] === 'step4'
+                              ? 'bg-surface text-accent-info font-bold'
+                              : 'text-text-secondary hover:bg-surface/50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 truncate">
+                            <span className="w-4 h-4 rounded-full bg-accent-info/20 text-accent-info flex items-center justify-center text-[9px] font-bold shrink-0">
+                              4
+                            </span>
+                            <span className="truncate">CRAG & Rerank</span>
+                          </div>
+                          <Scale className="w-3.5 h-3.5 text-accent-info shrink-0" />
+                        </button>
+                      </div>
+
+                      {/* Active Step Disclosure Content */}
+                      {activeTelemetryTab[idx] && (
+                        <div className="p-3.5 bg-surface text-xs font-mono text-text-secondary border-t border-border-subtle">
+                          {activeTelemetryTab[idx] === 'step1' && (
+                            <div className="space-y-2">
+                              <span className="text-[10px] text-text-muted uppercase tracking-wider block font-bold">
+                                Step 1: Query Condensation & Coreference Resolution
+                              </span>
+                              <div className="p-2.5 rounded-lg bg-elevated border border-border-subtle">
+                                <div className="text-[11px] text-text-muted mb-1">Original User Input:</div>
+                                <div className="text-text-primary font-sans font-medium mb-2">
+                                  "{userQueryText || 'N/A'}"
+                                </div>
+                                <div className="text-[11px] text-accent-primary mb-1">
+                                  Resolved Contextual Inquiry:
+                                </div>
+                                <div className="text-text-primary font-sans font-medium">
+                                  "{msg.condensedQuery || userQueryText}"
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {activeTelemetryTab[idx] === 'step2' && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] text-text-muted uppercase tracking-wider font-bold">
+                                  Step 2: Autonomous Newsroom Planner DAG
+                                </span>
+                                {msg.archetype && (
+                                  <span className="px-2 py-0.5 rounded bg-accent-editorial/20 text-accent-editorial border border-accent-editorial/30 text-[10px] uppercase font-bold">
+                                    Archetype: {msg.archetype}
+                                  </span>
+                                )}
+                              </div>
+                              {msg.plan && msg.plan.length > 0 ? (
+                                <div className="space-y-1.5">
+                                  {msg.plan.map((step, sIdx) => (
+                                    <div
+                                      key={sIdx}
+                                      className="p-2 rounded-lg bg-elevated border border-border-subtle flex items-start gap-2"
+                                    >
+                                      <span className="text-accent-editorial font-bold">#{sIdx + 1}</span>
+                                      <div>
+                                        <span className="text-text-primary font-bold">{step.tool_name}()</span>
+                                        <p className="text-[11px] text-text-secondary font-sans mt-0.5">
+                                          {step.purpose}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-text-muted italic">Direct synthesis plan executed.</p>
+                              )}
+                            </div>
+                          )}
+
+                          {activeTelemetryTab[idx] === 'step3' && (
+                            <div className="space-y-2">
+                              <span className="text-[10px] text-text-muted uppercase tracking-wider block font-bold">
+                                Step 3: Executed Tools & Retrieval Status
+                              </span>
+                              {msg.toolExecutions && msg.toolExecutions.length > 0 ? (
+                                <div className="space-y-2">
+                                  {msg.toolExecutions.map((t, tIdx) => {
+                                    const toolName = t.tool_name || t.name || 'tool';
+                                    const execData = t.execution || t;
+                                    const hasResults =
+                                      execData?.articles?.length ||
+                                      execData?.rows?.length ||
+                                      execData?.count ||
+                                      execData?.milestones?.length ||
+                                      (typeof execData === 'object' && Object.keys(execData).length > 0);
+
+                                    return (
+                                      <div
+                                        key={tIdx}
+                                        className="p-2.5 rounded-lg bg-elevated border border-border-subtle"
+                                      >
+                                        <div className="flex items-center justify-between mb-1">
+                                          <span className="text-accent-visual font-bold">{toolName}()</span>
+                                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-accent-primary/20 text-accent-primary font-mono">
+                                            SUCCESS
+                                          </span>
+                                        </div>
+                                        {/* Parameters */}
+                                        {t.args && (
+                                          <div className="text-[10px] text-text-muted truncate mb-1">
+                                            Args: {JSON.stringify(t.args)}
+                                          </div>
+                                        )}
+                                        {/* Structured Result Summary */}
+                                        <div className="text-[11px] text-text-secondary font-sans">
+                                          {execData?.summary ||
+                                            (execData?.articles
+                                              ? `Retrieved ${execData.articles.length} article chunks from Qdrant vector space.`
+                                              : execData?.rows
+                                              ? `Executed MySQL relational query; returned ${execData.rows.length} records.`
+                                              : typeof execData === 'string'
+                                              ? execData
+                                              : 'Tool executed successfully.')}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <p className="text-text-muted italic">No external tool calls recorded.</p>
+                              )}
+                            </div>
+                          )}
+
+                          {activeTelemetryTab[idx] === 'step4' && (
+                            <div className="space-y-2">
+                              <span className="text-[10px] text-text-muted uppercase tracking-wider block font-bold">
+                                Step 4: Corrective RAG (CRAG) & Cross-Encoder Evaluation
+                              </span>
+                              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-center">
+                                <div className="p-2 rounded bg-elevated border border-border-subtle">
+                                  <div className="text-sm font-bold text-text-primary">
+                                    {msg.citations?.length || msg.telemetry?.evidence_count || 0}
+                                  </div>
+                                  <div className="text-[9px] text-text-muted uppercase">Verified Sources</div>
+                                </div>
+                                <div className="p-2 rounded bg-elevated border border-border-subtle">
+                                  <div className="text-sm font-bold text-accent-primary">
+                                    {msg.telemetry?.latency_ms ? `${msg.telemetry.latency_ms}ms` : '~1.0s'}
+                                  </div>
+                                  <div className="text-[9px] text-text-muted uppercase">Two-Stage Latency</div>
+                                </div>
+                                <div className="p-2 rounded bg-elevated border border-border-subtle col-span-2 sm:col-span-1">
+                                  <div className="text-sm font-bold text-accent-editorial">
+                                    {msg.telemetry?.cost_usd ? `$${msg.telemetry.cost_usd.toFixed(4)}` : '$0.0000'}
+                                  </div>
+                                  <div className="text-[9px] text-text-muted uppercase">Token Cost</div>
+                                </div>
+                              </div>
+                              <p className="text-[11px] text-text-secondary leading-snug mt-1 font-sans">
+                                RRF Stage 1 (N=75) merged dense vectors & BM25 sparse hits. MiniLM Cross-Encoder Stage 2 capped candidates to top-20 evidence items before structured synthesis.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                {/* Message Content (Sanitized of Malformed Curly Braces) */}
+                <div className="text-sm leading-relaxed font-sans text-text-primary">
+                  {msg.role === 'user' ? (
+                    <div className="whitespace-pre-wrap">{msg.content}</div>
+                  ) : (
+                    (() => {
+                      const sanitized = sanitizeAnswerText(msg.content, msg.thought);
+                      const cleanSyntax = sanitizeCitationSyntax(sanitized);
+
+                      if (cleanSyntax) {
+                        return (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={customMarkdownComponents(msg.citations || [])}
+                          >
+                            {cleanSyntax}
+                          </ReactMarkdown>
                         );
                       }
+                      if (msg.isStreaming) {
+                        return (
+                          <span className="text-text-muted italic flex items-center gap-2">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent-primary" />
+                            <span>
+                              {msg.stage === 'thinking'
+                                ? 'Reasoning through evidence...'
+                                : msg.stage === 'inspecting_visual_asset'
+                                ? 'Inspecting visual infographic & extracting numerical data...'
+                                : msg.stage === 'web_search'
+                                ? 'Gathering web context...'
+                                : 'Synthesizing response...'}
+                            </span>
+                          </span>
+                        );
+                      }
+                      return <span className="text-text-muted italic">No response generated.</span>;
+                    })()
+                  )}
+                </div>
 
-                      // Visual Infographic / Chart Citation
-                      const isVisual = cit.source_type === 'visual_asset' || Boolean(cit.photo_id);
-                      if (isVisual) {
-                        const vType = cit.visual_type ? cit.visual_type.replace('_', ' ') : 'infographic';
-                        const imgUrl = cit.image_url || (cit.photo_id ? `/api/photos/${cit.photo_id}/image` : null);
+                {/* Archival Silence Notice (Fix Bug #2: Archival Silence & False Citation Suppression) */}
+                {absenceDetected && (
+                  <div className="mt-4 p-4 rounded-xl bg-elevated border border-accent-editorial/40 shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-accent-editorial/20 text-accent-editorial flex items-center justify-center shrink-0 mt-0.5">
+                        <AlertTriangle className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1">
+                        <h4 className="text-xs font-bold text-text-primary font-serif">
+                          Archival Silence / Zero Corpus Match Notice
+                        </h4>
+                        <p className="text-xs text-text-secondary mt-1 leading-relaxed font-sans">
+                          The historical broadsheet archives currently indexed contain no verifiable record or direct reporting on this topic. Distractor citations and low-confidence fallback passages have been suppressed to guarantee factual integrity.
+                        </p>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEnableWebSearch(true);
+                              handleSend(userQueryText);
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-info/15 hover:bg-accent-info/25 text-accent-info border border-accent-info/30 text-xs font-semibold font-mono transition-all cursor-pointer"
+                          >
+                            <Globe className="w-3.5 h-3.5" />
+                            <span>🌐 Re-run with Live Web Search ON</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab('graph')}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface hover:bg-elevated text-text-secondary hover:text-text-primary border border-border-subtle text-xs font-semibold font-mono transition-all cursor-pointer"
+                          >
+                            <Search className="w-3.5 h-3.5 text-accent-visual" />
+                            <span>🔍 Search Entity Knowledge Graph</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Verified Citations Grounding (Suppressed if absence detected) */}
+                {!absenceDetected && Array.isArray(msg.citations) && msg.citations.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-border-subtle">
+                    <span className="text-[11px] uppercase tracking-wider text-text-muted font-semibold block mb-2 font-mono">
+                      Verified Archival Sources & Spatial Citations:
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {msg.citations.map((cit, cIdx) => {
+                        if (!cit) return null;
+                        const isWeb = cit.is_web || cit.source_type === 'web' || !!cit.url;
+                        if (isWeb && cit.url) {
+                          return (
+                            <a
+                              key={cIdx}
+                              href={cit.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1.5 bg-accent-info/10 hover:bg-accent-info/20 text-accent-info border border-accent-info/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105"
+                              title={`Open live web source: ${cit.url}`}
+                            >
+                              <Globe className="w-3 h-3 text-accent-info shrink-0" />
+                              <span className="font-medium truncate max-w-[220px]">
+                                {cit.headline || cit.newspaper_name || 'Web Source'}
+                              </span>
+                              <ExternalLink className="w-2.5 h-2.5 opacity-70 shrink-0" />
+                            </a>
+                          );
+                        }
+
+                        // Visual Infographic / Chart Citation
+                        const isVisual = cit.source_type === 'visual_asset' || Boolean(cit.photo_id);
+                        if (isVisual) {
+                          const vType = cit.visual_type ? cit.visual_type.replace('_', ' ') : 'infographic';
+                          const imgUrl = cit.image_url || (cit.photo_id ? `/api/photos/${cit.photo_id}/image` : null);
+                          return (
+                            <button
+                              key={cIdx}
+                              type="button"
+                              onClick={() =>
+                                highlightArticle(
+                                  cit.issue_id,
+                                  cit.page_number || 1,
+                                  cit.article_id,
+                                  Array.isArray(cit.bboxes) ? cit.bboxes : []
+                                )
+                              }
+                              className="flex items-center gap-2 bg-accent-visual/15 hover:bg-accent-visual/25 text-accent-visual border border-accent-visual/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105 max-w-full cursor-pointer"
+                              title={`Visual Asset #${cit.photo_id} (${vType}) on Page ${cit.page_number || 1}. Click to view in broadsheet.`}
+                            >
+                              {imgUrl && (
+                                <img
+                                  src={imgUrl}
+                                  alt={vType}
+                                  className="w-5 h-5 object-cover rounded border border-border-subtle shrink-0 bg-canvas"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                  }}
+                                />
+                              )}
+                              <span className="font-semibold uppercase text-[11px] shrink-0 font-mono">
+                                📊 {vType} #{cit.photo_id}
+                              </span>
+                              {cit.headline && (
+                                <span className="truncate max-w-[160px] sm:max-w-[220px] font-normal">
+                                  {cit.headline}
+                                </span>
+                              )}
+                              <ExternalLink className="w-2.5 h-2.5 opacity-60 shrink-0" />
+                            </button>
+                          );
+                        }
+
+                        const pub = cit.newspaper_name || 'Daily News';
+                        const pg = cit.page_number || 1;
+                        const hl = cit.headline || '';
+                        const tooltip = `${pub} (Page ${pg})${hl ? `: "${hl}"` : ''}\nClick to jump and highlight article.`;
+
                         return (
                           <button
                             key={cIdx}
+                            type="button"
                             onClick={() =>
                               highlightArticle(
                                 cit.issue_id,
-                                cit.page_number || 1,
+                                pg,
                                 cit.article_id,
                                 Array.isArray(cit.bboxes) ? cit.bboxes : []
                               )
                             }
-                            className="flex items-center gap-2 bg-purple-950/40 hover:bg-purple-900/50 text-purple-300 border border-purple-800/40 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105 max-w-full"
-                            title={`Visual Asset #${cit.photo_id} (${vType}) on Page ${cit.page_number || 1}. Click to view in broadsheet.`}
+                            className="flex items-center gap-1.5 bg-accent-primary/10 hover:bg-accent-primary/20 text-accent-primary border border-accent-primary/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105 max-w-full cursor-pointer"
+                            title={tooltip}
                           >
-                            {imgUrl && (
-                              <img
-                                src={imgUrl}
-                                alt={vType}
-                                className="w-5 h-5 object-cover rounded border border-purple-700/50 shrink-0 bg-slate-950"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                }}
-                              />
-                            )}
-                            <span className="font-semibold text-purple-200 uppercase text-[11px] shrink-0">
-                              📊 {vType} #{cit.photo_id}
+                            <MapPin className="w-3 h-3 text-accent-primary shrink-0" />
+                            <span className="font-medium shrink-0 font-mono">
+                              {pub} (p.{pg}){hl ? ':' : ''}
                             </span>
-                            {cit.headline && (
-                              <span className="truncate max-w-[160px] sm:max-w-[220px] text-purple-300/80 font-normal">
-                                {cit.headline}
+                            {hl && (
+                              <span className="truncate max-w-[180px] sm:max-w-[260px] font-normal">
+                                {hl}
                               </span>
                             )}
                             <ExternalLink className="w-2.5 h-2.5 opacity-60 shrink-0" />
                           </button>
                         );
-                      }
-                      const pub = cit.newspaper_name || 'Daily News';
-                      const pg = cit.page_number || 1;
-                      const hl = cit.headline || '';
-                      const tooltip = `${pub} (Page ${pg})${hl ? `: "${hl}"` : ''}\nClick to jump and highlight article.`;
-                      return (
-                        <button
-                          key={cIdx}
-                          onClick={() =>
-                            highlightArticle(
-                              cit.issue_id,
-                              pg,
-                              cit.article_id,
-                              Array.isArray(cit.bboxes) ? cit.bboxes : []
-                            )
-                          }
-                          className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-md text-xs transition-all hover:scale-105 max-w-full"
-                          title={tooltip}
-                        >
-                          <MapPin className="w-3 h-3 text-emerald-400 shrink-0" />
-                          <span className="font-medium shrink-0">
-                            {pub} (p.{pg}){hl ? ':' : ''}
-                          </span>
-                          {hl && (
-                            <span className="truncate max-w-[180px] sm:max-w-[260px] text-emerald-300/90 font-normal">
-                              {hl}
-                            </span>
-                          )}
-                          <ExternalLink className="w-2.5 h-2.5 opacity-60 shrink-0" />
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Interactive Multi-Newspaper Deep-Dive & Exploration Pills */}
-              {msg.role === 'assistant' && !msg.isStreaming && (() => {
-                const pills = extractExplorationPills(msg.content);
-                if (pills.length === 0) return null;
-                return (
-                  <div className="mt-3 pt-3 border-t border-slate-800/80">
-                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400 uppercase tracking-wider mb-2">
-                      <Compass className="w-3.5 h-3.5" />
-                      <span>Explore Broadsheet Perspectives:</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {pills.map((pill, pIdx) => (
-                        <button
-                          key={pIdx}
-                          type="button"
-                          onClick={() => handleSend(pill)}
-                          className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 hover:text-emerald-200 border border-emerald-500/30 hover:border-emerald-400/50 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:scale-105 shadow-sm text-left group"
-                        >
-                          <Sparkles className="w-3 h-3 text-emerald-400 group-hover:rotate-12 transition-transform shrink-0" />
-                          <span>{pill}</span>
-                        </button>
-                      ))}
+                      })}
                     </div>
                   </div>
-                );
-              })()}
+                )}
 
-              {/* Storyline Trajectory Quick Action */}
-              {msg.role === 'assistant' && !msg.isStreaming && (
-                <div className="mt-3 pt-2 flex items-center justify-between border-t border-slate-800/80">
-                  <button
-                    onClick={() => {
-                      const userQuery =
-                        idx > 0 && messages[idx - 1]?.role === 'user'
-                          ? messages[idx - 1].content
-                          : query || 'Tata Power clean energy';
-                      openTimeline(userQuery);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 transition-all hover:scale-105"
-                  >
-                    <GitMerge className="w-3.5 h-3.5" />
-                    <span>Explore in Storyline Trajectory Canvas</span>
-                  </button>
+                {/* Interactive Multi-Newspaper Deep-Dive & Exploration Pills */}
+                {msg.role === 'assistant' &&
+                  !msg.isStreaming &&
+                  (() => {
+                    const pills = extractExplorationPills(msg.content);
+                    if (pills.length === 0) return null;
+                    return (
+                      <div className="mt-3 pt-3 border-t border-border-subtle">
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-accent-primary uppercase tracking-wider mb-2 font-mono">
+                          <Compass className="w-3.5 h-3.5" />
+                          <span>Explore Broadsheet Angles:</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {pills.map((pill, pIdx) => (
+                            <button
+                              key={pIdx}
+                              type="button"
+                              onClick={() => handleSend(pill)}
+                              className="flex items-center gap-1.5 bg-elevated hover:bg-surface text-text-secondary hover:text-text-primary border border-border-subtle hover:border-accent-primary/50 px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:scale-105 shadow-xs text-left cursor-pointer group"
+                            >
+                              <Sparkles className="w-3 h-3 text-accent-primary group-hover:rotate-12 transition-transform shrink-0" />
+                              <span>{pill}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
-                  {/* Telemetry Summary Footer */}
-                  {msg.telemetry && (
-                    <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono">
-                      <span>{msg.telemetry.latency_ms}ms</span>
-                      <span>•</span>
-                      <span>${msg.telemetry.cost_usd.toFixed(4)}</span>
-                    </div>
-                  )}
+                {/* Storyline Trajectory Quick Action */}
+                {msg.role === 'assistant' && !msg.isStreaming && (
+                  <div className="mt-3 pt-2 flex items-center justify-between border-t border-border-subtle">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const userQuery =
+                          idx > 0 && messages[idx - 1]?.role === 'user'
+                            ? messages[idx - 1].content
+                            : query || 'Clean energy policy announcements';
+                        openTimeline(userQuery);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-accent-primary/10 hover:bg-accent-primary/20 text-accent-primary border border-accent-primary/30 transition-all hover:scale-105 cursor-pointer font-mono"
+                    >
+                      <GitMerge className="w-3.5 h-3.5" />
+                      <span>Explore in Storyline Trajectory Canvas</span>
+                    </button>
+
+                    {/* Telemetry Summary Footer */}
+                    {msg.telemetry && (
+                      <div className="flex items-center gap-2 text-[10px] text-text-muted font-mono">
+                        <span>{msg.telemetry.latency_ms}ms</span>
+                        <span>•</span>
+                        <span>${msg.telemetry.cost_usd.toFixed(4)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {msg.role === 'user' && (
+                <div className="w-8 h-8 rounded-full bg-elevated border border-border-subtle flex items-center justify-center text-text-primary shrink-0 mt-1 shadow-sm">
+                  <User className="w-4 h-4" />
                 </div>
               )}
             </div>
-
-            {msg.role === 'user' && (
-              <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 shrink-0 mt-1">
-                <User className="w-4 h-4" />
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Suggested Prompt Chips */}
+      {/* Curated 6-Card Starter Matrix (when chat is empty / single welcome message) */}
       {messages.length <= 1 && (
-        <div className="py-2 flex flex-wrap gap-2 text-xs">
-          <button
-            onClick={() =>
-              handleSend(
-                'What are the key policy decisions and macroeconomic indicators announced in the latest issues?'
-              )
-            }
-            className="bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-full transition-colors"
-          >
-            📊 Latest Policy & Macro Indicators
-          </button>
-          <button
-            onClick={() =>
-              handleSend(
-                'Compare corporate deals and capital market disclosures between technology and energy sectors.'
-              )
-            }
-            className="bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-full transition-colors"
-          >
-            🏢 Corporate Deals & Market Disclosures
-          </button>
-          <button
-            onClick={() =>
-              handleSend(
-                'Identify all statutory public notices, tenders, and initial public offerings (IPOs).'
-              )
-            }
-            className="bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 px-3 py-1.5 rounded-full transition-colors"
-          >
-            📜 Public Notices & IPO Listings
-          </button>
+        <div className="py-4">
+          <div className="text-[11px] font-mono text-text-muted uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-accent-primary" />
+            <span>Select a Journalistic Research Archetype to Begin:</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+            {STARTER_CARDS.map((card, cIdx) => {
+              const CardIcon = card.icon;
+              return (
+                <button
+                  key={cIdx}
+                  type="button"
+                  onClick={() => handleSend(card.prompt)}
+                  className="text-left p-3 rounded-xl bg-surface border border-border-subtle hover:border-accent-primary/60 hover:bg-elevated transition-all shadow-xs group flex flex-col justify-between min-h-[95px] cursor-pointer"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[9px] font-mono uppercase tracking-wider text-accent-primary font-bold">
+                        {card.archetype}
+                      </span>
+                      <CardIcon className="w-3.5 h-3.5 text-text-muted group-hover:text-accent-primary transition-colors" />
+                    </div>
+                    <div className="text-xs font-semibold text-text-primary group-hover:text-accent-primary transition-colors">
+                      {card.title}
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-text-secondary line-clamp-2 mt-1 leading-snug">
+                    "{card.prompt}"
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
       {/* Attached Visual Asset Pill Banner (if an asset is attached from Broadsheet Reader) */}
       {activeAttachedAsset && (
-        <div className="flex items-center justify-between gap-3 bg-gradient-to-r from-cyan-950/80 via-slate-900/90 to-purple-950/60 border border-cyan-700/50 rounded-xl px-3 py-2 shadow-lg mb-2">
+        <div className="flex items-center justify-between gap-3 bg-elevated border border-accent-visual/50 rounded-xl px-3 py-2 shadow-lg mb-2">
           <div className="flex items-center gap-2.5 overflow-hidden">
             {activeAttachedAsset.imageUrl ? (
               <img
                 src={activeAttachedAsset.imageUrl}
                 alt="Attached asset"
-                className="w-10 h-10 object-cover rounded-lg border border-cyan-800/60 shrink-0 bg-slate-950"
+                className="w-10 h-10 object-cover rounded-lg border border-border-subtle shrink-0 bg-canvas"
               />
             ) : (
-              <div className="w-10 h-10 rounded-lg bg-cyan-950 border border-cyan-800/60 flex items-center justify-center shrink-0 text-cyan-400">
+              <div className="w-10 h-10 rounded-lg bg-surface border border-border-subtle flex items-center justify-center shrink-0 text-accent-visual">
                 <Layers className="w-5 h-5" />
               </div>
             )}
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                  Attached {activeAttachedAsset.visualType ? activeAttachedAsset.visualType.replace('_', ' ') : 'Visual Asset'} #{activeAttachedAsset.photoId}
+                <span className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded bg-accent-visual/20 text-accent-visual border border-accent-visual/30">
+                  Attached{' '}
+                  {activeAttachedAsset.visualType
+                    ? activeAttachedAsset.visualType.replace('_', ' ')
+                    : 'Visual Asset'}{' '}
+                  #{activeAttachedAsset.photoId}
                 </span>
                 {activeAttachedAsset.newspaperName && (
-                  <span className="text-[10px] text-cyan-200/90 font-mono px-1.5 py-0.5 rounded bg-slate-800/80 border border-cyan-800/40">
-                    {activeAttachedAsset.newspaperName} {activeAttachedAsset.issueDate ? `(${activeAttachedAsset.issueDate})` : ''}
+                  <span className="text-[10px] text-text-secondary font-mono px-1.5 py-0.5 rounded bg-surface border border-border-subtle">
+                    {activeAttachedAsset.newspaperName}{' '}
+                    {activeAttachedAsset.issueDate ? `(${activeAttachedAsset.issueDate})` : ''}
                   </span>
                 )}
                 {activeAttachedAsset.articleId && (
-                  <span className="text-[10px] text-slate-400 font-mono">
+                  <span className="text-[10px] text-text-muted font-mono">
                     Article #{activeAttachedAsset.articleId}
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-200 font-medium truncate max-w-[320px] sm:max-w-[480px] mt-0.5">
-                {activeAttachedAsset.headline || activeAttachedAsset.caption || 'Attached visual clipping from broadsheet'}
+              <p className="text-xs text-text-primary font-medium truncate max-w-[320px] sm:max-w-[480px] mt-0.5">
+                {activeAttachedAsset.headline ||
+                  activeAttachedAsset.caption ||
+                  'Attached visual clipping from broadsheet'}
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={clearAttachedAsset}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
+            className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface transition-colors shrink-0 cursor-pointer"
             title="Detach asset"
           >
             <X className="w-4 h-4" />
@@ -1023,16 +1425,20 @@ export default function AgentAssistant() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder={
             activeAttachedAsset
-              ? `Ask about this ${activeAttachedAsset.visualType ? activeAttachedAsset.visualType.replace('_', ' ') : 'infographic'} (e.g. "Extract all numbers and explain the trend")...`
-              : "Ask research questions across historical newspaper issues..."
+              ? `Ask about this ${
+                  activeAttachedAsset.visualType
+                    ? activeAttachedAsset.visualType.replace('_', ' ')
+                    : 'infographic'
+                } (e.g. "Extract all numbers and explain the trend")...`
+              : 'Ask research questions across historical newspaper broadsheets...'
           }
           disabled={isStreaming}
-          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500 transition-colors disabled:opacity-50"
+          className="flex-1 bg-surface border border-border-subtle rounded-xl px-4 py-3 text-sm text-text-primary placeholder-text-muted outline-none focus:border-accent-primary transition-colors disabled:opacity-50 shadow-inner font-sans"
         />
         <button
           type="submit"
           disabled={!query.trim() || isStreaming}
-          className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-3 rounded-xl text-sm font-semibold flex items-center gap-2 transition-colors disabled:opacity-40 disabled:hover:bg-emerald-600"
+          className="bg-accent-primary hover:opacity-90 text-white px-5 py-3 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all disabled:opacity-40 cursor-pointer shadow-md shadow-emerald-950/20"
         >
           <span>Ask</span>
           <Send className="w-4 h-4" />

@@ -1,29 +1,87 @@
 @import "tailwindcss";
 
+:root,
+[data-theme="midnight"] {
+  --bg-canvas: #080A0F;
+  --bg-surface: #0F131C;
+  --bg-elevated: #161B28;
+  --border-subtle: #1E2638;
+  --text-primary: #F3F4F6;
+  --text-secondary: #9CA3AF;
+  --text-muted: #64748B;
+  --accent-primary: #10B981;
+  --accent-editorial: #F59E0B;
+  --accent-visual: #8B5CF6;
+  --accent-info: #3B82F6;
+  color-scheme: dark;
+}
+
+[data-theme="archival"] {
+  --bg-canvas: #FAF7F2;
+  --bg-surface: #F2ECE1;
+  --bg-elevated: #E8E0D2;
+  --border-subtle: #D5CBB8;
+  --text-primary: #141413;
+  --text-secondary: #4A4742;
+  --text-muted: #78736A;
+  --accent-primary: #0D7A52;
+  --accent-editorial: #C84B31;
+  --accent-visual: #7C3AED;
+  --accent-info: #2563EB;
+  color-scheme: light;
+}
+
 @layer base {
   body {
-    background-color: #020617;
-    color: #f8fafc;
-    font-family: Inter, system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: "Plus Jakarta Sans", Inter, system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  code, pre, .font-mono {
+    font-family: "JetBrains Mono", Menlo, monospace;
+    font-variant-numeric: tabular-nums;
   }
 }
 
-/* Custom Scrollbar */
+/* 1px exposed hairline borders */
+.hairline-border {
+  border: 1px solid var(--border-subtle);
+}
+
+.hairline-border-t {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.hairline-border-b {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.hairline-border-l {
+  border-left: 1px solid var(--border-subtle);
+}
+
+.hairline-border-r {
+  border-right: 1px solid var(--border-subtle);
+}
+
+/* Custom Scrollbar styled for dual themes */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--bg-surface);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.4);
+  background: var(--border-subtle);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.6);
+  background: var(--text-muted);
 }
