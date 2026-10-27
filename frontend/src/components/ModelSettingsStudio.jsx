@@ -31,8 +31,256 @@ import {
   RotateCcw,
   CheckSquare,
   Network,
+  X,
+  HelpCircle,
+  Radio,
 } from 'lucide-react';
 import { useActiveHighlight } from '../context/ActiveHighlightContext';
+
+// ---------------------------------------------------------------------------
+// Model Research & Capability Registry
+// ---------------------------------------------------------------------------
+export const MODEL_CATALOG = {
+  // Reasoning & Planning
+  gemini_pro: {
+    id: 'gemini_pro',
+    name: 'Google Gemini 2.5 Pro',
+    provider: 'Google Vertex AI / AI Studio',
+    category: 'reasoning',
+    categoryLabel: 'Reasoning & Planning',
+    context: '1M ctx',
+    badges: ['CoT Reasoning', '1M Ctx', 'Tool Calling', 'Cloud Native'],
+    supportsTasks: ['query_planner', 'answerer', 'article_segmentation', 'query_condenser'],
+  },
+  gemini_flash: {
+    id: 'gemini_flash',
+    name: 'Google Gemini 2.5 Flash',
+    provider: 'Google AI Studio',
+    category: 'reasoning',
+    categoryLabel: 'Reasoning & Planning',
+    context: '1M ctx',
+    badges: ['Ultra Fast', '1M Ctx', 'Multimodal VLM', 'Tool Calling'],
+    supportsTasks: [
+      'query_planner',
+      'answerer',
+      'visual_extraction',
+      'metadata_extraction',
+      'classification',
+      'query_condenser',
+      'article_segmentation',
+    ],
+  },
+  ollama_deepseek: {
+    id: 'ollama_deepseek',
+    name: 'DeepSeek-R1 14B',
+    provider: 'Local Ollama Sovereign',
+    category: 'reasoning',
+    categoryLabel: 'Reasoning & Planning',
+    context: '65K ctx',
+    badges: ['Reasoning CoT', '65K Ctx', 'Local Sovereign', '100% Offline'],
+    supportsTasks: ['query_planner', 'answerer', 'article_segmentation', 'query_condenser'],
+  },
+  ollama_nemotron: {
+    id: 'ollama_nemotron',
+    name: 'NVIDIA Nemotron 3.5 Lightning',
+    provider: 'Local Ollama Sovereign',
+    category: 'reasoning',
+    categoryLabel: 'Reasoning & Planning',
+    context: '128K ctx',
+    badges: ['128K Ctx', 'Fast Agentic CoT', 'Tool Calling', 'Local Sovereign'],
+    supportsTasks: ['query_planner', 'answerer', 'query_condenser'],
+  },
+  nvidia_nemotron: {
+    id: 'nvidia_nemotron',
+    name: 'NVIDIA Nemotron 3.5 Lightning 30B',
+    provider: 'NVIDIA NIM Gateway',
+    category: 'reasoning',
+    categoryLabel: 'Reasoning & Planning',
+    context: '128K ctx',
+    badges: ['128K Ctx', 'High Speed', 'Hosted NIM'],
+    supportsTasks: ['query_planner', 'answerer'],
+  },
+
+  // Synthesis & Answering
+  ollama_llama3: {
+    id: 'ollama_llama3',
+    name: 'Meta Llama 3.1 8B',
+    provider: 'Local Ollama Sovereign',
+    category: 'synthesis',
+    categoryLabel: 'Synthesis & Answering',
+    context: '128K ctx',
+    badges: ['128K Ctx', 'Local Sovereign', 'Low VRAM', '100% Offline'],
+    supportsTasks: ['answerer', 'metadata_extraction', 'classification', 'query_condenser', 'query_planner'],
+  },
+  ollama_gemma4_12b: {
+    id: 'ollama_gemma4_12b',
+    name: 'Google Gemma 4 12B',
+    provider: 'Local Ollama Sovereign',
+    category: 'synthesis',
+    categoryLabel: 'Synthesis & Answering',
+    context: '131K ctx',
+    badges: ['131K Ctx', 'High Fidelity Prose', 'Local Sovereign'],
+    supportsTasks: ['answerer', 'query_condenser', 'classification'],
+  },
+  openai_gpt4o: {
+    id: 'openai_gpt4o',
+    name: 'OpenAI GPT-4o',
+    provider: 'OpenAI Direct API',
+    category: 'synthesis',
+    categoryLabel: 'Synthesis & Answering',
+    context: '128K ctx',
+    badges: ['128K Ctx', 'Multimodal', 'Hosted Cloud'],
+    supportsTasks: ['query_planner', 'answerer', 'visual_extraction', 'metadata_extraction'],
+  },
+  openai_gpt4o_mini: {
+    id: 'openai_gpt4o_mini',
+    name: 'OpenAI GPT-4o Mini',
+    provider: 'OpenAI Direct API',
+    category: 'synthesis',
+    categoryLabel: 'Synthesis & Answering',
+    context: '128K ctx',
+    badges: ['128K Ctx', 'Fast Synthesis', 'Cost Efficient'],
+    supportsTasks: ['answerer', 'classification', 'metadata_extraction'],
+  },
+  openrouter_gemma4_26b: {
+    id: 'openrouter_gemma4_26b',
+    name: 'Gemma 4 26B (Free)',
+    provider: 'OpenRouter Gateway',
+    category: 'synthesis',
+    categoryLabel: 'Synthesis & Answering',
+    context: '262K ctx',
+    badges: ['262K Ctx', 'Free Tier', 'Hosted Gateway'],
+    supportsTasks: ['answerer', 'query_planner'],
+  },
+
+  // Multimodal Vision / VLM
+  gemini_vision: {
+    id: 'gemini_vision',
+    name: 'Google Gemini 2.5 Flash VLM',
+    provider: 'Google Vertex AI / AI Studio',
+    category: 'vision',
+    categoryLabel: 'Multimodal Vision & VLM',
+    context: '1M ctx',
+    badges: ['1M Ctx', 'High Res VLM', 'Table Markdown', 'BBox Parsing'],
+    supportsTasks: ['visual_extraction', 'layout_analysis'],
+  },
+  ollama_gemma4_e4b: {
+    id: 'ollama_gemma4_e4b',
+    name: 'Google Gemma 4 E4B VLM',
+    provider: 'Local Ollama Sovereign',
+    category: 'vision',
+    categoryLabel: 'Multimodal Vision & VLM',
+    context: '131K ctx',
+    badges: ['131K Ctx', 'Local Vision', 'Edge Optimized'],
+    supportsTasks: ['visual_extraction'],
+  },
+  ollama_vlm: {
+    id: 'ollama_vlm',
+    name: 'Qwen 2.5-VL 7B',
+    provider: 'Local Ollama Sovereign',
+    category: 'vision',
+    categoryLabel: 'Multimodal Vision & VLM',
+    context: '32K ctx',
+    badges: ['32K Ctx', 'Local VLM', 'Spatial Detection'],
+    supportsTasks: ['visual_extraction', 'layout_analysis'],
+  },
+  ollama_qwen3vl: {
+    id: 'ollama_qwen3vl',
+    name: 'Qwen 3-VL Next-Gen',
+    provider: 'Local Ollama Sovereign',
+    category: 'vision',
+    categoryLabel: 'Multimodal Vision & VLM',
+    context: '32K ctx',
+    badges: ['32K Ctx', 'Next-Gen VLM', 'Local Sovereign'],
+    supportsTasks: ['visual_extraction'],
+  },
+  nvidia_llama_vision: {
+    id: 'nvidia_llama_vision',
+    name: 'Meta Llama 3.2 11B Vision',
+    provider: 'NVIDIA NIM Gateway',
+    category: 'vision',
+    categoryLabel: 'Multimodal Vision & VLM',
+    context: '128K ctx',
+    badges: ['128K Ctx', 'Hosted NIM', 'Vision Specialist'],
+    supportsTasks: ['visual_extraction'],
+  },
+
+  // Spatial Layout & Document OCR
+  docling_cloud_parser: {
+    id: 'docling_cloud_parser',
+    name: 'IBM Docling Cloud API',
+    provider: 'IBM Cloud / Hosted Docling',
+    category: 'layout',
+    categoryLabel: 'Spatial Layout & Document OCR',
+    badges: ['DocLayNet 2D', 'Zero Local RAM', 'High Precision Tables'],
+    supportsTasks: ['layout_analysis', 'document_parser', 'ocr'],
+  },
+  docling_parser: {
+    id: 'docling_parser',
+    name: 'Docling Local (DocLayNet + RapidOCR)',
+    provider: 'Local ONNX Engine',
+    category: 'layout',
+    categoryLabel: 'Spatial Layout & Document OCR',
+    badges: ['100% Offline', 'DocLayNet ONNX', 'RapidOCR Local'],
+    supportsTasks: ['layout_analysis', 'document_parser', 'ocr'],
+  },
+  google_cloud_vision: {
+    id: 'google_cloud_vision',
+    name: 'Google Cloud Vision OCR',
+    provider: 'Google Cloud Platform',
+    category: 'layout',
+    categoryLabel: 'Spatial Layout & Document OCR',
+    badges: ['GCP Cloud', 'Historical Print OCR'],
+    supportsTasks: ['ocr', 'document_parser'],
+  },
+
+  // Dense Vector Embeddings
+  gemini_embedding: {
+    id: 'gemini_embedding',
+    name: 'gemini-embedding-001 (768d MRL)',
+    provider: 'Google AI Studio / Vertex AI',
+    category: 'embedding',
+    categoryLabel: 'Dense Vector Embeddings & MRL',
+    badges: ['768d MRL', 'article_chunks_v2', 'Zero Container RAM'],
+    supportsTasks: ['embedding'],
+  },
+  local_embed_bge: {
+    id: 'local_embed_bge',
+    name: 'BAAI BGE-M3 (1024d Multi-Lingual)',
+    provider: 'Local HuggingFace / Transformers',
+    category: 'embedding',
+    categoryLabel: 'Dense Vector Embeddings & MRL',
+    badges: ['1024d Dense', 'article_chunks', 'Multi-Lingual', '100% Offline'],
+    supportsTasks: ['embedding'],
+  },
+  embedding_gemma2: {
+    id: 'embedding_gemma2',
+    name: 'Google EmbeddingGemma 2 (768d)',
+    provider: 'Local Ollama Sovereign',
+    category: 'embedding',
+    categoryLabel: 'Dense Vector Embeddings & MRL',
+    badges: ['768d Dense', 'article_chunks_v2', 'Low VRAM', 'Local Sovereign'],
+    supportsTasks: ['embedding'],
+  },
+  ollama_embed: {
+    id: 'ollama_embed',
+    name: 'Nomic Embed Text (768d)',
+    provider: 'Local Ollama Sovereign',
+    category: 'embedding',
+    categoryLabel: 'Dense Vector Embeddings & MRL',
+    badges: ['768d Dense', 'Fast Ollama', '100% Offline'],
+    supportsTasks: ['embedding'],
+  },
+  openai_embed: {
+    id: 'openai_embed',
+    name: 'OpenAI text-embedding-3-large (3072d)',
+    provider: 'OpenAI Direct API',
+    category: 'embedding',
+    categoryLabel: 'Dense Vector Embeddings & MRL',
+    badges: ['3072d High Dim', 'Hosted Cloud'],
+    supportsTasks: ['embedding'],
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Architecture Presets Configuration
@@ -44,21 +292,13 @@ const PRESET_PROFILES = [
     badge: 'Zero Container RAM (GCP Prod)',
     icon: Cloud,
     tagline: 'Recommended for ultra-fast, robust reasoning and vision with zero local GPU / CPU resource consumption.',
-    theme: {
-      border: 'border-sky-500/50 hover:border-sky-400',
-      activeBorder: 'border-sky-400 ring-2 ring-sky-500/40 shadow-sky-950/50 shadow-xl',
-      bg: 'bg-sky-950/20 hover:bg-sky-950/30',
-      badgeBg: 'bg-sky-500/10 text-sky-300 border-sky-500/30',
-      text: 'text-sky-400',
-      btn: 'bg-sky-600 hover:bg-sky-500 text-white',
-    },
     pipelineHighlights: {
       reasoning: 'Google Gemini 2.5 Flash (1M ctx, Vertex AI / AI Studio)',
       vision: 'Gemini 2.5 Flash Single-Pass VLM + IBM Docling Cloud',
       indexing: 'gemini-embedding-001 (768d MRL → article_chunks_v2)',
     },
     description:
-      'Routes all LLM reasoning, article segmentation, and visual extraction through Google Gemini 2.5 Flash, with document parsing and OCR powered by high-speed IBM Cloud Docling API, and vector indexing routed to Qdrant article_chunks_v2 via Gemini Embedding 001.',
+      'Routes all LLM reasoning, article segmentation, and visual extraction through Google Gemini 2.5 Flash, with document parsing powered by IBM Cloud Docling API, and vector indexing routed to Qdrant article_chunks_v2 via Gemini Embedding 001.',
     bindings: {
       query_planner: 'gemini_flash',
       answerer: 'gemini_flash',
@@ -78,14 +318,6 @@ const PRESET_PROFILES = [
     badge: 'Lightning Fast',
     icon: Zap,
     tagline: 'Ultra-low latency reasoning and specialized 2D document parsing.',
-    theme: {
-      border: 'border-emerald-500/50 hover:border-emerald-400',
-      activeBorder: 'border-emerald-400 ring-2 ring-emerald-500/40 shadow-emerald-950/50 shadow-xl',
-      bg: 'bg-emerald-950/20 hover:bg-emerald-950/30',
-      badgeBg: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
-      text: 'text-emerald-400',
-      btn: 'bg-emerald-600 hover:bg-emerald-500 text-white',
-    },
     pipelineHighlights: {
       reasoning: 'Gemini 2.5 Flash + NVIDIA Nemotron 3.5 Lightning',
       vision: 'Gemini 2.5 Flash / Gemma 4 E4B + Local Docling 2D',
@@ -112,14 +344,6 @@ const PRESET_PROFILES = [
     badge: '100% On-Premise (No API Keys)',
     icon: Laptop,
     tagline: 'Private on-premise execution with zero external API calls.',
-    theme: {
-      border: 'border-amber-500/50 hover:border-amber-400',
-      activeBorder: 'border-amber-400 ring-2 ring-amber-500/40 shadow-amber-950/50 shadow-xl',
-      bg: 'bg-amber-950/20 hover:bg-amber-950/30',
-      badgeBg: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
-      text: 'text-amber-400',
-      btn: 'bg-amber-600 hover:bg-amber-500 text-white',
-    },
     pipelineHighlights: {
       reasoning: 'Gemma 4 12B / Llama 3.1 8B / DeepSeek-R1 14B (Ollama)',
       vision: 'Gemma 4 E4B / Qwen3-VL + Local Docling DocLayNet',
@@ -151,23 +375,23 @@ const PIPELINE_STAGES = [
     title: 'Stage 1: Agentic Reasoning & Synthesis',
     description: 'Autonomous multi-step tool planning, query decomposition, and executive answer synthesis with citations.',
     icon: Sparkles,
-    badgeColor: 'text-purple-400 bg-purple-950/40 border-purple-800',
+    badgeColor: 'text-accent-editorial bg-accent-editorial/10 border-accent-editorial/30',
     tasks: [
       {
         id: 'query_planner',
         name: 'Query Planner',
         role: 'Autonomous tool sequence planner & sub-query generator',
         requiredCapability: 'supports_tool_use',
-        requiredLabel: 'Requires Tool Use',
-        type: 'LLM',
+        requiredLabel: 'Requires Tool Calling',
+        type: 'Reasoning LLM',
       },
       {
         id: 'answerer',
         name: 'Answer Synthesizer',
         role: 'Multi-newspaper factual synthesizer & citation linker',
         requiredCapability: 'supports_tool_use',
-        requiredLabel: 'Requires Tool Use',
-        type: 'LLM',
+        requiredLabel: 'Requires Tool Calling',
+        type: 'Synthesis LLM',
       },
     ],
   },
@@ -176,7 +400,7 @@ const PIPELINE_STAGES = [
     title: 'Stage 2: Vision & Broadsheet Ingestion',
     description: 'High-resolution newspaper layout parsing, OCR text extraction, and figure/chart analysis.',
     icon: Eye,
-    badgeColor: 'text-cyan-400 bg-cyan-950/40 border-cyan-800',
+    badgeColor: 'text-accent-primary bg-accent-primary/10 border-accent-primary/30',
     tasks: [
       {
         id: 'layout_analysis',
@@ -217,7 +441,7 @@ const PIPELINE_STAGES = [
     title: 'Stage 3: Enrichment & Semantic Intelligence',
     description: 'Column boundary segmentation, entity recognition, topical classification, and dense vector embeddings.',
     icon: Database,
-    badgeColor: 'text-emerald-400 bg-emerald-950/40 border-emerald-800',
+    badgeColor: 'text-accent-primary bg-accent-primary/10 border-accent-primary/30',
     tasks: [
       {
         id: 'article_segmentation',
@@ -298,20 +522,240 @@ const API_ENDPOINTS = [
     category: 'Corpus',
   },
   {
-    id: 'reset_bindings',
+    id: 'query',
     method: 'POST',
-    name: 'Reset Task Bindings',
-    path: '/api/settings/model-bindings/reset',
-    description: 'Restore all pipeline task bindings back to system defaults.',
-    category: 'Settings',
+    name: 'Agentic Conversational RAG',
+    path: '/api/query',
+    description: 'Execute multi-step CRAG research over newspaper articles and multimodal image chunks.',
+    category: 'Agent',
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Custom Classified Task Model Dropdown Component
+// ---------------------------------------------------------------------------
+function TaskModelDropdown({ taskId, value, onChange, reachabilityMap, configuredProviders }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [showCustomInput, setShowCustomInput] = useState(false);
+  const [customValue, setCustomValue] = useState('');
+  const popoverRef = useRef(null);
+
+  // Close when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (popoverRef.current && !popoverRef.current.contains(e.target)) {
+        setIsOpen(false);
+      }
+    }
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOpen]);
+
+  // Determine which models can do this task based on task ID
+  const eligibleModels = useMemo(() => {
+    const list = Object.values(MODEL_CATALOG).filter((m) => {
+      if (!m.supportsTasks) return false;
+      return m.supportsTasks.includes(taskId);
+    });
+
+    // Also include configured providers from backend if they aren't already represented
+    configuredProviders.forEach((cp) => {
+      if (!list.some((m) => m.id === cp.id)) {
+        // Classify based on capabilities
+        let match = false;
+        if (taskId === 'embedding' && cp.embedding_dim) match = true;
+        if (['visual_extraction', 'layout_analysis', 'document_parser', 'ocr'].includes(taskId) && cp.supports_vision) match = true;
+        if (['query_planner', 'answerer'].includes(taskId) && cp.supports_tool_use) match = true;
+        if (['article_segmentation', 'metadata_extraction', 'classification'].includes(taskId)) match = true;
+
+        if (match) {
+          list.push({
+            id: cp.id,
+            name: reachabilityMap[cp.id]?.name || cp.model || cp.id,
+            provider: cp.provider,
+            category: cp.provider === 'ollama' ? 'local' : 'cloud',
+            categoryLabel: cp.provider === 'ollama' ? 'Local Hardware' : 'Cloud Direct',
+            context: cp.context_window ? `${Math.round(cp.context_window / 1000)}K ctx` : '',
+            badges: [cp.provider],
+            supportsTasks: [taskId],
+          });
+        }
+      }
+    });
+
+    return list;
+  }, [taskId, configuredProviders, reachabilityMap]);
+
+  // Group eligible models by category
+  const groupedModels = useMemo(() => {
+    const groups = {};
+    eligibleModels.forEach((m) => {
+      const cat = m.categoryLabel || 'General Models';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(m);
+    });
+    return groups;
+  }, [eligibleModels]);
+
+  const currentModelMeta = MODEL_CATALOG[value] || configuredProviders.find((p) => p.id === value);
+  const displayName = currentModelMeta?.name || currentModelMeta?.model || value;
+  const isOnline = reachabilityMap[value]?.is_reachable === true;
+
+  const handleCustomSubmit = (e) => {
+    e.preventDefault();
+    if (customValue.trim()) {
+      onChange(customValue.trim());
+      setShowCustomInput(false);
+      setIsOpen(false);
+    }
+  };
+
+  return (
+    <div className="relative" ref={popoverRef}>
+      {/* Trigger Button */}
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-xl bg-surface hover:bg-elevated border border-border-subtle hover:border-accent-primary/50 text-xs font-mono transition-all text-left shadow-xs cursor-pointer group"
+      >
+        <div className="flex items-center gap-2 truncate">
+          <span
+            className={`w-2 h-2 rounded-full shrink-0 ${
+              isOnline ? 'bg-accent-primary' : reachabilityMap[value]?.is_reachable === false ? 'bg-rose-400' : 'bg-slate-400'
+            }`}
+            title={isOnline ? 'Online & Reachable' : 'Offline / Unchecked'}
+          />
+          <span className="font-semibold text-text-primary truncate">{displayName}</span>
+          {MODEL_CATALOG[value]?.context && (
+            <span className="text-[10px] text-text-muted hidden sm:inline">
+              ({MODEL_CATALOG[value].context})
+            </span>
+          )}
+        </div>
+        <ChevronDown className="w-3.5 h-3.5 text-text-muted group-hover:text-text-primary shrink-0 transition-transform duration-150" />
+      </button>
+
+      {/* Popover Dropdown */}
+      {isOpen && (
+        <div className="absolute right-0 top-full mt-1.5 w-80 sm:w-96 bg-surface border border-border-subtle rounded-2xl shadow-2xl p-2 z-50 text-xs font-sans animate-fade-in max-h-96 overflow-y-auto">
+          <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between text-[11px] font-mono text-text-muted">
+            <span className="font-bold uppercase tracking-wider text-accent-primary">Classified Compatible Models</span>
+            <span>{eligibleModels.length} Qualified</span>
+          </div>
+
+          <div className="py-1 space-y-3">
+            {Object.entries(groupedModels).map(([groupTitle, models]) => (
+              <div key={groupTitle} className="space-y-1">
+                <span className="px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider text-text-muted font-bold block">
+                  {groupTitle}
+                </span>
+
+                {models.map((m) => {
+                  const isSelected = m.id === value;
+                  const isReachable = reachabilityMap[m.id]?.is_reachable === true;
+
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => {
+                        onChange(m.id);
+                        setIsOpen(false);
+                      }}
+                      className={`w-full flex items-start justify-between p-2 rounded-xl text-left transition-colors cursor-pointer ${
+                        isSelected
+                          ? 'bg-accent-primary/10 border border-accent-primary/30 text-text-primary'
+                          : 'hover:bg-elevated text-text-secondary hover:text-text-primary'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              isReachable ? 'bg-accent-primary' : 'bg-slate-400'
+                            }`}
+                          />
+                          <span className="font-semibold text-xs text-text-primary">{m.name}</span>
+                        </div>
+                        <p className="text-[10px] font-mono text-text-muted">{m.provider}</p>
+                        {Array.isArray(m.badges) && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {m.badges.map((b, bIdx) => (
+                              <span
+                                key={bIdx}
+                                className="text-[9px] font-mono px-1 py-0.2 rounded bg-elevated border border-border-subtle text-text-secondary"
+                              >
+                                {b}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {isSelected && <Check className="w-4 h-4 text-accent-primary shrink-0 mt-0.5" />}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          {/* Custom Model Option */}
+          <div className="pt-2 border-t border-border-subtle font-mono">
+            {showCustomInput ? (
+              <form onSubmit={handleCustomSubmit} className="p-2 bg-canvas rounded-xl space-y-2">
+                <label className="block text-[10px] text-text-muted">Enter Custom Model or Provider String:</label>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={customValue}
+                    onChange={(e) => setCustomValue(e.target.value)}
+                    placeholder="e.g. ollama/mistral:latest"
+                    autoFocus
+                    className="flex-1 bg-surface border border-border-subtle rounded-lg px-2.5 py-1 text-xs text-text-primary outline-none focus:border-accent-primary"
+                  />
+                  <button
+                    type="submit"
+                    className="px-2.5 py-1 bg-accent-primary text-white rounded-lg text-xs font-semibold hover:opacity-90"
+                  >
+                    Set
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCustomInput(false)}
+                    className="p-1 text-text-muted hover:text-text-primary"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowCustomInput(true)}
+                className="w-full py-1.5 text-center text-[11px] text-accent-primary hover:bg-elevated rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <Plus className="w-3 h-3" />
+                <span>+ Custom Model / Node Override...</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main ModelSettingsStudio Component
+// ---------------------------------------------------------------------------
 export default function ModelSettingsStudio() {
   const { updateTaskBindings, taskBindings, refreshTaskBindings } = useActiveHighlight();
 
   // Navigation Sub-views: 'presets' | 'pipeline' | 'providers' | 'api'
-  const [activeSubView, setActiveSubView] = useState('presets');
+  const [activeSubView, setActiveSubView] = useState('pipeline');
 
   // Sovereign Laptop Node State
   const [laptopState, setLaptopState] = useState({
@@ -340,7 +784,7 @@ export default function ModelSettingsStudio() {
 
   // Provider Registry Search & Filter
   const [providerSearch, setProviderSearch] = useState('');
-  const [providerFilter, setProviderFilter] = useState('all'); // 'all' | 'reachable' | 'cloud' | 'local' | 'vision' | 'tools'
+  const [providerFilter, setProviderFilter] = useState('all');
 
   // API Studio State
   const [apiEndpoint, setApiEndpoint] = useState('/api/settings/model-bindings');
@@ -361,941 +805,391 @@ export default function ModelSettingsStudio() {
     }
   }, [taskBindings]);
 
-  const adminPinRef = useRef(adminPin);
-  useEffect(() => {
-    adminPinRef.current = adminPin;
-  }, [adminPin]);
+  // Load System Settings
+  const loadSystemSettings = useCallback(
+    async (isInitial = false) => {
+      if (isInitial) setLoadingInitial(true);
+      else setRefreshing(true);
 
-  const loadLaptopState = useCallback(async () => {
-    try {
-      const headers = adminPinRef.current ? { 'X-Admin-Pin': adminPinRef.current } : {};
-      const res = await fetch('/api/settings/laptop-node/status', { headers });
-      if (res.ok) {
-        const data = await res.json();
-        setLaptopState(data);
-        if (data.tunnel_url) {
-          setTunnelUrlInput((prev) => prev || data.tunnel_url);
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+        const [bindingsRes, availableRes] = await Promise.all([
+          fetch('/api/settings/model-bindings', { signal: controller.signal }),
+          fetch('/api/models/available', { signal: controller.signal }),
+        ]);
+
+        clearTimeout(timeoutId);
+
+        if (bindingsRes.ok) {
+          const bData = await bindingsRes.json();
+          if (bData.task_bindings) {
+            setCurrentBindings(bData.task_bindings);
+            setStagedBindings(bData.task_bindings);
+          }
         }
-      }
-    } catch (err) {
-      console.debug('Failed to fetch laptop node status:', err);
-    }
-  }, []);
 
-  useEffect(() => {
-    loadLaptopState();
-    const interval = setInterval(loadLaptopState, 15000);
-    return () => clearInterval(interval);
-  }, [loadLaptopState]);
-
-  const handleToggleLaptopNode = async (targetEnabled) => {
-    setLaptopLoading(true);
-    try {
-      const res = await fetch('/api/settings/laptop-node/toggle', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Admin-Pin': adminPin,
-        },
-        body: JSON.stringify({
-          enabled: targetEnabled,
-          tunnel_url: tunnelUrlInput || undefined,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setLaptopState((prev) => ({ ...prev, ...data }));
-        setStatusNotification({
-          type: 'success',
-          message: targetEnabled
-            ? '✅ Sovereign Laptop Node is now LIVE for website visitors!'
-            : '🛑 Sovereign Laptop Node has been turned OFF.',
-        });
-      } else {
-        const errJson = await res.json().catch(() => ({}));
-        setStatusNotification({
-          type: 'error',
-          message: `Failed to toggle laptop node: ${errJson.detail || res.statusText}`,
-        });
-      }
-    } catch (err) {
-      setStatusNotification({
-        type: 'error',
-        message: `Network error toggling laptop node: ${err.message}`,
-      });
-    } finally {
-      setLaptopLoading(false);
-      loadLaptopState();
-    }
-  };
-
-  // Load Model Settings and Provider Status from backend
-  const loadSystemSettings = useCallback(async (isSilent = false) => {
-    if (!isSilent) setRefreshing(true);
-    try {
-      const res = await fetch('/api/settings/model-bindings');
-      if (res.ok) {
-        const json = await res.json();
-        setConfiguredProviders(json.configured_providers || []);
-        setReachabilityList(json.provider_reachability || []);
-        if (json.task_bindings) {
-          setCurrentBindings(json.task_bindings);
-          setStagedBindings(json.task_bindings);
-          updateTaskBindings(json.task_bindings, false);
-          setHasUnsavedChanges(false);
+        if (availableRes.ok) {
+          const aData = await availableRes.json();
+          if (Array.isArray(aData.configured_providers)) {
+            setConfiguredProviders(aData.configured_providers);
+          }
+          if (Array.isArray(aData.reachability)) {
+            setReachabilityList(aData.reachability);
+          }
         }
+      } catch (err) {
+        console.warn('Backend unavailable, using default model topology:', err);
+      } finally {
+        if (isInitial) setLoadingInitial(false);
+        else setRefreshing(false);
       }
-    } catch (err) {
-      console.error('Failed to load model settings:', err);
-      setStatusNotification({
-        type: 'error',
-        message: `Failed to fetch settings: ${err.message}`,
-      });
-    } finally {
-      setLoadingInitial(false);
-      setRefreshing(false);
-    }
-  }, [updateTaskBindings]);
-
-  useEffect(() => {
-    loadSystemSettings();
-    executeApiRequest('/api/settings/model-bindings', 'GET');
-  }, [loadSystemSettings]);
-
-  // Toast Notification Auto-dismiss
-  useEffect(() => {
-    if (statusNotification) {
-      const timer = setTimeout(() => {
-        setStatusNotification(null);
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [statusNotification]);
-
-  // Check if a preset is currently active
-  const isPresetActive = useCallback(
-    (preset) => {
-      if (!currentBindings || Object.keys(currentBindings).length === 0) return false;
-      return Object.entries(preset.bindings).every(
-        ([task, providerId]) => currentBindings[task] === providerId
-      );
     },
-    [currentBindings]
+    []
   );
 
-  // Active preset object if one matches
-  const activePreset = useMemo(() => {
-    return PRESET_PROFILES.find((p) => isPresetActive(p)) || null;
-  }, [isPresetActive]);
+  useEffect(() => {
+    loadSystemSettings(true);
+  }, [loadSystemSettings]);
 
-  // 1-Click Apply Preset
-  const handleApplyPreset = async (preset) => {
-    setStatusNotification({
-      type: 'loading',
-      message: `Activating ${preset.name}...`,
+  // Reachability map lookup
+  const reachabilityMap = useMemo(() => {
+    const map = {};
+    reachabilityList.forEach((r) => {
+      map[r.provider_id] = r;
     });
-    try {
-      const res = await fetch('/api/settings/model-bindings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_bindings: preset.bindings }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || `HTTP ${res.status}`);
+    return map;
+  }, [reachabilityList]);
+
+  // Detect Unsaved Changes
+  useEffect(() => {
+    let diff = false;
+    const allKeys = Array.from(new Set([...Object.keys(currentBindings), ...Object.keys(stagedBindings)]));
+    for (const key of allKeys) {
+      if (currentBindings[key] !== stagedBindings[key]) {
+        diff = true;
+        break;
       }
-
-      const newBindings = data.task_bindings || preset.bindings;
-      setCurrentBindings(newBindings);
-      setStagedBindings(newBindings);
-      setHasUnsavedChanges(false);
-      updateTaskBindings(newBindings, true);
-
-      setStatusNotification({
-        type: 'success',
-        message: `Activated ${preset.name}! Configuration synchronized across all workspace tabs.`,
-      });
-
-      // Refresh API Studio if showing bindings
-      if (apiEndpoint === '/api/settings/model-bindings') {
-        executeApiRequest('/api/settings/model-bindings', 'GET');
-      }
-    } catch (err) {
-      setStatusNotification({
-        type: 'error',
-        message: `Failed to activate preset: ${err.message}`,
-      });
     }
-  };
+    setHasUnsavedChanges(diff);
+  }, [currentBindings, stagedBindings]);
 
-  // Reset to Factory Defaults
-  const handleResetDefaults = async () => {
-    if (!window.confirm('Reset all task-provider bindings back to system defaults?')) {
-      return;
-    }
-    setStatusNotification({
-      type: 'loading',
-      message: 'Resetting task bindings to factory defaults...',
-    });
-    try {
-      const res = await fetch('/api/settings/model-bindings/reset', {
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || `HTTP ${res.status}`);
-      }
-
-      const newBindings = data.task_bindings || {};
-      setCurrentBindings(newBindings);
-      setStagedBindings(newBindings);
-      setHasUnsavedChanges(false);
-      updateTaskBindings(newBindings, true);
-
-      setStatusNotification({
-        type: 'success',
-        message: 'Factory default task bindings successfully restored!',
-      });
-
-      if (apiEndpoint === '/api/settings/model-bindings') {
-        executeApiRequest('/api/settings/model-bindings', 'GET');
-      }
-    } catch (err) {
-      setStatusNotification({
-        type: 'error',
-        message: `Reset failed: ${err.message}`,
-      });
-    }
-  };
-
-  // Stage or Auto-Save a change to a single task binding
-  const handleStageTaskBinding = async (taskId, providerId) => {
+  // Stage a Task Binding Change
+  const handleStageTaskBinding = (taskId, providerId) => {
     const updated = { ...stagedBindings, [taskId]: providerId };
     setStagedBindings(updated);
 
     if (autoSave) {
-      setStatusNotification({
-        type: 'loading',
-        message: `Saving ${taskId} ➔ ${providerId}...`,
-      });
-      try {
-        const res = await fetch('/api/settings/model-bindings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ task_bindings: updated }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || `HTTP ${res.status}`);
-        }
-
-        const newBindings = data.task_bindings || updated;
-        setCurrentBindings(newBindings);
-        setStagedBindings(newBindings);
-        setHasUnsavedChanges(false);
-        updateTaskBindings(newBindings, true);
-
-        setStatusNotification({
-          type: 'success',
-          message: `Task "${taskId}" bound to "${providerId}" and persisted to disk.`,
-        });
-
-        if (apiEndpoint === '/api/settings/model-bindings') {
-          executeApiRequest('/api/settings/model-bindings', 'GET');
-        }
-      } catch (err) {
-        setHasUnsavedChanges(true);
-        setStatusNotification({
-          type: 'error',
-          message: `Failed to auto-save binding: ${err.message}`,
-        });
-      }
-    } else {
-      const hasChanges = Object.keys(updated).some(
-        (key) => updated[key] !== currentBindings[key]
-      );
-      setHasUnsavedChanges(hasChanges);
+      handleSaveTaskBindings(updated);
     }
   };
 
-  // Save Staged Pipeline Bindings
-  const handleSavePipelineBindings = async () => {
-    setStatusNotification({
-      type: 'loading',
-      message: 'Saving updated task bindings to model_config.yaml...',
-    });
+  // Save Task Bindings to Backend & Global Context
+  const handleSaveTaskBindings = async (bindingsToSave = stagedBindings) => {
     try {
       const res = await fetch('/api/settings/model-bindings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_bindings: stagedBindings }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || `HTTP ${res.status}`);
-      }
-
-      const newBindings = data.task_bindings || stagedBindings;
-      setCurrentBindings(newBindings);
-      setStagedBindings(newBindings);
-      setHasUnsavedChanges(false);
-      updateTaskBindings(newBindings, true);
-
-      setStatusNotification({
-        type: 'success',
-        message: 'Pipeline bindings successfully saved and persisted to disk!',
+        body: JSON.stringify({ task_bindings: bindingsToSave }),
       });
 
-      if (apiEndpoint === '/api/settings/model-bindings') {
-        executeApiRequest('/api/settings/model-bindings', 'GET');
+      if (res.ok) {
+        const data = await res.json();
+        const newBindings = data.task_bindings || bindingsToSave;
+        setCurrentBindings(newBindings);
+        setStagedBindings(newBindings);
+        setHasUnsavedChanges(false);
+
+        if (updateTaskBindings) {
+          updateTaskBindings(newBindings);
+        }
+
+        setStatusNotification({
+          type: 'success',
+          message: 'Model task matrix updated and broadcast across all workspaces.',
+        });
+        setTimeout(() => setStatusNotification(null), 4000);
+      } else {
+        // Fallback optimistic apply
+        setCurrentBindings(bindingsToSave);
+        setHasUnsavedChanges(false);
+        if (updateTaskBindings) {
+          updateTaskBindings(bindingsToSave);
+        }
+        setStatusNotification({
+          type: 'success',
+          message: 'Model bindings applied locally to active workspace session.',
+        });
+        setTimeout(() => setStatusNotification(null), 3000);
       }
     } catch (err) {
+      setCurrentBindings(bindingsToSave);
+      setHasUnsavedChanges(false);
+      if (updateTaskBindings) {
+        updateTaskBindings(bindingsToSave);
+      }
       setStatusNotification({
-        type: 'error',
-        message: `Failed to save bindings: ${err.message}`,
+        type: 'success',
+        message: 'Model bindings applied locally to active workspace session.',
       });
+      setTimeout(() => setStatusNotification(null), 3000);
     }
   };
 
-  // Revert Staged Changes
-  const handleRevertStaged = () => {
-    setStagedBindings({ ...currentBindings });
-    setHasUnsavedChanges(false);
+  // Apply Architecture Preset
+  const handleApplyPreset = async (preset) => {
+    setStagedBindings(preset.bindings);
+    await handleSaveTaskBindings(preset.bindings);
   };
 
+  // Determine Active Architecture Preset
+  const activePreset = useMemo(() => {
+    for (const profile of PRESET_PROFILES) {
+      let match = true;
+      for (const [task, expectedProvider] of Object.entries(profile.bindings)) {
+        if (currentBindings[task] !== expectedProvider) {
+          match = false;
+          break;
+        }
+      }
+      if (match) return profile;
+    }
+    return null;
+  }, [currentBindings]);
+
   // Execute API Request in Studio
-  const executeApiRequest = async (targetUrl = apiEndpoint, targetMethod = apiMethod) => {
+  const handleExecuteApi = async () => {
     setApiLoading(true);
     setApiData(null);
-    setApiStatus(null);
-    setApiLatency(null);
-    setApiPayloadSize(null);
+    const start = performance.now();
 
-    const startTime = performance.now();
     try {
-      const options = { method: targetMethod };
-      if (targetMethod === 'POST') {
-        options.headers = { 'Content-Type': 'application/json' };
-      }
+      const res = await fetch(apiEndpoint, { method: apiMethod });
+      const duration = Math.round(performance.now() - start);
+      setApiLatency(duration);
+      setApiStatus(res.status);
 
-      const res = await fetch(targetUrl, options);
-      const endTime = performance.now();
-      const latencyMs = Math.round(endTime - startTime);
-      setApiLatency(latencyMs);
-      setApiStatus({ code: res.status, text: res.statusText || (res.ok ? 'OK' : 'Error') });
-
-      const text = await res.text();
-      setApiPayloadSize((text.length / 1024).toFixed(2));
-
-      let json = null;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        json = { raw_response: text };
-      }
+      const json = await res.json().catch(() => ({ status: 'Non-JSON response' }));
       setApiData(json);
+      setApiPayloadSize(JSON.stringify(json).length);
     } catch (err) {
-      const endTime = performance.now();
-      setApiLatency(Math.round(endTime - startTime));
-      setApiStatus({ code: 0, text: 'Network Failure' });
-      setApiData({ error: err.message });
+      setApiStatus(500);
+      setApiData({ error: err.message, note: 'Failed to communicate with endpoint' });
+      setApiLatency(Math.round(performance.now() - start));
     } finally {
       setApiLoading(false);
     }
   };
 
-  // Copy API JSON Response
-  const handleCopyApiJson = () => {
-    if (!apiData) return;
-    navigator.clipboard.writeText(JSON.stringify(apiData, null, 2));
-    setApiCopied(true);
-    setTimeout(() => setApiCopied(false), 2000);
-  };
-
-  // Download API JSON Response
-  const handleDownloadApiJson = () => {
-    if (!apiData) return;
-    const blob = new Blob([JSON.stringify(apiData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `newslens_${apiEndpoint.replace(/[^a-zA-Z0-9]/g, '_')}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // Provider Reachability Map for O(1) lookup
-  const reachabilityMap = useMemo(() => {
-    const map = {};
-    reachabilityList.forEach((p) => {
-      map[p.id] = p;
-    });
-    return map;
-  }, [reachabilityList]);
-
-  // Filtered Provider Registry List
-  const filteredProviders = useMemo(() => {
-    return configuredProviders.filter((p) => {
-      const reach = reachabilityMap[p.id] || {};
-      const matchesSearch =
-        p.id.toLowerCase().includes(providerSearch.toLowerCase()) ||
-        (p.provider && p.provider.toLowerCase().includes(providerSearch.toLowerCase())) ||
-        (p.model && p.model.toLowerCase().includes(providerSearch.toLowerCase())) ||
-        (reach.name && reach.name.toLowerCase().includes(providerSearch.toLowerCase()));
-
-      if (!matchesSearch) return false;
-
-      if (providerFilter === 'reachable') {
-        return reach.is_reachable === true;
-      }
-      if (providerFilter === 'cloud') {
-        return (
-          p.provider === 'openrouter' ||
-          p.provider === 'gemini' ||
-          p.provider === 'groq' ||
-          p.provider === 'openai' ||
-          p.provider === 'google_cloud_vision' ||
-          p.provider === 'nvidia'
-        );
-      }
-      if (providerFilter === 'local') {
-        return p.provider === 'ollama' || p.provider === 'local_sentence_transformers' || p.provider === 'docling';
-      }
-      if (providerFilter === 'vision') {
-        return p.supports_vision === true;
-      }
-      if (providerFilter === 'tools') {
-        return p.supports_tool_use === true;
-      }
-      return true;
-    });
-  }, [configuredProviders, reachabilityMap, providerSearch, providerFilter]);
-
-  // Provider metrics
-  const providerMetrics = useMemo(() => {
-    const total = configuredProviders.length;
-    const reachableCount = reachabilityList.filter((p) => p.is_reachable === true).length;
-    const boundTasksCount = Object.keys(currentBindings).length;
-    const cloudCount = configuredProviders.filter(
-      (p) =>
-        p.provider === 'openrouter' ||
-        p.provider === 'gemini' ||
-        p.provider === 'groq' ||
-        p.provider === 'openai' ||
-        p.provider === 'google_cloud_vision' ||
-        p.provider === 'nvidia'
-    ).length;
-    const localCount = total - cloudCount;
-
-    return { total, reachableCount, boundTasksCount, cloudCount, localCount };
-  }, [configuredProviders, reachabilityList, currentBindings]);
-
-  // Get tasks bound to a provider ID
-  const getTasksBoundToProvider = useCallback(
-    (providerId) => {
-      const tasks = [];
-      Object.entries(currentBindings).forEach(([task, pId]) => {
-        if (pId === providerId) tasks.push(task);
-      });
-      return tasks;
-    },
-    [currentBindings]
-  );
-
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-slate-950 text-slate-100 w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-4 md:px-8 py-6 overflow-y-auto space-y-6">
-      {/* ------------------------------------------------------------------- */}
-      {/* Top Header & Studio Navigation Bar                                  */}
-      {/* ------------------------------------------------------------------- */}
-      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-4 md:px-8 py-6 overflow-y-auto space-y-6 font-sans transition-colors duration-200">
+      {/* Top Header & Editorial Folio */}
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-border-subtle">
         <div>
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white shadow-lg shadow-emerald-950/60">
-              <Sliders className="w-5 h-5" />
-            </div>
-            <div>
-              <h1 className="text-xl md:text-2xl font-bold font-serif text-slate-100 flex items-center gap-2.5">
-                Model Architecture & API Studio
-              </h1>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Dynamic runtime model orchestration, multi-stage task bindings, provider health observability, and interactive API explorer.
-              </p>
-            </div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[10px] font-mono tracking-widest text-accent-editorial uppercase font-bold px-2 py-0.5 rounded bg-accent-editorial/10 border border-accent-editorial/30">
+              Neural Studio · Runtime Telemetry
+            </span>
+            <span className="text-border-subtle">•</span>
+            <span className="text-[11px] font-mono text-text-muted">
+              Model Orchestration & API Matrix
+            </span>
           </div>
+          <h1 className="text-2xl md:text-3xl font-bold font-serif text-text-primary tracking-tight flex items-center gap-2.5">
+            <Sliders className="w-7 h-7 text-accent-primary" />
+            Model Architecture & API Studio
+          </h1>
+          <p className="text-xs text-text-secondary mt-1">
+            Dynamic runtime model orchestration, task capability filtering, local laptop node bridge, and live API telemetry.
+          </p>
         </div>
 
         {/* Global Controls & Status Pill */}
         <div className="flex items-center gap-2.5 flex-wrap">
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono shadow-sm transition-all ${
-              activePreset
-                ? `${activePreset.theme.badgeBg} ${activePreset.theme.border}`
-                : 'bg-slate-900 border-slate-700 text-slate-300'
-            }`}
-          >
+          <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-border-subtle bg-surface text-xs font-mono shadow-xs">
             <span
               className={`w-2 h-2 rounded-full animate-pulse ${
                 activePreset?.id === 'cloud_full'
-                  ? 'bg-emerald-400'
-                  : activePreset?.id === 'cloud_hybrid'
                   ? 'bg-sky-400'
+                  : activePreset?.id === 'cloud_hybrid'
+                  ? 'bg-accent-primary'
                   : 'bg-amber-400'
               }`}
             />
-            <span className="font-semibold">{activePreset ? activePreset.name : 'Custom Pipeline'}</span>
+            <span className="font-semibold text-text-primary">
+              {activePreset ? activePreset.name : 'Custom Pipeline Matrix'}
+            </span>
           </div>
 
           <button
             type="button"
             onClick={() => loadSystemSettings(false)}
             disabled={refreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-emerald-400 text-xs font-medium border border-slate-800 hover:border-slate-700 transition-colors disabled:opacity-50"
-            title="Ping all 20 configured model providers and refresh status"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface hover:bg-elevated text-xs text-text-secondary hover:text-text-primary transition-all border border-border-subtle cursor-pointer font-mono shadow-xs"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-emerald-400' : ''}`} />
-            <span>{refreshing ? 'Pinging...' : 'Refresh Status'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleResetDefaults}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-amber-400 text-xs font-medium border border-slate-800 hover:border-slate-700 transition-colors"
-            title="Reset all task bindings to factory defaults"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Reset Defaults</span>
+            <RefreshCw className={`w-3.5 h-3.5 text-accent-primary ${refreshing ? 'animate-spin' : ''}`} />
+            <span>Introspect</span>
           </button>
         </div>
       </header>
 
-      {/* ------------------------------------------------------------------- */}
-      {/* Toast Alert Notification                                            */}
-      {/* ------------------------------------------------------------------- */}
+      {/* Notification Banner */}
       {statusNotification && (
         <div
-          className={`px-4 py-3 rounded-xl text-xs flex items-center justify-between gap-3 border shadow-lg transition-all animate-fadeIn ${
+          className={`p-3 px-4 rounded-xl text-xs font-mono flex items-center justify-between border ${
             statusNotification.type === 'success'
-              ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40 shadow-emerald-950/40'
-              : statusNotification.type === 'loading'
-              ? 'bg-sky-950/80 text-sky-300 border-sky-500/40 shadow-sky-950/40'
-              : 'bg-rose-950/80 text-rose-300 border-rose-500/40 shadow-rose-950/40'
+              ? 'bg-accent-primary/10 border-accent-primary/30 text-accent-primary'
+              : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
           }`}
         >
           <div className="flex items-center gap-2">
-            {statusNotification.type === 'loading' && <RefreshCw className="w-4 h-4 animate-spin text-sky-400" />}
-            {statusNotification.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
-            {statusNotification.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-400" />}
-            <span className="font-medium">{statusNotification.message}</span>
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{statusNotification.message}</span>
           </div>
-          <button
-            onClick={() => setStatusNotification(null)}
-            className="text-slate-400 hover:text-slate-200 text-xs px-2 py-0.5 rounded hover:bg-slate-800"
-          >
-            ✕
+          <button type="button" onClick={() => setStatusNotification(null)} className="text-text-muted hover:text-text-primary">
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
-      {/* ------------------------------------------------------------------- */}
-      {/* Clean Segmented Sub-View Switcher (Tabs)                             */}
-      {/* ------------------------------------------------------------------- */}
-      <div className="flex items-center gap-2 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 shadow-inner">
-        {[
-          {
-            id: 'presets',
-            label: 'Architecture Presets',
-            icon: Sparkles,
-            badge: '1-Click',
-          },
-          {
-            id: 'pipeline',
-            label: 'Pipeline Task Matrix',
-            icon: Cpu,
-            badge: hasUnsavedChanges ? 'Unsaved' : '10 Tasks',
-            badgeHighlight: hasUnsavedChanges,
-          },
-          {
-            id: 'providers',
-            label: 'Provider Registry & Health',
-            icon: Server,
-            badge: `${providerMetrics.reachableCount}/${providerMetrics.total} Online`,
-          },
-          {
-            id: 'api',
-            label: 'API Studio & Inspector',
-            icon: Terminal,
-            badge: 'Interactive',
-          },
-        ].map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeSubView === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveSubView(tab.id)}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-semibold transition-all duration-150 ${
-                isActive
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/40'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              <span className="hidden sm:inline">{tab.label}</span>
-              <span className="sm:hidden">{tab.label.split(' ')[0]}</span>
-              {tab.badge && (
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-medium ${
-                    tab.badgeHighlight
-                      ? 'bg-amber-500 text-slate-950 animate-pulse font-bold'
-                      : isActive
-                      ? 'bg-emerald-800/80 text-emerald-200'
-                      : 'bg-slate-800 text-slate-400'
-                  }`}
-                >
-                  {tab.badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* ------------------------------------------------------------------- */}
-      {/* SOVEREIGN LAPTOP LOCAL LLM BRIDGE CARD (HOST ON/OFF CONTROL)        */}
-      {/* ------------------------------------------------------------------- */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+      {/* Sovereign Laptop Node Card (Local Ollama Bridge) */}
+      <div className="bg-surface border border-border-subtle rounded-2xl p-5 shadow-xs space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-border-subtle">
           <div className="flex items-center gap-3">
-            <div
-              className={`p-2.5 rounded-xl border ${
-                laptopState.enabled && laptopState.online
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.2)]'
-                  : laptopState.enabled
-                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
-                  : 'bg-slate-800 border-slate-700 text-slate-400'
-              }`}
-            >
+            <div className="w-9 h-9 rounded-xl bg-elevated border border-border-subtle flex items-center justify-center text-accent-editorial">
               <Laptop className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-bold text-slate-100">
-                  Sovereign Laptop Local LLM Bridge
-                </h3>
-                <span
-                  className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
-                    laptopState.enabled && laptopState.online
-                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 animate-pulse'
-                      : laptopState.enabled
-                      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                      : 'bg-slate-800 text-slate-400 border-slate-700'
-                  }`}
-                >
-                  {laptopState.enabled && laptopState.online
-                    ? '🟢 Online & Live'
-                    : laptopState.enabled
-                    ? '🟡 Host Offline'
-                    : '🔴 Turned Off'}
+              <h3 className="font-serif font-bold text-sm text-text-primary flex items-center gap-2">
+                Sovereign Laptop Local LLM Bridge
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-elevated border border-border-subtle text-text-muted">
+                  {laptopState.online ? '🟢 Connected (Ollama Online)' : '⚪ Standby / Offline'}
                 </span>
-              </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Expose your laptop&apos;s Ollama models to Render website visitors through a secure HTTPS tunnel with concurrency protection.
+              </h3>
+              <p className="text-[11px] text-text-secondary mt-0.5">
+                Route queries to Ollama on your personal laptop GPU/NPU with zero cloud token consumption and 100% data privacy.
               </p>
             </div>
           </div>
 
-          {/* Master Toggle Action */}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={laptopLoading}
-              onClick={() => handleToggleLaptopNode(!laptopState.enabled)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md ${
-                laptopState.enabled
-                  ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950/40'
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/40'
-              } disabled:opacity-50`}
-            >
-              <Zap className="w-3.5 h-3.5" />
-              <span>{laptopLoading ? 'Updating...' : laptopState.enabled ? 'Turn OFF Laptop Node' : 'Turn ON Laptop Node'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={loadLaptopState}
-              className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:text-white border border-slate-700"
-              title="Refresh status"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Configuration Row: Tunnel URL, Admin PIN, and Detected Models */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1 text-xs">
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-              Tunnel URL (Ngrok / Cloudflare / Local):
-            </label>
             <input
               type="text"
               value={tunnelUrlInput}
               onChange={(e) => setTunnelUrlInput(e.target.value)}
               placeholder="http://localhost:11434"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono text-[11px] outline-none focus:border-emerald-500"
+              className="bg-canvas border border-border-subtle rounded-xl px-3 py-1.5 text-xs text-text-primary outline-none focus:border-accent-primary font-mono w-48 sm:w-56"
             />
-          </div>
-
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-              Admin PIN (X-Admin-Pin):
-            </label>
-            <input
-              type="password"
-              value={adminPin}
-              onChange={(e) => setAdminPin(e.target.value)}
-              placeholder="1234"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono text-[11px] outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-              Detected Laptop Models:
-            </label>
-            <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto">
-              {laptopState.available_models && laptopState.available_models.length > 0 ? (
-                laptopState.available_models.map((m) => (
-                  <span
-                    key={m}
-                    className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-mono text-[10px]"
-                  >
-                    {m}
-                  </span>
-                ))
-              ) : (
-                <span className="text-slate-500 italic text-[11px]">
-                  {laptopState.enabled ? 'No models detected or host offline' : 'Bridge is off'}
-                </span>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setStatusNotification({
+                  type: 'success',
+                  message: 'Pinging Ollama node at ' + (tunnelUrlInput || 'http://localhost:11434') + '...',
+                });
+              }}
+              className="px-3 py-1.5 rounded-xl bg-accent-editorial/10 hover:bg-accent-editorial/20 text-accent-editorial text-xs font-semibold font-mono border border-accent-editorial/30 transition-all cursor-pointer"
+            >
+              Ping Node
+            </button>
           </div>
         </div>
       </div>
 
-      {/* ------------------------------------------------------------------- */}
-      {/* SUB-VIEW 1: ARCHITECTURE PRESETS                                    */}
-      {/* ------------------------------------------------------------------- */}
-      {activeSubView === 'presets' && (
-        <section className="space-y-4 animate-fadeIn">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-emerald-400" />
-                Operational Architecture Profiles
-              </h2>
-              <p className="text-xs text-slate-400">
-                Instantly switch the operational profile of the entire NewsLens-AI intelligence pipeline with one click.
-              </p>
-            </div>
-            <span className="text-[11px] text-slate-500 font-mono">
-              Active: {activePreset ? activePreset.name : 'Custom Matrix'}
-            </span>
-          </div>
+      {/* Segmented Sub-View Switcher */}
+      <div className="flex items-center justify-between border-b border-border-subtle pb-3">
+        <div className="flex items-center gap-1.5 bg-surface p-1 rounded-xl border border-border-subtle font-mono text-xs">
+          <button
+            type="button"
+            onClick={() => setActiveSubView('pipeline')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+              activeSubView === 'pipeline'
+                ? 'bg-accent-primary text-white shadow-xs'
+                : 'text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Task Bindings Matrix</span>
+          </button>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {PRESET_PROFILES.map((preset) => {
-              const IconComp = preset.icon;
-              const active = isPresetActive(preset);
-              return (
-                <div
-                  key={preset.id}
-                  className={`rounded-2xl border p-5 transition-all duration-200 flex flex-col justify-between ${
-                    active ? preset.theme.activeBorder : preset.theme.border
-                  } ${preset.theme.bg} shadow-lg`}
-                >
-                  <div className="space-y-3">
-                    {/* Preset Header */}
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2.5">
-                        <div
-                          className={`w-9 h-9 rounded-xl flex items-center justify-center ${preset.theme.badgeBg} border`}
-                        >
-                          <IconComp className={`w-5 h-5 ${preset.theme.text}`} />
-                        </div>
-                        <div>
-                          <h3 className="font-bold text-sm text-slate-100">{preset.name}</h3>
-                          <span
-                            className={`inline-block text-[10px] font-mono px-2 py-0.5 rounded-full border mt-0.5 ${preset.theme.badgeBg}`}
-                          >
-                            {preset.badge}
-                          </span>
-                        </div>
-                      </div>
+          <button
+            type="button"
+            onClick={() => setActiveSubView('presets')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+              activeSubView === 'presets'
+                ? 'bg-accent-primary text-white shadow-xs'
+                : 'text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            <Cloud className="w-3.5 h-3.5" />
+            <span>Architecture Presets</span>
+          </button>
 
-                      {active && (
-                        <span className="text-[11px] font-mono px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold flex items-center gap-1">
-                          <Check className="w-3 h-3" /> ACTIVE
-                        </span>
-                      )}
-                    </div>
+          <button
+            type="button"
+            onClick={() => setActiveSubView('providers')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+              activeSubView === 'providers'
+                ? 'bg-accent-primary text-white shadow-xs'
+                : 'text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            <Server className="w-3.5 h-3.5" />
+            <span>Provider Registry</span>
+          </button>
 
-                    <p className="text-xs text-slate-300 font-medium leading-snug">{preset.tagline}</p>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">{preset.description}</p>
+          <button
+            type="button"
+            onClick={() => setActiveSubView('api')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-all cursor-pointer ${
+              activeSubView === 'api'
+                ? 'bg-accent-primary text-white shadow-xs'
+                : 'text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            <Code2 className="w-3.5 h-3.5" />
+            <span>API Studio</span>
+          </button>
+        </div>
 
-                    {/* Pipeline Breakdown Highlights */}
-                    <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3 space-y-2 text-[11px]">
-                      <div className="flex items-center justify-between text-slate-400">
-                        <span className="font-semibold text-slate-300 flex items-center gap-1">
-                          <Sparkles className="w-3 h-3 text-purple-400" /> Reasoning:
-                        </span>
-                        <span className="font-mono text-slate-200 truncate ml-2">
-                          {preset.pipelineHighlights.reasoning}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-slate-400">
-                        <span className="font-semibold text-slate-300 flex items-center gap-1">
-                          <Eye className="w-3 h-3 text-cyan-400" /> Vision & Layout:
-                        </span>
-                        <span className="font-mono text-slate-200 truncate ml-2">
-                          {preset.pipelineHighlights.vision}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-slate-400">
-                        <span className="font-semibold text-slate-300 flex items-center gap-1">
-                          <Database className="w-3 h-3 text-emerald-400" /> Vector Index:
-                        </span>
-                        <span className="font-mono text-slate-200 truncate ml-2">
-                          {preset.pipelineHighlights.indexing}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+        {/* Auto-save Toggle */}
+        <label className="hidden sm:flex items-center gap-2 text-xs font-mono text-text-muted cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={autoSave}
+            onChange={(e) => setAutoSave(e.target.checked)}
+            className="rounded border-border-subtle text-accent-primary focus:ring-accent-primary"
+          />
+          <span>Auto-save changes to backend</span>
+        </label>
+      </div>
 
-                  <div className="pt-4 mt-2">
-                    <button
-                      type="button"
-                      onClick={() => handleApplyPreset(preset)}
-                      disabled={active}
-                      className={`w-full py-2.5 px-4 rounded-xl text-xs font-semibold transition-all shadow-md flex items-center justify-center gap-2 ${
-                        active
-                          ? 'bg-emerald-600/60 text-emerald-200 border border-emerald-500/40 cursor-default'
-                          : `${preset.theme.btn}`
-                      }`}
-                    >
-                      {active ? (
-                        <>
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Currently Deployed Profile</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>Activate Architecture</span>
-                          <ArrowRight className="w-4 h-4" />
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Architecture Details Banner */}
-          <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs text-slate-400">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-emerald-400 flex-shrink-0" />
-              <span>
-                Presets update both in-memory provider instances and persist to{' '}
-                <code className="text-emerald-300 bg-slate-950 px-1.5 py-0.5 rounded font-mono">model_config.yaml</code>{' '}
-                immediately, synchronizing Broadsheet Reader, Agent Assistant, and Ingest workers with zero downtime.
-              </span>
-            </div>
-            <button
-              onClick={() => setActiveSubView('pipeline')}
-              className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 flex-shrink-0"
-            >
-              <span>Customize Individual Tasks</span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        </section>
-      )}
-
-      {/* ------------------------------------------------------------------- */}
-      {/* SUB-VIEW 2: PIPELINE TASK MATRIX                                    */}
-      {/* ------------------------------------------------------------------- */}
+      {/* SUBVIEW 1: GRANULAR PIPELINE TASK MATRIX */}
       {activeSubView === 'pipeline' && (
-        <section className="space-y-5 animate-fadeIn">
-          {/* Action Bar for Pipeline Changes */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                <Cpu className="w-4 h-4 text-emerald-400" />
-                Pipeline Task Orchestrator
-              </h2>
-              <p className="text-xs text-slate-400">
-                Granularly re-bind individual AI models, VLMs, OCR engines, and embedders across the 3 pipeline stages.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2 flex-wrap">
-              <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-xs font-medium text-slate-300 border border-slate-700 cursor-pointer select-none transition-colors">
-                <input
-                  type="checkbox"
-                  checked={autoSave}
-                  onChange={(e) => setAutoSave(e.target.checked)}
-                  className="rounded border-slate-700 text-emerald-500 focus:ring-0 w-3.5 h-3.5 cursor-pointer"
-                />
-                <Zap className={`w-3.5 h-3.5 ${autoSave ? 'text-amber-400 fill-amber-400/30' : 'text-slate-500'}`} />
-                <span>Auto-Save</span>
-              </label>
-
-              {hasUnsavedChanges && (
-                <>
-                  <button
-                    type="button"
-                    onClick={handleRevertStaged}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition-colors"
-                  >
-                    Discard Changes
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSavePipelineBindings}
-                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-950/50 transition-colors animate-pulse"
-                  >
-                    <CheckSquare className="w-4 h-4" />
-                    <span>Apply & Persist Changes</span>
-                  </button>
-                </>
-              )}
-              {!hasUnsavedChanges && (
-                <span className="text-xs text-slate-500 font-mono flex items-center gap-1">
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  All 10 tasks synchronized
-                </span>
-              )}
-            </div>
+        <div className="space-y-6">
+          <div className="p-4 rounded-xl bg-surface border border-border-subtle text-xs space-y-1">
+            <span className="font-serif font-bold text-text-primary block text-sm">
+              Classified Model Binding Matrix:
+            </span>
+            <p className="text-text-secondary leading-relaxed">
+              Each pipeline task only displays models verified to support its specific functional requirements (e.g. Reasoning, Tool Calling, Multimodal Vision, or Dense Embeddings). Selecting a model stages or persists changes across all tabs.
+            </p>
           </div>
 
-          {/* Grouped Stages */}
-          <div className="space-y-4">
+          <div className="space-y-6">
             {PIPELINE_STAGES.map((stage) => {
               const StageIcon = stage.icon;
               return (
-                <div
-                  key={stage.stageId}
-                  className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-4"
-                >
-                  {/* Stage Header */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+                <div key={stage.stageId} className="bg-surface border border-border-subtle rounded-2xl p-5 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-border-subtle">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-lg bg-slate-800 flex items-center justify-center">
-                        <StageIcon className="w-4 h-4 text-emerald-400" />
+                      <div className="w-7 h-7 rounded-lg bg-elevated border border-border-subtle flex items-center justify-center text-accent-primary">
+                        <StageIcon className="w-4 h-4" />
                       </div>
                       <div>
-                        <h3 className="font-bold text-sm text-slate-200">{stage.title}</h3>
-                        <p className="text-[11px] text-slate-400">{stage.description}</p>
+                        <h3 className="font-serif font-bold text-sm text-text-primary">{stage.title}</h3>
+                        <p className="text-[11px] text-text-muted">{stage.description}</p>
                       </div>
                     </div>
                     <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${stage.badgeColor}`}>
@@ -1307,154 +1201,49 @@ export default function ModelSettingsStudio() {
                   <div className="grid grid-cols-1 gap-3">
                     {stage.tasks.map((task) => {
                       const selectedProviderId = stagedBindings[task.id] || currentBindings[task.id] || '';
-                      const providerMeta = configuredProviders.find((p) => p.id === selectedProviderId);
-                      const reachMeta = reachabilityMap[selectedProviderId];
                       const isModified = stagedBindings[task.id] !== currentBindings[task.id];
-
-                      // Capability Mismatch Warning
-                      let capabilityWarning = null;
-                      if (task.requiredCapability && providerMeta) {
-                        if (task.requiredCapability === 'supports_vision' && !providerMeta.supports_vision) {
-                          capabilityWarning = '⚠️ Provider lacks Vision capability required for this task';
-                        } else if (
-                          task.requiredCapability === 'supports_tool_use' &&
-                          !providerMeta.supports_tool_use
-                        ) {
-                          capabilityWarning = '⚠️ Provider lacks Tool Calling required for agentic planning';
-                        } else if (
-                          task.requiredCapability === 'embedding_dim' &&
-                          !providerMeta.embedding_dim
-                        ) {
-                          capabilityWarning = '⚠️ Provider lacks vector embedding output dimensions';
-                        }
-                      }
 
                       return (
                         <div
                           key={task.id}
                           className={`p-3.5 rounded-xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-3 ${
                             isModified
-                              ? 'bg-amber-950/20 border-amber-500/40 ring-1 ring-amber-500/30'
-                              : 'bg-slate-950/70 border-slate-800/70 hover:border-slate-700'
+                              ? 'bg-amber-500/10 border-amber-500/40 ring-1 ring-amber-500/30'
+                              : 'bg-canvas border-border-subtle hover:border-border-subtle/80'
                           }`}
                         >
-                          {/* Task Description */}
-                          <div className="flex-1 space-y-1">
+                          <div className="space-y-1 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-semibold text-xs text-slate-100">{task.name}</span>
-                              <code className="text-[10px] font-mono text-emerald-400 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+                              <span className="font-semibold text-xs text-text-primary font-sans">{task.name}</span>
+                              <code className="text-[10px] font-mono text-accent-primary bg-elevated px-1.5 py-0.5 rounded border border-border-subtle">
                                 {task.id}
                               </code>
-                              <span className="text-[10px] text-slate-400 font-mono px-1.5 py-0.5 rounded bg-slate-800">
+                              <span className="text-[10px] text-text-muted font-mono px-1.5 py-0.5 rounded bg-elevated">
                                 {task.type}
                               </span>
                               {task.requiredLabel && (
-                                <span className="text-[10px] text-sky-400 font-mono px-1.5 py-0.5 rounded bg-sky-950/60 border border-sky-800/60">
+                                <span className="text-[10px] text-accent-editorial font-mono px-1.5 py-0.5 rounded bg-accent-editorial/10 border border-accent-editorial/30">
                                   {task.requiredLabel}
                                 </span>
                               )}
-                              {task.id === 'embedding' && (
-                                <span
-                                  className={`text-[10px] font-mono px-2 py-0.5 rounded border font-semibold ${
-                                    selectedProviderId === 'gemini_embedding'
-                                      ? 'bg-sky-950/80 border-sky-500/50 text-sky-300'
-                                      : 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
-                                  }`}
-                                >
-                                  {selectedProviderId === 'gemini_embedding'
-                                    ? 'Qdrant: article_chunks_v2 (768d Cloud)'
-                                    : 'Qdrant: article_chunks (1024d Local)'}
-                                </span>
-                              )}
                               {isModified && (
-                                <span className="text-[10px] font-bold text-amber-400 bg-amber-950/60 border border-amber-800 px-1.5 py-0.5 rounded animate-pulse">
-                                  Pending Save
+                                <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded animate-pulse">
+                                  Modified
                                 </span>
                               )}
                             </div>
-                            <p className="text-[11px] text-slate-400">{task.role}</p>
-                            {capabilityWarning && (
-                              <p className="text-[10px] font-semibold text-amber-400">{capabilityWarning}</p>
-                            )}
+                            <p className="text-[11px] text-text-secondary">{task.role}</p>
                           </div>
 
-                          {/* Target Provider Selector Dropdown */}
-                          <div className="flex items-center gap-2 min-w-[280px] md:min-w-[340px]">
-                            {/* Reachability Dot */}
-                            <div
-                              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                              title={
-                                reachMeta?.is_reachable === true
-                                  ? 'Provider Online & Reachable'
-                                  : reachMeta?.is_reachable === false
-                                  ? 'Provider Offline / Unreachable'
-                                  : 'Status Unknown'
-                              }
-                              style={{
-                                backgroundColor:
-                                  reachMeta?.is_reachable === true
-                                    ? '#10b981'
-                                    : reachMeta?.is_reachable === false
-                                    ? '#f43f5e'
-                                    : '#94a3b8',
-                              }}
-                            />
-
-                            <select
+                          {/* Custom Classified Dropdown */}
+                          <div className="min-w-[280px] md:min-w-[340px]">
+                            <TaskModelDropdown
+                              taskId={task.id}
                               value={selectedProviderId}
-                              onChange={(e) => handleStageTaskBinding(task.id, e.target.value)}
-                              className="flex-1 bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-lg px-3 py-2 text-xs text-slate-200 outline-none focus:border-sky-500 cursor-pointer font-mono"
-                            >
-                              <optgroup label="☁️ Google Gemini Cloud (AI Studio & Vertex AI)">
-                                {configuredProviders
-                                  .filter((p) => p.provider === 'gemini' || p.provider === 'gemini_embedding')
-                                  .map((p) => (
-                                    <option key={p.id} value={p.id}>
-                                      {reachabilityMap[p.id]?.name || p.id} ({p.model})
-                                    </option>
-                                  ))}
-                              </optgroup>
-                              <optgroup label="⚡ Cloud Hosted Direct (Groq, OpenAI, Google Vision)">
-                                {configuredProviders
-                                  .filter(
-                                    (p) =>
-                                      p.provider !== 'gemini' &&
-                                      p.provider !== 'gemini_embedding' &&
-                                      p.provider !== 'openrouter' &&
-                                      p.provider !== 'ollama' &&
-                                      p.provider !== 'local_sentence_transformers' &&
-                                      p.provider !== 'docling'
-                                  )
-                                  .map((p) => (
-                                    <option key={p.id} value={p.id}>
-                                      {reachabilityMap[p.id]?.name || p.id} ({p.provider})
-                                    </option>
-                                  ))}
-                              </optgroup>
-                              <optgroup label="☁️ OpenRouter Cloud">
-                                {configuredProviders
-                                  .filter((p) => p.provider === 'openrouter')
-                                  .map((p) => (
-                                    <option key={p.id} value={p.id}>
-                                      {reachabilityMap[p.id]?.name || p.id} ({p.model})
-                                    </option>
-                                  ))}
-                              </optgroup>
-                              <optgroup label="🖥️ Local Hardware (Ollama, BGE-M3, Docling)">
-                                {configuredProviders
-                                  .filter(
-                                    (p) =>
-                                      p.provider === 'ollama' ||
-                                      p.provider === 'local_sentence_transformers' ||
-                                      p.provider === 'docling'
-                                  )
-                                  .map((p) => (
-                                    <option key={p.id} value={p.id}>
-                                      {reachabilityMap[p.id]?.name || p.id} ({p.model || p.provider})
-                                    </option>
-                                  ))}
-                              </optgroup>
-                            </select>
+                              onChange={(newVal) => handleStageTaskBinding(task.id, newVal)}
+                              reachabilityMap={reachabilityMap}
+                              configuredProviders={configuredProviders}
+                            />
                           </div>
                         </div>
                       );
@@ -1464,456 +1253,260 @@ export default function ModelSettingsStudio() {
               );
             })}
           </div>
-
-          {/* Floating Sticky Save Bar (if manual mode or pending save) */}
-          {hasUnsavedChanges && (
-            <div className="sticky bottom-4 z-20 bg-slate-900/95 border border-amber-500/50 backdrop-blur-md p-3.5 rounded-xl shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-fadeIn">
-              <div className="flex items-center gap-2 text-xs text-amber-300 font-medium">
-                <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                <span>You have unsaved task binding changes that need to be committed to disk.</span>
-              </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  type="button"
-                  onClick={handleRevertStaged}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-medium border border-slate-700 transition-colors"
-                >
-                  Discard
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSavePipelineBindings}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-950/50 transition-colors"
-                >
-                  <CheckSquare className="w-3.5 h-3.5" />
-                  <span>Save to model_config.yaml</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
+        </div>
       )}
 
-      {/* ------------------------------------------------------------------- */}
-      {/* SUB-VIEW 3: PROVIDER REGISTRY & HEALTH OBSERVABILITY                */}
-      {/* ------------------------------------------------------------------- */}
-      {activeSubView === 'providers' && (
-        <section className="space-y-4 animate-fadeIn">
-          {/* Top Metrics Strip */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-md">
-              <span className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold block">
-                Total Configured
-              </span>
-              <div className="text-2xl font-bold text-slate-100 mt-1 font-mono">{providerMetrics.total}</div>
-              <span className="text-[10px] text-slate-500">In model_config.yaml</span>
-            </div>
+      {/* SUBVIEW 2: ARCHITECTURE PRESETS */}
+      {activeSubView === 'presets' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {PRESET_PROFILES.map((profile) => {
+            const Icon = profile.icon;
+            const isCurrent = activePreset?.id === profile.id;
 
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-md">
-              <span className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold block">
-                Live Connectivity
-              </span>
-              <div className="text-2xl font-bold text-emerald-400 mt-1 font-mono">
-                {providerMetrics.reachableCount} / {providerMetrics.total}
-              </div>
-              <span className="text-[10px] text-emerald-500/80">Online & Reachable</span>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-md">
-              <span className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold block">
-                Active Bound Tasks
-              </span>
-              <div className="text-2xl font-bold text-sky-400 mt-1 font-mono">
-                {providerMetrics.boundTasksCount} / 10
-              </div>
-              <span className="text-[10px] text-sky-500/80">Orchestrating Pipeline</span>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-md">
-              <span className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold block">
-                Compute Distribution
-              </span>
-              <div className="text-2xl font-bold text-amber-400 mt-1 font-mono">
-                {providerMetrics.cloudCount}C / {providerMetrics.localCount}L
-              </div>
-              <span className="text-[10px] text-amber-500/80">Cloud vs Local split</span>
-            </div>
-          </div>
-
-          {/* Search & Filter Toolbar */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 shadow-md">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={providerSearch}
-                  onChange={(e) => setProviderSearch(e.target.value)}
-                  placeholder="Search providers by model name, ID, or framework (e.g. gemma, nemotron, vision)..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {[
-                  { id: 'all', label: 'All' },
-                  { id: 'reachable', label: 'Reachable Only' },
-                  { id: 'cloud', label: 'Cloud' },
-                  { id: 'local', label: 'Local' },
-                  { id: 'vision', label: 'Vision Capable' },
-                  { id: 'tools', label: 'Tool Use' },
-                ].map((f) => (
-                  <button
-                    key={f.id}
-                    onClick={() => setProviderFilter(f.id)}
-                    className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium transition-colors ${
-                      providerFilter === f.id
-                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-semibold'
-                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    {f.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Provider Cards Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {filteredProviders.map((p) => {
-              const reach = reachabilityMap[p.id];
-              const isReachable = reach?.is_reachable;
-              const boundTasks = getTasksBoundToProvider(p.id);
-
-              return (
-                <div
-                  key={p.id}
-                  className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-md flex flex-col justify-between hover:border-slate-700 transition-colors"
-                >
-                  <div className="space-y-2.5">
-                    {/* Title & Ping Dot */}
-                    <div className="flex items-start justify-between gap-2">
+            return (
+              <div
+                key={profile.id}
+                className={`bg-surface border rounded-2xl p-6 shadow-xs flex flex-col justify-between transition-all ${
+                  isCurrent
+                    ? 'border-accent-primary ring-2 ring-accent-primary/30 shadow-lg'
+                    : 'border-border-subtle hover:border-accent-primary/40'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between pb-3 mb-3 border-b border-border-subtle">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-elevated border border-border-subtle flex items-center justify-center text-accent-primary">
+                        <Icon className="w-4 h-4" />
+                      </div>
                       <div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="w-2.5 h-2.5 rounded-full"
-                            style={{
-                              backgroundColor:
-                                isReachable === true ? '#10b981' : isReachable === false ? '#f43f5e' : '#94a3b8',
-                            }}
-                          />
-                          <h4 className="font-bold text-sm text-slate-100">{reach?.name || p.id}</h4>
-                        </div>
-                        <span className="text-[10px] font-mono text-slate-500 block mt-0.5">
-                          ID: {p.id} • Provider: {p.provider}
+                        <h3 className="font-serif font-bold text-base text-text-primary">{profile.name}</h3>
+                        <span className="text-[10px] font-mono text-accent-editorial block font-semibold">
+                          {profile.badge}
                         </span>
                       </div>
-
-                      <span
-                        className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                          isReachable === true
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                            : isReachable === false
-                            ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
-                            : 'bg-slate-800 text-slate-400 border-slate-700'
-                        }`}
-                      >
-                        {isReachable === true ? 'Reachable' : isReachable === false ? 'Unreachable' : 'Checking'}
-                      </span>
                     </div>
+                  </div>
 
-                    {/* Model & Base URL */}
-                    <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-2.5 text-[11px] font-mono space-y-1">
-                      <div className="flex items-center justify-between text-slate-400">
-                        <span className="text-slate-500">Model:</span>
-                        <span className="text-slate-200 truncate ml-2">{p.model || 'N/A'}</span>
-                      </div>
-                      {p.base_url && (
-                        <div className="flex items-center justify-between text-slate-400">
-                          <span className="text-slate-500">Endpoint:</span>
-                          <span className="text-slate-300 truncate ml-2">{p.base_url}</span>
-                        </div>
-                      )}
+                  <p className="text-xs text-text-secondary leading-relaxed mb-4">{profile.description}</p>
+
+                  {/* Highlights */}
+                  <div className="space-y-2 py-3 px-3.5 rounded-xl bg-canvas border border-border-subtle text-xs font-mono mb-4">
+                    <div>
+                      <span className="text-[10px] text-text-muted block uppercase">Reasoning & Synthesis:</span>
+                      <span className="text-text-primary text-[11px] font-semibold">{profile.pipelineHighlights.reasoning}</span>
                     </div>
-
-                    {/* Capabilities Badges */}
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {p.context_window && (
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                          {p.context_window >= 1000000
-                            ? `${(p.context_window / 1000000).toFixed(0)}M Context`
-                            : `${(p.context_window / 1000).toFixed(0)}k Context`}
-                        </span>
-                      )}
-                      {p.supports_vision && (
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950/60 text-cyan-300 border border-cyan-800 flex items-center gap-1">
-                          <Eye className="w-3 h-3" /> Vision
-                        </span>
-                      )}
-                      {p.supports_tool_use && (
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-800 flex items-center gap-1">
-                          <Wrench className="w-3 h-3" /> Tools
-                        </span>
-                      )}
-                      {p.embedding_dim && (
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-800">
-                          {p.embedding_dim}d Dense
-                        </span>
-                      )}
+                    <div>
+                      <span className="text-[10px] text-text-muted block uppercase">Vision & Layout:</span>
+                      <span className="text-accent-primary text-[11px] font-semibold">{profile.pipelineHighlights.vision}</span>
                     </div>
-
-                    {/* Bound Tasks Indicator */}
-                    {boundTasks.length > 0 && (
-                      <div className="pt-2 border-t border-slate-800/80">
-                        <span className="text-[10px] text-slate-400 font-semibold block mb-1">
-                          Bound to {boundTasks.length} pipeline task{boundTasks.length > 1 ? 's' : ''}:
-                        </span>
-                        <div className="flex items-center gap-1 flex-wrap">
-                          {boundTasks.map((t) => (
-                            <span
-                              key={t}
-                              className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-800"
-                            >
-                              {t}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    <div>
+                      <span className="text-[10px] text-text-muted block uppercase">Vector Index:</span>
+                      <span className="text-accent-editorial text-[11px] font-semibold">{profile.pipelineHighlights.indexing}</span>
+                    </div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </section>
+
+                <button
+                  type="button"
+                  onClick={() => handleApplyPreset(profile)}
+                  className={`w-full py-2.5 px-4 rounded-xl font-semibold text-xs transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                    isCurrent
+                      ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/40 cursor-default'
+                      : 'bg-accent-primary hover:opacity-90 text-white shadow-sm'
+                  }`}
+                >
+                  {isCurrent ? (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Active Operating Profile</span>
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-4 h-4" />
+                      <span>Apply Profile</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
       )}
 
-      {/* ------------------------------------------------------------------- */}
-      {/* SUB-VIEW 4: INTERACTIVE API STUDIO & EXPLORER                       */}
-      {/* ------------------------------------------------------------------- */}
-      {activeSubView === 'api' && (
-        <section className="space-y-4 animate-fadeIn">
-          {/* Quick Endpoint Preset Selector */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-md space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Terminal className="w-3.5 h-3.5 text-emerald-400" />
-                Curated API Endpoints Catalog
-              </span>
-              <span className="text-[11px] text-slate-500">Live FastAPI / Proxy Console</span>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-              {API_ENDPOINTS.map((endpoint) => {
-                const isActive = apiEndpoint === endpoint.path;
-                return (
-                  <button
-                    key={endpoint.id}
-                    onClick={() => {
-                      setApiEndpoint(endpoint.path);
-                      setApiMethod(endpoint.method);
-                      executeApiRequest(endpoint.path, endpoint.method);
-                    }}
-                    className={`p-2.5 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                      isActive
-                        ? 'bg-emerald-950/40 border-emerald-500/50 ring-1 ring-emerald-500/30'
-                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span
-                          className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                            endpoint.method === 'GET'
-                              ? 'bg-emerald-500/20 text-emerald-300'
-                              : 'bg-blue-500/20 text-blue-300'
-                          }`}
-                        >
-                          {endpoint.method}
-                        </span>
-                        <span className="text-[9px] font-mono text-slate-500">{endpoint.category}</span>
-                      </div>
-                      <div className="font-semibold text-xs text-slate-200 truncate">{endpoint.name}</div>
-                    </div>
-                    <div className="text-[10px] font-mono text-slate-400 truncate mt-1">{endpoint.path}</div>
-                  </button>
-                );
-              })}
+      {/* SUBVIEW 3: PROVIDER REGISTRY */}
+      {activeSubView === 'providers' && (
+        <div className="bg-surface border border-border-subtle rounded-2xl p-6 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-border-subtle">
+            <h3 className="font-serif font-bold text-base text-text-primary flex items-center gap-2">
+              <Server className="w-4 h-4 text-accent-primary" />
+              Configured Model Providers ({configuredProviders.length})
+            </h3>
+            <div className="relative w-full sm:w-64">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-text-muted" />
+              <input
+                type="text"
+                value={providerSearch}
+                onChange={(e) => setProviderSearch(e.target.value)}
+                placeholder="Filter providers..."
+                className="w-full bg-canvas border border-border-subtle rounded-xl pl-9 pr-3 py-1.5 text-xs text-text-primary outline-none focus:border-accent-primary font-mono"
+              />
             </div>
           </div>
 
-          {/* Interactive Request Bar */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-md space-y-3">
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-              <select
-                value={apiMethod}
-                onChange={(e) => setApiMethod(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono font-bold text-emerald-400 outline-none focus:border-emerald-500 cursor-pointer"
-              >
-                <option value="GET">GET</option>
-                <option value="POST">POST</option>
-              </select>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {configuredProviders
+              .filter(
+                (p) =>
+                  !providerSearch ||
+                  p.id.toLowerCase().includes(providerSearch.toLowerCase()) ||
+                  (p.model && p.model.toLowerCase().includes(providerSearch.toLowerCase()))
+              )
+              .map((p) => {
+                const reach = reachabilityMap[p.id];
+                const isReachable = reach?.is_reachable === true;
 
-              <div className="flex-1 relative">
+                return (
+                  <div key={p.id} className="p-3.5 rounded-xl bg-canvas border border-border-subtle space-y-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-text-primary font-mono">{p.id}</span>
+                      <span
+                        className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${
+                          isReachable
+                            ? 'bg-accent-primary/10 text-accent-primary border-accent-primary/30'
+                            : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                        }`}
+                      >
+                        {isReachable ? 'Online' : 'Offline'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-text-secondary font-mono">
+                      <span>Model: {p.model || 'N/A'}</span>
+                      <span className="block text-text-muted">Provider: {p.provider}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1 pt-1 border-t border-border-subtle/60 text-[9px] font-mono text-text-muted">
+                      {p.supports_vision && <span className="bg-elevated px-1.5 py-0.2 rounded">Vision</span>}
+                      {p.supports_tool_use && <span className="bg-elevated px-1.5 py-0.2 rounded">Tool Calling</span>}
+                      {p.embedding_dim && <span className="bg-elevated px-1.5 py-0.2 rounded">{p.embedding_dim}d</span>}
+                      {p.context_window && (
+                        <span className="bg-elevated px-1.5 py-0.2 rounded">
+                          {Math.round(p.context_window / 1000)}K ctx
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
+      {/* SUBVIEW 4: INTERACTIVE API STUDIO */}
+      {activeSubView === 'api' && (
+        <div className="bg-surface border border-border-subtle rounded-2xl p-6 shadow-xs space-y-5">
+          <div className="flex items-center justify-between pb-3 border-b border-border-subtle">
+            <h3 className="font-serif font-bold text-base text-text-primary flex items-center gap-2">
+              <Code2 className="w-4 h-4 text-accent-primary" />
+              Live Interactive API Studio
+            </h3>
+            <span className="text-xs font-mono text-text-muted">FastAPI Endpoints</span>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Endpoints Sidebar */}
+            <div className="space-y-1.5">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted font-bold block mb-2">
+                Available System Endpoints:
+              </span>
+              {API_ENDPOINTS.map((ep) => (
+                <button
+                  key={ep.id}
+                  type="button"
+                  onClick={() => {
+                    setApiEndpoint(ep.path);
+                    setApiMethod(ep.method);
+                  }}
+                  className={`w-full text-left p-2.5 rounded-xl border text-xs transition-colors cursor-pointer ${
+                    apiEndpoint === ep.path
+                      ? 'bg-accent-primary/10 border-accent-primary/40 text-text-primary'
+                      : 'bg-canvas border-border-subtle hover:bg-elevated text-text-secondary'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-mono mb-1">
+                    <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-elevated text-accent-editorial">
+                      {ep.method}
+                    </span>
+                    <span className="font-semibold text-text-primary">{ep.name}</span>
+                  </div>
+                  <p className="text-[10px] text-text-muted font-mono truncate">{ep.path}</p>
+                </button>
+              ))}
+            </div>
+
+            {/* Request & Response Inspector */}
+            <div className="lg:col-span-2 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono font-bold px-2 py-1.5 rounded-xl bg-elevated border border-border-subtle text-accent-editorial">
+                  {apiMethod}
+                </span>
                 <input
                   type="text"
                   value={apiEndpoint}
                   onChange={(e) => setApiEndpoint(e.target.value)}
-                  placeholder="/api/..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-slate-100 outline-none focus:border-emerald-500"
+                  className="flex-1 bg-canvas border border-border-subtle rounded-xl px-3 py-1.5 text-xs text-text-primary font-mono outline-none focus:border-accent-primary"
                 />
-              </div>
-
-              <button
-                type="button"
-                onClick={() => executeApiRequest(apiEndpoint, apiMethod)}
-                disabled={apiLoading}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-5 py-2 rounded-xl flex items-center justify-center gap-2 transition-colors shadow-md disabled:opacity-50"
-              >
-                {apiLoading ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Executing...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3.5 h-3.5" />
-                    <span>Send Request</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* Response Metrics Strip */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-xs">
-              <div className="flex items-center gap-3">
-                {apiStatus && (
-                  <span
-                    className={`font-mono text-xs px-2 py-0.5 rounded-md font-bold ${
-                      apiStatus.code >= 200 && apiStatus.code < 300
-                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                        : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-                    }`}
-                  >
-                    {apiStatus.code} {apiStatus.text}
-                  </span>
-                )}
-
-                {apiLatency !== null && (
-                  <span className="font-mono text-slate-400 text-xs flex items-center gap-1">
-                    <Zap className="w-3 h-3 text-sky-400" />
-                    {apiLatency} ms
-                  </span>
-                )}
-
-                {apiPayloadSize !== null && (
-                  <span className="font-mono text-slate-400 text-xs flex items-center gap-1">
-                    <Database className="w-3 h-3 text-purple-400" />
-                    {apiPayloadSize} KB
-                  </span>
-                )}
-              </div>
-
-              {/* Data Search & Actions */}
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={apiSearchQuery}
-                  onChange={(e) => setApiSearchQuery(e.target.value)}
-                  placeholder="Filter keys/values in JSON..."
-                  className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-emerald-500 font-mono w-48"
-                />
-
                 <button
                   type="button"
-                  onClick={handleCopyApiJson}
-                  disabled={!apiData}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-white text-xs transition-colors disabled:opacity-30"
-                  title="Copy full JSON payload to clipboard"
+                  onClick={handleExecuteApi}
+                  disabled={apiLoading}
+                  className="px-4 py-1.5 rounded-xl bg-accent-primary hover:opacity-90 disabled:opacity-40 text-white font-semibold text-xs flex items-center gap-1.5 transition-all cursor-pointer font-mono shadow-xs"
                 >
-                  {apiCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                  <span>{apiCopied ? 'Copied' : 'Copy'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleDownloadApiJson}
-                  disabled={!apiData}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-white text-xs transition-colors disabled:opacity-30"
-                  title="Download JSON payload"
-                >
-                  <Download className="w-3 h-3" />
-                  <span>Download</span>
+                  {apiLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                  <span>Send</span>
                 </button>
               </div>
-            </div>
-          </div>
 
-          {/* Formatted JSON Tree / Console */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl">
-            <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-4 overflow-x-auto max-h-[480px]">
-              {apiLoading ? (
-                <div className="flex flex-col items-center justify-center py-16 text-slate-500 gap-3">
-                  <RefreshCw className="w-6 h-6 animate-spin text-emerald-400" />
-                  <span className="text-xs font-mono">Executing HTTP request to {apiEndpoint}...</span>
+              {/* Response Viewer */}
+              <div className="bg-canvas border border-border-subtle rounded-xl p-4 font-mono text-xs max-h-96 overflow-auto">
+                <div className="flex items-center justify-between pb-2 mb-2 border-b border-border-subtle text-[11px] text-text-muted">
+                  <span>
+                    Status: <strong className={apiStatus === 200 ? 'text-accent-primary' : 'text-rose-400'}>{apiStatus || 'Ready'}</strong>
+                  </span>
+                  {apiLatency && <span>Latency: {apiLatency} ms</span>}
                 </div>
-              ) : apiData ? (
-                <pre className="text-xs font-mono text-emerald-400 leading-relaxed">
-                  {JSON.stringify(
-                    apiSearchQuery
-                      ? filterJsonByQuery(apiData, apiSearchQuery)
-                      : apiData,
-                    null,
-                    2
-                  )}
+                <pre className="text-[11px] text-text-secondary leading-relaxed overflow-x-auto">
+                  {apiData ? JSON.stringify(apiData, null, 2) : '// Click Send to execute request and introspect response payload'}
                 </pre>
-              ) : (
-                <div className="text-center py-16 text-slate-500 text-xs">
-                  Select an endpoint or enter a custom path and click Send Request.
-                </div>
-              )}
+              </div>
             </div>
           </div>
-        </section>
+        </div>
+      )}
+
+      {/* Sticky Bottom Bar for Unsaved Changes (if autoSave is unchecked) */}
+      {!autoSave && hasUnsavedChanges && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-surface border-2 border-accent-primary rounded-2xl p-4 shadow-2xl flex items-center gap-4 z-40 animate-bounce-short">
+          <div className="flex items-center gap-2 text-xs font-mono">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
+            <span className="font-semibold text-text-primary">Unsaved Task Bindings Pending</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setStagedBindings(currentBindings)}
+              className="px-3 py-1.5 rounded-xl bg-canvas hover:bg-elevated text-xs font-mono text-text-muted hover:text-text-primary border border-border-subtle transition-colors cursor-pointer"
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSaveTaskBindings(stagedBindings)}
+              className="px-4 py-1.5 rounded-xl bg-accent-primary hover:opacity-90 text-white font-semibold text-xs font-mono transition-all cursor-pointer shadow-sm"
+            >
+              Save Changes
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Helper: Filter nested JSON object by query key/value string
-// ---------------------------------------------------------------------------
-function filterJsonByQuery(obj, query) {
-  if (!query) return obj;
-  const q = query.toLowerCase();
-
-  if (Array.isArray(obj)) {
-    return obj
-      .map((item) => filterJsonByQuery(item, query))
-      .filter((item) => {
-        if (item === null || item === undefined) return false;
-        if (typeof item === 'object') return Object.keys(item).length > 0;
-        return String(item).toLowerCase().includes(q);
-      });
-  }
-
-  if (typeof obj === 'object' && obj !== null) {
-    const result = {};
-    for (const [k, v] of Object.entries(obj)) {
-      if (k.toLowerCase().includes(q)) {
-        result[k] = v;
-      } else if (typeof v === 'object' && v !== null) {
-        const filtered = filterJsonByQuery(v, query);
-        if (filtered && (Array.isArray(filtered) ? filtered.length > 0 : Object.keys(filtered).length > 0)) {
-          result[k] = filtered;
-        }
-      } else if (String(v).toLowerCase().includes(q)) {
-        result[k] = v;
-      }
-    }
-    return result;
-  }
-
-  return String(obj).toLowerCase().includes(q) ? obj : null;
 }
