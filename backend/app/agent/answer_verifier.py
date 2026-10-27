@@ -9,8 +9,6 @@ Audits synthesized responses against retrieved evidence ground truth along four 
 
 from __future__ import annotations
 
-import contextlib
-import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -21,14 +19,21 @@ from app.agent.archive_context import (
     STATIC_ARCHIVE_DATE_MIN,
     STATIC_CANONICAL_PUBLICATIONS,
 )
+from app.agent.decision_layer import (
+    is_availability_query,
+    is_quantitative_query,
+)
 from app.agent.extractor import (
     _KNOWN_BRANDS_PATTERNS,
     has_named_brand,
     is_archive_wide_newspaper_query,
 )
+from app.agent.llm_helpers import (
+    extract_json_object,
+    resolve_provider_candidates,
+)
 from app.core.logging import get_logger
 from app.providers.base import ChatModelProvider, Message
-from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
 
@@ -106,30 +111,14 @@ class AnswerVerifier:
         self._provider = provider
 
     def _resolve_providers(self, model_override: str | None = None) -> list[ChatModelProvider]:
-        """Resolve candidate model providers for answer verification."""
-        if self._provider is not None:
-            return [self._provider]
-
-        candidates: list[ChatModelProvider] = []
-        try:
-            reg = get_registry()
-            if model_override:
-                with contextlib.suppress(Exception):
-                    candidates.append(reg.get_chat_provider(model_override))
-            for key in ["evaluator", "query_planner", "synthesizer"]:
-                with contextlib.suppress(Exception):
-                    p = reg.get_provider(key)
-                    if p is not None and hasattr(p, "complete") and p not in candidates:
-                        candidates.append(p)
-            for k in reg.get_chat_failover_candidates():
-                with contextlib.suppress(Exception):
-                    p = reg.get_chat_provider(k)
-                    if p is not None and hasattr(p, "complete") and p not in candidates:
-                        candidates.append(p)
-        except Exception as e:
-            logger.warning("Could not resolve candidate models for AnswerVerifier", extra={"error": str(e)})
-
-        return candidates
+        """Resolve candidate model providers for answer verification via shared llm_helpers."""
+        return resolve_provider_candidates(
+            task_name="evaluator",
+            model_override=model_override,
+            injected_provider=self._provider,
+            fallback_task_keys=("query_planner", "synthesizer"),
+            prefer_local=False,
+        )
 
     def _build_evidence_summary(self, evidence_items: list[dict[str, Any]]) -> str:
         """Format retrieved evidence items into a clean, compact ground-truth summary."""
@@ -164,7 +153,6 @@ class AnswerVerifier:
         query: str = "",
     ) -> AnswerVerificationResult | None:
         """Fast-floor check catching explicit relational zero-count contradictions deterministically."""
-        # 1. Publication scope mismatch check: query asked about archive-wide newspapers, but draft answer narrowed to a single brand
         if query:
             is_archive_np = is_archive_wide_newspaper_query(query)
             named_brand_in_query = has_named_brand(query)
@@ -187,7 +175,6 @@ class AnswerVerifier:
                             dynamic_tool_hint=f"Execute dynamic SQL query across all publications for {query}.",
                         )
 
-        # 2. Check for NaN in draft answer (e.g. "nan words", "is nan", "nan %")
         nan_match = re.search(r"(?i)\b(?:nan|null)\s*(?:words?|articles?|issues?|pages?|%|\b)", draft_answer)
         if nan_match or re.search(r"(?i)\bis\s+nan\b", draft_answer):
             return AnswerVerificationResult(
@@ -219,36 +206,18 @@ class AnswerVerifier:
                 break
 
         if zero_issue_record is not None:
-            if query:
-                q_low = query.lower()
-                is_archive_np = is_archive_wide_newspaper_query(query)
-                is_quant = bool(
-                    is_archive_np
-                    or re.search(
-                        r"\b(how many|no of|number of|count of|total issues|total newspapers|how many newspapers)\b",
-                        q_low,
-                    )
+            if query and is_quantitative_query(query) and not is_availability_query(query):
+                return AnswerVerificationResult(
+                    is_valid=False,
+                    has_hallucination=False,
+                    has_contradiction=False,
+                    evidence_gap_detected=True,
+                    quality_score=0.2,
+                    factual_errors=["Static retrieval produced 0 records for an aggregate count query."],
+                    critique="Evidence gap: quantitative count query received 0 records from static tool. Fallback to dynamic database tool required.",
+                    recommended_action="fallback_to_dynamic_tool",
+                    dynamic_tool_hint="Execute dynamic SQL query to count distinct newspapers and issues.",
                 )
-                is_avail = bool(
-                    re.search(
-                        r"\b(is\s+(?:any\s+)?newspaper\s+available|are\s+there\s+(?:any\s+)?newspapers|is\s+there\s+an?\s+issue|"
-                        r"papers?\s+available|newspapers?\s+available|check\s+availability|issues?\s+available|edition\s+available|"
-                        r"available\s+for\s+dated?|issues?\s+for\s+dated?|paper\s+for\s+dated?)\b",
-                        q_low,
-                    )
-                )
-                if is_quant and not is_avail:
-                    return AnswerVerificationResult(
-                        is_valid=False,
-                        has_hallucination=False,
-                        has_contradiction=False,
-                        evidence_gap_detected=True,
-                        quality_score=0.2,
-                        factual_errors=["Static retrieval produced 0 records for an aggregate count query."],
-                        critique="Evidence gap: quantitative count query received 0 records from static tool. Fallback to dynamic database tool required.",
-                        recommended_action="fallback_to_dynamic_tool",
-                        dynamic_tool_hint="Execute dynamic SQL query to count distinct newspapers and issues.",
-                    )
 
             has_positive_claim = bool(
                 re.search(
@@ -312,13 +281,11 @@ class AnswerVerifier:
                 recommended_action="fallback_to_dynamic_tool" if not evidence_items else "refine_answer",
             )
 
-        # 1. Fast Groundedness Floor Check
         fast_result = self._fast_groundedness_check(draft_answer, evidence_items, query=query)
         if fast_result is not None:
             fast_result.latency_ms = round((time.monotonic() - t0) * 1000)
             return fast_result
 
-        # 2. Prepare LLM Judge Prompt
         evidence_summary = self._build_evidence_summary(evidence_items)
         prompt = (
             f"USER QUERY:\n{query}\n\n"
@@ -329,8 +296,7 @@ class AnswerVerifier:
             "Respond ONLY with a valid JSON object matching the required schema."
         )
 
-        candidates = self._resolve_providers(model_override)
-        for prov in candidates:
+        for prov in self._resolve_providers(model_override):
             try:
                 resp = await prov.complete(
                     messages=[
@@ -341,10 +307,8 @@ class AnswerVerifier:
                     temperature=0.0,
                     thinking_budget=0,
                 )
-                raw_text = (resp.text or "").strip()
-                json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-                if json_match:
-                    data = json.loads(json_match.group(0))
+                data = extract_json_object(resp.text or "")
+                if data:
                     is_valid = bool(data.get("is_valid", False))
                     has_hallucination = bool(data.get("has_hallucination", False))
                     has_contradiction = bool(data.get("has_contradiction", False))
@@ -353,9 +317,6 @@ class AnswerVerifier:
                     errors = data.get("factual_errors") or []
                     critique = data.get("critique") or ""
                     action = str(data.get("recommended_action", "accept" if is_valid else "refine_answer"))
-                    refined = data.get("refined_answer")
-                    dyn_hint = data.get("dynamic_tool_hint")
-
                     if action not in ("accept", "refine_answer", "fallback_to_dynamic_tool"):
                         action = "accept" if is_valid else "refine_answer"
 
@@ -368,15 +329,14 @@ class AnswerVerifier:
                         factual_errors=errors if isinstance(errors, list) else [str(errors)],
                         critique=critique,
                         recommended_action=action,
-                        refined_answer=refined,
-                        dynamic_tool_hint=dyn_hint,
+                        refined_answer=data.get("refined_answer"),
+                        dynamic_tool_hint=data.get("dynamic_tool_hint"),
                         latency_ms=round((time.monotonic() - t0) * 1000),
                     )
             except Exception as e:
                 logger.debug("AnswerVerifier candidate provider execution failed", extra={"error": str(e)})
                 continue
 
-        # Fallback if no LLM responded
         return AnswerVerificationResult(
             is_valid=True,
             quality_score=0.9,

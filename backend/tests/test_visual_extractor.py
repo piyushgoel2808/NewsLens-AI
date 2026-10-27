@@ -182,7 +182,6 @@ async def test_visual_extractor_classify_fallback_ocr_density(monkeypatch) -> No
 def test_repair_and_parse_json_utilities() -> None:
     """Verify repair_and_parse_json handles thought tags, code fences, and truncated JSON."""
     from app.ingestion.visual_extractor import (
-        extract_markdown_table_from_raw_text,
         repair_and_parse_json,
     )
 

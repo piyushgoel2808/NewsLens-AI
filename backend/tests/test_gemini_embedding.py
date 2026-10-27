@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
 import httpx
+import pytest
 
 from app.providers.base import ProviderError
 from app.providers.gemini_embedding_provider import GeminiEmbeddingProvider

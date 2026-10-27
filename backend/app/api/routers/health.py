@@ -8,6 +8,7 @@ a degraded-but-running dependency. The 'status' field conveys the severity.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -98,10 +99,8 @@ async def _check_celery() -> dict[str, Any]:
                 return celery_app.control.ping(timeout=0.5)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 # Connection dropped by Redis idle timeout; reset connection pool and retry once
-                try:
+                with contextlib.suppress(Exception):
                     celery_app.close()
-                except Exception:
-                    pass
                 return celery_app.control.ping(timeout=0.5)
 
         async def _ping_celery() -> list[Any] | None:

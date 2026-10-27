@@ -13,19 +13,17 @@ Validates:
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.agent.graph import _can_bypass_llm_planner
 from app.agent.synthesizer import AnswerSynthesizer
-from app.retrieval.hybrid_search import HybridSearchEngine, HybridSearchResult
+from app.retrieval.hybrid_search import HybridSearchEngine
 from app.retrieval.reranker import CrossEncoderReranker, HeuristicReranker
 from app.storage.base import FullTextSearchResult, VectorSearchResult
 from app.storage.cache_store import (
     CacheStore,
-    compute_embedding_cache_key,
     compute_query_cache_key,
 )
 
@@ -440,6 +438,7 @@ class TestPageNumberStandardizationAndOrdinalRetrieval:
     @pytest.mark.asyncio
     async def test_issue_summary_calculates_page_word_count_metrics(self) -> None:
         from datetime import date
+
         from app.models.article import Article, ArticlePage
         from app.models.newspaper import Issue, Newspaper, Page
         from app.retrieval.sql_analytics import SQLAnalyticsEngine

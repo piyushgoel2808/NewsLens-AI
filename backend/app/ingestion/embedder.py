@@ -94,15 +94,21 @@ class ArticleEmbedder:
         if not chunks:
             return []
 
-        # 1. Embed chunk texts
-        texts_to_embed = [c.text for c in chunks]
+        # 1. Enrich chunk texts with visual/infographic context when present and embed into 768d MRL space
+        texts_to_embed: list[str] = []
+        for c in chunks:
+            if (has_visual_data or chunk_type == "visual" or photo_description) and photo_description:
+                v_label = visual_type or "visual_asset"
+                texts_to_embed.append(
+                    f"[Visual Asset: {v_label}] Headline: {headline} | Visual Description & Data: {photo_description} | Content: {c.text}"
+                )
+            else:
+                texts_to_embed.append(c.text)
+
         provider = self._get_embedding_provider()
-        if getattr(provider, "provider_name", "") in ("gemini_embedding", "gemini"):
-            try:
-                vectors = await provider.embed(texts_to_embed, task_type="RETRIEVAL_DOCUMENT")  # type: ignore[call-arg]
-            except TypeError:
-                vectors = await provider.embed(texts_to_embed)
-        else:
+        try:
+            vectors = await provider.embed(texts_to_embed, task_type="RETRIEVAL_DOCUMENT")  # type: ignore[call-arg]
+        except TypeError:
             vectors = await provider.embed(texts_to_embed)
 
         vector_ids: list[str] = []

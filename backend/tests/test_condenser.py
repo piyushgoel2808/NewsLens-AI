@@ -1,7 +1,8 @@
 """Unit tests for query condensation, coreference resolution, and anti-hallucination guardrails."""
 
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.agent.condenser import (
     condense_conversational_query,

@@ -17,6 +17,31 @@ from app.models.newspaper import Issue
 
 logger = get_logger(__name__)
 
+_HONORIFIC_PREFIX_RE = re.compile(
+    r"^(?:chief\s+minister|prime\s+minister|union\s+minister|minister|president|governor|"
+    r"senator|justice|judge|general|colonel|dr\.?|mr\.?|mrs\.?|ms\.?|prof\.?|shri|smt\.?|cm|pm)\s+",
+    re.IGNORECASE,
+)
+
+
+def _clean_entity_query(entity_name: str) -> list[str]:
+    """Extract candidate entity search terms after stripping titles and splitting 'or'."""
+    raw = (entity_name or "").strip()
+    if not raw:
+        return []
+    parts = [p.strip() for p in re.split(r"\s+or\s+", raw, flags=re.I) if p.strip()]
+    candidates: list[str] = []
+    for p in parts:
+        cleaned = _HONORIFIC_PREFIX_RE.sub("", p).strip("?:!.,\"' ")
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+        if p not in candidates:
+            candidates.append(p)
+        tokens = [t for t in re.findall(r"[A-Za-z0-9]{4,}", cleaned) if len(t) >= 4]
+        if len(tokens) >= 2 and tokens[-1] not in candidates:
+            candidates.append(tokens[-1])
+    return candidates
+
 
 @dataclass
 class EntitySearchResult:
@@ -41,7 +66,7 @@ class EntitySearchResult:
 
 
 class EntitySearchEngine:
-    """Retrieves articles based on structured entity mentions and topic taxonomy."""
+    """Retrieves articles based on structured entity mentions and topic taxonomy with full-text fallback."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -57,7 +82,8 @@ class EntitySearchEngine:
         date_to: str | None = None,
         top_k: int = 10,
     ) -> list[EntitySearchResult]:
-        """Search articles containing specified entities or topic taxonomy."""
+        """Search articles containing specified entities or topic taxonomy, falling back to article text if NER table is sparse."""
+        candidates = _clean_entity_query(entity_name or "")
         async with self._session_factory() as db:
             stmt = (
                 select(ArticleEntity)
@@ -73,14 +99,8 @@ class EntitySearchEngine:
                 )
             )
 
-            if entity_name:
-                clean_e = entity_name.strip()
-                if " or " in clean_e.lower():
-                    parts = [p.strip() for p in re.split(r"\s+or\s+", clean_e, flags=re.I) if p.strip()]
-                    if parts:
-                        stmt = stmt.where(or_(*(Entity.name.ilike(f"%{p}%") for p in parts)))
-                else:
-                    stmt = stmt.where(Entity.name.ilike(f"%{clean_e}%"))
+            if candidates:
+                stmt = stmt.where(or_(*(Entity.name.ilike(f"%{c}%") for c in candidates)))
             if entity_type:
                 stmt = stmt.where(Entity.type == entity_type)
             if min_salience > 0.0:
@@ -108,10 +128,12 @@ class EntitySearchEngine:
             records = res.scalars().all()
 
             results: list[EntitySearchResult] = []
+            seen_art_ids: set[int] = set()
             for ae in records:
                 art = ae.article
-                if not art:
+                if not art or art.id in seen_art_ids:
                     continue
+                seen_art_ids.add(art.id)
 
                 np_name = (
                     art.issue.newspaper.name if art.issue and art.issue.newspaper else "Daily News"
@@ -140,8 +162,8 @@ class EntitySearchEngine:
                         section=art.section,
                         article_type=art.article_type,
                         prominence_score=art.prominence_score,
-                        entity_name=ae.entity.name if ae.entity else "",
-                        entity_type=ae.entity.type if ae.entity else "misc",
+                        entity_name=ae.entity.name if ae.entity else (entity_name or ""),
+                        entity_type=ae.entity.type if ae.entity else (entity_type or "person"),
                         mention_count=ae.mention_count,
                         salience_score=ae.salience_score,
                         newspaper_name=np_name,
@@ -153,6 +175,74 @@ class EntitySearchEngine:
                     )
                 )
 
+            # Fallback: If ArticleEntity join returned 0 rows, search Article headline/summary/full_text directly
+            if not results and candidates:
+                primary_terms = candidates[:2]
+                text_conds = []
+                for term in primary_terms:
+                    text_conds.append(Article.headline.ilike(f"%{term}%"))
+                    text_conds.append(Article.summary.ilike(f"%{term}%"))
+                    text_conds.append(Article.full_text.ilike(f"%{term}%"))
+
+                art_stmt = (
+                    select(Article)
+                    .join(Issue, Article.issue_id == Issue.id)
+                    .where(or_(*text_conds))
+                    .options(
+                        selectinload(Article.issue).selectinload(Issue.newspaper),
+                        selectinload(Article.article_pages),
+                    )
+                )
+                if newspaper_id:
+                    art_stmt = art_stmt.where(Issue.newspaper_id == newspaper_id)
+                if date_from:
+                    art_stmt = art_stmt.where(Issue.issue_date >= date_from)
+                if date_to:
+                    art_stmt = art_stmt.where(Issue.issue_date <= date_to)
+
+                art_stmt = art_stmt.order_by(desc(Article.prominence_score)).limit(top_k)
+                art_res = await db.execute(art_stmt)
+                for art in art_res.scalars().all():
+                    if art.id in seen_art_ids:
+                        continue
+                    seen_art_ids.add(art.id)
+                    np_name = (
+                        art.issue.newspaper.name if art.issue and art.issue.newspaper else "Daily News"
+                    )
+                    issue_date = str(art.issue.issue_date) if art.issue else ""
+                    pages_list = (
+                        sorted({ap.page_number for ap in art.article_pages})
+                        if art.article_pages
+                        else [1]
+                    )
+                    bboxes_list = []
+                    if art.article_pages:
+                        for ap in art.article_pages:
+                            if isinstance(ap.bbox_json, list):
+                                bboxes_list.extend(ap.bbox_json)
+                            elif isinstance(ap.bbox_json, dict):
+                                bboxes_list.append(ap.bbox_json)
+                    results.append(
+                        EntitySearchResult(
+                            article_id=art.id,
+                            headline=art.headline or "Untitled",
+                            byline_author=art.byline_author,
+                            section=art.section,
+                            article_type=art.article_type or "news",
+                            prominence_score=art.prominence_score or 0.5,
+                            entity_name=candidates[0],
+                            entity_type=entity_type or "entity",
+                            mention_count=1,
+                            salience_score=0.75,
+                            newspaper_name=np_name,
+                            issue_date=issue_date,
+                            pages=pages_list,
+                            summary=art.summary or (art.full_text[:250] if art.full_text else ""),
+                            issue_id=art.issue_id,
+                            bboxes=bboxes_list,
+                        )
+                    )
+
             logger.info(
                 "Entity search executed",
                 extra={
@@ -161,7 +251,6 @@ class EntitySearchEngine:
                     "hits": len(results),
                 },
             )
-
             return results
 
     async def expand_entity_cooccurrence_graph(
@@ -173,7 +262,6 @@ class EntitySearchEngine:
     ) -> dict[str, Any]:
         """Multi-Hop Knowledge Graph Traversal: Expand entity co-occurrence graph across articles."""
         async with self._session_factory() as db:
-            # 1. Locate focal entity (matching name)
             root_stmt = select(Entity).where(Entity.name.ilike(f"%{entity_name}%")).limit(5)
             root_res = await db.execute(root_stmt)
             root_entities = list(root_res.scalars().all())
@@ -200,15 +288,12 @@ class EntitySearchEngine:
                 for e in root_entities
             }
             edges_map: dict[tuple[int, int], dict[str, Any]] = {}
-
             current_frontier = set(root_ids)
 
-            # Traversal loop up to depth
             for current_depth in range(1, min(depth, 3) + 1):
                 if not current_frontier:
                     break
 
-                # Find all articles containing frontier entities
                 art_stmt = (
                     select(ArticleEntity.article_id, ArticleEntity.entity_id)
                     .where(ArticleEntity.entity_id.in_(current_frontier))
@@ -222,7 +307,6 @@ class EntitySearchEngine:
                 if not all_art_ids:
                     break
 
-                # Find all co-occurring entities in those articles
                 cooc_stmt = (
                     select(
                         ArticleEntity.article_id,
@@ -238,8 +322,6 @@ class EntitySearchEngine:
                 rows = cooc_res.all()
 
                 next_frontier: set[int] = set()
-
-                # Group by article to build co-occurrence pairs
                 art_to_entities: dict[int, list[tuple[int, str, str, float]]] = {}
                 for art_id, ent_id, salience, name, ent_type in rows:
                     art_to_entities.setdefault(art_id, []).append((ent_id, name, ent_type, salience))
@@ -252,73 +334,52 @@ class EntitySearchEngine:
                             "article_count": 0,
                         }
                     nodes_map[ent_id]["article_count"] += 1
+                    if ent_id not in visited_entity_ids:
+                        next_frontier.add(ent_id)
 
-                for art_id, ent_list in art_to_entities.items():
-                    for i in range(len(ent_list)):
-                        for j in range(i + 1, len(ent_list)):
-                            e1, n1, t1, s1 = ent_list[i]
-                            e2, n2, t2, s2 = ent_list[j]
-
-                            # Ensure edge touches the frontier at this step
-                            if e1 not in current_frontier and e2 not in current_frontier:
+                for _art_id, ents in art_to_entities.items():
+                    for i in range(len(ents)):
+                        for j in range(i + 1, len(ents)):
+                            id_a, _name_a, _, sal_a = ents[i]
+                            id_b, _name_b, _, sal_b = ents[j]
+                            if id_a == id_b:
                                 continue
-
-                            u, v = min(e1, e2), max(e1, e2)
-                            pair_key = (u, v)
-                            if pair_key not in edges_map:
-                                edges_map[pair_key] = {
-                                    "source": str(u),
-                                    "target": str(v),
-                                    "source_name": n1 if u == e1 else n2,
-                                    "target_name": n2 if u == e1 else n1,
+                            pair = (min(id_a, id_b), max(id_a, id_b))
+                            if pair not in edges_map:
+                                edges_map[pair] = {
+                                    "source": str(pair[0]),
+                                    "target": str(pair[1]),
                                     "weight": 0,
-                                    "articles": set(),
+                                    "avg_salience": 0.0,
                                 }
-                            edges_map[pair_key]["weight"] += 1
-                            edges_map[pair_key]["articles"].add(art_id)
+                            edges_map[pair]["weight"] += 1
+                            edges_map[pair]["avg_salience"] = round(
+                                (edges_map[pair]["avg_salience"] + (sal_a + sal_b) / 2.0) / 2.0,
+                                3,
+                            )
 
-                            if e1 not in visited_entity_ids:
-                                next_frontier.add(e1)
-                                visited_entity_ids.add(e1)
-                            if e2 not in visited_entity_ids:
-                                next_frontier.add(e2)
-                                visited_entity_ids.add(e2)
+                visited_entity_ids.update(next_frontier)
+                current_frontier = set(list(next_frontier)[:top_neighbors])
 
-                current_frontier = next_frontier
-
-            # Filter edges by min_cooccurrence and prune top neighbors
-            sorted_edges = sorted(
-                edges_map.values(),
-                key=lambda x: x["weight"],
-                reverse=True,
-            )
             filtered_edges = [
-                {
-                    "source": e["source"],
-                    "target": e["target"],
-                    "source_name": e["source_name"],
-                    "target_name": e["target_name"],
-                    "weight": e["weight"],
-                    "article_count": len(e["articles"]),
-                }
-                for e in sorted_edges
-                if e["weight"] >= min_cooccurrence
-            ][:top_neighbors * 2]
-
-            active_node_ids = {e["source"] for e in filtered_edges} | {e["target"] for e in filtered_edges}
-            active_node_ids |= {str(i) for i in root_ids}
-
-            filtered_nodes = [
-                nodes_map[int(nid)]
-                for nid in active_node_ids
-                if int(nid) in nodes_map
+                edge for edge in edges_map.values() if edge["weight"] >= min_cooccurrence
             ]
+            filtered_edges.sort(key=lambda x: x["weight"], reverse=True)
+            filtered_edges = filtered_edges[: top_neighbors * 2]
+
+            active_node_ids = {str(rid) for rid in root_ids}
+            for edge in filtered_edges:
+                active_node_ids.add(edge["source"])
+                active_node_ids.add(edge["target"])
+
+            final_nodes = [
+                n for n in nodes_map.values() if n["id"] in active_node_ids
+            ][: top_neighbors + len(root_ids)]
 
             return {
-                "root_entity": root_entities[0].name,
-                "nodes": filtered_nodes,
+                "root_entity": entity_name,
+                "nodes": final_nodes,
                 "edges": filtered_edges,
-                "total_nodes": len(filtered_nodes),
+                "total_nodes": len(final_nodes),
                 "total_edges": len(filtered_edges),
             }
-

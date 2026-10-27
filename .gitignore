@@ -103,6 +103,7 @@ celery_*.pid
 *.tmp
 .aider*
 .serena/
+.archify/
 scratch/
 demo/
 Newspaper_RAG/

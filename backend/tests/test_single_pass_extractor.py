@@ -9,11 +9,8 @@ import pytest
 from PIL import Image
 
 from app.ingestion.single_pass_extractor import (
-    PageVisualAnalysis,
-    RegionAnalysis,
     SinglePassVisualExtractor,
     VisualRegion,
-    VisualRegionResult,
 )
 from app.providers.base import ModelResponse, VisionModelProvider
 
@@ -350,6 +347,7 @@ def test_resolve_photo_article_binding_prevents_giant_envelope_theft() -> None:
 def test_resolve_photo_article_binding_generic_token_matching() -> None:
     """Verify that photo binding uses generic 4-character significant token matching without hardcoded company lists."""
     from unittest.mock import MagicMock
+
     from app.ingestion.media_extractor import MediaExtractor
 
     extractor = MediaExtractor(db=MagicMock())

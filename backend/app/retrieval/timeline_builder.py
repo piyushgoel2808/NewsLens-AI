@@ -205,11 +205,31 @@ class TimelineBuilder:
             if date_to:
                 stmt = stmt.where(Issue.issue_date <= date_to)
             if query:
-                stmt = stmt.where(
-                    (Article.headline.ilike(f"%{query}%"))
-                    | (Article.summary.ilike(f"%{query}%"))
-                    | (Article.full_text.ilike(f"%{query}%"))
-                )
+                from sqlalchemy import or_
+
+                _tl_stop = {
+                    "timeline", "chronology", "chronological", "evolution", "trajectory",
+                    "progression", "history", "developments", "development", "trace",
+                    "back", "began", "unfolded", "started", "beginning", "over", "time",
+                    "the", "and", "for", "from", "with", "about", "what", "how", "give", "show",
+                }
+                tl_tokens = [
+                    w for w in re.findall(r"\b[A-Za-z0-9]{3,}\b", query)
+                    if w.lower() not in _tl_stop
+                ]
+                if tl_tokens:
+                    tok_conds = []
+                    for tok in tl_tokens[:5]:
+                        tok_conds.append(Article.headline.ilike(f"%{tok}%"))
+                        tok_conds.append(Article.summary.ilike(f"%{tok}%"))
+                        tok_conds.append(Article.full_text.ilike(f"%{tok}%"))
+                    stmt = stmt.where(or_(*tok_conds))
+                else:
+                    stmt = stmt.where(
+                        (Article.headline.ilike(f"%{query}%"))
+                        | (Article.summary.ilike(f"%{query}%"))
+                        | (Article.full_text.ilike(f"%{query}%"))
+                    )
 
             stmt = stmt.order_by(asc(Issue.issue_date), asc(Article.primary_page_id)).limit(limit)
             res = await db.execute(stmt)
@@ -326,14 +346,25 @@ class TimelineBuilder:
             if issue_ids:
                 stmt = stmt.where(Issue.id.in_(issue_ids))
 
-            keywords = [w for w in re.findall(r"\b[A-Za-z0-9]{3,}\b", clean_query) if len(w) >= 3]
+            _tl_stop = {
+                "timeline", "chronology", "chronological", "evolution", "trajectory",
+                "progression", "history", "developments", "development", "trace",
+                "back", "began", "unfolded", "started", "beginning", "over", "time",
+                "the", "and", "for", "from", "with", "about", "what", "how", "give", "show",
+            }
+            keywords = [
+                w for w in re.findall(r"\b[A-Za-z0-9]{3,}\b", clean_query)
+                if len(w) >= 3 and w.lower() not in _tl_stop
+            ]
             if keywords:
+                from sqlalchemy import or_
+
                 filters = []
                 for kw in keywords[:4]:
                     filters.append(Article.headline.ilike(f"%{kw}%"))
                     filters.append(Article.summary.ilike(f"%{kw}%"))
                     filters.append(Article.full_text.ilike(f"%{kw}%"))
-                stmt = stmt.where(select(Article).where(*filters).whereclause)  # type: ignore[arg-type]
+                stmt = stmt.where(or_(*filters))
 
             stmt = stmt.order_by(asc(Issue.issue_date), asc(Article.primary_page_id)).limit(35)
             db_res = await db.execute(stmt)

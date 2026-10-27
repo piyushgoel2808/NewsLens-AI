@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from pathlib import Path
 from typing import Any
@@ -320,6 +321,9 @@ class SQLAnalyticsEngine:
             if not category_filter and extracted.get("category_filter"):
                 category_filter = extracted["category_filter"]
 
+        if issue_date:
+            issue_date = normalize_date_to_iso(issue_date) or issue_date
+
         async with self._session_factory() as db:
             issue: Issue | None = None
             if issue_id:
@@ -573,10 +577,8 @@ class SQLAnalyticsEngine:
             # 2. Apply positive page filter if requested
             target_pnums: set[int] = set()
             if page_number is not None:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     target_pnums.add(int(page_number))
-                except (ValueError, TypeError):
-                    pass
             elif page_filter is not None:
                 if isinstance(page_filter, (list, tuple, set)):
                     for p in page_filter:
@@ -649,6 +651,7 @@ class SQLAnalyticsEngine:
         date_to: str | None = None,
         section: str | None = None,
         article_type: str | None = None,
+        page_filter: str | int | None = None,
         limit: int = 30,
     ) -> dict[str, Any]:
         """Return exact article count and matching article records matching filters."""
@@ -660,9 +663,18 @@ class SQLAnalyticsEngine:
         norm_date = normalize_date_to_iso(issue_date) if issue_date else None
         norm_from = normalize_date_to_iso(date_from) if date_from else None
         norm_to = normalize_date_to_iso(date_to) if date_to else None
+        page_num: int | None = None
+        if page_filter is not None:
+            digits = re.findall(r"\b\d{1,3}\b", str(page_filter))
+            if digits:
+                page_num = int(digits[0])
 
         async with self._session_factory() as db:
-            stmt = select(func.count(Article.id)).join(Issue, Article.issue_id == Issue.id)
+            stmt = select(func.count(func.distinct(Article.id))).join(Issue, Article.issue_id == Issue.id)
+            if page_num is not None:
+                stmt = stmt.join(ArticlePage, Article.id == ArticlePage.article_id).where(
+                    ArticlePage.page_number == page_num
+                )
             if newspaper_name:
                 stmt = stmt.join(Newspaper, Issue.newspaper_id == Newspaper.id).where(
                     Newspaper.name.ilike(f"%{newspaper_name}%")

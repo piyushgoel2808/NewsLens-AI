@@ -227,7 +227,14 @@ async def stream_query(
             return
 
         # 1. Query Condensation, Coreference Resolution, & In-Context Meta Queries
-        is_meta = is_in_context_meta_query(query, chat_history) if chat_history else False
+        is_greeting = bool(
+            re.match(
+                r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|howdy|greetings|who\s+are\s+you|what\s+can\s+you\s+do|help|namaste)[!?.]*$",
+                query.strip(),
+                re.IGNORECASE,
+            )
+        )
+        is_meta = (is_in_context_meta_query(query, chat_history) if chat_history else False) or is_greeting
 
         if is_meta:
             effective_archetype = "conversational_meta_query"
@@ -291,14 +298,19 @@ async def stream_query(
                 )
             else:
                 yield f"event: stage\ndata: {json.dumps({'stage': 'planning'})}\n\n"
+                from app.agent.archive_context import get_archive_and_schema_context
+
+                archive_context_str = await get_archive_and_schema_context(workflow._session_factory)
                 plan_res = await workflow._planner.plan_query_async(
                     query,
                     enable_web_search=request.enable_web_search,
                     model_override=effective_model,
+                    archive_context=archive_context_str,
                     active_issue_date=planner_active_date,
                     active_newspapers=planner_active_nps,
                     attached_article_id=eff_attached_article_id,
                     attached_photo_id=eff_attached_photo_id,
+                    chat_history=chat_history,
                 )
             effective_archetype = plan_res.archetype
             planned_calls = [
@@ -327,46 +339,49 @@ async def stream_query(
             else:
                 yield f"event: stage\ndata: {json.dumps({'stage': 'tool_execution'})}\n\n"
 
-            tool_state = await workflow._execute_tools_node(
-                {
-                    "query": query,
-                    "original_query": request.query,
-                    "chat_history": chat_history,
-                    "archetype": effective_archetype,
-                    "plan": planned_calls,
-                    "tool_executions": [],
-                    "evidence_items": [],
-                    "synthesized_answer": "",
-                    "citations": [],
-                    "cost_usd": 0.0,
-                    "latency_ms": 0,
-                    "user_id": request.user_id,
-                    "model_override": effective_model,
-                    "enable_web_search": request.enable_web_search,
-                    "web_search_results": [],
-                    "active_issue_id": (attached_ctx.get("issue_id") if has_attached_asset else active_ctx.get("issue_id")),
-                    "active_newspaper_name": (attached_ctx.get("newspaper_name") if has_attached_asset else active_ctx.get("newspaper_name")),
-                    "active_issue_date": (attached_ctx.get("issue_date") if has_attached_asset else active_ctx.get("issue_date")),
-                    "attached_article_id": eff_attached_article_id,
-                    "attached_photo_id": eff_attached_photo_id,
-                    "is_condensed": bool(is_followup),
-                    "error": None,
-                }
+            exec_state: dict[str, Any] = {
+                "query": query,
+                "original_query": request.query,
+                "chat_history": chat_history,
+                "archetype": effective_archetype,
+                "plan": planned_calls,
+                "tool_executions": [],
+                "evidence_items": [],
+                "synthesized_answer": "",
+                "citations": [],
+                "cost_usd": 0.0,
+                "latency_ms": 0,
+                "user_id": request.user_id,
+                "model_override": effective_model,
+                "enable_web_search": request.enable_web_search,
+                "web_search_results": [],
+                "active_issue_id": (attached_ctx.get("issue_id") if has_attached_asset else active_ctx.get("issue_id")),
+                "active_newspaper_name": (attached_ctx.get("newspaper_name") if has_attached_asset else active_ctx.get("newspaper_name")),
+                "active_issue_date": (attached_ctx.get("issue_date") if has_attached_asset else active_ctx.get("issue_date")),
+                "attached_article_id": eff_attached_article_id,
+                "attached_photo_id": eff_attached_photo_id,
+                "is_condensed": bool(is_followup),
+                "recovery_attempts": 0,
+                "error": None,
+            }
+            tool_state = await workflow._execute_tools_node(exec_state)  # type: ignore[arg-type]
+            raw_evidence = tool_state.get("evidence_items", [])
+            evidence = workflow._evaluator.filter_evidence(
+                raw_evidence,
+                query,
+                effective_archetype,
             )
-            evidence = tool_state.get("evidence_items", [])
             tool_records = [dict(t) for t in tool_state.get("tool_executions", [])]
-            tool_data = json.dumps({"evidence_count": len(evidence), "tools": tool_records})
-            yield f"event: tool_results\ndata: {tool_data}\n\n"
 
-            # CRAG Fast-Floor Sufficiency Evaluation
+            # CRAG Fast-Floor Sufficiency Evaluation & Closed-Loop Recovery
+            eval_state = {
+                **exec_state,
+                "evidence_items": evidence,
+                "tool_executions": tool_records,
+            }
             crag_verdict = workflow._evaluator.audit_evidence_sufficiency(
                 evidence=evidence,
-                state={
-                    "query": query,
-                    "archetype": effective_archetype,
-                    "active_newspaper_name": active_ctx.get("newspaper_name"),
-                    "active_issue_date": active_ctx.get("issue_date"),
-                },
+                state=eval_state,  # type: ignore[arg-type]
             )
             logger.info(
                 "Streaming CRAG sufficiency evaluation",
@@ -374,8 +389,26 @@ async def stream_query(
                     "query": query,
                     "is_sufficient": crag_verdict.is_sufficient,
                     "quality_score": crag_verdict.quality_score,
+                    "recommended_action": crag_verdict.recommended_action,
                 },
             )
+            if not crag_verdict.is_sufficient and planned_calls:
+                with contextlib.suppress(Exception):
+                    eval_state["gap_diagnosis"] = crag_verdict.gap_reason
+                    if crag_verdict.recommended_action == "synthesize_dynamic_tool" and workflow._tool_maker:
+                        rec_state = await workflow._execute_dynamic_code_node(eval_state)  # type: ignore[arg-type]
+                    else:
+                        rec_state = await workflow._execute_adaptive_replan_node(eval_state)  # type: ignore[arg-type]
+                    if rec_state.get("evidence_items"):
+                        evidence = workflow._evaluator.filter_evidence(
+                            rec_state["evidence_items"],
+                            query,
+                            effective_archetype,
+                        )
+                        tool_records = [dict(t) for t in rec_state.get("tool_executions", tool_records)]
+
+            tool_data = json.dumps({"evidence_count": len(evidence), "tools": tool_records})
+            yield f"event: tool_results\ndata: {tool_data}\n\n"
 
         # 4. Synthesis & Reasoning Stage
         yield f"event: stage\ndata: {json.dumps({'stage': 'synthesizing'})}\n\n"

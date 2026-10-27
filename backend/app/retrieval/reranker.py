@@ -82,7 +82,7 @@ class CrossEncoderReranker:
 
     def __init__(
         self,
-        model_name: str = "BAAI/bge-reranker-v2-gemma",
+        model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
         device: str | None = None,
         model: Any = None,
     ) -> None:
@@ -91,6 +91,16 @@ class CrossEncoderReranker:
         self._fallback = HeuristicReranker()
         self._load_lock = asyncio.Lock()
         self._model = model
+
+    @staticmethod
+    def _calibrate_score(raw_score: float) -> float:
+        """Preserve scores already in [0, 1] and apply sigmoid calibration to raw unbounded logits."""
+        if 0.0 <= raw_score <= 1.0:
+            return raw_score
+        import math
+
+        clamped = max(-20.0, min(20.0, raw_score))
+        return 1.0 / (1.0 + math.exp(-clamped))
 
     def _load_model_sync(self) -> Any:
         """Load cross-encoder model synchronously with process-wide caching."""
@@ -116,24 +126,10 @@ class CrossEncoderReranker:
                 "Loading Cross-Encoder model on device",
                 extra={"model": self.model_name, "device": self.device},
             )
-            # If testing, use fast local ms-marco to prevent multi-GB test execution stalls
             try:
-                from app.core.config import get_settings
-
-                is_test = getattr(get_settings(), "testing", False)
+                model = CrossEncoder(self.model_name, device=self.device)
             except Exception:
-                is_test = False
-
-            if is_test and self.model_name == "BAAI/bge-reranker-v2-gemma":
-                try:
-                    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=self.device)
-                except Exception:
-                    model = CrossEncoder(self.model_name, device=self.device)
-            else:
-                try:
-                    model = CrossEncoder(self.model_name, device=self.device)
-                except Exception:
-                    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=self.device)
+                model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=self.device)
 
             _SHARED_CROSS_ENCODERS[self.model_name] = model
             return model
@@ -152,7 +148,7 @@ class CrossEncoderReranker:
         if model is not None:
             try:
                 raw_scores = model.predict(pairs, batch_size=32, show_progress_bar=False)
-                return [float(s) for s in raw_scores]
+                return [self._calibrate_score(float(s)) for s in raw_scores]
             except Exception as ex:
                 logger.warning("CrossEncoder predict failed, falling back to heuristic", extra={"error": str(ex)})
         # Heuristic fallback score calculation
@@ -224,7 +220,7 @@ class CrossEncoderReranker:
             scored: list[tuple[float, dict[str, Any]]] = []
             for score, cand in zip(scores, candidates, strict=False):
                 cand_copy = dict(cand)
-                score_val = float(score)
+                score_val = self._calibrate_score(float(score))
                 cand_copy["rerank_score"] = round(score_val, 4)
                 scored.append((score_val, cand_copy))
 

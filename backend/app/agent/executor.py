@@ -219,10 +219,8 @@ class ToolExecutor:
 
         p_num: int | None = None
         if p_filt is not None:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 p_num = int(p_filt)
-            except (ValueError, TypeError):
-                pass
 
         d_from = args.get("date_from") or args.get("issue_date")
         d_to = args.get("date_to") or args.get("issue_date")
@@ -339,8 +337,12 @@ class ToolExecutor:
         self,
         args: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], int]:
+        np_id = await self._resolve_newspaper_id(args.get("newspaper_name"))
         tl_result = await self._timeline_builder.build_timeline(
             query=args.get("query"),
+            newspaper_id=np_id,
+            date_from=args.get("date_from"),
+            date_to=args.get("date_to"),
             limit=args.get("limit", 20),
         )
         items: list[dict[str, Any]] = []

@@ -7,7 +7,6 @@ Creates the collection on startup if it doesn't exist.
 from __future__ import annotations
 
 import contextlib
-from datetime import UTC
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
@@ -26,7 +25,7 @@ class QdrantStore:
     def __init__(
         self,
         settings: QdrantSettings,
-        embedding_dim: int = 1024,
+        embedding_dim: int = 768,
     ) -> None:
         self._settings = settings
         self._embedding_dim = embedding_dim
@@ -156,34 +155,32 @@ class QdrantStore:
                 # Check if any value is a date string (e.g. YYYY-MM-DD)
                 is_date = any(isinstance(v, str) and "-" in v for v in value.values())
                 if is_date:
-                    from datetime import datetime
-                    dt_kwargs: dict[str, Any] = {}
-                    for bound, val in value.items():
-                        if isinstance(val, str):
-                            try:
-                                if bound in ("gte", "gt"):
-                                    if len(val) == 10:
-                                        d = datetime.fromisoformat(val)
-                                        dt_kwargs[bound] = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=UTC)
-                                    else:
-                                        dt_kwargs[bound] = datetime.fromisoformat(val)
-                                elif bound in ("lte", "lt"):
-                                    if len(val) == 10:
-                                        d = datetime.fromisoformat(val)
-                                        dt_kwargs[bound] = datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=UTC)
-                                    else:
-                                        dt_kwargs[bound] = datetime.fromisoformat(val)
-                            except Exception:
-                                pass
-                        elif isinstance(val, (int, float)):
-                            dt_kwargs[bound] = val
-                    if dt_kwargs:
-                        must.append(
-                            qmodels.FieldCondition(
-                                key=key,
-                                range=qmodels.DatetimeRange(**dt_kwargs),
-                            )
-                        )
+                    from datetime import date as dt_date
+                    from datetime import timedelta
+
+                    gte_str = str(value.get("gte") or value.get("gt") or "")[:10]
+                    lte_str = str(value.get("lte") or value.get("lt") or "")[:10]
+                    if len(gte_str) == 10 and len(lte_str) == 10:
+                        try:
+                            d_start = dt_date.fromisoformat(gte_str)
+                            d_end = dt_date.fromisoformat(lte_str)
+                            delta_days = (d_end - d_start).days
+                            if 0 <= delta_days <= 366:
+                                iso_dates = [
+                                    (d_start + timedelta(days=i)).isoformat()
+                                    for i in range(delta_days + 1)
+                                ]
+                                must.append(
+                                    qmodels.FieldCondition(
+                                        key=key,
+                                        match=qmodels.MatchAny(any=iso_dates),
+                                    )
+                                )
+                                continue
+                        except Exception:
+                            pass
+                    # If open-ended or > 366 days on a KEYWORD date field, skip Qdrant range filter
+                    # and let hybrid_search post-filter on ISO date strings so Qdrant never rejects DatetimeRange on KEYWORD.
                     continue
 
                 # Standard numeric range filter

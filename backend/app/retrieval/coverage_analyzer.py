@@ -179,14 +179,23 @@ class CoverageAnalyzer:
             score = rerank_val if has_rerank else top_hit.rrf_score
 
             if has_rerank and rerank_val is not None:
-                # Calibrated cross-encoder logits:
-                # >= -4.5: Confirmed coverage
-                # -7.0 to -4.5: Borderline / uncertain relevance
-                # < -7.0: Below semantic relevance baseline -> Confirmed omission (NOT_FOUND)
-                if rerank_val >= -4.5:
-                    matched_art_ids = [h.article_id for h in hits if h.rerank_score is not None and h.rerank_score >= -5.5]
-                    matched_hls = [h.headline for h in hits[:3] if h.headline and (h.rerank_score is None or h.rerank_score >= -5.5)]
-                    conf = 0.95 if rerank_val >= -2.0 else 0.85
+                # Support both sigmoid-calibrated scores in [0.0, 1.0] and raw negative logits (< 0.0):
+                is_calibrated_prob = 0.0 <= rerank_val <= 1.0
+                covered_cutoff = 0.35 if is_calibrated_prob else -4.5
+                include_cutoff = 0.25 if is_calibrated_prob else -5.5
+                uncertain_cutoff = 0.15 if is_calibrated_prob else -7.0
+                high_conf_cutoff = 0.75 if is_calibrated_prob else -2.0
+
+                if rerank_val >= covered_cutoff:
+                    matched_art_ids = [
+                        h.article_id for h in hits if h.rerank_score is not None and h.rerank_score >= include_cutoff
+                    ]
+                    matched_hls = [
+                        h.headline
+                        for h in hits[:3]
+                        if h.headline and (h.rerank_score is None or h.rerank_score >= include_cutoff)
+                    ]
+                    conf = 0.95 if rerank_val >= high_conf_cutoff else 0.85
                     return PublicationCoverageReport(
                         newspaper_id=newspaper.id,
                         newspaper_name=newspaper.name,
@@ -198,7 +207,7 @@ class CoverageAnalyzer:
                         evidence_snippet=top_hit.snippet[:300],
                         audit_notes=f"Confirmed coverage across {len(matched_art_ids or [1])} relevant article(s).",
                     )
-                elif rerank_val >= -7.0:
+                elif rerank_val >= uncertain_cutoff:
                     return PublicationCoverageReport(
                         newspaper_id=newspaper.id,
                         newspaper_name=newspaper.name,

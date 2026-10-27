@@ -28,6 +28,8 @@ QueryArchetype = Literal[
     "macro_summary",
     "negative_coverage_audit",
     "analytical_computation",
+    "clarification_needed",
+    "conversational_meta_query",
 ]
 
 SectionFormat = Literal[
@@ -69,6 +71,19 @@ class PlannedToolCall:
 
 
 @dataclass
+class ToolDecision:
+    """Structured output of the pre-planning ToolDecisionPolicy layer."""
+
+    intent: str
+    archetype: str
+    selected_tools: list[str] = field(default_factory=list)
+    recommended_analysis_type: str | None = None
+    is_deterministic: bool = False
+    confidence: float = 1.0
+    rationale: str = ""
+
+
+@dataclass
 class PlanResult:
     """The structured planning outcome."""
 
@@ -76,6 +91,7 @@ class PlanResult:
     reasoning: str
     tool_calls: list[PlannedToolCall]
     answer_blueprint: AnswerBlueprint | None = None
+    decision: ToolDecision | None = None
 
 
 class ToolCallSpec(BaseModel):
@@ -135,5 +151,6 @@ __all__ = [
     "SectionFormat",
     "SectionSpec",
     "ToolCallSpec",
+    "ToolDecision",
     "ToolName",
 ]

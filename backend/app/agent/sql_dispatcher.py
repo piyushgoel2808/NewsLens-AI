@@ -585,14 +585,21 @@ class SQLAnalyticsDispatcher:
         self,
         args: dict[str, Any],
     ) -> tuple[list[dict[str, Any]], int]:
-        count_res = await self._sql_analytics.count_articles(
-            newspaper_name=args.get("newspaper_name"),
-            issue_date=args.get("issue_date"),
-            date_from=args.get("date_from"),
-            date_to=args.get("date_to"),
-            section=args.get("section") or args.get("category_filter"),
-            article_type=args.get("article_type"),
-        )
+        count_kwargs: dict[str, Any] = {
+            "newspaper_name": args.get("newspaper_name"),
+            "issue_date": args.get("issue_date"),
+            "date_from": args.get("date_from"),
+            "date_to": args.get("date_to"),
+            "section": args.get("section") or args.get("category_filter"),
+            "article_type": args.get("article_type"),
+        }
+        if args.get("page_filter") is not None:
+            count_kwargs["page_filter"] = args.get("page_filter")
+        try:
+            count_res = await self._sql_analytics.count_articles(**count_kwargs)
+        except TypeError:
+            count_kwargs.pop("page_filter", None)
+            count_res = await self._sql_analytics.count_articles(**count_kwargs)
         c_val = count_res.get("count", 0)
         hits_count = c_val
         art_list = count_res.get("articles", [])

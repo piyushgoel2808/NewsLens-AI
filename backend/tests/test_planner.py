@@ -857,7 +857,7 @@ class TestAgentWorkflowToolExecution:
 
     def test_cross_newspaper_comparison_front_page_plan_reconciliation(self) -> None:
         """Verify cross-newspaper comparison preserves both newspapers and front-page filter."""
-        from app.agent.planner import AgentPlan, ExtractedToolArguments, QueryPlanner, ToolCallSpec
+        from app.agent.planner import AgentPlan, QueryPlanner, ToolCallSpec
 
         planner = QueryPlanner()
         query = "Compare the front-page stories between The morning standard and Goan on 2026-08-01"
@@ -906,7 +906,7 @@ class TestAgentWorkflowToolExecution:
 
     def test_how_many_goan_newspaper_plan_and_execution(self) -> None:
         """Verify publication count query routes to quantitative_trend and count_issues with newspaper_name."""
-        from app.agent.planner import AgentPlan, ExtractedToolArguments, QueryPlanner, ToolCallSpec
+        from app.agent.planner import AgentPlan, QueryPlanner, ToolCallSpec
 
         planner = QueryPlanner()
         query = "how many Goan newspaper are there"
@@ -942,6 +942,7 @@ class TestAgentWorkflowToolExecution:
     async def test_execute_sql_analytics_count_issues_backfills_newspaper_from_query(self) -> None:
         """Verify _exec_sql_count_issues extracts newspaper_name from query when missing in arguments."""
         from unittest.mock import AsyncMock, MagicMock
+
         from app.agent.graph import AgentWorkflow
 
         mock_session_factory = MagicMock()

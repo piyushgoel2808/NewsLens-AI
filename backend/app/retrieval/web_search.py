@@ -261,19 +261,42 @@ class WebSearchEngine:
                 )
             )
 
-        # If regex didn't match (DDG structure change), return a clean fallback item
+        # Fallback to DuckDuckGo Instant Answer JSON API if HTML scraping returned 0 matches
         if not results:
-            # Fallback search query reference
-            results.append(
-                WebSearchResult(
-                    title=f"Live Web Context for '{query[:50]}'",
-                    url=f"https://duckduckgo.com/?q={urllib.parse.quote_plus(query)}",
-                    snippet=(
-                        f"Live internet web search results for research topic '{query}' "
-                        "retrieved via live search query."
-                    ),
-                    source="DuckDuckGo",
-                )
-            )
+            try:
+                api_url = "https://api.duckduckgo.com/"
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    resp_json = await client.get(
+                        api_url,
+                        params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+                    )
+                    if resp_json.status_code == 200:
+                        jdata = resp_json.json()
+                        abstract = (jdata.get("AbstractText") or "").strip()
+                        abs_url = jdata.get("AbstractURL") or ""
+                        abs_src = jdata.get("AbstractSource") or "DuckDuckGo"
+                        if abstract and abs_url:
+                            results.append(
+                                WebSearchResult(
+                                    title=jdata.get("Heading") or query[:50],
+                                    url=abs_url,
+                                    snippet=abstract,
+                                    source=abs_src,
+                                )
+                            )
+                        for topic in (jdata.get("RelatedTopics") or [])[:num_results]:
+                            if isinstance(topic, dict) and topic.get("Text") and topic.get("FirstURL"):
+                                results.append(
+                                    WebSearchResult(
+                                        title=str(topic["Text"])[:60],
+                                        url=str(topic["FirstURL"]),
+                                        snippet=str(topic["Text"]),
+                                        source="DuckDuckGo",
+                                    )
+                                )
+                                if len(results) >= num_results:
+                                    break
+            except Exception:
+                pass
 
-        return results
+        return results[:num_results]

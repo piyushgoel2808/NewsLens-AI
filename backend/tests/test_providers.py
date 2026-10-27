@@ -342,7 +342,7 @@ class TestGeminiProvider:
             assert response.output_tokens == 8
 
     def test_express_mode_detection_and_headers(self) -> None:
-        from app.providers.gemini_provider import GeminiProvider, VERTEX_AI_EXPRESS_BASE
+        from app.providers.gemini_provider import VERTEX_AI_EXPRESS_BASE, GeminiProvider
 
         provider = GeminiProvider(model="gemini-3.8-flash", api_key="AQ.MockExpressKey1234567890abcdef")
         assert provider.is_express_mode is True
@@ -353,7 +353,7 @@ class TestGeminiProvider:
         assert "key" not in params
 
     def test_ai_studio_detection_and_params(self) -> None:
-        from app.providers.gemini_provider import GeminiProvider, AI_STUDIO_BASE
+        from app.providers.gemini_provider import AI_STUDIO_BASE, GeminiProvider
 
         provider = GeminiProvider(model="gemini-3.8-flash", api_key="AIzaSyDummyKey12345")
         assert provider.is_express_mode is False
@@ -372,7 +372,8 @@ class TestGeminiProvider:
 
     def test_vertex_ai_service_account_routing_and_auth(self, monkeypatch: Any) -> None:
         from unittest.mock import MagicMock
-        from app.providers.gemini_provider import GeminiProvider, VERTEX_AI_EXPRESS_BASE
+
+        from app.providers.gemini_provider import VERTEX_AI_EXPRESS_BASE, GeminiProvider
 
         mock_creds = MagicMock()
         mock_creds.token = "mock-sa-bearer-token-12345"
@@ -391,7 +392,12 @@ class TestGeminiProvider:
 
     def test_vertex_ai_use_vertex_ai_override(self, monkeypatch: Any) -> None:
         from unittest.mock import MagicMock
-        from app.providers.gemini_provider import GeminiProvider, VERTEX_AI_EXPRESS_BASE, AI_STUDIO_BASE
+
+        from app.providers.gemini_provider import (
+            AI_STUDIO_BASE,
+            VERTEX_AI_EXPRESS_BASE,
+            GeminiProvider,
+        )
 
         mock_creds = MagicMock()
         mock_creds.token = "mock-sa-token"

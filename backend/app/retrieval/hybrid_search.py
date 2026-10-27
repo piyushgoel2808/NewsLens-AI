@@ -9,6 +9,7 @@ with standard smoothing parameter k = 60.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -190,18 +191,17 @@ class HybridSearchEngine:
                         query_vector = await provider.embed_one(query)
                 else:
                     query_vector = await provider.embed_one(query)
-                try:
+                with contextlib.suppress(Exception):
                     await self._cache.set_embedding(query, query_vector, model=embed_model_name)
-                except Exception:
-                    pass
 
         # 2. Concurrently execute Vector Search and Sparse FULLTEXT Search
         fetch_k = top_k * 3
+        effective_threshold = 0.05 if search_filters_dict else 0.15
         vector_task = self._qdrant.search(
             query_vector=query_vector,
             top_k=fetch_k,
             filters=search_filters_dict if search_filters_dict else None,
-            score_threshold=0.30,
+            score_threshold=effective_threshold,
         )
         ft_task = self._ft_search.search(
             query=query,
@@ -328,6 +328,11 @@ class HybridSearchEngine:
                 else "Daily News"
             )
             issue_date = str(article.issue.issue_date) if article.issue else ""
+            if filters and issue_date:
+                if filters.date_from and len(filters.date_from) == 10 and issue_date < filters.date_from:
+                    continue
+                if filters.date_to and len(filters.date_to) == 10 and issue_date > filters.date_to:
+                    continue
             pages_list = (
                 sorted({ap.page_number for ap in article.article_pages})
                 if article.article_pages

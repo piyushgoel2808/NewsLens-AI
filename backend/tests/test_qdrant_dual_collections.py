@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from qdrant_client.http import models as qmodels
 
 from app.core.config import QdrantSettings
 from app.storage.base import VectorPoint

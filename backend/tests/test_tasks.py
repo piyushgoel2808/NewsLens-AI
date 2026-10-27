@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+
 import pytest
 
 from app.ingestion.detector import DigitalTextBlock
@@ -66,6 +67,7 @@ class TestTaskIngestionStorageKey:
 
     def test_celery_task_dispatches_with_storage_key(self) -> None:
         from unittest.mock import AsyncMock, patch
+
         from app.ingestion.tasks import process_issue_ingestion_task
 
         with patch("app.ingestion.tasks.run_ingestion_pipeline", new_callable=AsyncMock) as mock_pipe:
@@ -89,6 +91,7 @@ class TestTaskIngestionStorageKey:
     @pytest.mark.asyncio
     async def test_execute_ingestion_pipeline_streams_from_storage(self) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from app.ingestion.tasks import _execute_ingestion_pipeline
 
         mock_store = AsyncMock()
@@ -111,7 +114,7 @@ class TestTaskIngestionStorageKey:
         with (
             patch("app.ingestion.tasks.PDFRasterizer") as mock_raster_cls,
             patch("app.ingestion.tasks.PDFPageDetector") as mock_detector_cls,
-            patch("app.ingestion.tasks.UnifiedExtractor") as mock_extractor_cls,
+            patch("app.ingestion.tasks.UnifiedExtractor"),
             patch("app.ingestion.tasks.ConsensusExtractor") as mock_consensus_cls,
             patch("app.ingestion.tasks.get_settings") as mock_settings,
         ):
@@ -148,7 +151,8 @@ class TestTaskIngestionStorageKey:
 
     def test_cross_encoder_process_wide_cache(self) -> None:
         from unittest.mock import MagicMock, patch
-        from app.retrieval.reranker import CrossEncoderReranker, _SHARED_CROSS_ENCODERS
+
+        from app.retrieval.reranker import _SHARED_CROSS_ENCODERS, CrossEncoderReranker
 
         _SHARED_CROSS_ENCODERS.clear()
 

@@ -578,9 +578,19 @@ class ToolMaker:
         return "\n".join(cleaned_lines).strip()
 
     def _resolve_provider(self, model_override: str | None = None) -> Any:
-        """Resolve LLM provider for tool code generation."""
+        """Resolve LLM provider for tool code generation via shared failover candidates."""
         if self._provider is not None:
             return self._provider
+        from app.agent.llm_helpers import resolve_provider_candidates
+
+        candidates = resolve_provider_candidates(
+            task_name="query_planner",
+            model_override=model_override,
+            fallback_task_keys=("query_condenser", "answerer"),
+            prefer_local=False,
+        )
+        if candidates:
+            return candidates[0]
         reg = get_registry()
         try:
             return reg.get_chat_provider(model_override or "query_planner")

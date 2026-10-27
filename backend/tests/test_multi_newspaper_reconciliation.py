@@ -445,6 +445,7 @@ def test_reconcile_arguments_multi_page_purpose_extraction():
         query=query,
         purpose="Retrieve comparative story excerpts across pages 1 and 3",
     )
+    assert args_hs.get("page_filter") is None
     # The valid_pages has length 2, but if user explicitly passed page_filter "1" and it's valid, it stays
     # However, if args has no page_filter:
     args_hs_empty = reconcile_and_sanitize_arguments(

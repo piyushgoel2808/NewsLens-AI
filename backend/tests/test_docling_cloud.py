@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-import pytest
 
 from app.core.config import get_settings
-from app.ingestion.parsers.docling import DoclingLayoutParser, DoclingParsedItem
+from app.ingestion.parsers.docling import DoclingLayoutParser
 from app.providers.registry import ModelRegistry, reset_registry
 
 
