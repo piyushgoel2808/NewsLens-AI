@@ -267,9 +267,13 @@ def extract_parameters_from_query(query: str) -> dict[str, Any]:
                 break
 
         if not matched_month:
-            # Bare named month without explicit year (e.g. "in August", "during September") -> default to archive year 2026
-            for bare_m in re.finditer(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b", query, re.I):
-                m_name = bare_m.group(1).lower()
+            # Bare named month without explicit year: exclude ambiguous modal verb 'may' unless preceded by a temporal preposition
+            for bare_m in re.finditer(
+                r"(?:\b(?:in|during|for|from|of|throughout|across|since|until)\s+(may)\b|\b(january|february|march|april|june|july|august|september|october|november|december)\b)",
+                query,
+                re.I,
+            ):
+                m_name = (bare_m.group(1) or bare_m.group(2) or "").lower()
                 if m_name in _MONTH_MAP:
                     month_val = _MONTH_MAP[m_name]
                     year_val = 2026
@@ -392,4 +396,3 @@ __all__ = [
     "has_named_brand",
     "is_archive_wide_newspaper_query",
 ]
-

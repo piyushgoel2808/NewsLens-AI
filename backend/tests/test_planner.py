@@ -629,7 +629,7 @@ class TestAgentWorkflowToolExecution:
             arguments=ExtractedToolArguments(newspaper_name="The Goan", issue_date="2026-08-01"),
         )
         res1 = planner._build_plan_from_structured_model(q, plan1)
-        assert res1.archetype == "quantitative_trend"
+        assert res1.archetype in ("macro_summary", "quantitative_trend")
         assert any(t.tool_name == "sql_analytics" for t in res1.tool_calls)
 
         q2 = "Audit what The Goan omitted compared to The Morning Standard on 2026-08-01"

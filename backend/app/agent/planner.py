@@ -22,6 +22,8 @@ from app.agent.decision_layer import (
     is_availability_query,
     is_comparative_query,
     is_dynamic_analysis_permitted,
+    is_macro_edition_query,
+    is_ordinal_lead_story_query,
     is_visual_query,
     is_volume_query,
 )
@@ -123,10 +125,13 @@ class QueryPlanner:
         attached_article_id: int | None = None,
         attached_photo_id: int | None = None,
         chat_history: list[dict[str, Any]] | None = None,
+        extracted_params: dict[str, Any] | None = None,
     ) -> PlanResult:
         """Plan query using pre-LLM ToolDecisionPolicy + direct agentic tool calling with heuristic fallback."""
+        extracted = extracted_params if extracted_params is not None else extract_parameters_from_query(query)
         pre_decision = ToolDecisionPolicy.decide(
             query=query,
+            extracted=extracted,
             active_issue_date=active_issue_date,
             active_newspapers=active_newspapers,
             attached_article_id=attached_article_id,
@@ -143,6 +148,7 @@ class QueryPlanner:
                     overall_tone="conversational",
                     sections=[],
                 ),
+                decision=pre_decision,
             )
         for provider in self._get_provider_candidates(model_override):
             try:
@@ -203,6 +209,7 @@ class QueryPlanner:
                         active_newspapers=active_newspapers,
                         attached_article_id=attached_article_id,
                         attached_photo_id=attached_photo_id,
+                        extracted_params=extracted,
                     )
                     plan_res.decision = pre_decision
                     return plan_res
@@ -223,6 +230,7 @@ class QueryPlanner:
             active_newspapers=active_newspapers,
             attached_article_id=attached_article_id,
             attached_photo_id=attached_photo_id,
+            extracted_params=extracted,
         )
         fallback_res.decision = pre_decision
         return fallback_res
@@ -267,9 +275,10 @@ class QueryPlanner:
         active_newspapers: list[str] | None = None,
         attached_article_id: int | None = None,
         attached_photo_id: int | None = None,
+        extracted_params: dict[str, Any] | None = None,
     ) -> PlanResult:
         """Translate AgentPlan into PlanResult, executing direct tool calls or legacy adapter."""
-        extracted = extract_parameters_from_query(query)
+        extracted = dict(extracted_params) if extracted_params is not None else extract_parameters_from_query(query)
         if attached_article_id is not None:
             extracted["attached_article_id"] = attached_article_id
         if attached_photo_id is not None:
@@ -277,7 +286,7 @@ class QueryPlanner:
         tool_calls: list[PlannedToolCall] = []
 
         archetype = plan_obj.archetype
-        if archetype == "macro_summary":
+        if archetype == "macro_summary" and not is_macro_edition_query(query):
             archetype = "quantitative_trend"
         elif archetype == "negative_coverage_audit":
             archetype = "cross_newspaper_comparison"
@@ -387,6 +396,7 @@ class QueryPlanner:
                 active_newspapers=active_newspapers,
                 attached_article_id=attached_article_id,
                 attached_photo_id=attached_photo_id,
+                extracted_params=extracted,
             )
             tool_calls = heur.tool_calls
 
@@ -553,7 +563,7 @@ class QueryPlanner:
             archetype=archetype,
             reasoning=reasoning,
             tool_calls=_deduplicate_tool_calls(planned_calls),
-            answer_blueprint=self._build_heuristic_answer_blueprint(query, archetype),
+            answer_blueprint=self._build_heuristic_answer_blueprint(query, archetype, extracted),
         )
 
     def _plan_query_heuristic(
@@ -564,10 +574,11 @@ class QueryPlanner:
         active_newspapers: list[str] | None = None,
         attached_article_id: int | None = None,
         attached_photo_id: int | None = None,
+        extracted_params: dict[str, Any] | None = None,
     ) -> PlanResult:
         """Clean, deterministic single-pass intent routing for offline fallback."""
         q_lower = query.lower().strip()
-        params = extract_parameters_from_query(query)
+        params = dict(extracted_params) if extracted_params is not None else extract_parameters_from_query(query)
 
         is_archive_np = is_archive_wide_newspaper_query(query) or bool(
             re.search(r"\b(?:no|number|count|how many|all|total|which|list)\s+(?:of\s+)?newspapers?\b", q_lower)
@@ -613,7 +624,7 @@ class QueryPlanner:
             re.search(r"[\"“][^\"”]{8,150}[\"”]", query)
             or re.search(r"\b(?:tell me about|explain|summ[ae]ri[sz]e|find|read|what does|describe|details? of|takeaways? from)\s+(?:about|on|for)?\s*(?:this|the|that|an?|ir)?\s*(?:[\w-]+\s+){0,4}(?:article|story|piece|it|report)\b", q_lower)
             or re.search(r"\b(?:in\s+(?:under\s+|less\s+than\s+|at\s+most\s+)?\d+\s+words?|under\s+\d+\s+words?|brief\s+summary|key\s+takeaways?)\b", q_lower)
-        ) and not any(w in q_lower for w in ("how many", "count", "list all", "catalog", "compare all"))
+        ) and not any(w in q_lower for w in ("how many", "count", "list all", "catalog", "compare all")) and not is_macro_edition_query(query)
 
         # 0. Visual Asset / Infographic Inspection
         is_vis = is_visual_query(query, attached_photo_id)
@@ -625,7 +636,12 @@ class QueryPlanner:
             ]
             if enable_web_search:
                 calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))
-            return PlanResult(archetype="factual_lookup", reasoning="Deterministic visual inspection plan (factual_lookup)", tool_calls=calls)
+            return PlanResult(
+                archetype="factual_lookup",
+                reasoning="Deterministic visual inspection plan (factual_lookup)",
+                tool_calls=calls,
+                answer_blueprint=self._build_heuristic_answer_blueprint(query, "factual_lookup", params),
+            )
 
         # 1. Timeline / Chronological Trajectory
         if any(w in q_lower for w in ("timeline", "chronology", "chronological", "evolution", "over time", "history of", "progression", "trace back", "trace it back", "where it began", "from the beginning", "how it unfolded", "how it started")):
@@ -637,7 +653,7 @@ class QueryPlanner:
             archetype = "entity_deep_dive"
             clean_ent = _extract_clean_entity(query)
             calls = [
-                build_entity_search_tool(entity_name=clean_ent, top_k=10),
+                build_entity_search_tool(entity_name=clean_ent, top_k=10, newspaper_name=newspaper, date_from=date_from, date_to=date_to),
                 build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, top_k=8, purpose="Semantic context"),
             ]
 
@@ -692,7 +708,7 @@ class QueryPlanner:
 
         # 5b. Single Newspaper Coverage Audit / Presence Check
         elif newspaper and not comp_newspaper and bool(re.search(r"\b(?:did\s+.+\s+(?:report\s+on|cover|publish|carry)|was\s+.+\s+(?:reported|covered|published|carried)\s+(?:in|by)|(?:coverage|reporting)\s+(?:of|on)\s+.+\s+(?:in|by)|check\s+(?:if|whether)\s+.+\s+(?:reported|covered))\b", q_lower)):
-            archetype = "coverage_audit"
+            archetype = "factual_lookup"
             target_dt = issue_date or date_from
             topic_clean = re.sub(r"(?i)\b(?:did|was|were|is|are|has|have)\s+(?:the\s+)?[\w\s]+\s+(?:report\s+on|cover|publish|carry|mention)\s*", "", query)
             topic_clean = re.sub(r"(?i)\b(?:on|dated?)\s+\d{4}[/-]\d{1,2}[/-]\d{1,2}\b", "", topic_clean).strip("?:!.,\"' ") or query
@@ -712,7 +728,7 @@ class QueryPlanner:
         ):
             q_no_np = re.sub(r"\bnewspapers?\b", "", q_lower)
             has_article_words = bool(re.search(r"\b(articles?|story|stories|news)\b", q_no_np))
-            is_ordinal_page = bool(page_filter and re.search(r"\b(?:1st|first|2nd|second|3rd|third|lead|top|main|head)\s+(?:news|story|article|headline|item)\b", q_lower))
+            is_ordinal_page = bool(page_filter and is_ordinal_lead_story_query(query))
             is_availability = is_availability_query(query)
             is_count = is_availability or any(w in q_lower for w in ("how many", "total articles", "number of articles", "count of articles", "no of articles", "count of", "number of issues", "total issues", "no of newspaper", "how many issues", "count of pages", "number of pages"))
             is_whole_or_count = is_availability or is_count or any(w in q_lower for w in ("today's paper", "edition", "whole", "entire", "overview", "summarize", "how many", "count of", "number of", "no of", "distribution", "frequency", "trend", "statistics", "volume"))
@@ -776,7 +792,8 @@ class QueryPlanner:
         # 7. Factual Lookup (Default)
         else:
             archetype = "factual_lookup"
-            calls = [build_hybrid_search_tool(query=query, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=4 if is_target_art else 6, purpose="Search for factual evidence")]
+            search_q = params.get("headline") or query
+            calls = [build_hybrid_search_tool(query=search_q, newspaper_name=newspaper, date_from=date_from, date_to=date_to, page_filter=page_filter, top_k=4 if is_target_art else 6, purpose="Search for factual evidence")]
 
         if enable_web_search:
             calls.append(build_web_search_tool(build_targeted_web_query(query), num_results=5))

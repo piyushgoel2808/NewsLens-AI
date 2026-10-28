@@ -1,7 +1,7 @@
 """Modular System Prompt Templates and Dynamic Prompt Compiler for AnswerSynthesizer.
 
 Separates large prompt templates and dynamic structure compilation from the runtime
-AnswerSynthesizer orchestration logic while preserving full backward compatibility.
+AnswerSynthesizer orchestration logic while reconciling planner blueprints with post-retrieval evidence.
 """
 
 from __future__ import annotations
@@ -135,33 +135,48 @@ def compile_structure_from_blueprint(
     blueprint: AnswerBlueprint | dict[str, Any],
     domain: str | None = None,
 ) -> str:
-    """Compile a Planner-designed AnswerBlueprint into targeted response structure instructions."""
+    """Compile a Planner-designed AnswerBlueprint into targeted response structure instructions, enriched with domain guardrails."""
     if isinstance(blueprint, dict):
         with contextlib.suppress(Exception):
             blueprint = AnswerBlueprint(**blueprint)
     if not isinstance(blueprint, AnswerBlueprint) or not blueprint.sections:
         return ""
 
+    bp = blueprint.model_copy(deep=True)
+    if domain and bp.user_intent == "cross_newspaper_tabular_comparison":
+        metric_col = DOMAIN_TAXONOMY.get(domain, {}).get("metric_col", "Key Takeaways & Core Findings")
+        if bp.sections and bp.sections[0].title == "### ⚡ Executive Summary: Broadsheet Comparison":
+            bp.sections[0].title = f"### ⚡ Executive Summary: {domain} Intelligence"
+        if len(bp.sections) >= 2 and bp.sections[1].title == "### 📊 Cross-Newspaper Comparison Matrix":
+            bp.sections[1].title = f"### 📊 Cross-Newspaper {domain} Comparison Matrix"
+        if bp.table_columns == ["Publication", "Issue Date", "Top Headline & Page", "Core Findings", "Editorial Angle"]:
+            bp.table_columns = ["Publication", "Issue Date", f"Top {domain} Headline", metric_col, "Editorial Angle / Focus"]
+
     lines: list[str] = [
         "REQUIRED RESPONSE STRUCTURE (DESIGNED BY QUERY PLANNER FOR THIS INQUIRY):"
     ]
 
-    for idx, sec in enumerate(blueprint.sections, 1):
+    for idx, sec in enumerate(bp.sections, 1):
         lines.append(f"{idx}. {sec.title}")
         if sec.target_length:
             lines.append(f"   - Target Length: {sec.target_length}.")
         if sec.content_focus:
             lines.append(f"   - Focus & Content: {sec.content_focus}")
         if sec.format_type == "markdown_table":
-            if blueprint.table_columns:
-                col_header = " | ".join(blueprint.table_columns)
+            if bp.table_columns:
+                col_header = " | ".join(bp.table_columns)
                 lines.append(f"   - Format as Markdown Table with columns: | {col_header} |")
             else:
                 lines.append("   - Format as a clean, structured Markdown table.")
+            if domain and bp.user_intent == "cross_newspaper_tabular_comparison":
+                lines.append(
+                    f"   - ZERO-COVERAGE RULE: If a publication lacks standalone reporting in {domain}, explicitly write:\n"
+                    f"     | **[Publication]** | [Date] | No standalone {domain} reporting | Carried no standalone {domain} reporting in this edition | Minimal / No coverage |"
+                )
         elif sec.format_type == "bullet_list":
             lines.append("   - Format as clean, factual bullet points.")
             is_availability_sec = (
-                getattr(blueprint, "user_intent", "") == "archive_availability"
+                getattr(bp, "user_intent", "") == "archive_availability"
                 or "Archive Scope" in (sec.title or "")
                 or "Available Coverage" in (sec.title or "")
             )
@@ -176,18 +191,84 @@ def compile_structure_from_blueprint(
         else:
             lines.append("   - Format as authoritative, narrative journalistic paragraphs.")
 
-    if blueprint.target_word_count:
-        lines.append(f"\nCRITICAL WORD COUNT CEILING:\n- Your entire response MUST be approximately {blueprint.target_word_count} words or fewer. Respect this concise constraint strictly!")
+    if bp.target_word_count:
+        lines.append(f"\nCRITICAL WORD COUNT CEILING:\n- Your entire response MUST be approximately {bp.target_word_count} words or fewer. Respect this concise constraint strictly!")
 
-    if blueprint.prohibited_elements:
+    if bp.prohibited_elements:
         lines.append("\nSTRICT PROHIBITIONS FOR THIS RESPONSE:")
-        for p in blueprint.prohibited_elements:
+        for p in bp.prohibited_elements:
             lines.append(f"- DO NOT output {p}.")
+
+    if domain and bp.user_intent == "cross_newspaper_tabular_comparison":
+        lines.append(
+            f"\nSTRICT DOMAIN PURITY MANDATE & NEGATIVE CONSTRAINTS:\n"
+            f"- The user has specifically requested analysis of: {domain}.\n"
+            f"- ZERO-COVERAGE REPORTING: If a publication lacks standalone reporting in {domain}, explicitly state in the matrix and highlights:\n"
+            f'  "[Publication] carried no standalone {domain} reporting in this edition."\n'
+            f"  Do NOT substitute stories from other sections to fill out coverage for that newspaper!"
+        )
+    elif bp.user_intent == "shared_wire_comparison":
+        lines.append(
+            "\nSTRICT SIMILARITY & SHARED STORY INTEGRITY:\n"
+            "- ABSOLUTE PROHIBITION ON FALSE EQUIVALENCE: Never pair unrelated local stories across publications.\n"
+            "- Adhere strictly to verified shared wire matches in the evidence."
+        )
 
     lines.append("\nANTI-REPETITION CONSTRAINT:")
     lines.append("- Do NOT repeat the same sentences, statistics, or phrasing across sections. Each section must provide distinct, complementary value.")
 
     return "\n".join(lines)
+
+
+def _reconcile_blueprint_with_evidence(
+    blueprint: AnswerBlueprint | dict[str, Any] | None,
+    archetype: str,
+    query: str,
+    evidence_items: list[dict[str, Any]],
+) -> AnswerBlueprint | None:
+    """Reconcile a pre-retrieval Planner blueprint against actual post-retrieval evidence items."""
+    if not blueprint:
+        return None
+    if isinstance(blueprint, dict):
+        with contextlib.suppress(Exception):
+            blueprint = AnswerBlueprint(**blueprint)
+    if not isinstance(blueprint, AnswerBlueprint) or not blueprint.sections:
+        return None
+
+    has_real_articles = any(int(it.get("article_id") or 0) > 0 for it in evidence_items)
+
+    # 1. If retrieval returned ONLY statistical/count metadata (0 real articles), never render an article catalog table
+    if evidence_items and not has_real_articles and blueprint.user_intent in (
+        "comprehensive_article_catalog",
+        "page_article_catalog",
+        "targeted_factual_lookup",
+    ):
+        return None
+
+    # 2. If evidence contains verified shared syndicated wire coverage, defer to the shared wire layout if blueprint was generic
+    is_shared_ev = any(
+        "VERIFIED SHARED SYNDICATED WIRE COVERAGE" in str(it.get("snippet", ""))
+        or it.get("source_tool") == "sql_analytics_shared"
+        for it in evidence_items
+    )
+    if is_shared_ev and blueprint.user_intent == "cross_newspaper_tabular_comparison":
+        return None
+
+    # 3. If retrieval returned exactly 1 real article for a generic factual lookup, inject the article's headline
+    unique_art_ids = {
+        int(it["article_id"])
+        for it in evidence_items
+        if it.get("article_id") and int(it.get("article_id") or 0) > 0
+    }
+    if len(unique_art_ids) == 1 and blueprint.user_intent in ("targeted_factual_lookup", "single_article_summary"):
+        target_art = next((it for it in evidence_items if int(it.get("article_id") or 0) in unique_art_ids), {})
+        single_hl = (target_art.get("headline") or "").strip()
+        if single_hl and blueprint.sections and ":" not in blueprint.sections[0].title:
+            bp_copy = blueprint.model_copy(deep=True)
+            bp_copy.sections[0].title = f"### ⚡ Executive Summary: {single_hl}"
+            return bp_copy
+
+    return blueprint
 
 
 def build_synthesizer_system_prompt(
@@ -196,13 +277,20 @@ def build_synthesizer_system_prompt(
     evidence_items: list[dict[str, Any]] | None = None,
     answer_blueprint: AnswerBlueprint | dict[str, Any] | None = None,
 ) -> str:
-    """Construct intent-aware dynamic system prompt tailored to query archetype, blueprint, and domain."""
+    """Construct intent-aware dynamic system prompt tailored to query archetype, blueprint, and post-retrieval evidence."""
     domain = detect_domain_from_query(query, evidence_items)
     ev_items = evidence_items or []
     has_real_articles = any(int(it.get("article_id") or 0) > 0 for it in ev_items)
 
-    if answer_blueprint:
-        custom_structure = compile_structure_from_blueprint(answer_blueprint, domain=domain)
+    effective_blueprint = _reconcile_blueprint_with_evidence(
+        blueprint=answer_blueprint,
+        archetype=archetype,
+        query=query,
+        evidence_items=ev_items,
+    )
+
+    if effective_blueprint:
+        custom_structure = compile_structure_from_blueprint(effective_blueprint, domain=domain)
         if custom_structure:
             return (
                 f"You are NewsLens-AI, an elite broadsheet intelligence assistant.\n"
@@ -219,7 +307,7 @@ def build_synthesizer_system_prompt(
         )
         and not any(w in query.lower() for w in ["word count", "average length", "character count", "ratio", "percentage", "correlat"])
         or (
-            archetype in ("quantitative_trend", "factual_lookup")
+            archetype in ("quantitative_trend", "factual_lookup", "article_catalog")
             and bool(ev_items)
             and not has_real_articles
         )

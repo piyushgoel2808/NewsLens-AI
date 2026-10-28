@@ -303,14 +303,16 @@ class AgentWorkflow:
         q_params = extract_parameters_from_query(condensed_query)
         explicit_q_date = q_params.get("issue_date")
         explicit_q_nps = q_params.get("target_newspapers") or ([q_params["newspaper_name"]] if q_params.get("newspaper_name") else [])
+        has_implicit_page_ref = bool(q_params.get("page_filter") and not explicit_q_date and not explicit_q_nps)
 
-        # Preserve active issue date and newspapers if an asset is attached, if this is a follow-up,
-        # or if conversation history exists with active working context, unless explicitly overridden.
+        # Preserve active issue date and newspapers ONLY when an asset is attached, when this turn is a follow-up,
+        # or when a bare page reference is made without a new date/newspaper (preventing cross-turn lock-in on new queries).
+        should_inherit_active_ctx = bool(has_attached_asset or is_followup or has_implicit_page_ref)
         planner_active_date = explicit_q_date or (
-            active_issue_date if (has_attached_asset or is_followup or bool(chat_history and active_issue_date)) else None
+            active_issue_date if should_inherit_active_ctx else None
         )
         planner_active_newspapers = explicit_q_nps or (
-            active_newspapers if (has_attached_asset or is_followup or bool(chat_history and active_newspapers)) else []
+            active_newspapers if should_inherit_active_ctx else []
         )
 
         plan_res = await self._planner.plan_query_async(
@@ -323,6 +325,7 @@ class AgentWorkflow:
             attached_article_id=state.get("attached_article_id"),
             attached_photo_id=state.get("attached_photo_id"),
             chat_history=chat_history,
+            extracted_params=q_params,
         )
 
         planned_calls = [
@@ -340,15 +343,13 @@ class AgentWorkflow:
             else (plan_res.answer_blueprint if isinstance(plan_res.answer_blueprint, dict) else None)
         )
 
-        extracted_params = extract_parameters_from_query(condensed_query)
-
         return {
             "query": condensed_query,
             "original_query": original_query,
             "archetype": plan_res.archetype,
             "plan": planned_calls,
             "answer_blueprint": blueprint_dict,
-            "extracted_params": extracted_params,
+            "extracted_params": q_params,
             "is_condensed": True,
         }
 

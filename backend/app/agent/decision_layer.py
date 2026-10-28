@@ -55,11 +55,29 @@ _ENTITY_DEEP_DIVE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_ORDINAL_LEAD_STORY_PATTERNS = re.compile(
+    r"\b(?:1st|first|2nd|second|3rd|third|lead|top|main|head)\s+(?:news|story|article|headline|item)\b",
+    re.IGNORECASE,
+)
+
+_MACRO_EDITION_PATTERNS = re.compile(
+    r"\b(?:summarize\s+(?:the\s+)?(?:whole|entire|full)\s+(?:newspaper|issue|edition|paper)|"
+    r"summarize\s+(?:today'?s\s+)?(?:issue|edition|paper)|"
+    r"overview\s+of\s+(?:the\s+)?(?:whole\s+)?(?:newspaper|issue|edition)|"
+    r"whole\s+newspaper\s+summary)\b",
+    re.IGNORECASE,
+)
+
 _LISTING_CATALOG_PATTERNS = re.compile(
     r"\b(list\s+all|show\s+all|all\s+articles|all\s+news|all\s+headlines|all\s+stories|"
     r"what\s+articles\s+are\s+on|what\s+news\s+are\s+on|articles\s+on\s+page|news\s+on\s+page|"
-    r"headings\s+on\s+page|1st\s+news|first\s+news|lead\s+story|top\s+story|summarize\s+the\s+whole\s+newspaper|"
-    r"summarize\s+issue|whole\s+newspaper)\b",
+    r"headings\s+on\s+page|show\s+me\s+all\s+headlines|what\s+are\s+all\s+the\s+articles)\b",
+    re.IGNORECASE,
+)
+
+_COVERAGE_AUDIT_PATTERNS = re.compile(
+    r"\b(?:did\s+.+\s+(?:report\s+on|cover|publish|carry)|was\s+.+\s+(?:reported|covered|published|carried)\s+(?:in|by)|"
+    r"(?:coverage|reporting)\s+(?:of|on)\s+.+\s+(?:in|by)|check\s+(?:if|whether)\s+.+\s+(?:reported|covered))\b",
     re.IGNORECASE,
 )
 
@@ -92,7 +110,6 @@ _COMPARATIVE_PATTERNS = re.compile(
     r"all\s+available\s+newspaper|all\s+the\s+available|similar\s+articles|shared\s+articles|omissions\s+across)\b",
     re.IGNORECASE,
 )
-
 
 _GREETING_PATTERN = re.compile(
     r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|howdy|greetings|who\s+are\s+you|what\s+can\s+you\s+do|help|namaste)[!?.]*$",
@@ -157,6 +174,19 @@ def is_visual_query(query: str, attached_photo_id: int | None = None) -> bool:
     return any(w in q_low for w in _VISUAL_KEYWORDS)
 
 
+def is_ordinal_lead_story_query(query: str) -> bool:
+    """Return True when query asks for the 1st/lead/top story on a page rather than a full catalog table."""
+    q_low = (query or "").lower()
+    if any(w in q_low for w in ("list all", "all articles", "all news", "all stories", "compare")):
+        return False
+    return bool(_ORDINAL_LEAD_STORY_PATTERNS.search(q_low))
+
+
+def is_macro_edition_query(query: str) -> bool:
+    """Return True when query asks to summarize an entire newspaper issue/edition."""
+    return bool(_MACRO_EDITION_PATTERNS.search((query or "").lower()))
+
+
 class ToolDecisionPolicy:
     """Deterministic-first decision engine for selecting query archetypes and retrieval tools."""
 
@@ -167,6 +197,8 @@ class ToolDecisionPolicy:
     is_comparative_query = staticmethod(is_comparative_query)
     is_volume_query = staticmethod(is_volume_query)
     is_visual_query = staticmethod(is_visual_query)
+    is_ordinal_lead_story_query = staticmethod(is_ordinal_lead_story_query)
+    is_macro_edition_query = staticmethod(is_macro_edition_query)
 
     @classmethod
     def decide(
@@ -255,6 +287,17 @@ class ToolDecisionPolicy:
                 rationale="Shared/syndicated coverage query between two named publications.",
             )
 
+        if len(target_pages) >= 2 and len(target_nps) <= 1 and _COMPARATIVE_PATTERNS.search(q_low):
+            return ToolDecision(
+                intent="cross_page_comparison",
+                archetype="cross_newspaper_comparison",
+                selected_tools=["sql_analytics", "hybrid_search"],
+                recommended_analysis_type="issue_summary",
+                is_deterministic=True,
+                confidence=0.92,
+                rationale="Cross-page comparative analysis within a broadsheet edition.",
+            )
+
         if _COMPARATIVE_PATTERNS.search(q_low) or len(target_nps) >= 2:
             if len(target_nps) == 1 and len(target_dates) >= 2:
                 return ToolDecision(
@@ -273,7 +316,18 @@ class ToolDecisionPolicy:
                 recommended_analysis_type="issue_summary",
                 is_deterministic=False,
                 confidence=0.90,
-                rationale="Cross-newspaper or multi-page comparative analysis.",
+                rationale="Cross-newspaper comparative analysis.",
+            )
+
+        # 3b. Single-Newspaper Coverage Presence Audit ("Did X report on Y?")
+        if len(target_nps) == 1 and _COVERAGE_AUDIT_PATTERNS.search(q_low):
+            return ToolDecision(
+                intent="coverage_presence_audit",
+                archetype="factual_lookup",
+                selected_tools=["coverage_analysis", "hybrid_search"],
+                is_deterministic=True,
+                confidence=0.92,
+                rationale="Single-newspaper topic presence or omission audit.",
             )
 
         # 4. Chronological Timeline / Narrative Trajectory
@@ -322,19 +376,38 @@ class ToolDecisionPolicy:
                 rationale=f"Quantitative count or archive roster query ({a_type}).",
             )
 
-        # 6. Page-Scoped or Issue-Wide Article Catalog / Listing
-        if _LISTING_CATALOG_PATTERNS.search(q_low):
-            is_macro = bool(
-                re.search(r"\b(summarize\s+the\s+whole|summarize\s+issue|whole\s+newspaper|today'?s\s+paper|edition)\b", q_low)
-                and not target_pages
+        # 6a. Ordinal / Lead Story on a Page ("What is the 1st news on page 6?")
+        if is_ordinal_lead_story_query(q_clean):
+            return ToolDecision(
+                intent="ordinal_lead_story",
+                archetype="factual_lookup",
+                selected_tools=["sql_analytics", "hybrid_search"],
+                recommended_analysis_type="issue_summary",
+                is_deterministic=True,
+                confidence=0.92,
+                rationale="Ordinal or lead story identification on a specific page using prominence score ranking.",
             )
-            arch = "quantitative_trend" if is_macro else "article_catalog"
+
+        # 6b. Macro Edition Summary ("Summarize the whole newspaper")
+        if is_macro_edition_query(q_clean):
+            return ToolDecision(
+                intent="macro_edition_summary",
+                archetype="macro_summary",
+                selected_tools=["sql_analytics", "hybrid_search"],
+                recommended_analysis_type="issue_summary",
+                is_deterministic=True,
+                confidence=0.90,
+                rationale="Whole-edition executive briefing combining relational manifest and lead story excerpts.",
+            )
+
+        # 6c. Page-Scoped or Issue-Wide Article Catalog / Listing
+        if _LISTING_CATALOG_PATTERNS.search(q_low):
             tools = ["sql_analytics"]
             if target_pages:
                 tools.append("hybrid_search")
             return ToolDecision(
                 intent="page_article_catalog" if target_pages else "issue_manifest",
-                archetype=arch,
+                archetype="article_catalog",
                 selected_tools=tools,
                 recommended_analysis_type="issue_summary",
                 is_deterministic=True,
@@ -374,6 +447,8 @@ __all__ = [
     "is_availability_query",
     "is_comparative_query",
     "is_dynamic_analysis_permitted",
+    "is_macro_edition_query",
+    "is_ordinal_lead_story_query",
     "is_quantitative_query",
     "is_visual_query",
     "is_volume_query",

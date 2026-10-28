@@ -22,7 +22,7 @@ Analyze the user's query, understand their underlying intent, produce step-by-st
 _PROMPT_BODY = """### 🛠️ STRICT OPERATIONAL TOOL CONTRACTS & BOUNDARIES
 
 1. `sql_analytics`: Relational system of record for FIXED, PRE-COMPILED routines.
-   - Arguments: {"analysis_type": "issue_summary" | "count_articles" | "count_advertisements" | "count_photos" | "count_issues" | "coverage_difference" | "shared_coverage", "newspaper_name": str, "comparison_newspaper": str, "issue_date": "YYYY-MM-DD", "date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "category_filter": str, "page_filter": str, "query": str}
+   - Arguments: {"analysis_type": "issue_summary" | "count_articles" | "count_advertisements" | "count_photos" | "count_issues" | "coverage_difference" | "shared_coverage" | "coverage_comparison", "newspaper_name": str, "comparison_newspaper": str, "issue_date": "YYYY-MM-DD", "date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "category_filter": str, "page_filter": str, "query": str}
    - STRICT ENUM REQUIREMENT: `analysis_type` MUST be one of these 8 exact literals:
      * `count_issues`: Issue availability, publication rosters, and issue volume (e.g. 'list available newspapers in September 2026', 'is any newspaper available on 2026-04-28', 'total issues of a publication').
      * `count_articles`: Total article count for a newspaper or date range.
@@ -32,10 +32,10 @@ _PROMPT_BODY = """### 🛠️ STRICT OPERATIONAL TOOL CONTRACTS & BOUNDARIES
      * `coverage_difference`: Exclusive stories published by one newspaper but omitted by another.
      * `shared_coverage`: Common/syndicated wire stories published across two newspapers.
      * `coverage_comparison`: Cross-publication coverage matrix and audit across all newspapers on a date.
-   - ⚠️ NEGATIVE CONSTRAINT: `sql_analytics` CANNOT generate custom SQL, CANNOT calculate averages, CANNOT compute word lengths, ratios, medians, or custom groupings. Calling `sql_analytics` for anything other than these 7 fixed enum values is a fatal tool error!
+   - ⚠️ NEGATIVE CONSTRAINT: `sql_analytics` CANNOT generate custom SQL, CANNOT calculate averages, CANNOT compute word lengths, ratios, medians, or custom groupings. Calling `sql_analytics` for anything other than these 8 fixed enum values is a fatal tool error!
 
 2. `dynamic_analysis`: LLM-synthesized custom Python & SQL analysis engine.
-   - Arguments: {"query": str, "analysis_description": str}
+   - Arguments: {"query": str, "analysis_description": str, "newspaper_name": str, "issue_date": str}
    - POSITIVE SCOPE: Use for ANY question requiring calculations, mathematical aggregations, averages (e.g. 'what is the average length of articles in The Times dated 2026-08-01', 'average word count of editorials'), distributions (e.g. 'distribution of word counts'), ratios, author statistics, correlations, or multi-table SQL groupings across the broadsheet schema.
    - ⚠️ NEGATIVE CONSTRAINT: NEVER schedule `dynamic_analysis` for text summarization, reading articles, quotes, or narrative inquiries (e.g. 'summarize article in 100 words' uses `hybrid_search`, where word count is an answer length constraint, not a database calculation).
 
@@ -44,16 +44,16 @@ _PROMPT_BODY = """### 🛠️ STRICT OPERATIONAL TOOL CONTRACTS & BOUNDARIES
    - Use for: Point-in-time facts, quotes, event details, or targeted content.
 
 4. `timeline_builder`: Chronological evolution and milestone articles.
-   - Arguments: {"query": str, "limit": int}
+   - Arguments: {"query": str, "newspaper_name": str, "date_from": str, "date_to": str, "limit": int}
    - Use for: Evolution over time, trajectories, and multi-date developments.
 
 5. `entity_search`: Multi-hop entity network search and profiles.
-   - Arguments: {"entity_name": str, "top_k": int}
-   - Use for: Deep profiles of specific people or corporations.
+   - Arguments: {"entity_name": str, "newspaper_name": str, "date_from": str, "date_to": str, "top_k": int}
+   - Use for: Deep profiles of specific people, officials, or corporations.
 
 6. `coverage_analysis`: Unreported news and negative coverage audit.
-   - Arguments: {"query": str, "target_date": str}
-   - Use for: Identifying what a newspaper omitted or missed across the archive.
+   - Arguments: {"query": str, "target_date": str, "newspaper_name": str}
+   - Use for: Identifying what a newspaper omitted or checking whether a specific newspaper reported on a topic.
 
 7. `web_search`: Live internet search.
    - Arguments: {"query": str, "num_results": int}
@@ -119,7 +119,7 @@ Query: "Did The Morning Standard report on power tariff on 2026-08-01?"
 Output: {"thought_process": "Auditing single-newspaper coverage or omission of a specific topic/event on a given date. Schedule coverage_analysis.", "archetype": "factual_lookup", "tool_calls": [{"tool_name": "coverage_analysis", "arguments": {"query": "power tariff", "target_date": "2026-08-01", "newspaper_name": "The Morning Standard"}, "purpose": "Audit coverage presence for The Morning Standard regarding power tariff"}]}
 
 Query: "List all news on page 5 of Hindustan Times on 2026-09-03"
-Output: {"thought_process": "User wants a complete catalog of articles on page 5 of Hindustan Times on 2026-09-03. This is an article_catalog query — the user is asking to LIST articles on a specific page. Schedule sql_analytics issue_summary with page_filter=5 to get the relational manifest, then hybrid_search for article text excerpts.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "Hindustan Times", "issue_date": "2026-09-03", "page_filter": "5", "analysis_type": "issue_summary"}, "purpose": "Retrieve relational manifest of all articles on page 5"}, {"tool_name": "hybrid_search", "arguments": {"query": "news articles Hindustan Times 2026-09-03 page 5", "newspaper_name": "Hindustan Times", "date_from": "2026-09-03", "date_to": "2026-09-03", "page_filter": "5", "top_k": 8}, "purpose": "Retrieve article text excerpts for page 5"}], "answer_blueprint": {"user_intent": "page_article_catalog", "overall_tone": "authoritative_journalistic", "sections": [{"title": "### ⚡ Executive Summary: Page 5 Article Catalog", "format_type": "narrative", "content_focus": "Total articles on page 5, publication, date", "target_length": "1 to 2 sentences"}, {"title": "### 📋 Comprehensive Articles Catalog", "format_type": "markdown_table", "content_focus": "Complete table of all page 5 articles with headline, section, author", "target_length": "Full table of all articles"}, {"title": "### 📌 Key Featured Stories", "format_type": "bullet_list", "content_focus": "Top 3 stories with inline citations", "target_length": "3 bullets"}, {"title": "### 🔍 Explore Further", "format_type": "bullet_list", "content_focus": "Follow-up prompts for specific articles on this page", "target_length": "2 prompts"}], "table_columns": ["#", "Page", "Section", "Headline", "Author / Byline"], "prohibited_elements": ["count statistics instead of article table", "narrative summaries instead of catalog rows", "conversational filler"]}}
+Output: {"thought_process": "User wants a complete catalog of articles on page 5 of Hindustan Times on 2026-09-03. This is an article_catalog query — the user is asking to LIST articles on a specific page. Schedule sql_analytics issue_summary with page_filter=5 to get the relational manifest, then hybrid_search for article text excerpts.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "Hindustan Times", "issue_date": "2026-09-03", "page_filter": "5", "analysis_type": "issue_summary"}, "purpose": "Retrieve relational manifest of all articles on page 5"}, {"tool_name": "hybrid_search", "arguments": {"query": "news articles Hindustan Times 2026-09-03 page 5", "newspaper_name": "Hindustan Times", "date_from": "2026-09-03", "date_to": "2026-09-03", "page_filter": "5", "top_k": 8}, "purpose": "Retrieve article text excerpts for page 5"}], "answer_blueprint": {"user_intent": "page_article_catalog", "overall_tone": "authoritative_journalistic", "sections": [{"title": "### ⚡ Executive Summary: Page 5 Article Catalog", "format_type": "narrative", "content_focus": "Total articles on page 5, publication, date", "target_length": "1 to 2 sentences"}, {"title": "### 📋 Comprehensive Page 5 Articles Catalog", "format_type": "markdown_table", "content_focus": "Complete table of all page 5 articles with headline, section, author", "target_length": "Full table of all articles"}, {"title": "### 📌 Key Featured Stories", "format_type": "bullet_list", "content_focus": "Top 3 stories with inline citations", "target_length": "3 bullets"}, {"title": "### 🔍 Explore Further", "format_type": "bullet_list", "content_focus": "Follow-up prompts for specific articles on this page", "target_length": "2 prompts"}], "table_columns": ["#", "Page", "Section", "Headline", "Author / Byline"], "prohibited_elements": ["count statistics instead of article table", "narrative summaries instead of catalog rows", "conversational filler"]}}
 
 Query: "What are all the articles and headings on page 6 of The Hindu dated 2026-09-03?"
 Output: {"thought_process": "User wants all article headings/catalog on a specific page. This is a page-scoped article_catalog query. Schedule sql_analytics issue_summary with page_filter=6 to get the relational manifest of page 6 articles.", "archetype": "article_catalog", "tool_calls": [{"tool_name": "sql_analytics", "arguments": {"newspaper_name": "The Hindu", "issue_date": "2026-09-03", "page_filter": "6", "analysis_type": "issue_summary"}, "purpose": "Retrieve complete article manifest for page 6 of The Hindu on 2026-09-03"}]}
@@ -150,6 +150,8 @@ Output: {"thought_process": "User is comparing broadsheet reporting between Page
 - CRITICAL DATE RESTRAINT: NEVER invent or hallucinate date ranges (e.g. "2020-01-01" to "2022-12-31") or historical years when the user query does NOT specify any dates! If the query contains no dates, leave `date_from`, `date_to`, `issue_date`, and `target_date` empty or omitted so the retrieval tools search across the entire broadsheet archive.
 - ARCHETYPE SELECTION:
   * For queries citing specific statements, article quotes, headlines, or factual claims without explicit multi-newspaper comparative keywords, choose `factual_lookup` and schedule targeted `hybrid_search`.
+  * For ordinal/lead story identification on a specific page (e.g. "what is the 1st news on page 6?", "what is the lead story on page 1?"), schedule `sql_analytics` (`issue_summary` with `page_filter`) + `hybrid_search` (`page_filter`) so prominence rankings and text are retrieved, and design a concise `ordinal_lead_story` blueprint rather than a full catalog table.
+  * For whole-edition executive summaries (e.g. "summarize the whole newspaper", "overview of today's edition"), choose `macro_summary` and schedule `sql_analytics` (`issue_summary`) + `hybrid_search`.
   * For mathematical, statistical, or analytical calculations (e.g. "calculate average word count", "average length", "word count of articles", "ratio of", "percentage of"), choose `analytical_computation` and schedule `dynamic_analysis`.
   * For counting, frequencies, volume, or metadata questions (e.g. "how many issues", "how many [brand] newspaper", "number of pages", "count of articles", "total editions"), choose `quantitative_trend` and schedule `sql_analytics count_issues` or `count_articles`. NEVER select `article_catalog` or `factual_lookup` for scalar counts!
   * Select `article_catalog` when the user wants to LIST, ENUMERATE, or BROWSE multiple articles — including page-scoped listing queries like "list all news on page 5", "what articles are on page 6", "show headlines on page 3 of [newspaper]", "show all articles in [newspaper] on [date]". A query asking to LIST articles on a specific page IS article_catalog, not quantitative_trend.
@@ -157,7 +159,7 @@ Output: {"thought_process": "User is comparing broadsheet reporting between Page
   * MULTI-PAGE RETRIEVAL & CROSS-PAGE COMPARISONS: Whenever the user query references multiple pages (e.g. "compare page 1 and page 3", "across pages 1, 2, and 4", "what is on front page vs page 5"), you MUST schedule a separate tool call (e.g. `sql_analytics` with `page_filter: "1"`, `page_filter: "3"`, etc.) for EACH requested page so data from every page is retrieved. Schedule `hybrid_search` without restricting `page_filter` to a single page so excerpts from all target pages are retrieved.
 - You MUST respond with a valid JSON object matching the required schema. Return only the JSON object, with no markdown fences or conversational text.
 - DYNAMIC ANSWER BLUEPRINT (OPTIONAL):
-  You may optionally include an `answer_blueprint` object in your JSON response to design the exact sections and layout of the final answer:
+  You may optionally include a tailored `answer_blueprint` object in your JSON response designed specifically around the user's entities, pages, publications, or domain—never copy generic static boilerplate if the query has specific page/domain/publication scope:
   {
     "user_intent": "concise interpretation of query intent",
     "overall_tone": "authoritative_journalistic" | "executive_brief" | "analytical_comparison" | "concise_atomic",
@@ -171,8 +173,6 @@ Output: {"thought_process": "User is comparing broadsheet reporting between Page
 """
 
 PLANNER_SYSTEM_PROMPT = f"{_PROMPT_PREAMBLE}\n{STATIC_BROADSHEET_SCHEMA}\n\n{_PROMPT_BODY}"
-
-
 
 
 def build_replanner_prompt(
@@ -198,8 +198,8 @@ def build_replanner_prompt(
         f"5. Available Tools:\n"
         f"   - `hybrid_search`: {{\"query\": str, \"newspaper_name\": str, \"date_from\": str, \"date_to\": str, \"page_filter\": str, \"top_k\": int}}\n"
         f"   - `sql_analytics`: {{\"analysis_type\": \"issue_summary\"|\"count_articles\"|\"count_advertisements\"|\"count_photos\"|\"count_issues\"|\"coverage_difference\"|\"shared_coverage\", \"newspaper_name\": str, \"comparison_newspaper\": str, \"issue_date\": str, \"query\": str}}\n"
-        f"   - `timeline_builder`: {{\"query\": str, \"limit\": int}}\n"
-        f"   - `entity_search`: {{\"entity_name\": str, \"top_k\": int}}\n"
+        f"   - `timeline_builder`: {{\"query\": str, \"newspaper_name\": str, \"date_from\": str, \"date_to\": str, \"limit\": int}}\n"
+        f"   - `entity_search`: {{\"entity_name\": str, \"newspaper_name\": str, \"date_from\": str, \"date_to\": str, \"top_k\": int}}\n"
         f"   - `inspect_visual_asset`: {{\"photo_id\": int, \"article_id\": int, \"query\": str, \"page_filter\": str}}\n"
         f"6. CRITICAL: NEVER schedule `dynamic_analysis` for text summarization, explanation, or standard article search.\n\n"
         f"Output a JSON object matching this schema:\n"
