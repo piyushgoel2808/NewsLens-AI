@@ -98,19 +98,19 @@ function MainApp() {
   const isHybrid = activePreset === 'cloud_hybrid';
 
   return (
-    <div className="min-h-screen bg-canvas text-primary flex flex-col font-sans transition-colors duration-200">
+    <div className="h-screen h-[100dvh] max-h-screen bg-canvas text-primary flex flex-col font-sans transition-colors duration-200 overflow-hidden">
       {/* Top Editorial Masthead & Navigation Bar */}
-      <nav className="h-16 bg-surface/90 backdrop-blur-md border-b border-border-subtle px-3 md:px-6 flex items-center justify-between sticky top-0 z-30 shadow-sm">
+      <nav className="h-14 sm:h-16 bg-surface/90 backdrop-blur-md border-b border-border-subtle px-3 sm:px-4 md:px-6 flex items-center justify-between sticky top-0 z-30 shadow-sm shrink-0">
         {/* Left Masthead & Custom Geometric Emblem */}
         <div
           onClick={() => setActiveTab('home')}
-          className="flex items-center gap-3 cursor-pointer select-none group"
+          className="flex items-center gap-2 sm:gap-3 cursor-pointer select-none group shrink-0"
           title="Return to Overview (⌘1)"
         >
           {/* Custom Geometric Broadsheet-Lens SVG Emblem */}
-          <div className="w-9 h-9 rounded-xl bg-elevated border border-border-subtle flex items-center justify-center text-accent-primary shadow-sm group-hover:border-accent-primary/60 transition-all">
+          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-elevated border border-border-subtle flex items-center justify-center text-accent-primary shadow-sm group-hover:border-accent-primary/60 transition-all shrink-0">
             <svg
-              className="w-5 h-5 text-accent-primary"
+              className="w-4 h-4 sm:w-5 sm:h-5 text-accent-primary"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -126,16 +126,16 @@ function MainApp() {
           </div>
 
           <div>
-            <span className="font-serif font-bold text-lg text-primary tracking-tight flex items-center gap-1.5 leading-none">
-              NewsLens<span className="text-accent-primary font-sans font-extrabold text-xs px-1 py-0.5 rounded bg-accent-primary/10 border border-accent-primary/30">AI</span>
+            <span className="font-serif font-bold text-base sm:text-lg text-primary tracking-tight flex items-center gap-1.5 leading-none">
+              NewsLens<span className="text-accent-primary font-sans font-extrabold text-[10px] sm:text-xs px-1 py-0.5 rounded bg-accent-primary/10 border border-accent-primary/30">AI</span>
             </span>
-            <span className="text-[9px] text-muted tracking-widest uppercase block font-mono mt-0.5">
+            <span className="text-[8px] sm:text-[9px] text-muted tracking-widest uppercase block font-mono mt-0.5">
               BROADSHEET INTELLIGENCE
             </span>
           </div>
         </div>
 
-        {/* Center Segmented Workspace Switcher */}
+        {/* Center Segmented Workspace Switcher (Desktop) */}
         <div className="hidden lg:flex items-center gap-1 bg-elevated/70 p-1 rounded-xl border border-border-subtle">
           {navigationTabs.map((tab) => {
             const Icon = tab.icon;
@@ -169,12 +169,12 @@ function MainApp() {
         </div>
 
         {/* Right Status Cluster: Architecture Pill & Dual Theme Toggle */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
           {/* Active Architecture Pill */}
           <button
             type="button"
             onClick={() => setActiveTab('settings')}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono shadow-sm transition-all hover:scale-[1.02] cursor-pointer ${
+            className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full border text-xs font-mono shadow-sm transition-all hover:scale-[1.02] cursor-pointer ${
               isLocal
                 ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
                 : isHybrid
@@ -184,12 +184,17 @@ function MainApp() {
             title={`Active Architecture: Click to configure in Model Studio`}
           >
             <span
-              className={`w-2 h-2 rounded-full animate-pulse ${
+              className={`w-2 h-2 rounded-full shrink-0 animate-pulse ${
                 isLocal ? 'bg-amber-400' : isHybrid ? 'bg-emerald-400' : 'bg-sky-400'
               }`}
             />
-            <span className="font-semibold truncate max-w-[150px] sm:max-w-[200px]">
+            {/* Desktop / Tablet Label */}
+            <span className="font-semibold hidden sm:inline truncate max-w-[130px] md:max-w-[200px]">
               {isLocal ? `● Local Sovereign · ${activeModelName}` : isHybrid ? `● Hybrid · ${activeModelName}` : `● Cloud · ${activeModelName}`}
+            </span>
+            {/* Compact Mobile Label */}
+            <span className="font-semibold sm:hidden text-[11px]">
+              {isLocal ? 'Local' : isHybrid ? 'Hybrid' : 'Cloud'}
             </span>
           </button>
 
@@ -197,21 +202,21 @@ function MainApp() {
           <button
             type="button"
             onClick={toggleTheme}
-            className="p-2 rounded-xl bg-elevated border border-border-subtle text-text-secondary hover:text-text-primary hover:border-slate-500 transition-colors shadow-sm"
+            className="p-1.5 sm:p-2 rounded-xl bg-elevated border border-border-subtle text-text-secondary hover:text-text-primary hover:border-slate-500 transition-colors shadow-sm shrink-0"
             title={`Switch to ${theme === 'midnight' ? 'Archival Newsprint (Light)' : 'Midnight Newsroom (Dark)'} theme`}
             aria-label="Toggle visual theme"
           >
             {theme === 'midnight' ? (
-              <Sun className="w-4 h-4 text-amber-400" />
+              <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-400" />
             ) : (
-              <Moon className="w-4 h-4 text-sky-500" />
+              <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-sky-500" />
             )}
           </button>
         </div>
       </nav>
 
-      {/* Mobile/Tablet Sub-Navigation Bar for Viewports < 1024px */}
-      <div className="lg:hidden flex items-center overflow-x-auto bg-surface border-b border-border-subtle px-2 py-1.5 gap-1 text-xs">
+      {/* Mobile/Tablet Horizontal Sub-Navigation Ribbon for Viewports < 1024px */}
+      <div className="lg:hidden flex items-center overflow-x-auto bg-surface/95 border-b border-border-subtle px-2 py-1.5 gap-1 text-xs shrink-0 no-scrollbar touch-pan-x">
         {navigationTabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -219,9 +224,9 @@ function MainApp() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
                 isActive
-                  ? 'bg-accent-primary text-white font-semibold'
+                  ? 'bg-accent-primary text-white font-semibold shadow-xs'
                   : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
               }`}
             >
@@ -233,29 +238,29 @@ function MainApp() {
       </div>
 
       {/* Main View Container (Preserves tab state across switching) */}
-      <main className="flex-1 overflow-hidden relative">
-        <div className={activeTab === 'home' ? 'h-full w-full overflow-y-auto' : 'hidden'}>
+      <main className="flex-1 min-h-0 overflow-hidden relative">
+        <div className={activeTab === 'home' ? 'h-full w-full min-h-0 overflow-y-auto' : 'hidden'}>
           <HomePage />
         </div>
-        <div className={activeTab === 'reader' ? 'h-full w-full' : 'hidden'}>
+        <div className={activeTab === 'reader' ? 'h-full w-full min-h-0' : 'hidden'}>
           <BroadsheetReader />
         </div>
-        <div className={activeTab === 'agent' ? 'h-full w-full' : 'hidden'}>
+        <div className={activeTab === 'agent' ? 'h-full w-full min-h-0' : 'hidden'}>
           <AgentAssistant />
         </div>
-        <div className={activeTab === 'graph' ? 'h-full w-full' : 'hidden'}>
+        <div className={activeTab === 'graph' ? 'h-full w-full min-h-0' : 'hidden'}>
           <EntityGraphWorkspace />
         </div>
-        <div className={activeTab === 'timeline' ? 'h-full w-full' : 'hidden'}>
+        <div className={activeTab === 'timeline' ? 'h-full w-full min-h-0' : 'hidden'}>
           <TimelineWorkspace />
         </div>
-        <div className={activeTab === 'archive' ? 'h-full w-full' : 'hidden'}>
+        <div className={activeTab === 'archive' ? 'h-full w-full min-h-0' : 'hidden'}>
           <ArchiveExplorer />
         </div>
-        <div className={activeTab === 'ingest' ? 'h-full w-full' : 'hidden'}>
+        <div className={activeTab === 'ingest' ? 'h-full w-full min-h-0' : 'hidden'}>
           <UploadTrigger />
         </div>
-        <div className={activeTab === 'settings' ? 'h-full w-full' : 'hidden'}>
+        <div className={activeTab === 'settings' ? 'h-full w-full min-h-0' : 'hidden'}>
           <ModelSettingsStudio />
         </div>
       </main>

@@ -110,7 +110,7 @@ export default function EntityGraphWorkspace() {
     }) || [];
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary overflow-hidden font-sans transition-colors duration-200">
+    <div className="flex flex-col h-full min-h-0 bg-canvas text-text-primary overflow-hidden font-sans transition-colors duration-200">
       {/* Header & Controls Toolbar */}
       <header className="p-4 border-b border-border-subtle bg-surface shrink-0 flex flex-wrap items-center justify-between gap-4 shadow-xs">
         <div className="flex items-center gap-3">

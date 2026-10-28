@@ -241,6 +241,7 @@ export default function BroadsheetReader() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedSection, setSelectedSection] = useState('ALL');
   const [analyzingPhotoIds, setAnalyzingPhotoIds] = useState({});
+  const [mobileView, setMobileView] = useState('page'); // 'page' | 'inspector'
 
   const canvasContainerRef = useRef(null);
   const articleListRef = useRef(null);
@@ -467,6 +468,14 @@ export default function BroadsheetReader() {
       });
   }, [selectedArticleId]);
 
+  // When an article is selected on mobile/small screens, auto-switch to inspector
+  useEffect(() => {
+    if (selectedArticleId && typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setMobileView('inspector');
+      setActiveInspectorTab('articles');
+    }
+  }, [selectedArticleId]);
+
   // Current Active Page
   const currentPage = useMemo(() => {
     if (!issueData || !Array.isArray(issueData.pages) || issueData.pages.length === 0) return null;
@@ -626,12 +635,12 @@ export default function BroadsheetReader() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary overflow-hidden font-sans transition-colors duration-200">
+    <div className="flex flex-col h-full min-h-0 bg-canvas text-text-primary overflow-hidden font-sans transition-colors duration-200">
       {/* Top Header & Issue Selector Ribbon */}
-      <header className="flex flex-wrap items-center justify-between px-4 py-2 bg-surface border-b border-border-subtle gap-3 z-20">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-elevated px-3 py-1.5 rounded-xl border border-border-subtle">
-            <Newspaper className="w-4 h-4 text-accent-primary" />
+      <header className="flex flex-wrap items-center justify-between px-3 sm:px-4 py-2 bg-surface border-b border-border-subtle gap-2 sm:gap-3 z-20 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          <div className="flex items-center gap-2 bg-elevated px-2.5 sm:px-3 py-1.5 rounded-xl border border-border-subtle">
+            <Newspaper className="w-4 h-4 text-accent-primary shrink-0" />
             <select
               value={selectedIssueId || ''}
               onChange={(e) => {
@@ -639,7 +648,7 @@ export default function BroadsheetReader() {
                 setSelectedPageNumber(1);
                 setSelectedArticleId(null);
               }}
-              className="bg-transparent text-sm font-semibold text-text-primary outline-none cursor-pointer"
+              className="bg-transparent text-xs sm:text-sm font-semibold text-text-primary outline-none cursor-pointer max-w-[200px] sm:max-w-none truncate"
             >
               {Array.isArray(issues) && issues.length > 0 ? (
                 issues.map((iss) => (
@@ -653,6 +662,39 @@ export default function BroadsheetReader() {
                 </option>
               )}
             </select>
+          </div>
+
+          {/* Mobile View Toggle Switcher (Canvas vs Inspector) */}
+          <div className="lg:hidden flex items-center bg-elevated rounded-xl p-0.5 border border-border-subtle text-xs">
+            <button
+              type="button"
+              onClick={() => setMobileView('page')}
+              className={`px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                mobileView === 'page'
+                  ? 'bg-accent-primary text-white shadow-xs'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              <Newspaper className="w-3.5 h-3.5" />
+              <span>Canvas</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setMobileView('inspector')}
+              className={`px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                mobileView === 'inspector'
+                  ? 'bg-accent-editorial text-white shadow-xs'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Inspector</span>
+              {filteredArticles.length > 0 && (
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/20 font-mono">
+                  {filteredArticles.length}
+                </span>
+              )}
+            </button>
           </div>
 
           {issueData?.issue && (
@@ -672,7 +714,7 @@ export default function BroadsheetReader() {
         </div>
 
         {/* Vector Space & Model Badges */}
-        <div className="flex items-center gap-2 font-mono text-xs">
+        <div className="hidden sm:flex items-center gap-2 font-mono text-xs">
           <span className="text-[11px] px-2.5 py-1 rounded-full bg-elevated border border-border-subtle text-text-secondary">
             Vector Space: <strong className="text-accent-editorial">{vectorCollectionBadge}</strong>
           </span>
@@ -713,12 +755,14 @@ export default function BroadsheetReader() {
         </div>
       )}
 
-      {/* Main Content Area (Split Screen) */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+      {/* Main Content Area (Split Screen on Desktop, Tabbed on Mobile) */}
+      <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden relative">
         {/* LEFT PANE: Broadsheet Canvas & Raster Viewer */}
         <section
           ref={canvasContainerRef}
-          className="flex-1 bg-canvas overflow-auto p-4 flex items-start justify-center relative select-none"
+          className={`${
+            mobileView === 'page' ? 'flex' : 'hidden'
+          } lg:flex flex-1 min-h-0 bg-canvas overflow-auto p-2 sm:p-4 items-start justify-center relative select-none`}
         >
           {loading ? (
             <div className="flex flex-col items-center justify-center h-full text-text-muted gap-3">
@@ -991,7 +1035,11 @@ export default function BroadsheetReader() {
         {/* ------------------------------------------------------------------ */}
         {/* RIGHT PANE: SYNCHRONIZED 3-TAB INSPECTOR DRAWER */}
         {/* ------------------------------------------------------------------ */}
-        <aside className="w-full lg:w-[480px] xl:w-[540px] bg-surface border-t lg:border-t-0 lg:border-l border-border-subtle flex flex-col h-full z-10">
+        <aside
+          className={`${
+            mobileView === 'inspector' ? 'flex' : 'hidden'
+          } lg:flex w-full lg:w-[480px] xl:w-[540px] bg-surface border-t lg:border-t-0 lg:border-l border-border-subtle flex-col h-full min-h-0 z-10`}
+        >
           {/* Top 3 Tabs Switcher */}
           <div className="grid grid-cols-3 border-b border-border-subtle bg-elevated text-xs font-mono">
             <button
@@ -1042,14 +1090,26 @@ export default function BroadsheetReader() {
                 <div className="flex-1 flex flex-col h-full overflow-hidden bg-surface">
                   {/* Article Detail Header */}
                   <div className="p-3.5 border-b border-border-subtle flex items-center justify-between bg-elevated/70 backdrop-blur-sm sticky top-0 z-10">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedArticleId(null)}
-                      className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary font-medium px-2 py-1 rounded-lg bg-surface border border-border-subtle transition-colors cursor-pointer"
-                    >
-                      <ChevronLeft className="w-3.5 h-3.5" />
-                      Back to Page Articles
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedArticleId(null)}
+                        className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary font-medium px-2 py-1 rounded-lg bg-surface border border-border-subtle transition-colors cursor-pointer"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Back to Page Articles</span>
+                        <span className="sm:hidden">Articles</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMobileView('page')}
+                        className="lg:hidden flex items-center gap-1 text-xs text-accent-primary hover:text-accent-primary/80 font-medium px-2 py-1 rounded-lg bg-accent-primary/10 border border-accent-primary/30 transition-colors cursor-pointer"
+                        title="Return to Broadsheet Page View"
+                      >
+                        <Newspaper className="w-3.5 h-3.5" />
+                        <span>Canvas</span>
+                      </button>
+                    </div>
                     <div className="flex items-center gap-2">
                       {getProminenceBadge(articleDetails.prominence_score)}
                       <span className="text-xs uppercase font-mono px-2 py-0.5 rounded bg-surface text-text-secondary border border-border-subtle">

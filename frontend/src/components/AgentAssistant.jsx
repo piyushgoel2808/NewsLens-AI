@@ -632,7 +632,7 @@ export default function AgentAssistant() {
   });
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-4 md:px-8 py-4 transition-colors duration-200">
+    <div className="flex flex-col h-full min-h-0 bg-canvas text-text-primary w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-2 sm:px-4 md:px-8 py-2 sm:py-4 transition-colors duration-200">
       {/* Top Controls & Model Selector */}
       <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-border-subtle text-xs">
         <div className="flex items-center gap-2">

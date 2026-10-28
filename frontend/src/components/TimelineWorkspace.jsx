@@ -302,7 +302,7 @@ export default function TimelineWorkspace() {
   const hasResultsOrLoading = Boolean(trajectoryData || loading);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary overflow-hidden font-sans transition-colors duration-200">
+    <div className="flex flex-col h-full min-h-0 bg-canvas text-text-primary overflow-hidden font-sans transition-colors duration-200">
       {/* Top Header Toolbar */}
       <header className="px-6 py-3.5 bg-surface border-b border-border-subtle shrink-0 space-y-3 z-10 shadow-xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">

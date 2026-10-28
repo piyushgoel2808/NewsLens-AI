@@ -983,7 +983,7 @@ export default function ModelSettingsStudio() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] bg-canvas text-text-primary w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-4 md:px-8 py-6 overflow-y-auto space-y-6 font-sans transition-colors duration-200">
+    <div className="flex flex-col h-full min-h-0 bg-canvas text-text-primary w-full max-w-7xl 2xl:max-w-[1600px] mx-auto px-3 sm:px-6 md:px-8 py-4 sm:py-6 overflow-y-auto space-y-6 font-sans transition-colors duration-200">
       {/* Top Header & Editorial Folio */}
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-border-subtle">
         <div>
