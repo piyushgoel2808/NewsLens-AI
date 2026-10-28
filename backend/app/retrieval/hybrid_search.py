@@ -223,8 +223,8 @@ class HybridSearchEngine:
         elif isinstance(ft_res, list):
             keyword_results = ft_res
 
-        # 3. Compute RRF Scores
-        # Map: article_id -> {vector_rank, keyword_rank, rrf_score, chunks}
+        # 3. Compute RRF Scores with Best-Rank Primary Fusion & Bounded Multi-Chunk Bonus
+        # Map: article_id -> {vector_rank, keyword_rank, rrf_score, chunks, vector_hits}
         scores: dict[int, dict[str, Any]] = {}
 
         for rank, v_res in enumerate(vector_results, start=1):
@@ -235,12 +235,17 @@ class HybridSearchEngine:
                 scores[art_id] = {
                     "vector_rank": rank,
                     "keyword_rank": None,
-                    "rrf_score": 0.0,
-                    "chunks": [],
+                    "rrf_score": dense_weight * (1.0 / (self._k + rank)),
+                    "chunks": [v_res.payload],
+                    "vector_hits": 1,
                 }
-            scores[art_id]["vector_rank"] = rank
-            scores[art_id]["rrf_score"] += dense_weight * (1.0 / (self._k + rank))
-            scores[art_id]["chunks"].append(v_res.payload)
+            else:
+                scores[art_id]["vector_rank"] = min(scores[art_id]["vector_rank"], rank)
+                scores[art_id]["vector_hits"] += 1
+                if scores[art_id]["vector_hits"] <= 4:
+                    # Dampened multi-chunk corroboration bonus so long articles do not drown out lead stories
+                    scores[art_id]["rrf_score"] += 0.15 * dense_weight * (1.0 / (self._k + rank))
+                scores[art_id]["chunks"].append(v_res.payload)
 
         for rank, kw_res in enumerate(keyword_results, start=1):
             art_id = kw_res.article_id
@@ -250,11 +255,15 @@ class HybridSearchEngine:
                 scores[art_id] = {
                     "vector_rank": None,
                     "keyword_rank": rank,
-                    "rrf_score": 0.0,
+                    "rrf_score": sparse_weight * (1.0 / (self._k + rank)),
                     "chunks": [],
+                    "vector_hits": 0,
                 }
-            scores[art_id]["keyword_rank"] = rank
-            scores[art_id]["rrf_score"] += sparse_weight * (1.0 / (self._k + rank))
+            elif scores[art_id]["keyword_rank"] is None:
+                scores[art_id]["keyword_rank"] = rank
+                scores[art_id]["rrf_score"] += sparse_weight * (1.0 / (self._k + rank))
+            else:
+                scores[art_id]["keyword_rank"] = min(scores[art_id]["keyword_rank"], rank)
 
         if not scores:
             return []
@@ -311,14 +320,36 @@ class HybridSearchEngine:
                 art_cat = (article.category.name if article.category else "").lower()
                 art_sec = (article.section or "").lower()
                 art_psec = (article.printed_section or "").lower()
-                # If economics or finance or business, bridge across related economic domains
+                combined_cat_meta = f"{art_cat} {art_sec} {art_psec}"
                 if any(w in cat_req for w in ["econom", "financ", "business", "market"]):
                     matched_cat = any(
-                        w in art_cat or w in art_sec or w in art_psec
-                        for w in ["business", "market", "econom", "financ", "trade", "commerce", "money", "industry"]
+                        w in combined_cat_meta
+                        for w in ["business", "market", "econom", "financ", "trade", "commerce", "money", "industry", "corporate"]
+                    )
+                elif any(w in cat_req for w in ["world", "international", "geopolitic", "foreign", "global"]):
+                    matched_cat = any(
+                        w in combined_cat_meta
+                        for w in ["world", "international", "global", "foreign", "diplomacy"]
+                    )
+                elif any(w in cat_req for w in ["opinion", "editorial", "column", "commentary"]):
+                    matched_cat = (
+                        article.article_type == "editorial"
+                        or any(w in combined_cat_meta for w in ["opinion", "editorial", "column", "commentary", "view"])
+                    )
+                elif any(w in cat_req for w in ["crime", "law", "legal", "court"]):
+                    matched_cat = any(
+                        w in combined_cat_meta
+                        for w in ["crime", "law", "legal", "court", "police", "justice"]
                     )
                 else:
-                    matched_cat = (cat_req in art_cat or cat_req in art_sec or cat_req in art_psec)
+                    cat_tokens = [
+                        tok for tok in cat_req.replace("/", " ").replace("&", " ").split()
+                        if len(tok) >= 3 and tok not in {"and", "the", "for"}
+                    ]
+                    matched_cat = (
+                        cat_req in combined_cat_meta
+                        or any(tok in combined_cat_meta for tok in cat_tokens)
+                    )
                 if not matched_cat:
                     continue
 

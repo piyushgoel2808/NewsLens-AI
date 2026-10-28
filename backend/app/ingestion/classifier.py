@@ -91,13 +91,22 @@ EDITORIAL_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-ADVERTISEMENT_KEYWORDS = re.compile(
-    r"\b(?:advertisement|advertorial|special\s+promotional\s+feature|sponsored|"
-    r"initial\s+public\s+offering|\bipo\b|red\s+herring\s+prospectus|"
-    r"book\s+running\s+lead\s+manager|price\s+band|public\s+notice|statutory\s+notice|"
-    r"tender\s+notice|auction\s+sale|corrigendum|classified|for\s+sale|special\s+offer|"
-    r"discount|call\s+now|inquiries|toll\s+free)\b",
+STRONG_ADVERTISEMENT_KEYWORDS = re.compile(
+    r"\b(?:advertisement|advertorial|special\s+promotional\s+feature|sponsored\s+feature|"
+    r"red\s+herring\s+prospectus|book\s+running\s+lead\s+manager|"
+    r"public\s+notice|statutory\s+notice|tender\s+notice|corrigendum|"
+    r"classifieds?|special\s+offer|call\s+now|toll\s+free)\b",
     re.IGNORECASE,
+)
+
+COMMERCIAL_OFFER_KEYWORDS = re.compile(
+    r"\b(?:for\s+sale|auction\s+sale|discount\s+rates?|inquiries|book\s+now|limited\s+period\s+offer)\b",
+    re.IGNORECASE,
+)
+
+JOURNALISTIC_DATELINE_RE = re.compile(
+    r"^\s*[A-Z][A-Z\s,/.-]{2,30}\s*:\s+|\b(?:correspondent|bureau|reuters|pti|ani|bloomberg|press\s+trust)\b",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 TABLE_PATTERNS = re.compile(
@@ -220,14 +229,18 @@ class ArticleClassifier:
         top_cat, top_score = sorted_cats[0]
 
         if top_score <= 0.0:
-            # Fallback based on generic content cues
+            # Fallback based on generic content cues without blindly forcing Politics
             combined = f"{hl}\n{sub}\n{b_sample}"
-            if any(k in combined for k in ("market", "crore", "rupee", "bank", "fund", "shares")):
+            if any(k in combined for k in ("market", "crore", "rupee", "bank", "fund", "shares", "company", "firm", "sector", "industry")):
                 top_cat, top_score = "Business & Markets", 2.0
-            elif any(k in combined for k in ("minister", "government", "police", "court", "state")):
+            elif any(k in combined for k in ("minister", "government", "parliament", "assembly", "cabinet", "election", "state")):
                 top_cat, top_score = "Politics", 2.0
+            elif any(k in combined for k in ("police", "court", "judge", "arrest", "bail", "accused", "verdict")):
+                top_cat, top_score = "Crime & Law", 2.0
+            elif any(k in combined for k in ("city", "civic", "municipal", "metro", "traffic", "water", "resident")):
+                top_cat, top_score = "Local/Metro", 1.5
             else:
-                top_cat, top_score = "Politics", 1.0
+                top_cat, top_score = "Local/Metro", 1.0
 
         # Compute confidence (bounded 0.60 to 0.98)
         confidence = min(0.98, max(0.60, round(0.60 + (top_score / 15.0) * 0.38, 2)))
@@ -259,10 +272,23 @@ class ArticleClassifier:
         # Resolve genuine printed section from assembler or argument
         active_printed_sec = printed_section or article.printed_section
 
+        has_journalistic_signal = bool(
+            article.byline_author
+            or JOURNALISTIC_DATELINE_RE.search(body[:250])
+            or article.word_count >= 180
+        )
+        is_explicit_ad = (
+            headline.upper().startswith("[ADVERTISEMENT]")
+            or headline.upper().startswith("[PUBLIC NOTICE]")
+            or bool(STRONG_ADVERTISEMENT_KEYWORDS.search(combined_text[:400]))
+            or (
+                bool(COMMERCIAL_OFFER_KEYWORDS.search(combined_text[:400]))
+                and not has_journalistic_signal
+            )
+        )
+
         # 1. Determine Article Type
-        if headline.upper().startswith("[ADVERTISEMENT]") or headline.upper().startswith(
-            "[PUBLIC NOTICE]"
-        ) or ADVERTISEMENT_KEYWORDS.search(combined_text[:400]):
+        if is_explicit_ad:
             article_type = "advertisement"
             section = "Advertisements & Notices"
         elif vlm_article_type and vlm_article_type in _VALID_TYPES:
@@ -397,4 +423,3 @@ class ArticleClassifier:
             printed_section=active_printed_sec,
             secondary_categories=secondary_cats,
         )
-

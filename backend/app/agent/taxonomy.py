@@ -80,23 +80,73 @@ DOMAIN_TAXONOMY: dict[str, dict[str, Any]] = {
         "negative_hl": [],
         "required_override": [],
     },
+    "Science & Environment": {
+        "regex": r"\b(science|environment(?:al)?|climate\s+change|emissions?|biodiversity|isro|nasa|space|satellites?|astronomy|ecology|wildlife|pollution)\b",
+        "stems": [
+            "science", "environment", "climate", "emission", "biodiversity", "isro",
+            "nasa", "space", "satellite", "lunar", "solar", "orbit", "ecology",
+            "wildlife", "forest", "pollution", "warming",
+        ],
+        "metric_col": "Key Scientific & Environmental Findings",
+        "negative_hl": [],
+        "required_override": [],
+    },
+    "Entertainment": {
+        "regex": r"\b(entertainment|cinema|movies?|films?|bollywood|hollywood|box\s+office|theatre|music|concerts?|celebrity|ott)\b",
+        "stems": [
+            "entertainment", "cinema", "movie", "film", "bollywood", "hollywood",
+            "box office", "actor", "director", "music", "concert", "ott", "series",
+        ],
+        "metric_col": "Key Cultural & Box Office Highlights",
+        "negative_hl": [],
+        "required_override": [],
+    },
+    "Opinion/Editorial": {
+        "regex": r"\b(opinion|editorials?|op-ed|columns?|columnists?|commentary|viewpoints?|letters\s+to\s+the\s+editor)\b",
+        "stems": [
+            "opinion", "editorial", "op-ed", "column", "commentary", "viewpoint",
+            "perspective", "our view", "my view",
+        ],
+        "metric_col": "Core Editorial Arguments & Positions",
+        "negative_hl": [],
+        "required_override": [],
+    },
 }
 
 
 def detect_domain_from_query(query: str, evidence_items: list[dict[str, Any]] | None = None) -> str | None:
-    """Detect specific domain/sector from user query or evidence manifests."""
+    """Detect specific single domain/sector from user query without false-positive lock-in on general overviews."""
     if not query:
         return None
     q_lower = query.lower()
-    for domain, spec in DOMAIN_TAXONOMY.items():
-        if re.search(spec["regex"], q_lower):
-            return domain
 
-    # Inspect evidence items if manifests contain explicit CATEGORY
+    # Do not lock onto a single domain if the user is asking for a general issue/page/edition summary
+    is_general_edition_overview = bool(
+        re.search(
+            r"\b(?:all\s+(?:stories|articles|news|sections)|top\s+(?:stories|news|headlines)|"
+            r"main\s+(?:stories|news|headlines)|summarize\s+(?:the\s+)?(?:issue|edition|newspaper|front\s+page|page)|"
+            r"what\s+is\s+on\s+(?:the\s+)?(?:front\s+page|page\s+\d+))\b",
+            q_lower,
+        )
+    )
+    if is_general_edition_overview:
+        return None
+
+    matched_domains = [
+        domain for domain, spec in DOMAIN_TAXONOMY.items()
+        if re.search(spec["regex"], q_lower)
+    ]
+    if len(matched_domains) == 1:
+        return matched_domains[0]
+    if len(matched_domains) > 1:
+        # Multi-domain query (e.g., "compare business and politics news"): do not filter out one of them
+        return None
+
+    # Only fall back to evidence items if an explicit CATEGORY_FILTER was applied on the manifest
     if evidence_items:
         for item in evidence_items:
             snip = item.get("snippet", "")
-            m = re.search(r"CATEGORY:\s*([A-Za-z &]+)", snip)
+            m = re.search(r"CATEGORY[_\s]+FILTER:\s*([A-Za-z &/]+)", snip, re.IGNORECASE)
             if m:
                 cat = m.group(1).strip()
                 if any(w in cat.lower() for w in ["econom", "financ", "business", "market"]):
@@ -104,7 +154,7 @@ def detect_domain_from_query(query: str, evidence_items: list[dict[str, Any]] | 
                 if cat in DOMAIN_TAXONOMY:
                     return cat
                 for dom in DOMAIN_TAXONOMY:
-                    if cat.lower() in dom.lower():
+                    if cat.lower() in dom.lower() or dom.lower() in cat.lower():
                         return dom
                 return cat
     return None

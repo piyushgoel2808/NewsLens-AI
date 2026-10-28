@@ -91,12 +91,45 @@ class NewspaperChunker:
             pages=pages,
         )
 
-        paragraphs = [
+        raw_paragraphs = [
             p.strip() for p in re.split(r"\n\s*\n", text)
             if p.strip() and not is_noise_or_promo_text(p.strip())
         ]
-        if not paragraphs:
+        if not raw_paragraphs:
             return []
+
+        header_words = len(header.split())
+        effective_max_words = max(50, self.max_chunk_tokens - header_words - 10)
+        effective_target_words = min(self.target_chunk_tokens, effective_max_words)
+
+        paragraphs: list[str] = []
+        for raw_p in raw_paragraphs:
+            if len(raw_p.split()) <= effective_target_words:
+                paragraphs.append(raw_p)
+                continue
+            # Oversized paragraph (common in single-newline OCR text): split by single newline or sentences
+            sub_lines = [
+                ln.strip() for ln in raw_p.split("\n")
+                if ln.strip() and not is_noise_or_promo_text(ln.strip())
+            ]
+            for sub_ln in sub_lines:
+                if len(sub_ln.split()) <= effective_target_words:
+                    paragraphs.append(sub_ln)
+                else:
+                    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", sub_ln) if s.strip()]
+                    buf: list[str] = []
+                    buf_words = 0
+                    for sent in sentences:
+                        s_words = len(sent.split())
+                        if buf and (buf_words + s_words > effective_target_words):
+                            paragraphs.append(" ".join(buf))
+                            buf = [sent]
+                            buf_words = s_words
+                        else:
+                            buf.append(sent)
+                            buf_words += s_words
+                    if buf:
+                        paragraphs.append(" ".join(buf))
 
         chunks: list[DocumentChunk] = []
         current_paragraphs: list[str] = []
@@ -107,7 +140,7 @@ class NewspaperChunker:
             para_words = len(para.split())
 
             # If adding this paragraph exceeds target size and we already have content
-            if current_paragraphs and (current_word_count + para_words > self.target_chunk_tokens):
+            if current_paragraphs and (current_word_count + para_words > effective_target_words):
                 raw_chunk_text = "\n\n".join(current_paragraphs)
                 combined_chunk_text = f"{header}\n\n{raw_chunk_text}"
                 approx_tokens = len(combined_chunk_text.split())
