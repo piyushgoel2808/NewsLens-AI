@@ -3,13 +3,18 @@
 Backfill script to run visual table & data extraction on existing infographic / data chart photos
 that currently have fallback placeholder descriptions in the database.
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 # Add backend directory to sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+backend_dir = Path(__file__).resolve().parent.parent / "backend"
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
 
 from sqlalchemy import or_, select
 

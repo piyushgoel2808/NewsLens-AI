@@ -1294,10 +1294,6 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 * **Work It Is Doing**: Provides a full-featured interface for configuring hosted and local model providers (NVIDIA NIM, Ollama, Anthropic, OpenAI, Gemini, Groq), managing API keys, running real-time connectivity and latency health tests, inspecting model capabilities (chat, reasoning, multimodal vision, embeddings), and dynamically updating task assignments (`query_planner`, `synthesizer`, `vlm_extractor`, `embedding`, `ocr`) with hot reload.
 * **Important Tools / Frameworks**: React Hooks, Lucide Icons, REST API integration.
 
-##### [`frontend/src/components/RawDataViewer.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/RawDataViewer.jsx)
-* **What It Has**: JSON tree inspector.
-* **Work It Is Doing**: Renders raw JSON manifests (`articles_manifest.json`, `rag_chunks.json`, `ingestion_summary.json`) for deep inspection.
-
 ##### [`frontend/src/components/UploadTrigger.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/components/UploadTrigger.jsx)
 * **What It Has**: Broadsheet PDF drag-and-drop modal, publication selector, real-time Celery ingestion progress bar.
 * **Work It Is Doing**: Posts PDF files to `/api/ingest/upload` and polls `/api/ingest/jobs/{id}` until ingestion completes.
@@ -1330,6 +1326,10 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 ##### [`scripts/reindex_embeddings.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/scripts/reindex_embeddings.py)
 * **What It Has**: CLI background re-indexing and migration utility for vector embeddings.
 * **Work It Is Doing**: Iterates through existing relational MySQL `article_chunks`, generates new vector representations via the targeted embedding model (e.g. `gemini_embedding` with 768d MRL or `local_embed_bge` with 1024d), and upserts them into the corresponding Qdrant collection (`article_chunks_v2` or `article_chunks`) with batched processing, rate-limit backoff, and `--dry-run` validation.
+
+##### [`scripts/backfill_infographics.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/scripts/backfill_infographics.py)
+* **What It Has**: CLI backfill tool for visual table and chart data extraction on database photo assets.
+* **Work It Is Doing**: Scans `photos` table for infographics, data charts, and tables with placeholder or missing descriptions, retrieves cropped image bytes from MinIO, invokes `VisualDataExtractor`, and updates the database with structured markdown tables and key metrics.
 
 ##### Verification Scripts:
 - [`scripts/verify_phase1.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/scripts/verify_phase1.py): Verifies PDF rasterization and Docling layout analysis.
