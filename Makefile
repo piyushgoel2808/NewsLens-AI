@@ -124,7 +124,7 @@ serve: ## Run FastAPI development server with auto-reload (requires 'make up' fi
 	$(BACKEND) uv run uvicorn app.api.main:app --reload --host 0.0.0.0 --port 8000
 
 worker: ## Run Celery ingestion worker (requires 'make up' first)
-	$(BACKEND) uv run celery -A app.workers.celery_app worker --loglevel=info
+	$(BACKEND) uv run celery -A app.ingestion.celery_app worker --loglevel=info
 
 test: ## Run pytest test suite
 	$(BACKEND) uv run pytest tests/ -v

@@ -1,13 +1,24 @@
-.venv
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache
-.mypy_cache
-.ruff_cache
-debug_output
+# Virtual environments & Python caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets & Credentials (NEVER copy into Docker image)
+.env
+.env.*
+*.env
+*service-account*.json
+*.pem
+*.key
+*.crt
+
+# Test suites & debug artifacts
+tests/
+debug_output/
+*.log
 .DS_Store
-.git
-tests
-service-account*.json

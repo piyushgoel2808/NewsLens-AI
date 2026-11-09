@@ -370,3 +370,229 @@ class TestDoclingLayoutParser:
         assert ad.headline.startswith("[Advertisement]")
         assert ad.section == "Advertisement"
         assert "bauma" in ad.body_text.lower() or "machinery" in ad.body_text.lower()
+
+
+class TestDoclingKickerExtraction:
+    """Regression tests for kicker extraction and tuple unpacking in DoclingLayoutParser."""
+
+    def test_kicker_our_view_preserves_actual_headline(self) -> None:
+        """Verify 'OUR VIEW: Why rate cuts must wait' keeps the actual headline and stores kicker in subheadline."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="title",
+                text="OUR VIEW: Why rate cuts must wait",
+                bbox=(50.0, 100.0, 700.0, 140.0),
+                page_number=10,
+                level=1,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="The Reserve Bank of India must maintain monetary vigilance until inflation firmly aligns with targets.",
+                bbox=(50.0, 150.0, 700.0, 300.0),
+                page_number=10,
+                level=2,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=10, items=items, width_px=1000, height_px=1400)
+        assert len(articles) == 1
+        art = articles[0]
+        # Crucial regression assertions: headline must NOT be the kicker
+        assert art.headline == "Why rate cuts must wait"
+        assert art.headline != "OUR VIEW"
+        assert art.subheadline == "OUR VIEW"
+        assert "Reserve Bank of India" in art.body_text
+
+    def test_kicker_mint_primer_preserves_actual_headline(self) -> None:
+        """Verify 'MINT PRIMER: How new tax rules work' keeps the true headline."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="title",
+                text="MINT PRIMER: How new tax rules work",
+                bbox=(50.0, 100.0, 700.0, 140.0),
+                page_number=6,
+                level=1,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="The central board of direct taxes notified revised compliance requirements for capital gains yesterday.",
+                bbox=(50.0, 150.0, 700.0, 300.0),
+                page_number=6,
+                level=2,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=6, items=items, width_px=1000, height_px=1400)
+        assert len(articles) == 1
+        art = articles[0]
+        assert art.headline == "How new tax rules work"
+        assert art.headline != "MINT PRIMER"
+        assert art.subheadline == "MINT PRIMER"
+        assert "direct taxes" in art.body_text
+
+    def test_headline_without_kicker_unmodified(self) -> None:
+        """Verify headlines without kickers retain their exact text and have no spurious subheadline."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="title",
+                text="RBI holds benchmark repo rate at 6.5%",
+                bbox=(50.0, 100.0, 700.0, 140.0),
+                page_number=1,
+                level=1,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="The monetary policy committee voted unanimously to maintain the policy stance in Mumbai on Friday.",
+                bbox=(50.0, 150.0, 700.0, 300.0),
+                page_number=1,
+                level=2,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=1, items=items, width_px=1000, height_px=1400)
+        assert len(articles) == 1
+        art = articles[0]
+        assert art.headline == "RBI holds benchmark repo rate at 6.5%"
+        assert art.subheadline is None
+        assert "monetary policy committee" in art.body_text
+
+    def test_kicker_with_existing_subheadline_deck_coalescence(self) -> None:
+        """Verify when both a kicker in the title and a separate deck element exist, both are preserved."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="title",
+                text="PLAIN FACTS: India's semiconductor push gathers pace",
+                bbox=(50.0, 50.0, 700.0, 90.0),
+                page_number=4,
+                level=1,
+            ),
+            DoclingParsedItem(
+                label="section_header",
+                text="Union cabinet approves three new commercial fabrication units",
+                bbox=(50.0, 95.0, 700.0, 130.0),
+                page_number=4,
+                level=2,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="The central government on Thursday cleared major semiconductor manufacturing facilities across multiple states.",
+                bbox=(50.0, 140.0, 700.0, 300.0),
+                page_number=4,
+                level=3,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=4, items=items, width_px=1000, height_px=1400)
+        assert len(articles) == 1
+        art = articles[0]
+        assert art.headline == "India's semiconductor push gathers pace"
+        assert art.headline != "PLAIN FACTS"
+        assert "PLAIN FACTS" in (art.subheadline or "")
+        assert "Union cabinet approves three new commercial fabrication units" in (art.subheadline or "")
+
+    def test_kicker_without_substantive_headline_handled_safely(self) -> None:
+        """Verify malformed text with only a kicker label does not crash or corrupt state."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="title",
+                text="OUR VIEW:",
+                bbox=(50.0, 100.0, 300.0, 130.0),
+                page_number=10,
+                level=1,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="Short note.",
+                bbox=(50.0, 135.0, 300.0, 150.0),
+                page_number=10,
+                level=2,
+            ),
+        ]
+        # Low word count (< 5) and invalid headline candidate means article is discarded cleanly
+        articles = parser.assemble_articles(page_number=10, items=items, width_px=1000, height_px=1400)
+        assert len(articles) == 0
+
+    def test_empty_or_missing_headline_handled_safely(self) -> None:
+        """Verify document with no title/heading elements handles fallback or returns empty."""
+        parser = DoclingLayoutParser()
+        items = [
+            DoclingParsedItem(
+                label="title",
+                text="",
+                bbox=(50.0, 100.0, 300.0, 130.0),
+                page_number=2,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=2, items=items, width_px=1000, height_px=1400)
+        assert len(articles) == 0
+
+    def test_multiple_articles_with_mixed_kickers_on_same_page(self) -> None:
+        """Verify multiple articles on the same page with different kickers are partitioned with clean headlines."""
+        parser = DoclingLayoutParser()
+        items = [
+            # Article 1: With OUR VIEW kicker
+            DoclingParsedItem(
+                label="title",
+                text="OUR VIEW: The inflation fight is far from over",
+                bbox=(50.0, 100.0, 450.0, 140.0),
+                page_number=8,
+                level=1,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="Central banks around the world must maintain higher interest rates to ensure price stability.",
+                bbox=(50.0, 145.0, 450.0, 300.0),
+                page_number=8,
+                level=2,
+            ),
+            # Article 2: With MINT PRIMER kicker
+            DoclingParsedItem(
+                label="title",
+                text="MINT PRIMER: Sovereign green bonds explained",
+                bbox=(500.0, 100.0, 950.0, 140.0),
+                page_number=8,
+                level=1,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="The government issued its third tranche of sovereign green bonds to finance renewable energy projects.",
+                bbox=(500.0, 145.0, 950.0, 300.0),
+                page_number=8,
+                level=2,
+            ),
+            # Article 3: Standard headline without kicker
+            DoclingParsedItem(
+                label="title",
+                text="Automakers report double-digit festive sales growth",
+                bbox=(50.0, 400.0, 950.0, 440.0),
+                page_number=8,
+                level=1,
+            ),
+            DoclingParsedItem(
+                label="paragraph",
+                text="Leading passenger vehicle manufacturers recorded their highest monthly dispatches driven by festive demand.",
+                bbox=(50.0, 445.0, 950.0, 600.0),
+                page_number=8,
+                level=2,
+            ),
+        ]
+        articles = parser.assemble_articles(page_number=8, items=items, width_px=1000, height_px=1400)
+        assert len(articles) == 3
+
+        # Article 1 assertions
+        assert articles[0].headline == "The inflation fight is far from over"
+        assert articles[0].headline != "OUR VIEW"
+        assert articles[0].subheadline == "OUR VIEW"
+        assert "price stability" in articles[0].body_text
+
+        # Article 2 assertions
+        assert articles[1].headline == "Sovereign green bonds explained"
+        assert articles[1].headline != "MINT PRIMER"
+        assert articles[1].subheadline == "MINT PRIMER"
+        assert "renewable energy" in articles[1].body_text
+
+        # Article 3 assertions
+        assert articles[2].headline == "Automakers report double-digit festive sales growth"
+        assert articles[2].subheadline is None
+        assert "passenger vehicle" in articles[2].body_text

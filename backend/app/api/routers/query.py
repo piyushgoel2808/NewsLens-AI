@@ -24,6 +24,7 @@ from app.agent.planner import QueryPlanner
 from app.agent.synthesizer import parse_thought_and_answer
 from app.core.logging import get_logger
 from app.core.metrics import record_agent_query
+from app.core.security import require_api_auth
 from app.models.base import get_db, get_session_factory
 from app.models.query import QueryLog
 from app.retrieval import (
@@ -109,6 +110,7 @@ class QueryResponse(BaseModel):
 @router.post("", response_model=QueryResponse, summary="Execute full agentic RAG query pipeline")
 async def execute_query(
     request: QueryRequest,
+    _auth: str = Depends(require_api_auth),
 ) -> QueryResponse:
     """Execute the multi-stage LangGraph query workflow."""
     factory = get_session_factory()
@@ -149,6 +151,7 @@ async def execute_query(
 )
 async def stream_query(
     request: QueryRequest,
+    _auth: str = Depends(require_api_auth),
 ) -> StreamingResponse:
     """Stream real-time agent execution progress, token deltas, and citations."""
     factory = get_session_factory()
@@ -217,13 +220,14 @@ async def stream_query(
 
             yield f"event: citations\ndata: {json.dumps({'citations': cached_citations})}\n\n"
             latency_ms = round((time.monotonic() - t0) * 1000)
+            cached_cost_usd = float(cached_result.get("cost_usd", 0.0) or 0.0)
             record_agent_query(
                 archetype=cached_archetype,
                 status="cached",
                 model=effective_model or "default",
                 duration_seconds=latency_ms / 1000.0,
             )
-            yield f"event: done\ndata: {json.dumps({'latency_ms': latency_ms, 'cost_usd': 0.0, 'cached': True})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'latency_ms': latency_ms, 'cost_usd': cached_cost_usd, 'cached': True})}\n\n"
             return
 
         # 1. Query Condensation, Coreference Resolution, & In-Context Meta Queries
@@ -235,6 +239,10 @@ async def stream_query(
             )
         )
         is_meta = (is_in_context_meta_query(query, chat_history) if chat_history else False) or is_greeting
+        blueprint_dict: dict[str, Any] | None = None
+        tool_records: list[dict[str, Any]] = []
+        crag_verdict_dict: dict[str, Any] = {}
+        plan_res: Any = None
 
         if is_meta:
             effective_archetype = "conversational_meta_query"
@@ -245,6 +253,8 @@ async def stream_query(
             tool_data = json.dumps({"evidence_count": 0, "tools": []})
             yield f"event: tool_results\ndata: {tool_data}\n\n"
         else:
+            from app.agent.extractor import extract_parameters_from_query
+
             working_ctx = await resolve_conversation_working_context(
                 query=query,
                 chat_history=chat_history,
@@ -276,21 +286,34 @@ async def stream_query(
                 cond_data = json.dumps({"condensed_query": condensed})
                 yield f"event: query_condensed\ndata: {cond_data}\n\n"
 
-            # 2. Planning Stage
-            # When an asset is attached, lock the planner's active date and newspaper to the attached asset Ground Truth
-            if has_attached_asset:
-                planner_active_date = attached_ctx.get("issue_date") or active_ctx.get("issue_date")
-                planner_active_np = attached_ctx.get("newspaper_name") or active_ctx.get("newspaper_name")
-                planner_active_nps = [planner_active_np] if planner_active_np else None
-            else:
-                planner_active_date = active_ctx.get("issue_date") if is_followup else None
-                planner_active_nps = (
-                    [active_ctx.get("newspaper_name")]
-                    if (is_followup and active_ctx.get("newspaper_name"))
-                    else None
-                )
+            # 2. Planning Stage (aligned with AgentWorkflow._classify_and_plan_node)
+            q_params = extract_parameters_from_query(query)
+            explicit_q_date = q_params.get("issue_date")
+            explicit_q_nps = q_params.get("target_newspapers") or (
+                [q_params["newspaper_name"]] if q_params.get("newspaper_name") else []
+            )
+            has_implicit_page_ref = bool(
+                q_params.get("page_filter") and not explicit_q_date and not explicit_q_nps
+            )
+            should_inherit_active_ctx = bool(has_attached_asset or is_followup or has_implicit_page_ref)
 
-            blueprint_dict: dict[str, Any] | None = None
+            base_active_date = (
+                (attached_ctx.get("issue_date") or active_ctx.get("issue_date"))
+                if has_attached_asset
+                else active_ctx.get("issue_date")
+            )
+            base_active_np = (
+                (attached_ctx.get("newspaper_name") or active_ctx.get("newspaper_name"))
+                if has_attached_asset
+                else active_ctx.get("newspaper_name")
+            )
+            planner_active_date = explicit_q_date or (
+                base_active_date if should_inherit_active_ctx else None
+            )
+            planner_active_nps = explicit_q_nps or (
+                [base_active_np] if (should_inherit_active_ctx and base_active_np) else None
+            )
+
             if _can_bypass_llm_planner(query, chat_history, has_attached_asset):
                 plan_res = workflow._planner._plan_query_heuristic(
                     query,
@@ -311,6 +334,7 @@ async def stream_query(
                     attached_article_id=eff_attached_article_id,
                     attached_photo_id=eff_attached_photo_id,
                     chat_history=chat_history,
+                    extracted_params=q_params,
                 )
             effective_archetype = plan_res.archetype
             planned_calls = [
@@ -360,42 +384,34 @@ async def stream_query(
                 "active_issue_date": (attached_ctx.get("issue_date") if has_attached_asset else active_ctx.get("issue_date")),
                 "attached_article_id": eff_attached_article_id,
                 "attached_photo_id": eff_attached_photo_id,
+                "extracted_params": q_params,
                 "is_condensed": bool(is_followup),
                 "recovery_attempts": 0,
                 "error": None,
             }
             tool_state = await workflow._execute_tools_node(exec_state)  # type: ignore[arg-type]
-            raw_evidence = tool_state.get("evidence_items", [])
-            evidence = workflow._evaluator.filter_evidence(
-                raw_evidence,
-                query,
-                effective_archetype,
-            )
-            tool_records = [dict(t) for t in tool_state.get("tool_executions", [])]
+            eval_input_state: dict[str, Any] = {**exec_state, **tool_state}
 
-            # CRAG Fast-Floor Sufficiency Evaluation & Closed-Loop Recovery
-            eval_state = {
-                **exec_state,
-                "evidence_items": evidence,
-                "tool_executions": tool_records,
-            }
-            crag_verdict = workflow._evaluator.audit_evidence_sufficiency(
-                evidence=evidence,
-                state=eval_state,  # type: ignore[arg-type]
-            )
+            # Unified CRAG Evaluation & Closed-Loop Recovery via AgentWorkflow nodes
+            eval_updates = await workflow._evaluate_and_fallback_node(eval_input_state)  # type: ignore[arg-type]
+            eval_state: dict[str, Any] = {**eval_input_state, **eval_updates}
+            evidence = eval_state.get("evidence_items", [])
+            tool_records = [dict(t) for t in eval_state.get("tool_executions", [])]
+            crag_verdict_dict = eval_state.get("evaluation_verdict") or {}
+
             logger.info(
                 "Streaming CRAG sufficiency evaluation",
                 extra={
                     "query": query,
-                    "is_sufficient": crag_verdict.is_sufficient,
-                    "quality_score": crag_verdict.quality_score,
-                    "recommended_action": crag_verdict.recommended_action,
+                    "is_sufficient": crag_verdict_dict.get("is_sufficient", True),
+                    "quality_score": crag_verdict_dict.get("quality_score", 0.0),
+                    "recommended_action": crag_verdict_dict.get("recommended_action"),
                 },
             )
-            if not crag_verdict.is_sufficient and planned_calls:
+            route_action = workflow._route_after_evaluation(eval_state)  # type: ignore[arg-type]
+            if route_action != "synthesize_answer" and planned_calls:
                 with contextlib.suppress(Exception):
-                    eval_state["gap_diagnosis"] = crag_verdict.gap_reason
-                    if crag_verdict.recommended_action == "synthesize_dynamic_tool" and workflow._tool_maker:
+                    if route_action == "execute_dynamic_code":
                         rec_state = await workflow._execute_dynamic_code_node(eval_state)  # type: ignore[arg-type]
                     else:
                         rec_state = await workflow._execute_adaptive_replan_node(eval_state)  # type: ignore[arg-type]
@@ -418,6 +434,7 @@ async def stream_query(
         think_chunks: list[str] = []
         answer_chunks: list[str] = []
         think_start_time: float | None = None
+        fallback_synth_cost_usd = 0.0
 
         async for chunk in workflow._synthesizer.synthesize_stream(
             query=query,
@@ -543,7 +560,7 @@ async def stream_query(
                 # If cannot separate or streaming returned empty, attempt non-streaming synthesis
                 synth_success = False
                 try:
-                    full_answer, _, _ = await workflow._synthesizer.synthesize(
+                    full_answer, _, fallback_synth_cost_usd = await workflow._synthesizer.synthesize(
                         query=query,
                         archetype=effective_archetype,
                         evidence_items=evidence,
@@ -579,13 +596,20 @@ async def stream_query(
                 full_answer, query=query, archetype=effective_archetype, evidence_items=evidence
             )
 
-        fast_res = workflow._verifier._fast_groundedness_check(
-            draft_answer=full_answer,
-            evidence_items=evidence,
-            query=query,
-        )
-        if fast_res is not None and not fast_res.is_valid and fast_res.refined_answer:
-            full_answer = fast_res.refined_answer
+        # Unified Answer Verification via AgentWorkflow._verify_answer_node
+        verify_state: dict[str, Any] = {
+            "query": query,
+            "synthesized_answer": full_answer,
+            "evidence_items": evidence,
+            "archetype": effective_archetype,
+            "model_override": effective_model,
+            "answer_blueprint": blueprint_dict,
+            "evaluation_verdict": crag_verdict_dict or {"is_sufficient": True, "quality_score": 0.85},
+            "verification_attempts": 0,
+        }
+        verify_updates = await workflow._verify_answer_node(verify_state)  # type: ignore[arg-type]
+        if verify_updates.get("synthesized_answer"):
+            full_answer = verify_updates["synthesized_answer"]
 
         target_page_num = None
         from app.agent.extractor import extract_parameters_from_query
@@ -594,7 +618,7 @@ async def stream_query(
             with contextlib.suppress(ValueError, TypeError):
                 target_page_num = int(p_val)
 
-        eff_arch = getattr(plan_res, "archetype", effective_archetype)
+        eff_arch = getattr(plan_res, "archetype", effective_archetype) if plan_res else effective_archetype
         citations = workflow._synthesizer.extract_citations(
             full_answer, evidence, target_page=target_page_num, archetype=eff_arch
         )
@@ -603,47 +627,55 @@ async def stream_query(
         yield f"event: citations\ndata: {json.dumps({'citations': citations_list})}\n\n"
 
         latency_ms = round((time.monotonic() - t0) * 1000)
+        stream_cost_usd = round(
+            max(
+                float(getattr(workflow._synthesizer, "last_stream_cost_usd", 0.0) or 0.0),
+                float(fallback_synth_cost_usd or 0.0),
+            ),
+            6,
+        )
 
-        # 4. Save Query Log in DB
-        async with factory() as db:
-            log_record = QueryLog(
-                user_id=request.user_id,
-                query_text=query,
-                query_type=getattr(plan_res, "archetype", effective_archetype),
-                plan_json={"plan": planned_calls, "answer_blueprint": blueprint_dict},
-                tool_calls_json={"tools": tool_records},
-                answer_text=full_answer,
-                citations_json={"citations": citations_list},
-                latency_ms=latency_ms,
-                cost_usd=0.0,
-            )
-            db.add(log_record)
-            await db.commit()
+        # 5. Save Query Log in DB via shared _log_query_node
+        await workflow._log_query_node(
+            {
+                "user_id": request.user_id,
+                "query": query,
+                "archetype": eff_arch,
+                "plan": planned_calls,
+                "answer_blueprint": blueprint_dict,
+                "tool_executions": tool_records,
+                "synthesized_answer": full_answer,
+                "citations": citations_list,
+                "latency_ms": latency_ms,
+                "cost_usd": stream_cost_usd,
+            }  # type: ignore[arg-type]
+        )
 
-        # 5. Store in Redis Cache
+        # 6. Store in Redis Cache
         try:
             cache_payload = {
                 "query": query,
-                "archetype": getattr(plan_res, "archetype", effective_archetype),
+                "archetype": eff_arch,
                 "synthesized_answer": full_answer,
                 "citations": citations_list,
                 "plan": planned_calls,
                 "answer_blueprint": blueprint_dict,
                 "evidence_count": len(evidence),
+                "cost_usd": stream_cost_usd,
             }
             await workflow._cache.set_query(cache_key, cache_payload, ttl_seconds=3600)
         except Exception:
             pass
 
-        # 6. Record Prometheus Metrics
+        # 7. Record Prometheus Metrics
         record_agent_query(
-            archetype=getattr(plan_res, "archetype", effective_archetype),
+            archetype=eff_arch,
             status="success",
             model=effective_model or "default",
             duration_seconds=latency_ms / 1000.0,
         )
 
-        yield f"event: done\ndata: {json.dumps({'latency_ms': latency_ms, 'cost_usd': 0.0})}\n\n"
+        yield f"event: done\ndata: {json.dumps({'latency_ms': latency_ms, 'cost_usd': stream_cost_usd, 'evidence_count': len(evidence)})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -659,6 +691,7 @@ async def stream_query(
 @router.post("/plan", summary="Inspect query archetype classification and tool execution plan")
 async def inspect_plan(
     request: QueryRequest,
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Classify archetype and generate execution plan without executing tools."""
     planner = QueryPlanner()
@@ -742,6 +775,7 @@ class TimelineQueryRequest(BaseModel):
 )
 async def generate_timeline(
     request: TimelineQueryRequest,
+    _auth: str = Depends(require_api_auth),
 ) -> NarrativeTrajectoryResponse:
     """Construct a multi-perspective chronological story trajectory."""
     factory = get_session_factory()
@@ -760,6 +794,7 @@ async def generate_timeline(
 )
 async def stream_timeline(
     request: TimelineQueryRequest,
+    _auth: str = Depends(require_api_auth),
 ) -> StreamingResponse:
     """Stream real-time progress events and synthesized narrative milestones."""
     factory = get_session_factory()

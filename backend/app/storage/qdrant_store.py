@@ -85,6 +85,7 @@ class QdrantStore:
                 "page_numbers": qmodels.PayloadSchemaType.INTEGER,
                 "newspaper_name": qmodels.PayloadSchemaType.KEYWORD,
                 "issue_date": qmodels.PayloadSchemaType.KEYWORD,
+                "issue_date_int": qmodels.PayloadSchemaType.INTEGER,
                 "has_photo": qmodels.PayloadSchemaType.BOOL,
                 "has_table": qmodels.PayloadSchemaType.BOOL,
                 "article_id": qmodels.PayloadSchemaType.INTEGER,
@@ -179,8 +180,21 @@ class QdrantStore:
                                 continue
                         except Exception:
                             pass
-                    # If open-ended or > 366 days on a KEYWORD date field, skip Qdrant range filter
-                    # and let hybrid_search post-filter on ISO date strings so Qdrant never rejects DatetimeRange on KEYWORD.
+                    # For multi-year (> 366 days) or open-ended date ranges, filter on integer YYYYMMDD (issue_date_int)
+                    date_int_bounds: dict[str, float] = {}
+                    for bound in ("gte", "lte", "gt", "lt"):
+                        b_val = str(value.get(bound) or "")[:10]
+                        if len(b_val) == 10 and b_val.count("-") == 2:
+                            with contextlib.suppress(ValueError):
+                                date_int_bounds[bound] = float(int(b_val.replace("-", "")))
+                    if date_int_bounds:
+                        target_int_key = "issue_date_int" if key == "issue_date" else key
+                        must.append(
+                            qmodels.FieldCondition(
+                                key=target_int_key,
+                                range=qmodels.Range(**date_int_bounds),
+                            )
+                        )
                     continue
 
                 # Standard numeric range filter
@@ -303,6 +317,40 @@ class QdrantStore:
             return True
         except Exception:
             return False
+
+    async def backfill_issue_date_int(self, collection_name: str | None = None) -> int:
+        """Backfill integer YYYYMMDD issue_date_int on legacy points that only have string issue_date."""
+        target_cols = self._target_collections(collection_name)
+        updated_total = 0
+        for col in target_cols:
+            offset = None
+            while True:
+                try:
+                    records, offset = await self._client.scroll(
+                        collection_name=col,
+                        limit=100,
+                        offset=offset,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                except Exception:
+                    break
+                for rec in records:
+                    payload = rec.payload or {}
+                    if "issue_date_int" not in payload and "issue_date" in payload:
+                        d_str = str(payload["issue_date"])[:10]
+                        if len(d_str) == 10 and d_str.count("-") == 2:
+                            with contextlib.suppress(ValueError):
+                                d_int = int(d_str.replace("-", ""))
+                                await self._client.set_payload(
+                                    collection_name=col,
+                                    payload={"issue_date_int": d_int},
+                                    points=[rec.id],
+                                )
+                                updated_total += 1
+                if offset is None:
+                    break
+        return updated_total
 
     async def close(self) -> None:
         """Close the Qdrant client connection."""

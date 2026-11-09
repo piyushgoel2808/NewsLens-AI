@@ -1,0 +1,31 @@
+# Git & VCS
+.git/
+.github/
+.gitignore
+
+# Virtual environments & caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+dist/
+
+# Secrets & Environment Files (NEVER bake into container images)
+.env
+.env.*
+*.env
+*service-account*.json
+*.pem
+*.key
+*.crt
+
+# Runtime & Debug Artifacts
+debug_output/
+backend/debug_output/
+*.log
+.DS_Store

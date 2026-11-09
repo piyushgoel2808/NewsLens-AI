@@ -291,6 +291,7 @@ class AnswerSynthesizer:
     ) -> None:
         self._provider = provider
         self._session_factory = session_factory
+        self.last_stream_cost_usd: float = 0.0
 
     def _has_valid_evidence(self, evidence_items: list[dict[str, Any]]) -> bool:
         return has_valid_evidence(evidence_items)
@@ -492,6 +493,7 @@ class AnswerSynthesizer:
         """Stream synthesized answer token by token with conversational context and failover."""
         has_evidence = self._has_valid_evidence(evidence_items)
         is_conversational = archetype in {"conversational_meta_query", "clarification_needed"}
+        self.last_stream_cost_usd = 0.0
 
         if not has_evidence and not is_conversational:
             yield EMPTY_EVIDENCE_RESPONSE
@@ -504,6 +506,7 @@ class AnswerSynthesizer:
             chat_history=chat_history,
             answer_blueprint=answer_blueprint,
         )
+        est_input_tokens = max(1, sum(len(m.content or "") for m in messages) // 4)
 
         for provider in self._get_provider_candidates(model_override=model_override):
             try:
@@ -520,10 +523,21 @@ class AnswerSynthesizer:
                     thinking_budget=0,
                 )
                 streamed_any = False
+                streamed_chars = 0
                 async for chunk in stream_gen:
                     streamed_any = True
+                    streamed_chars += len(chunk)
                     yield chunk
                 if streamed_any:
+                    p_name = getattr(provider, "provider_name", "llm")
+                    m_name = getattr(provider, "_model", getattr(provider, "model_name", "default"))
+                    est_output_tokens = max(1, streamed_chars // 4)
+                    self.last_stream_cost_usd = record_usage_and_cost(
+                        provider=p_name,
+                        model=m_name,
+                        input_tokens=est_input_tokens,
+                        output_tokens=est_output_tokens,
+                    )
                     return
             except Exception as e:
                 logger.warning(

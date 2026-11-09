@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
+from app.core.security import require_api_auth
 from app.ingestion.intake import IntakeService
 from app.ingestion.tasks import process_issue_ingestion_task, run_ingestion_pipeline
 from app.models.base import get_db
@@ -30,6 +31,7 @@ router = APIRouter(prefix="/api", tags=["ingestion"])
 async def inspect_upload_preview(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Inspect uploaded PDF and return detected brand, date consensus, and existing publications."""
     content = await file.read()
@@ -61,6 +63,7 @@ async def inspect_upload_preview(
         "detected_date": str(det_date) if det_date else str(date.today()),
         "is_new_newspaper": is_new,
         "existing_newspapers": existing_newspapers,
+        "date_votes": telemetry.get("date_votes", {}) if isinstance(telemetry, dict) else {},
         "telemetry": telemetry,
     }
 
@@ -86,6 +89,7 @@ async def upload_newspaper_document(
         description="If True, processes rasterization and text extraction synchronously in request",
     ),
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Upload and ingest a single PDF or a ZIP archive containing multiple issue PDFs."""
     content = await file.read()
@@ -138,8 +142,8 @@ async def upload_newspaper_document(
 
     pipeline_results: list[dict[str, Any]] = []
 
-    # Run processing pipeline on newly created issues
-    if filename.lower().endswith(".pdf") and intake_res.issues_created:
+    # Run processing pipeline on newly created issues (both single PDF and unpacked ZIP archives)
+    if intake_res.issues_created:
         for issue_id in intake_res.issues_created:
             pdf_payload = intake_res.compressed_contents.get(issue_id, content)
             storage_key = intake_res.storage_keys.get(issue_id)
@@ -294,6 +298,7 @@ async def get_page_layout(
 async def delete_ingestion_job(
     job_id: int,
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Purge an ingestion job and all associated issue artifacts."""
     from app.ingestion.storage import DeletionService

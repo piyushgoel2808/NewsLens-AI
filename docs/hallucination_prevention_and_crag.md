@@ -164,7 +164,7 @@ flowchart TD
     PassSRF --> Step3
 
     subgraph Step3 ["3. Runtime Subprocess Health Evaluation (REH)"]
-        SubprocessRun["Execute in Isolated Subprocess (sandbox_runner.py)<br/>• 15s Timeout Ceiling<br/>• 512MB RAM Cap (setrlimit)<br/>• Read-Only DB Connection with Rollback"]
+        SubprocessRun["Execute in Isolated Subprocess (sandbox_runner.py)<br/>• 15s Timeout Ceiling & 512MB RAM Cap (setrlimit)<br/>• AST Binary String Folding & _safe_getattr Guard<br/>• SET SESSION TRANSACTION READ ONLY + _ReadOnlySessionProxy"]
         ExecCheck{"Process Exit Code == 0 AND No Exceptions?"}
         PassREH["REH Score: 1.0 (Healthy)"]
         FailREH["REH Score: 0.0 (Crashed / Timeout / OOM)<br/>Captures Stderr Traceback"]

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pymupdf
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -175,7 +175,7 @@ class DeletionService:
         # ---------------------------------------------------------------------
         deleted_files = 0
         try:
-            # 1. Delete explicit page raster keys
+            # 1. Delete explicit page raster keys and per-page cropped photo prefixes
             for p in pages:
                 if p.raster_object_key:
                     with contextlib.suppress(Exception):
@@ -184,8 +184,14 @@ class DeletionService:
                             p.raster_object_key,
                         )
                         deleted_files += 1
+                if getattr(p, "id", None) is not None:
+                    with contextlib.suppress(Exception):
+                        deleted_files += await self._minio.delete_prefix(
+                            self._settings.minio.bucket_pages,
+                            f"photos/{p.id}/",
+                        )
 
-            # 2. Delete prefix directories for the issue
+            # 2. Delete prefix directories for the issue and original PDF job archive
             deleted_files += await self._minio.delete_prefix(
                 self._settings.minio.bucket_pages,
                 f"issues/{issue_id}/",
@@ -194,6 +200,23 @@ class DeletionService:
                 self._settings.minio.bucket_originals,
                 f"issues/{issue_id}/",
             )
+            deleted_files += await self._minio.delete_prefix(
+                self._settings.minio.bucket_originals,
+                f"originals/{issue_id}/",
+            )
+            # Only delete the shared ZIP job prefix if no sibling issues remain in this job
+            siblings_count = 0
+            if source_job_id:
+                siblings_query = select(func.count(Issue.id)).where(
+                    Issue.source_zip_id == source_job_id,
+                    Issue.id != issue_id,
+                )
+                siblings_count = (await self._db.execute(siblings_query)).scalar() or 0
+                if siblings_count == 0:
+                    deleted_files += await self._minio.delete_prefix(
+                        self._settings.minio.bucket_originals,
+                        f"originals/{source_job_id}/",
+                    )
             logger.info(
                 "Tier 2: Purged MinIO objects",
                 extra={"issue_id": issue_id, "deleted_files": deleted_files},
@@ -214,8 +237,8 @@ class DeletionService:
             # Delete the Issue (cascading deletes pages, articles, chunks, tables, photos)
             await self._db.delete(issue)
 
-            # Delete associated IngestionJob if present
-            if source_job_id:
+            # Delete associated IngestionJob only if no sibling issues remain
+            if source_job_id and siblings_count == 0:
                 job = await self._db.get(IngestionJob, source_job_id)
                 if job:
                     await self._db.delete(job)
@@ -234,6 +257,21 @@ class DeletionService:
                 extra={"issue_id": issue_id, "error": str(e)},
             )
             raise
+
+        # ---------------------------------------------------------------------
+        # Tier 4: Redis Query & Timeline Cache Invalidation
+        # ---------------------------------------------------------------------
+        try:
+            from app.storage.cache_store import CacheStore
+
+            cache = CacheStore(self._settings.redis.url)
+            await cache.clear_all()
+            await cache.close()
+        except Exception as e:
+            logger.warning(
+                "Tier 4: Redis cache eviction warning (continuing purge)",
+                extra={"issue_id": issue_id, "error": str(e)},
+            )
 
         return {
             "status": "deleted",

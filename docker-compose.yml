@@ -166,6 +166,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     command: >
       sh -c "alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --workers 2"
 
@@ -215,7 +221,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info
+    healthcheck:
+      disable: true
+    command: celery -A app.ingestion.celery_app worker --loglevel=info
 
   # ---------------------------------------------------------------------------
   # 8. Frontend — React SPA (Nginx)

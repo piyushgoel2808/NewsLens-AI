@@ -159,7 +159,7 @@ flowchart TD
     end
 
     subgraph SANDBOX ["3. Isolated Subprocess Sandbox"]
-        AuditCritic --> Subprocess["Sandboxed Subprocess<br/>• Timeout: 15s<br/>• Max RAM: 512 MB<br/>• Read-Only DB Connection"]
+        AuditCritic --> Subprocess["Sandboxed Subprocess<br/>• Timeout: 15s & Max RAM: 512 MB<br/>• AST String Folding & _safe_getattr<br/>• SET SESSION TRANSACTION READ ONLY + _ReadOnlySessionProxy"]
         Subprocess --> ExecResult["Structured Execution Output<br/>{data: [...], metadata: {...}, summary: '...'}"]
     end
 

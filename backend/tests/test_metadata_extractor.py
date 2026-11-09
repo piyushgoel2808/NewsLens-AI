@@ -81,3 +81,21 @@ class TestMetadataExtractor:
         assert len(results[1].entities) > 0
         assert len(results[2].entities) > 0
         assert mock_db.flush.called
+
+    def test_extract_acronyms_and_prevent_institutional_person_misclassification(self) -> None:
+        extractor = MetadataExtractor(db=MagicMock())
+        headline = "RBI AND SEBI ANNOUNCE MONETARY POLICY REFORMS"
+        text = (
+            "The Supreme Court and White House officials reviewed the Stock Market "
+            "and Monetary Policy framework prepared by ISRO and RBI."
+        )
+        entities = extractor.extract_entities_from_text(text, headline=headline)
+        by_name = {e.name: e.type for e in entities}
+
+        assert by_name.get("RBI") == "org"
+        assert by_name.get("SEBI") == "org"
+        assert by_name.get("ISRO") == "org"
+        assert by_name.get("Supreme Court") == "org"
+        assert by_name.get("White House") == "org"
+        assert by_name.get("Monetary Policy") != "person"
+        assert by_name.get("Stock Market") != "person"

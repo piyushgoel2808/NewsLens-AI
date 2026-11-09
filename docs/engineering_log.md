@@ -4599,6 +4599,65 @@ Ingestion of a full 24-page broadsheet newspaper issue was taking 7–11+ minute
    - Resolved all major and minor findings including storage consistency, degraded-mode purges, and presigned URL verification.
    - Verified 621/621 backend pytest suite passing and Vite frontend building cleanly.
 
+---
+
+## Phase 31 — Production Defect Remediations (`REM-01` through `REM-10`)
+
+**Date**: 2026-11-10
+**Status**: Completed ✅
+
+### Architectural Overview & Remediations Implemented
+
+1. **Celery Entrypoint & Docker Healthcheck (`REM-01`)**:
+   - Updated [`docker-compose.yml`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/docker-compose.yml) and [`Makefile`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/Makefile) worker command from non-existent `app.core.celery_app` to [`app.ingestion.celery_app`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/celery_app.py).
+   - Added `/health` HTTP healthcheck to `backend` and `healthcheck: disable: true` on `worker` in `docker-compose.yml`.
+2. **Docling Parser Inverted Unpacking Fix (`REM-02`)**:
+   - Fixed inverted tuple unpacking in [`backend/app/ingestion/parsers/docling.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/ingestion/parsers/docling.py) (`clean_h, kicker = extract_kicker_and_clean_headline(raw_h)`), preserving the clean headline in `current_headline` and prepending the kicker to `current_subheadline`. Added 7 regression tests in `test_docling_parser.py`.
+3. **DualSyncObjectStore Empty-Byte Cloud Fallback (`REM-03`)**:
+   - Fixed [`backend/app/storage/dual_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/dual_store.py) (`if data:` instead of `if data is not None:`) so missing local MinIO keys returning `b""` transparently fall back to Cloudflare R2.
+4. **Streaming Query & LangGraph CRAG/Verifier Parity (`REM-04`)**:
+   - Unified `POST /api/query/stream` in [`backend/app/api/routers/query.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/api/routers/query.py) with the compiled LangGraph workflow: post-condensation parameter re-extraction, reflexive CRAG evaluation (with adaptive replanning and dynamic tool synthesis), post-synthesis `AnswerVerifier` fact-checking, and real token cost accounting via `record_usage_and_cost()`.
+5. **Dynamic Tool Sandbox Hardening (`REM-05`)**:
+   - Added recursive AST binary string concatenation folding (`_fold_string_concat`) in [`backend/app/agent/sandbox.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox.py) and runtime `_safe_getattr`, `SET SESSION TRANSACTION READ ONLY`, and `_ReadOnlySessionProxy` in [`backend/app/agent/sandbox_runner.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/agent/sandbox_runner.py).
+6. **Container Security & Context Bloat (`REM-06`)**:
+   - Created [`.dockerignore`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/.dockerignore), [`backend/.dockerignore`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/.dockerignore), and [`frontend/.dockerignore`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/.dockerignore) to block `service-account*.json`, `.env*`, `.venv`, and `node_modules` from container build contexts.
+7. **Issue Deletion & Cache Eviction (`REM-07`)**:
+   - Implemented `CacheStore.clear_all()` in [`backend/app/storage/cache_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/storage/cache_store.py), wired cache invalidation into `PATCH /api/issues/{id}` and `DeletionService.delete_issue`, and added MinIO prefix cleanup for `photos/{page_id}/` and `originals/{job_id}/`.
+8. **Ingestion Pipeline Completeness (`REM-08`)**:
+   - Enabled `.zip` archive uploads in `/api/ingest/upload`, surfaced `date_votes` in `/api/ingest/inspect-preview`, removed shadowed `asyncio.Semaphore(4)` in `tasks.py`, and added uppercase acronym NER extraction in `metadata_extractor.py`.
+9. **Frontend-Backend Contract Alignment (`REM-09`)**:
+   - Updated [`frontend/src/context/ModelConfigContext.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/context/ModelConfigContext.jsx) to accept object or `(task, providerId)` arguments in `updateTaskBinding` and fetch live `/api/settings/laptop-node/status`; updated `AgentAssistant.jsx` to read `t.arguments || t.tool_input`.
+10. **Frontend Lazy Workspace Mounting & Bundle Splitting (`REM-10`)**:
+    - Updated [`frontend/src/App.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/App.jsx) to lazily mount workspace tabs on first visit (`visitedTabs`) and configured Rollup manual chunk splitting (`vendor-react`, `vendor-icons`) in [`frontend/vite.config.js`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/vite.config.js).
+
+---
+
+## Phase 32 — Enterprise Security, Concurrency Isolation & Unlimited Vector Date Ranges
+
+**Date**: 2026-11-10
+**Status**: Completed ✅
+
+### Architectural Overview & Hardening Implemented
+
+1. **API Key / Bearer Authentication (`CRIT-01` — `backend/app/core/security.py`)**:
+   - Implemented `require_api_auth` using constant-time `secrets.compare_digest` over `X-API-Key` and `Authorization: Bearer <token>`.
+   - Enforced across all mutating endpoints in `ingest.py`, `settings.py`, and `newspapers.py`; fails closed (`HTTP 403`) when `APP_DEBUG=false` and `API_AUTH_KEY` is unconfigured.
+2. **Laptop Node PIN Brute-Force Lockout (`HIGH-01` — `backend/app/core/security.py`, `settings.py`)**:
+   - Implemented `PinAttemptTracker` with constant-time PIN comparison (`secrets.compare_digest`) and per-IP brute-force protection (5 failed attempts within 300s triggers a 300s `HTTP 429` lockout).
+3. **Unlimited Multi-Year Qdrant Date Range Filtering (`HIGH-02` — `qdrant_store.py`, `embedder.py`)**:
+   - Indexed `issue_date_int` (`YYYYMMDD` integer, `PayloadSchemaType.INTEGER`) on Qdrant collections (`article_chunks` and `article_chunks_v2`).
+   - Replaced the 366-day date expansion cap with native `qdrant_models.Range(gte=d_from_int, lte=d_to_int)` combined with legacy `MatchAny` for backward compatibility.
+4. **Redis-Backed Distributed Rate Limiting & Proxy Spoofing Guard (`HIGH-03` — `security.py`, `main.py`)**:
+   - Replaced per-worker in-memory rate limiting with `RateLimitMiddleware` using Redis atomic `INCR` + `EXPIRE` (`RATE_LIMIT_RPM=60`) and automatic in-memory fallback.
+   - Added `TRUST_FORWARDED_FOR` setting so `X-Forwarded-For` is only trusted behind configured reverse proxies.
+5. **Request-Scoped `ContextVar` Task Bindings (`MED-01` — `providers/registry.py`, `query.py`)**:
+   - Added `_SCOPED_TASK_BINDINGS: ContextVar` and `ModelRegistry.scoped_task_bindings()` context manager so per-request `model_override` in `/api/query` and `/api/query/stream` never mutates global singleton state across concurrent requests.
+6. **Automatic Redis Cache Eviction on Ingestion & Page Re-Ingestion (`MED-02` — `tasks.py`, `page_reingestion.py`)**:
+   - Wired `await CacheStore().clear_all()` at completion of `run_ingestion_pipeline()` and `PageReingestionService.reingest_page()` to immediately evict stale zero-hit query caches.
+7. **Verification**:
+   - Added [`backend/tests/test_security_and_hardening.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_security_and_hardening.py) covering all 6 hardening controls.
+   - `ruff check app/ tests/` passed with 0 errors.
+
 
 
 

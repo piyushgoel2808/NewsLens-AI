@@ -57,6 +57,7 @@ class TestDeletionService:
         mock_db.get = AsyncMock(return_value=mock_issue)
         mock_pages_res = MagicMock()
         mock_pages_res.scalars.return_value.all.return_value = mock_pages
+        mock_pages_res.scalar.return_value = 0
         mock_db.execute = AsyncMock(return_value=mock_pages_res)
         mock_db.delete = AsyncMock()
         mock_db.commit = AsyncMock()
@@ -77,13 +78,46 @@ class TestDeletionService:
         # Tier 1: Qdrant
         mock_qdrant.delete_by_filter.assert_awaited_once_with({"issue_id": 10})
 
-        # Tier 2: MinIO
-        assert mock_minio.delete_prefix.await_count >= 2
+        # Tier 2: MinIO (includes photos/{page_id}/ and originals/{job_id}/ prefixes)
+        assert mock_minio.delete_prefix.await_count >= 5
+        deleted_prefixes = [call.args[1] for call in mock_minio.delete_prefix.await_args_list]
+        assert "photos/101/" in deleted_prefixes
+        assert "photos/102/" in deleted_prefixes
+        assert "originals/42/" in deleted_prefixes
         assert mock_minio.delete.await_count == 2
 
         # Tier 3: MySQL
         assert mock_db.delete.await_count >= 1
         mock_db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_issue_preserves_sibling_job_prefix(self) -> None:
+        """Verify originals/{source_job_id}/ is not purged when sibling issues still reference the job."""
+        mock_db = MagicMock()
+        mock_issue = _MockIssue(id=10, newspaper_id=1, source_zip_id=42)
+
+        mock_db.get = AsyncMock(return_value=mock_issue)
+        mock_pages_res = MagicMock()
+        mock_pages_res.scalars.return_value.all.return_value = []
+        # Return 1 sibling remaining
+        mock_pages_res.scalar.return_value = 1
+        mock_db.execute = AsyncMock(return_value=mock_pages_res)
+        mock_db.delete = AsyncMock()
+        mock_db.commit = AsyncMock()
+
+        mock_minio = MagicMock()
+        mock_minio.delete = AsyncMock()
+        mock_minio.delete_prefix = AsyncMock(return_value=1)
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.delete_by_filter = AsyncMock()
+
+        service = DeletionService(db=mock_db, minio=mock_minio, qdrant=mock_qdrant)
+        result = await service.delete_issue(10)
+
+        assert result["status"] == "deleted"
+        deleted_prefixes = [call.args[1] for call in mock_minio.delete_prefix.await_args_list]
+        assert "originals/42/" not in deleted_prefixes
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_issue_returns_not_found(self) -> None:

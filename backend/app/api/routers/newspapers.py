@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.security import require_api_auth
 from app.models.article import Article, ArticleChunk
 from app.models.base import get_db
 from app.models.newspaper import Issue, Newspaper, Page
@@ -412,6 +413,7 @@ async def inspect_issue_ingestion(
 async def delete_issue(
     issue_id: int,
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Execute 3-Tier Hard Deletion Blueprint across Qdrant, MinIO, and MySQL."""
     from app.ingestion.storage import DeletionService
@@ -431,6 +433,7 @@ async def delete_issue(
 async def create_newspaper(
     request: CreateNewspaperRequest,
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Create a new newspaper in the system."""
     stmt = select(Newspaper).where(Newspaper.name == request.name)
@@ -466,6 +469,7 @@ async def update_newspaper(
     newspaper_id: int,
     request: UpdateNewspaperRequest,
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Update publication metadata and synchronize Qdrant payloads if renamed."""
     stmt = select(Newspaper).where(Newspaper.id == newspaper_id)
@@ -520,6 +524,7 @@ async def update_newspaper(
 async def delete_newspaper(
     newspaper_id: int,
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Delete a newspaper and cascade deletion across all its issues in Qdrant, MinIO, and MySQL."""
     from app.ingestion.storage import DeletionService
@@ -557,6 +562,7 @@ async def patch_issue(
     issue_id: int,
     request: UpdateIssueRequest,
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Update issue date or edition, and synchronize vector embedding payloads in Qdrant."""
     stmt = select(Issue).where(Issue.id == issue_id).options(selectinload(Issue.newspaper))
@@ -595,16 +601,23 @@ async def patch_issue(
         try:
             settings = get_settings()
             qdrant = QdrantStore(settings.qdrant)
+            iso_str = str(new_date_obj)
+            date_int = int(iso_str.replace("-", "")) if len(iso_str) == 10 else 0
             await qdrant.set_payload_by_filter(
-                payload={"issue_date": str(new_date_obj)},
+                payload={"issue_date": iso_str, "issue_date_int": date_int},
                 filters={"issue_id": issue_id},
             )
             # Invalidate Redis query & timeline cache
-            from app.retrieval.query_cache import QueryCache
-            cache = QueryCache(settings.redis.url)
+            from app.storage.cache_store import CacheStore
+
+            cache = CacheStore(settings.redis.url)
             await cache.clear_all()
-        except Exception:
-            pass
+            await cache.close()
+        except Exception as cache_err:
+            logger.warning(
+                "Failed to invalidate query cache or Qdrant payload after issue patch",
+                extra={"issue_id": issue_id, "error": str(cache_err)},
+            )
 
     return {
         "id": issue.id,
@@ -627,6 +640,7 @@ async def reingest_issue_page(
     parser_engine: str = Query("auto", description="Parser engine to use: auto, docling, google_vision, or gemini"),
     request_data: dict[str, Any] | None = Body(None),
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Execute complete atomic re-ingestion for a single page of an issue.
 
@@ -637,38 +651,44 @@ async def reingest_issue_page(
     from app.ingestion.page_reingestion import PageReingestionService
     from app.providers.registry import get_registry
 
+    valid_bindings: dict[str, str] = {}
     try:
         if request_data:
             if "parser_engine" in request_data and request_data["parser_engine"]:
                 parser_engine = str(request_data["parser_engine"]).strip()
             if "task_bindings" in request_data and isinstance(request_data["task_bindings"], dict) and request_data["task_bindings"]:
                 try:
-                    settings = get_settings()
-                    model_cfg = settings.load_model_config()
+                    reg = get_registry()
+                    model_cfg = reg._model_config
                     valid_bindings = {
                         k: v for k, v in request_data["task_bindings"].items()
                         if v and (v in model_cfg.providers or k in model_cfg.task_bindings)
                     }
-                    if valid_bindings:
-                        model_cfg.task_bindings.update(valid_bindings)
-                        settings.save_model_config(model_cfg)
-                        get_registry().invalidate_all()
-                        logger.info(
-                            "Reingest applied dynamic task_bindings",
-                            extra={"task_bindings": valid_bindings, "issue_id": issue_id, "page_number": page_number},
-                        )
                 except Exception as b_err:
                     logger.warning(
-                        "Failed to update task_bindings during reingest",
+                        "Failed to validate scoped task_bindings during reingest",
                         extra={"error": str(b_err)},
                     )
 
         service = PageReingestionService(db=db)
-        result = await service.reingest_page(
-            issue_id=issue_id,
-            page_number=page_number,
-            parser_engine=parser_engine,
-        )
+        if valid_bindings:
+            reg = get_registry()
+            with reg.scoped_task_bindings(valid_bindings):
+                logger.info(
+                    "Reingest applied ContextVar-scoped task_bindings",
+                    extra={"task_bindings": valid_bindings, "issue_id": issue_id, "page_number": page_number},
+                )
+                result = await service.reingest_page(
+                    issue_id=issue_id,
+                    page_number=page_number,
+                    parser_engine=parser_engine,
+                )
+        else:
+            result = await service.reingest_page(
+                issue_id=issue_id,
+                page_number=page_number,
+                parser_engine=parser_engine,
+            )
         commit_fn = getattr(db, "commit", None)
         if callable(commit_fn):
             res_commit = commit_fn()
@@ -694,6 +714,7 @@ async def reingest_page_by_id(
     parser_engine: str = Query("auto", description="Parser engine to use"),
     request_data: dict[str, Any] | None = Body(None),
     db: AsyncSession = Depends(get_db),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Re-ingest page using page_id."""
     stmt = select(Page).where(Page.id == page_id)

@@ -1649,15 +1649,15 @@ async def analyze(db, query, context):
 2. **AST Pre-Execution Safety Inspection (`ASTSafetyScanner`)**:
    - **Module Check**: Validates that no forbidden modules (`os`, `sys`, `subprocess`, `socket`, `shutil`, `urllib`) are imported.
    - **Builtin Check**: Verifies that banned primitives (`open`, `eval`, `exec`, `compile`, `__import__`) are absent.
-   - **Dunder Check**: Confirms no escape to `__subclasses__` or `__globals__`.
+   - **Dunder & String-Concat Folding Check (`_fold_string_concat`)**: Recursively folds string literal binary additions (`"__sub" + "classes__"`) and confirms no escape to `__subclasses__`, `__globals__`, or private attributes.
    - **Function Contract**: Confirms `async def analyze(db, query, context)` signature is present.
 
 #### 5. Subprocess Sandbox Execution (`sandbox_runner.py`)
 - Spawns an isolated subprocess worker via `sys.executable`.
 - Enforces an OS-level memory limit (512MB) and a 15-second execution timeout.
-- Pre-populates `exec_globals` with safe pre-imported libraries (`re`, `math`, `statistics`, `json`, `datetime`, `pd`, `np`, `text`).
-- Connects to MySQL with `autocommit=False`.
-- Runs `analyze(db, query, context)` and unconditionally calls `connection.rollback()` in a `finally` block, guaranteeing zero mutations to MySQL.
+- Pre-populates `exec_globals` with safe pre-imported libraries (`re`, `math`, `statistics`, `json`, `datetime`, `pd`, `np`, `text`) and replaces `getattr` with `_safe_getattr` (blocking underscore-prefixed attributes at runtime).
+- Connects to MySQL with `SET SESSION TRANSACTION READ ONLY` and wraps the session in `_ReadOnlySessionProxy` (raising `PermissionError` on `.commit()`, `.flush()`, or `.close()`).
+- Runs `analyze(ro_session, query, context)` and unconditionally calls `await session.rollback()` in a `finally` block, guaranteeing zero mutations to MySQL.
 
 #### 6. Diagnostic ToolCritic Quality Audit (`tool_critic.py`)
 The raw execution output is audited across 5 quantitative dimensions:

@@ -109,7 +109,14 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.app_debug else None,
     )
 
-    # CORS
+    # Distributed Rate Limiting & Prometheus Metrics (registered before CORS so CORS is the outermost layer)
+    from app.core.metrics import PrometheusMiddleware, generate_prometheus_metrics
+    from app.core.security import RateLimitMiddleware
+
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(PrometheusMiddleware)
+
+    # CORS (registered after other middleware so Starlette runs it outermost and 429s receive CORS headers)
     cors_kwargs: dict[str, Any] = {
         "allow_methods": ["*"],
         "allow_headers": ["*"],
@@ -121,11 +128,6 @@ def create_app() -> FastAPI:
         cors_kwargs["allow_origins"] = settings.cors_origins
         cors_kwargs["allow_credentials"] = True
     app.add_middleware(CORSMiddleware, **cors_kwargs)
-
-    # Prometheus Metrics Middleware
-    from app.core.metrics import PrometheusMiddleware, generate_prometheus_metrics
-
-    app.add_middleware(PrometheusMiddleware)
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics_endpoint() -> Response:

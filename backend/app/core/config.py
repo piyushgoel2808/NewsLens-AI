@@ -347,17 +347,20 @@ def find_project_root() -> Path:
     return Path.cwd().resolve()
 
 
+_PROJECT_ROOT = find_project_root()
+
+
 class Settings(BaseSettings):
     """NewsLens-AI application settings.
 
     Values are loaded from (in order of precedence):
     1. Environment variables
-    2. .env file (if present in the working directory)
+    2. .env file (if present in the repository root or backend directory)
     3. Default values defined below
     """
 
     model_config = SettingsConfigDict(
-        env_file=(".env", "../.env"),
+        env_file=(_PROJECT_ROOT / ".env", _PROJECT_ROOT / "backend" / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -368,6 +371,9 @@ class Settings(BaseSettings):
     app_debug: bool = False
     app_log_level: str = "INFO"
     app_secret_key: str = "change-me-in-production"
+    api_auth_key: str | None = Field(default=None, validation_alias="API_AUTH_KEY")
+    rate_limit_rpm: int = Field(default=120, validation_alias="RATE_LIMIT_RPM")
+    trust_forwarded_for: bool = Field(default=False, validation_alias="TRUST_FORWARDED_FOR")
     testing: bool = False
     cors_allowed_origins: str = (
         "http://localhost:5173,http://localhost:5174,http://localhost:3000,"
@@ -492,6 +498,7 @@ class Settings(BaseSettings):
         "huggingface_token",
         "hf_api_token",
         "docling_api_key",
+        "api_auth_key",
         mode="before",
     )
     @classmethod

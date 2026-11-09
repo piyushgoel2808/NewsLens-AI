@@ -704,8 +704,7 @@ async def _execute_ingestion_pipeline(
                     start_photo_index=1,
                 )
 
-        # Execute single-pass visual extraction across pages with Semaphore(4)
-        visual_semaphore = asyncio.Semaphore(4)
+        # Execute single-pass visual extraction across pages with Semaphore(2)
         visual_tasks = [
             _process_page_visuals(rendered, analysis)
             for rendered, analysis in zip(rendered_pages, analysis_results, strict=False)
@@ -865,7 +864,26 @@ async def _execute_ingestion_pipeline(
             issue.ingestion_status = "completed"
         await db.commit()
 
+        # Invalidate Redis query & timeline caches so newly ingested issue is immediately discoverable
+        with contextlib.suppress(Exception):
+            from app.storage.cache_store import CacheStore
+
+            cache = CacheStore(settings.redis.url)
+            await cache.clear_all()
+            await cache.close()
+
         # Step 8: Diagnostic telemetry export
+        rag_chunks_debug = [
+            {
+                "article_id": item.article_id,
+                "headline": item.headline,
+                "chunk_type": item.chunk_type,
+                "chunk_index": getattr(item.chunk, "chunk_index", idx),
+                "text": getattr(item.chunk, "text", ""),
+            }
+            for idx, item in enumerate(all_issue_indexing_items)
+        ]
+        ads_debug = [m for m in articles_manifest if m.get("article_type") == "advertisement"]
         exporter = DebugArtifactsExporter()
         debug_dir = exporter.export_issue_artifacts(
             issue_id=issue_id,
@@ -874,8 +892,8 @@ async def _execute_ingestion_pipeline(
             edition=issue.edition if issue and issue.edition else "morning",
             page_extractions=page_extractions,
             articles=articles_manifest,
-            rag_chunks=[],
-            advertisements=[],
+            rag_chunks=rag_chunks_debug,
+            advertisements=ads_debug,
         )
 
         return {

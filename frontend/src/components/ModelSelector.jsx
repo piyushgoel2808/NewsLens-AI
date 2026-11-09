@@ -31,6 +31,7 @@ const CORE_MODELS = {
 };
 
 import { deduplicatedFetch } from '../utils/apiDeduplicator';
+import { useModelConfig } from '../context/ModelConfigContext';
 
 export default function ModelSelector({
   value,
@@ -40,40 +41,21 @@ export default function ModelSelector({
   compact = false,
   showLabel = true,
 }) {
+  const { laptopBridgeStatus, laptopStatusLoaded } = useModelConfig();
   const [fetchedModels, setFetchedModels] = useState([]);
-  const [laptopStatus, setLaptopStatus] = useState({
+  const laptopStatus = laptopBridgeStatus || {
     enabled: false,
     online: false,
     available_models: [],
     default_model: 'llama3.1:8b',
-  });
-
-  const valueRef = useRef(value);
-  const onChangeRef = useRef(onChange);
-  useEffect(() => {
-    valueRef.current = value;
-    onChangeRef.current = onChange;
-  });
+  };
 
   useEffect(() => {
-    const checkLaptop = () => {
-      fetch('/api/settings/laptop-node/status')
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data) {
-            setLaptopStatus(data);
-            const v = valueRef.current;
-            if (v && v.startsWith('laptop:') && (!data.enabled || !data.online)) {
-              onChangeRef.current && onChangeRef.current('gemini_flash');
-            }
-          }
-        })
-        .catch((err) => console.debug('Laptop node status poll failed:', err));
-    };
-    checkLaptop();
-    const interval = setInterval(checkLaptop, 30000);
-    return () => clearInterval(interval);
-  }, []);
+    if (!laptopStatusLoaded) return;
+    if (value && value.startsWith('laptop:') && (!laptopStatus.enabled || !laptopStatus.online)) {
+      onChange && onChange('gemini_flash');
+    }
+  }, [laptopStatusLoaded, value, laptopStatus.enabled, laptopStatus.online, onChange]);
 
   useEffect(() => {
     if (!propModels || propModels.length === 0) {

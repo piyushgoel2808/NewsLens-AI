@@ -1083,15 +1083,43 @@ export default function ModelSettingsStudio() {
             />
             <button
               type="button"
-              onClick={() => {
-                setStatusNotification({
-                  type: 'success',
-                  message: 'Pinging Ollama node at ' + (tunnelUrlInput || 'http://localhost:11434') + '...',
-                });
+              disabled={laptopLoading}
+              onClick={async () => {
+                setLaptopLoading(true);
+                try {
+                  const res = await fetch('/api/settings/laptop-node/status');
+                  if (res.ok) {
+                    const data = await res.json();
+                    setLaptopState((prev) => ({
+                      ...prev,
+                      ...data,
+                      tunnel_url: data.tunnel_url || tunnelUrlInput || prev.tunnel_url,
+                    }));
+                    const modelsCount = Array.isArray(data.available_models) ? data.available_models.length : 0;
+                    setStatusNotification({
+                      type: data.online ? 'success' : 'error',
+                      message: data.online
+                        ? `Ollama node online (${modelsCount} models discovered: ${(data.available_models || []).slice(0, 4).join(', ')}).`
+                        : 'Laptop Ollama node is currently offline or unreachable.',
+                    });
+                  } else {
+                    setStatusNotification({
+                      type: 'error',
+                      message: `Laptop node ping returned HTTP ${res.status}.`,
+                    });
+                  }
+                } catch (err) {
+                  setStatusNotification({
+                    type: 'error',
+                    message: `Failed to reach laptop node status endpoint: ${err.message}`,
+                  });
+                } finally {
+                  setLaptopLoading(false);
+                }
               }}
-              className="px-3 py-1.5 rounded-xl bg-accent-editorial/10 hover:bg-accent-editorial/20 text-accent-editorial text-xs font-semibold font-mono border border-accent-editorial/30 transition-all cursor-pointer"
+              className="px-3 py-1.5 rounded-xl bg-accent-editorial/10 hover:bg-accent-editorial/20 text-accent-editorial text-xs font-semibold font-mono border border-accent-editorial/30 transition-all cursor-pointer disabled:opacity-50"
             >
-              Ping Node
+              {laptopLoading ? 'Pinging...' : 'Ping Node'}
             </button>
           </div>
         </div>

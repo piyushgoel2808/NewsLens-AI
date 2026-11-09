@@ -572,12 +572,13 @@ class PageReingestionService:
                 or bool(re.search(r"\|\s*[-:]+\s*\|", assembled_art.full_text))
             )
 
-            # Annotate full text with visual tags
+            # Annotate full text with visual tags and persist to article record
             annotated_text = assembled_art.full_text
             if has_photo:
                 annotated_text = f"[VISUAL: PHOTO INCLUDED]\n{annotated_text}"
             if has_table:
                 annotated_text = f"[VISUAL: DATA TABLE INCLUDED]\n{annotated_text}"
+            article_rec.full_text = annotated_text
 
             # 1. Generate text chunks
             chunks = chunker.chunk_article(
@@ -668,9 +669,16 @@ class PageReingestionService:
                 total_chunks_created += 1
                 total_vectors_created += len(v_vec_ids)
 
-        # 9. Finalize page status and commit transaction
+        # 9. Finalize page status, commit transaction, and evict stale query cache
         page.ingestion_status = "indexed"
         await self._db.commit()
+
+        with contextlib.suppress(Exception):
+            from app.storage.cache_store import CacheStore
+
+            cache = CacheStore(self._settings.redis.url)
+            await cache.clear_all()
+            await cache.close()
 
         logger.info(
             "Page re-ingestion successfully completed",

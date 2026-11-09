@@ -119,11 +119,17 @@ class ArticleEmbedder:
             point_id = str(uuid.uuid4())
             vector_ids.append(point_id)
 
+            issue_date_int = (
+                int(issue_date[:10].replace("-", ""))
+                if issue_date and len(issue_date) >= 10 and issue_date[:10].replace("-", "").isdigit()
+                else 0
+            )
             payload = {
                 "article_id": article_id,
                 "issue_id": issue_id,
                 "newspaper_name": newspaper_name,
                 "issue_date": issue_date,
+                "issue_date_int": issue_date_int,
                 "headline": headline,
                 "section": section or "General",
                 "article_type": article_type,
@@ -209,11 +215,17 @@ class ArticleEmbedder:
         qdrant_points: list[VectorPoint] = []
         for item, vector in zip(items, all_vectors, strict=False):
             point_id = str(uuid.uuid4())
+            issue_date_int = (
+                int(item.issue_date[:10].replace("-", ""))
+                if item.issue_date and len(item.issue_date) >= 10 and item.issue_date[:10].replace("-", "").isdigit()
+                else 0
+            )
             payload = {
                 "article_id": item.article_id,
                 "issue_id": item.issue_id,
                 "newspaper_name": item.newspaper_name,
                 "issue_date": item.issue_date,
+                "issue_date_int": issue_date_int,
                 "headline": item.headline,
                 "section": item.section or "General",
                 "article_type": item.article_type,

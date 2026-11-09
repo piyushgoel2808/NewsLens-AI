@@ -697,19 +697,21 @@ When the response is audited by the reflective editorial fact-checker ([`backend
 
 When the agent synthesizes ad-hoc Python/SQL analysis tools (`ToolMaker` / `SandboxedExecutor`), it queries MySQL 8 to answer complex structural questions (such as total page count distributions or custom article aggregations). To preserve absolute relational integrity, the execution engine enforces multi-layered database protection:
 
-1. **Transaction Isolation & Unconditional Rollback**:
-   - Dynamic tools run with autocommit explicitly disabled (`autocommit=False`).
+1. **Transaction Isolation, Read-Only Session Mode & Unconditional Rollback**:
+   - Dynamic tools run with autocommit explicitly disabled (`autocommit=False`), execute `SET SESSION TRANSACTION READ ONLY` at the MySQL session level, and wrap the session in `_ReadOnlySessionProxy` (which raises `PermissionError` on `.commit()`, `.flush()`, or `.close()`).
    - The subprocess runner encapsulates all dynamic queries inside a strict `try/finally` block:
      ```python
      try:
-         result = func(connection, **kwargs)
+         await session.execute(text("SET SESSION TRANSACTION READ ONLY"))
+         ro_session = _ReadOnlySessionProxy(session)
+         result = await func(ro_session, **kwargs)
      finally:
-         connection.rollback()
+         await session.rollback()
      ```
-   - Even if generated code inadvertently executes a data-modifying statement (`INSERT`, `UPDATE`, `DELETE`, `DROP`), no changes are ever committed to the system of record.
-2. **Subprocess Credential Isolation**:
+   - Even if generated code attempts to execute a data-modifying statement (`INSERT`, `UPDATE`, `DELETE`, `DROP`) or call `await db.commit()`, MySQL and the read-only proxy reject the operation and no changes are ever committed to the system of record.
+2. **Subprocess Credential & Attribute Isolation**:
    - Connection credentials are submitted via private JSON stdin to an isolated `sandbox_runner.py` subprocess and wiped from process memory.
-   - The AST scanner (`ASTSafetyScanner`) blocks access to environment variables, disk files, and system shells (`os.environ`, `open`, `subprocess`), preventing credential exfiltration.
+   - `ASTSafetyScanner` folds binary string concatenations (`_fold_string_concat`) to prevent obfuscated attribute strings (e.g. `"__sub" + "classes__"`) and blocks access to environment variables, disk files, and system shells (`os.environ`, `open`, `subprocess`), while `_safe_getattr` blocks runtime access to any underscore-prefixed attribute.
 3. **Schema Exposure & Grounded Query Generation**:
    - The complete relational schema (all 17 tables with column types, primary keys, and foreign keys) is provided in `TOOL_MAKER_SYSTEM_PROMPT`.
    - Ensures synthesized queries use indexed join paths (e.g. `issues.newspaper_id = newspapers.id`, `articles.issue_id = issues.id`) and adhere to MySQL 8 syntax without triggering expensive table scans or deadlock conditions.

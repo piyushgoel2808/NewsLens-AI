@@ -18,13 +18,13 @@ class TestSettings:
         assert isinstance(settings, Settings)
 
     def test_database_async_url_uses_aiomysql(self) -> None:
-        settings = Settings(mysql_host="testhost", mysql_db="testdb")
+        settings = Settings(_env_file=None, database_url=None, mysql_host="testhost", mysql_db="testdb")
         assert "aiomysql" in settings.database.async_url
         assert "testhost" in settings.database.async_url
         assert "testdb" in settings.database.async_url
 
     def test_database_sync_url_uses_pymysql(self) -> None:
-        settings = Settings(mysql_host="testhost", mysql_db="testdb")
+        settings = Settings(_env_file=None, database_url=None, mysql_host="testhost", mysql_db="testdb")
         assert "pymysql" in settings.database.sync_url
 
     def test_qdrant_settings_accessible(self) -> None:

@@ -21,9 +21,56 @@ logger = get_logger(__name__)
 
 # Heuristic regular expressions for entity extraction
 ORG_SUFFIXES = re.compile(
-    r"\b(?:Corp|Corporation|Inc|Ltd|Limited|Bank|Ministry|Parliament|Congress|Senate|Bureau|Agency|Group|Board|Association|Commission|University|Party|Committee)\b",
+    r"\b(?:Corp|Corporation|Inc|Ltd|Limited|Bank|Ministry|Parliament|Congress|Senate|Bureau|Agency|Group|Board|Association|Commission|University|Party|Committee|Court|Tribunal|Bench|Authority|Council|Institute|Foundation|Federation|Alliance|Union|Secretariat|Department|Exchange|Mission|Cabinet|Sabha|House|Assembly|Government|Police|Army|Navy|Force|Hospital|College|Center|Centre|Research|Labs|Systems|Solutions|Enterprises|Industries|Motors|Power|Energy|Airlines|Railways|Telecom|Media|Press)\b",
     re.IGNORECASE,
 )
+
+NON_PERSON_CONCEPTS = re.compile(
+    r"\b(?:Policy|Market|Index|Rate|Growth|Budget|Tax|Reform|Bond|Data|Fund|Sector|Trade|Deficit|Inflation|Survey|Report|Act|Scheme|Plan|Summit|Forum|Pact|Treaty|Award|Prize|Cup|League|Trophy|Series|Edition|Primer|View|Facts|Notice|Tender)\b"
+)
+
+KNOWN_ACRONYM_ORGS = {
+    "RBI",
+    "SEBI",
+    "ISRO",
+    "DRDO",
+    "NITI",
+    "TRAI",
+    "IRDAI",
+    "NPCI",
+    "BCCI",
+    "AICTE",
+    "UGC",
+    "NCERT",
+    "CBI",
+    "NIA",
+    "NTPC",
+    "ONGC",
+    "BHEL",
+    "GAIL",
+    "IOC",
+    "BPCL",
+    "HPCL",
+    "LIC",
+    "SBI",
+    "HDFC",
+    "ICICI",
+    "NATO",
+    "BRICS",
+    "ASEAN",
+    "OPEC",
+    "UNESCO",
+    "UNICEF",
+    "WTO",
+    "IMF",
+    "FIFA",
+    "ICC",
+    "BJP",
+    "AAP",
+    "NDA",
+}
+
+ACRONYM_PATTERN = re.compile(r"\b([A-Z]{3,8})\b")
 
 CAPITALIZED_NAME_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b")
 
@@ -116,7 +163,9 @@ class MetadataExtractor:
         matches = CAPITALIZED_NAME_PATTERN.findall(combined)
         for match in matches:
             match_clean = match.strip()
-            if len(match_clean) < 3 or match_clean in ("The Daily", "Newspaper Intelligence"):
+            if match_clean.lower().startswith("the "):
+                match_clean = match_clean[4:].strip()
+            if len(match_clean) < 3 or match_clean in ("Daily", "The Daily", "Newspaper Intelligence"):
                 continue
 
             # Classify entity type
@@ -124,6 +173,8 @@ class MetadataExtractor:
                 etype = "location"
             elif ORG_SUFFIXES.search(match_clean):
                 etype = "org"
+            elif NON_PERSON_CONCEPTS.search(match_clean):
+                etype = "misc"
             elif re.match(r"^[A-Z][a-z]+\s+[A-Z][a-z]+$", match_clean):
                 etype = "person"
             else:
@@ -131,6 +182,12 @@ class MetadataExtractor:
 
             key = (match_clean, etype)
             entities_dict[key] = entities_dict.get(key, 0) + 1
+
+        # 2. Match known uppercase organizational acronyms (RBI, SEBI, ISRO, etc.)
+        for acr in ACRONYM_PATTERN.findall(combined):
+            if acr in KNOWN_ACRONYM_ORGS:
+                key = (acr, "org")
+                entities_dict[key] = entities_dict.get(key, 0) + 1
 
         # Calculate salience scores based on mention frequency and headline presence
         results: list[ExtractedEntity] = []
@@ -353,10 +410,17 @@ class MetadataExtractor:
             )
             existing_entity_links = {(r[0], r[1]) for r in ae_res.all()}
 
+        # Fetch all target Article rows in a single bulk query instead of N+1 selects
+        articles_by_id: dict[int, Article] = {}
+        if article_ids:
+            arts_res = await self._db.execute(
+                select(Article).where(Article.id.in_(article_ids))
+            )
+            for art_obj in arts_res.scalars().all():
+                articles_by_id[art_obj.id] = art_obj
+
         for article_id, ents, tops, summ in all_extracted:
-            art_stmt = select(Article).where(Article.id == article_id)
-            art_res = await self._db.execute(art_stmt)
-            article = art_res.scalar_one_or_none()
+            article = articles_by_id.get(article_id)
             if article:
                 article.summary = summ
 

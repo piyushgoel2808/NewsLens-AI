@@ -136,6 +136,48 @@ async def test_upload_endpoint_dispatches_celery_task_when_async(mock_db_session
             )
 
 
+@pytest.mark.asyncio
+async def test_upload_zip_archive_dispatches_all_created_issues(mock_db_session: AsyncMock) -> None:
+    """Verify that uploading a .zip archive dispatches the ingestion pipeline for every unpacked PDF issue."""
+    app = create_app()
+
+    async def override_get_db() -> AsyncGenerator[AsyncMock, None]:
+        yield mock_db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    with (
+        patch("app.api.main.init_db"),
+        patch("app.api.main.close_db", new_callable=AsyncMock),
+        patch("app.storage.minio_store.MinioStore.startup", new_callable=AsyncMock),
+        patch("app.storage.qdrant_store.QdrantStore._ensure_collection", new_callable=AsyncMock),
+        patch("app.ingestion.intake.IntakeService.process_upload", new_callable=AsyncMock) as mock_process,
+        patch("app.api.routers.ingest.run_ingestion_pipeline", new_callable=AsyncMock) as mock_pipeline,
+    ):
+        mock_process.return_value = IntakeResult(
+            job_id=99,
+            total_files=2,
+            issues_created=[201, 202],
+            skipped_duplicates=[],
+            storage_keys={201: "originals/99/issue1.pdf", 202: "originals/99/issue2.pdf"},
+        )
+        mock_pipeline.side_effect = [
+            {"issue_id": 201, "status": "completed"},
+            {"issue_id": 202, "status": "completed"},
+        ]
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            files = {"file": ("archive_bundle.zip", b"PK\x03\x04mockzip", "application/zip")}
+            data = {"newspaper_name": "auto", "sync_processing": "true"}
+            resp = await client.post("/api/ingest/upload", files=files, data=data)
+
+            assert resp.status_code == 201
+            body = resp.json()
+            assert body["issues_created"] == [201, 202]
+            assert len(body["pipeline_results"]) == 2
+            assert mock_pipeline.await_count == 2
+
+
 
 @pytest.mark.asyncio
 async def test_get_ingestion_job_not_found(mock_db_session: AsyncMock) -> None:

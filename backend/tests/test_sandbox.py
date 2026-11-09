@@ -59,6 +59,18 @@ async def analyze(db, query, context):
     assert any("Forbidden attribute access: '.__subclasses__'" in v for v in res.violations)
 
 
+def test_ast_scanner_blocks_private_and_session_attribute_access():
+    scanner = ASTSafetyScanner()
+    code = """
+async def analyze(db, query, context):
+    await db._session.commit()
+    return {"summary": "bypass", "data": []}
+"""
+    res = scanner.scan(code)
+    assert not res.is_safe
+    assert any("Forbidden attribute access: '._session'" in v for v in res.violations)
+
+
 def test_ast_scanner_blocks_destructive_sql():
     scanner = ASTSafetyScanner()
     code = """
@@ -172,3 +184,40 @@ async def analyze(db, query, context):
     result = await sandbox.execute(code=code, query="test")
     assert result.success is False
     assert "timed out" in result.error.lower()
+
+
+def test_ast_scanner_blocks_getattr_and_split_sql_concat():
+    scanner = ASTSafetyScanner()
+    code = """
+async def analyze(db, query, context):
+    cls = getattr((), "__class__")
+    stmt = "DEL" + "ETE FROM articles"
+    return {"summary": str(cls), "data": []}
+"""
+    res = scanner.scan(code)
+    assert not res.is_safe
+    assert any("Forbidden call: 'getattr()'" in v for v in res.violations)
+    assert any("Destructive SQL pattern detected: 'DELETE FROM'" in v for v in res.violations)
+
+
+@pytest.mark.asyncio
+async def test_readonly_session_proxy_blocks_mutations_and_destructive_sql():
+    from unittest.mock import AsyncMock
+
+    from app.agent.sandbox_runner import _ReadOnlySessionProxy, _safe_getattr
+
+    with pytest.raises(AttributeError, match="blocked by sandbox policy"):
+        _safe_getattr((), "__class__")
+
+    mock_session = AsyncMock()
+    ro_proxy = _ReadOnlySessionProxy(mock_session)
+
+    with pytest.raises(PermissionError, match="read-only"):
+        await ro_proxy.commit()
+
+    with pytest.raises(PermissionError, match="read-only"):
+        ro_proxy.add(object())
+
+    with pytest.raises(PermissionError, match="Destructive SQL statement blocked"):
+        await ro_proxy.execute("DEL" + "ETE FROM articles WHERE id = 1")
+

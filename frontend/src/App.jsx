@@ -34,6 +34,18 @@ import ModelSettingsStudio from './components/ModelSettingsStudio';
 
 function MainApp() {
   const { activeTab, setActiveTab } = useActiveHighlight();
+  const [visitedTabs, setVisitedTabs] = React.useState(() => new Set([activeTab || 'home']));
+
+  useEffect(() => {
+    if (activeTab) {
+      setVisitedTabs((prev) => {
+        if (prev.has(activeTab)) return prev;
+        const next = new Set(prev);
+        next.add(activeTab);
+        return next;
+      });
+    }
+  }, [activeTab]);
   const {
     theme,
     toggleTheme,
@@ -237,32 +249,46 @@ function MainApp() {
         })}
       </div>
 
-      {/* Main View Container (Preserves tab state across switching) */}
+      {/* Main View Container (Lazy-mounts tabs on first visit, then preserves state across switching) */}
       <main className="flex-1 min-h-0 overflow-hidden relative">
         <div className={activeTab === 'home' ? 'h-full w-full min-h-0 overflow-y-auto' : 'hidden'}>
           <HomePage />
         </div>
-        <div className={activeTab === 'reader' ? 'h-full w-full min-h-0' : 'hidden'}>
-          <BroadsheetReader />
-        </div>
-        <div className={activeTab === 'agent' ? 'h-full w-full min-h-0' : 'hidden'}>
-          <AgentAssistant />
-        </div>
-        <div className={activeTab === 'graph' ? 'h-full w-full min-h-0' : 'hidden'}>
-          <EntityGraphWorkspace />
-        </div>
-        <div className={activeTab === 'timeline' ? 'h-full w-full min-h-0' : 'hidden'}>
-          <TimelineWorkspace />
-        </div>
-        <div className={activeTab === 'archive' ? 'h-full w-full min-h-0' : 'hidden'}>
-          <ArchiveExplorer />
-        </div>
-        <div className={activeTab === 'ingest' ? 'h-full w-full min-h-0' : 'hidden'}>
-          <UploadTrigger />
-        </div>
-        <div className={activeTab === 'settings' ? 'h-full w-full min-h-0' : 'hidden'}>
-          <ModelSettingsStudio />
-        </div>
+        {visitedTabs.has('reader') && (
+          <div className={activeTab === 'reader' ? 'h-full w-full min-h-0' : 'hidden'}>
+            <BroadsheetReader />
+          </div>
+        )}
+        {visitedTabs.has('agent') && (
+          <div className={activeTab === 'agent' ? 'h-full w-full min-h-0' : 'hidden'}>
+            <AgentAssistant />
+          </div>
+        )}
+        {visitedTabs.has('graph') && (
+          <div className={activeTab === 'graph' ? 'h-full w-full min-h-0' : 'hidden'}>
+            <EntityGraphWorkspace />
+          </div>
+        )}
+        {visitedTabs.has('timeline') && (
+          <div className={activeTab === 'timeline' ? 'h-full w-full min-h-0' : 'hidden'}>
+            <TimelineWorkspace />
+          </div>
+        )}
+        {visitedTabs.has('archive') && (
+          <div className={activeTab === 'archive' ? 'h-full w-full min-h-0' : 'hidden'}>
+            <ArchiveExplorer />
+          </div>
+        )}
+        {visitedTabs.has('ingest') && (
+          <div className={activeTab === 'ingest' ? 'h-full w-full min-h-0' : 'hidden'}>
+            <UploadTrigger />
+          </div>
+        )}
+        {visitedTabs.has('settings') && (
+          <div className={activeTab === 'settings' ? 'h-full w-full min-h-0' : 'hidden'}>
+            <ModelSettingsStudio />
+          </div>
+        )}
       </main>
     </div>
   );

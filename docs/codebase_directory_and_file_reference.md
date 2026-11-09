@@ -616,6 +616,15 @@ NewsLens-AI is an agentic intelligence platform engineered specifically for **br
 * **Important Tools / Frameworks**: YAML 1.2.
 * **LLM / VLM / Embedding Models**: None (Broadsheet Rules).
 
+##### [`backend/app/core/security.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/app/core/security.py)
+* **What It Has**: `require_api_auth()`, `get_client_ip()`, `PinAttemptTracker`, `pin_attempt_tracker`, `RateLimitMiddleware`.
+* **Work It Is Doing**:
+  - **API Key & Bearer Token Authentication**: Validates `X-API-Key` or `Authorization: Bearer <token>` using constant-time `secrets.compare_digest` on mutating endpoints; fails closed (`HTTP 403`) in production (`APP_DEBUG=false`) when `API_AUTH_KEY` is unconfigured.
+  - **Distributed Redis Sliding-Window Rate Limiter**: Enforces per-IP request limits (`RATE_LIMIT_RPM`) on `/api/query*`, `/api/timeline*`, and `/api/ingest*` using Redis atomic `INCR` + `EXPIRE` with graceful in-memory fallback and `TRUST_FORWARDED_FOR` anti-spoofing.
+  - **PIN Brute-Force Lockout**: Tracks failed Laptop Node admin PIN attempts per client IP (`PinAttemptTracker`), enforcing a 300-second `HTTP 429` lockout after 5 failed attempts within 5 minutes.
+* **Important Tools / Frameworks**: FastAPI Security (`APIKeyHeader`, `HTTPBearer`), `secrets.compare_digest`, `redis.asyncio`, Starlette `BaseHTTPMiddleware`.
+* **LLM / VLM / Embedding Models**: None (Security & Rate-Limiting Middleware).
+
 ---
 
 ### 4.4 `backend/app/evaluation/` — Information Retrieval Benchmarks
@@ -1208,6 +1217,8 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 - [`test_vlm_grounding.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_vlm_grounding.py): Tests coordinate parsing from Qwen-VL's native `<think>` stream.
 - [`test_hybrid_search.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_hybrid_search.py): Tests dense/sparse RRF fusion and Cross-Encoder reranking.
 - [`test_sql_analytics.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_sql_analytics.py): Tests issue manifests, photo counts by section, advertisement counts, and cross-newspaper coverage difference counts.
+- [`test_laptop_node_and_dual_store.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_laptop_node_and_dual_store.py): Verifies Sovereign Laptop Node bridge status/toggle endpoints and `DualSyncObjectStore` empty-byte cloud fallback.
+- [`test_security_and_hardening.py`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/backend/tests/test_security_and_hardening.py): Verifies API Key & Bearer authentication (`require_api_auth`), Laptop Node PIN brute-force lockout (`PinAttemptTracker`), unlimited multi-year Qdrant `issue_date_int` range filtering, Redis-backed `RateLimitMiddleware` + `TRUST_FORWARDED_FOR`, and `ContextVar`-isolated `ModelRegistry.scoped_task_bindings()`.
 
 ---
 
@@ -1218,14 +1229,15 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 * **Work It Is Doing**: Bundles React components, compiles Tailwind CSS utilities, and proxies API requests to the backend.
 
 #### Files in `frontend/`:
-- [`package.json`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/package.json): React 18, Vite, Lucide React icons, Tailwind CSS, PostCSS.
-- [`vite.config.js`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/vite.config.js): Local dev server port (5173), reverse proxy forwarding `/api` to `http://127.0.0.1:8000`.
+- [`package.json`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/package.json): React 19, Vite, Lucide React icons, Tailwind CSS, PostCSS.
+- [`vite.config.js`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/vite.config.js): Local dev server port (5173), reverse proxy forwarding `/api` to `http://127.0.0.1:8000`, and manual Rollup chunk splitting (`vendor-react`, `vendor-icons`).
 - [`tailwind.config.js`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/tailwind.config.js): Custom broadsheet typography, dark-mode slate/emerald theme.
 - [`postcss.config.js`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/postcss.config.js): PostCSS configuration.
 - [`frontend/index.html`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/index.html): HTML entrypoint with viewport & fonts.
-- [`frontend/src/App.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/App.jsx): Main layout with sticky header, navigation tabs, active model tier indicator, and active workspace switcher.
-- [`frontend/src/main.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/main.jsx): React entrypoint rendering `<App />` within `ActiveHighlightProvider`.
+- [`frontend/src/App.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/App.jsx): Main layout with sticky header, navigation tabs, active model tier indicator, and lazy-mounted workspace switcher (`visitedTabs`).
+- [`frontend/src/main.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/main.jsx): React entrypoint rendering `<App />` within `ActiveHighlightProvider` and `ModelConfigProvider`.
 - [`frontend/src/index.css`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/index.css): Global styles, custom scrollbars, broadsheet typography rules.
+- [`frontend/src/utils/apiDeduplicator.js`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/utils/apiDeduplicator.js): Client-side in-flight request deduplicator and short-TTL response cache preventing duplicate burst calls on initial page load.
 
 ---
 
@@ -1234,6 +1246,10 @@ All 14 legacy backward-compatibility re-export shims have been retired and remov
 ##### [`frontend/src/context/ActiveHighlightContext.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/context/ActiveHighlightContext.jsx)
 * **What It Has**: `ActiveHighlightProvider`, `useActiveHighlight()` hook, state for active newspaper, selected issue, active page, highlighted article bounding boxes, and active citation focus.
 * **Work It Is Doing**: Enables cross-component synchrony: clicking an inline citation in `AgentAssistant` automatically switches tabs to `BroadsheetReader`, zooms to the referenced page, and highlights the exact bounding box polygons on the canvas.
+
+##### [`frontend/src/context/ModelConfigContext.jsx`](file:///Users/piyushgoel/Downloads/Projects/NewsLens-AI/frontend/src/context/ModelConfigContext.jsx)
+* **What It Has**: `ModelConfigProvider`, `useModelConfig()` hook, `updateTaskBinding()`, `applyPreset()`, `toggleLaptopNode()`, `refreshConfig()`.
+* **Work It Is Doing**: Synchronizes live model provider availability, task bindings (`/api/settings/model-bindings`), and Sovereign Laptop Node status (`/api/settings/laptop-node/status` & `/api/settings/laptop-node/toggle`) across `ModelSettingsStudio`, `ModelSelector`, and `AgentAssistant`.
 
 ---
 

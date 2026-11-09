@@ -47,11 +47,25 @@ async def test_dual_sync_object_store_writes_both_and_reads_local_first() -> Non
     assert data == b"local-image-data"
     assert not cloud_mock.get.called
 
-    # 3. Fallback to cloud if local fails or misses
-    local_mock.get = AsyncMock(side_effect=Exception("Local MinIO Miss"))
-    fallback_data = await dual_store.get("pages", "page_1.png")
-    assert fallback_data == b"cloud-fallback-data"
-    assert cloud_mock.get.called
+    # 3a. Fallback to cloud when local misses by returning b"" (MinioStore NoSuchKey behavior)
+    cloud_mock.get.reset_mock()
+    local_mock.get = AsyncMock(return_value=b"")
+    miss_fallback_data = await dual_store.get("pages", "missing_locally.png")
+    assert miss_fallback_data == b"cloud-fallback-data"
+    cloud_mock.get.assert_awaited_once_with("pages", "missing_locally.png")
+
+    # 3b. Fallback to cloud if local raises network/S3 exception
+    cloud_mock.get.reset_mock()
+    local_mock.get = AsyncMock(side_effect=Exception("Local MinIO Unreachable"))
+    exc_fallback_data = await dual_store.get("pages", "page_1.png")
+    assert exc_fallback_data == b"cloud-fallback-data"
+    cloud_mock.get.assert_awaited_once_with("pages", "page_1.png")
+
+    # 3c. Returns b"" when object is missing in both local and cloud tiers
+    local_mock.get = AsyncMock(return_value=b"")
+    cloud_mock.get = AsyncMock(return_value=b"")
+    both_missing_data = await dual_store.get("pages", "nonexistent.png")
+    assert both_missing_data == b""
 
     # 4. delete_prefix calls both stores
     del_count = await dual_store.delete_prefix("pages", "issue_1/")
@@ -82,6 +96,55 @@ async def test_dual_sync_object_store_writes_both_and_reads_local_first() -> Non
     cloud_mock.presign_url = AsyncMock(return_value="https://r2.cloud.com/signed.png")
     presigned = await dual_store.presign_url("pages", "signed.png")
     assert presigned == "https://r2.cloud.com/signed.png"
+
+
+@pytest.mark.asyncio
+async def test_dual_sync_object_store_with_minio_nosuchkey_sentinel() -> None:
+    """Verify DualSyncObjectStore falls back to cloud when real MinioStore.get() catches NoSuchKey and returns b''."""
+    from minio.error import S3Error
+    from urllib3.response import HTTPResponse
+
+    from app.storage.minio_store import MinioStore
+
+    local_store = MinioStore(
+        endpoint="localhost:9000",
+        access_key="minioadmin",
+        secret_key="minioadmin",
+        secure=False,
+    )
+    cloud_store = MinioStore(
+        endpoint="r2.cloudflarestorage.com",
+        access_key="cloud-key",
+        secret_key="cloud-secret",
+        secure=True,
+    )
+
+    no_such_key_err = S3Error(
+        code="NoSuchKey",
+        message="The specified key does not exist.",
+        resource="/pages/page_1.png",
+        request_id="req-123",
+        host_id="host-123",
+        response=HTTPResponse(status=404),
+    )
+    local_store._client.get_object = MagicMock(side_effect=no_such_key_err)
+
+    mock_cloud_resp = MagicMock()
+    mock_cloud_resp.read.return_value = b"r2-broadsheet-scan-bytes"
+    cloud_store._client.get_object = MagicMock(return_value=mock_cloud_resp)
+
+    dual_store = DualSyncObjectStore(primary_local=local_store, secondary_cloud=cloud_store)
+    result = await dual_store.get("pages", "page_1.png")
+
+    assert result == b"r2-broadsheet-scan-bytes"
+    local_store._client.get_object.assert_called_once_with(
+        bucket_name="pages",
+        object_name="page_1.png",
+    )
+    cloud_store._client.get_object.assert_called_once_with(
+        bucket_name="pages",
+        object_name="page_1.png",
+    )
 
 
 # ---------------------------------------------------------------------------

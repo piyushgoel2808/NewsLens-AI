@@ -60,6 +60,9 @@ FORBIDDEN_CALLS: frozenset[str] = frozenset({
     "open",
     "globals",
     "locals",
+    "vars",
+    "dir",
+    "getattr",
     "__import__",
     "setattr",
     "delattr",
@@ -75,6 +78,7 @@ FORBIDDEN_ATTRIBUTES: frozenset[str] = frozenset({
     "__class__",
     "__bases__",
     "__mro__",
+    "__dict__",
 })
 
 FORBIDDEN_SQL_PATTERNS: tuple[str, ...] = (
@@ -162,7 +166,7 @@ class ASTSafetyScanner:
 
             # Check attribute access: obj.attr
             elif isinstance(node, ast.Attribute):
-                if node.attr in self._forbidden_attrs:
+                if node.attr in self._forbidden_attrs or node.attr.startswith("_"):
                     violations.append(f"Forbidden attribute access: '.{node.attr}'")
 
             # Check string literals for destructive SQL statements
@@ -172,10 +176,32 @@ class ASTSafetyScanner:
                     if sql_kw in str_val:
                         violations.append(f"Destructive SQL pattern detected: '{sql_kw.strip()}'")
 
+            # Check concatenated string expressions (e.g. "DEL" + "ETE FROM articles")
+            elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                folded = self._fold_string_concat(node)
+                if folded:
+                    str_val = folded.upper()
+                    for sql_kw in FORBIDDEN_SQL_PATTERNS:
+                        if sql_kw in str_val:
+                            violations.append(f"Destructive SQL pattern detected: '{sql_kw.strip()}'")
+
         if not has_analyze_func:
             violations.append("Missing required entrypoint function 'async def analyze(db, query, context)'")
 
-        return ScanResult(is_safe=len(violations) == 0, violations=violations)
+        unique_violations = list(dict.fromkeys(violations))
+        return ScanResult(is_safe=len(unique_violations) == 0, violations=unique_violations)
+
+    @classmethod
+    def _fold_string_concat(cls, node: ast.AST) -> str | None:
+        """Recursively fold static string concatenation nodes to detect split SQL keywords."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = cls._fold_string_concat(node.left)
+            right = cls._fold_string_concat(node.right)
+            if left is not None and right is not None:
+                return left + right
+        return None
 
     @staticmethod
     def _resolve_call_name(node: ast.AST) -> str | None:

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-11-10
+
+### Added & Hardened (Phase 31 & Phase 32 Audit Remediations)
+- **API Key / Bearer Authentication & Fail-Closed Production Security (`backend/app/core/security.py`)**:
+  - Added `require_api_auth` FastAPI dependency validating `X-API-Key` or `Authorization: Bearer <token>` with constant-time `secrets.compare_digest` across all mutating endpoints (`/api/ingest/*`, `/api/settings/*`, newspaper/issue `POST`/`PUT`/`PATCH`/`DELETE`, and single-page re-ingestion).
+  - Enforces fail-closed protection (`HTTP 403`) in production (`APP_DEBUG=false`) when `API_AUTH_KEY` is not set.
+- **Distributed Sliding-Window Rate Limiting & Proxy Trust Guard (`backend/app/core/security.py`, `backend/app/api/main.py`)**:
+  - Replaced per-worker in-memory rate limiting with a Redis-backed atomic `INCR` + `EXPIRE` sliding-window middleware (`RateLimitMiddleware`, default `RATE_LIMIT_RPM=60`) with graceful in-memory fallback.
+  - Added `TRUST_FORWARDED_FOR` configuration to prevent `X-Forwarded-For` header spoofing.
+- **Laptop Node PIN Brute-Force Lockout (`PinAttemptTracker`)**:
+  - Added constant-time PIN comparison and per-IP brute-force protection on `POST /api/settings/laptop-node/toggle` (locks out client IP with `HTTP 429` for 300s after 5 failed attempts within 5 minutes).
+- **Unlimited Multi-Year Qdrant Date Range Filtering (`issue_date_int`)**:
+  - Added `YYYYMMDD` integer payload indexing (`issue_date_int`) in Qdrant (`backend/app/storage/qdrant_store.py` & `backend/app/ingestion/embedder.py`), replacing the 366-day date expansion cap with native `qdrant_models.Range(gte=..., lte=...)` + legacy `MatchAny` union for backward compatibility.
+- **Request-Scoped `ContextVar` Task Bindings (`backend/app/providers/registry.py`)**:
+  - Added `ModelRegistry.scoped_task_bindings()` backed by `contextvars.ContextVar` so per-request `model_override` selections in `/api/query` and `/api/query/stream` never mutate global singleton state across concurrent users.
+- **Full Streaming & LangGraph CRAG/Verifier Parity (`backend/app/api/routers/query.py`)**:
+  - Unified `POST /api/query/stream` with the compiled LangGraph workflow: post-condensation parameter re-extraction, reflexive CRAG evaluation (with adaptive replanning and dynamic tool synthesis), post-synthesis `AnswerVerifier` fact-checking, and real token cost accounting (`record_usage_and_cost`).
+- **Hardened Subprocess AST Sandbox (`backend/app/agent/sandbox.py`, `sandbox_runner.py`)**:
+  - Added AST binary string concatenation folding (`_fold_string_concat`) to catch obfuscated dunder strings, runtime `_safe_getattr` protection, MySQL `SET SESSION TRANSACTION READ ONLY`, and `_ReadOnlySessionProxy` blocking `.commit()`/`.flush()`.
+- **Automatic Redis Query Cache Invalidation on Corpus Mutation**:
+  - Wired `await CacheStore().clear_all()` into `DeletionService.delete_issue`, `PATCH /api/issues/{id}`, `run_ingestion_pipeline`, and `PageReingestionService.reingest_page`, plus MinIO prefix cleanup for `photos/{page_id}/` and `originals/{job_id}/`.
+- **Docker Context Isolation & Worker Healthcheck Fixes**:
+  - Added `.dockerignore`, `backend/.dockerignore`, and `frontend/.dockerignore` to block secrets (`service-account.json`, `.env*`) and virtualenvs from Docker images; pointed Celery worker to `app.ingestion.celery_app`; disabled inherited HTTP healthcheck on the worker container.
+- **Docling Parser Unpacking, DualSync Empty-Byte Fallback & Frontend Lazy Mounting**:
+  - Fixed inverted tuple unpacking (`clean_h, kicker = extract_kicker_and_clean_headline(...)`) in `parsers/docling.py`; fixed `DualSyncObjectStore.get()` empty-byte `b""` cloud fallback in `dual_store.py`; added lazy tab mounting and `vite.config.js` vendor chunk splitting (`vendor-react`, `vendor-icons`) in the React 19 frontend.
+
+---
+
 ## [0.5.0] - 2026-09-21
 
 ### Added & Optimized

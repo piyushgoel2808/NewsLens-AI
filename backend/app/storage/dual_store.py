@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 
 from app.core.logging import get_logger
 from app.storage.base import ObjectStore
@@ -82,26 +81,39 @@ class DualSyncObjectStore(ObjectStore):
                 "DualSyncObjectStore put failed on local tier (cloud succeeded); purging stale local copy",
                 extra={"key": key, "error": str(local_res)},
             )
-            with contextlib.suppress(Exception):
+            try:
                 await self._local.delete(bucket, key)
+            except Exception as exc:
+                logger.error(
+                    "DualSyncObjectStore failed to purge stale local copy after failed put; tier remains out of sync",
+                    extra={"key": key, "error": str(exc)},
+                )
 
         if cloud_failed:
             logger.warning(
                 "DualSyncObjectStore put failed on cloud tier (local succeeded); purging stale cloud copy",
                 extra={"key": key, "error": str(cloud_res)},
             )
-            with contextlib.suppress(Exception):
+            try:
                 await self._cloud.delete(bucket, key)
+            except Exception as exc:
+                logger.error(
+                    "DualSyncObjectStore failed to purge stale cloud copy after failed put; tier remains out of sync",
+                    extra={"key": key, "error": str(exc)},
+                )
         return key
 
     async def get(self, bucket: str, key: str) -> bytes:
         # 1. Try fast local Docker MinIO first
         try:
             data = await self._local.get(bucket, key)
-            if data is not None:
+            if data:
                 return data
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "DualSyncObjectStore local get failed; falling back to cloud tier",
+                extra={"bucket": bucket, "key": key, "error": str(exc)},
+            )
         # 2. Fallback to Cloud S3 (Cloudflare R2)
         return await self._cloud.get(bucket, key)
 

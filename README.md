@@ -62,6 +62,12 @@
 - **🧮 Statistical & Analytical Computation Archetype (`analytical_computation`)**: Formally decouples mathematical inquiries (*"calculate average word count"*, *"average length"*, *"correlation"*) from scalar archive counts, routing them directly to `dynamic_analysis` without artificial 80-word count ceilings.
 - **🔍 OCR Noise Tolerance & Intelligent Semantic Reconstruction**: Dedicated synthesis directives authorizing the model to phonetically and semantically reconstruct words corrupted during broadsheet OCR scanning (*"Reconstruction is not hallucination"*), strictly prohibiting raw OCR typographical errors in final responses.
 - **🛡️ Isolated Single-Article Prompt Context**: Enforces strict chunk filtering for article explanation and deep-dive queries, eliminating prompt context contamination from unrelated advertisements or outside page stories.
+- **🔒 Enterprise API Security, Rate Limiting & Concurrency Isolation (v0.6.0)**:
+  - **API Key & Bearer Authentication (`app/core/security.py`)**: Constant-time `X-API-Key` and `Authorization: Bearer` validation protecting all mutating and administrative endpoints with fail-closed production enforcement.
+  - **Distributed Redis Sliding-Window Rate Limiter (`RateLimitMiddleware`)**: Atomic Redis `INCR` + `EXPIRE` rate limiting (`RATE_LIMIT_RPM`) across worker processes with `TRUST_FORWARDED_FOR` anti-spoofing and Laptop Node PIN brute-force lockout (`PinAttemptTracker`).
+  - **Request-Scoped `ContextVar` Task Bindings**: Per-request `model_override` isolation via `ModelRegistry.scoped_task_bindings()` so concurrent users never overwrite shared model bindings.
+  - **Unlimited Multi-Year Qdrant Date Range Indexing (`issue_date_int`)**: Native `YYYYMMDD` integer payload indexing supporting multi-year `Range(gte, lte)` vector filtering alongside legacy `MatchAny` compatibility.
+  - **Hardened Read-Only Subprocess AST Sandbox**: Recursive AST string-concatenation folding, `_safe_getattr` attribute guards, MySQL `SET SESSION TRANSACTION READ ONLY`, and `_ReadOnlySessionProxy` transaction lockouts.
 
 ---
 

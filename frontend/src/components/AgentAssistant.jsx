@@ -415,6 +415,11 @@ export default function AgentAssistant() {
                 current.content = (current.content || '') + (data.delta || '');
               } else if (eventType === 'citations') {
                 current.citations = data.citations || [];
+              } else if (eventType === 'error') {
+                current.isStreaming = false;
+                current.stage = 'failed';
+                current.error = data.error || 'An error occurred during query execution';
+                current.content = (current.content ? current.content + '\n\n' : '') + `*(Error: ${current.error})*`;
               } else if (eventType === 'done') {
                 current.telemetry = {
                   latency_ms: data.latency_ms,
@@ -977,13 +982,14 @@ export default function AgentAssistant() {
                                 <div className="space-y-2">
                                   {msg.toolExecutions.map((t, tIdx) => {
                                     const toolName = t.tool_name || t.name || 'tool';
+                                    const toolArgs = t.args || t.tool_input;
                                     const execData = t.execution || t;
-                                    const hasResults =
-                                      execData?.articles?.length ||
-                                      execData?.rows?.length ||
-                                      execData?.count ||
-                                      execData?.milestones?.length ||
-                                      (typeof execData === 'object' && Object.keys(execData).length > 0);
+                                    const resultsCount =
+                                      typeof t.results_count === 'number'
+                                        ? t.results_count
+                                        : execData?.articles?.length ?? execData?.rows?.length ?? null;
+                                    const execMs =
+                                      typeof t.execution_time_ms === 'number' ? t.execution_time_ms : null;
 
                                     return (
                                       <div
@@ -992,14 +998,21 @@ export default function AgentAssistant() {
                                       >
                                         <div className="flex items-center justify-between mb-1">
                                           <span className="text-accent-visual font-bold">{toolName}()</span>
-                                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-accent-primary/20 text-accent-primary font-mono">
-                                            SUCCESS
-                                          </span>
+                                          <div className="flex items-center gap-1.5">
+                                            {execMs !== null && (
+                                              <span className="text-[10px] text-text-muted font-mono">
+                                                {execMs}ms
+                                              </span>
+                                            )}
+                                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-accent-primary/20 text-accent-primary font-mono">
+                                              {t.error ? 'ERROR' : 'SUCCESS'}
+                                            </span>
+                                          </div>
                                         </div>
                                         {/* Parameters */}
-                                        {t.args && (
+                                        {toolArgs && Object.keys(toolArgs).length > 0 && (
                                           <div className="text-[10px] text-text-muted truncate mb-1">
-                                            Args: {JSON.stringify(t.args)}
+                                            Args: {JSON.stringify(toolArgs)}
                                           </div>
                                         )}
                                         {/* Structured Result Summary */}
@@ -1009,6 +1022,8 @@ export default function AgentAssistant() {
                                               ? `Retrieved ${execData.articles.length} article chunks from Qdrant vector space.`
                                               : execData?.rows
                                               ? `Executed MySQL relational query; returned ${execData.rows.length} records.`
+                                              : resultsCount !== null
+                                              ? `Returned ${resultsCount} verified evidence ${resultsCount === 1 ? 'record' : 'records'}.`
                                               : typeof execData === 'string'
                                               ? execData
                                               : 'Tool executed successfully.')}

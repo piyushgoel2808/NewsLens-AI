@@ -53,13 +53,26 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 try:
-    from app.agent.sandbox import FORBIDDEN_MODULES as BLOCKED_MODULES
+    from app.agent.sandbox import (
+        FORBIDDEN_ATTRIBUTES,
+        FORBIDDEN_SQL_PATTERNS,
+    )
+    from app.agent.sandbox import (
+        FORBIDDEN_MODULES as BLOCKED_MODULES,
+    )
 except ImportError:
     import pathlib
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-    from app.agent.sandbox import FORBIDDEN_MODULES as BLOCKED_MODULES
+    from app.agent.sandbox import (
+        FORBIDDEN_ATTRIBUTES,
+        FORBIDDEN_SQL_PATTERNS,
+    )
+    from app.agent.sandbox import (
+        FORBIDDEN_MODULES as BLOCKED_MODULES,
+    )
 
 _orig_import = builtins.__import__
+_orig_getattr = builtins.getattr
 
 
 def _restricted_import(name: str, globals: Any = None, locals: Any = None, fromlist: Any = (), level: int = 0) -> Any:
@@ -69,13 +82,76 @@ def _restricted_import(name: str, globals: Any = None, locals: Any = None, froml
     return _orig_import(name, globals, locals, fromlist, level)
 
 
+def _safe_getattr(obj: Any, name: str, *default: Any) -> Any:
+    """Restrict getattr in sandboxed code from accessing private or dunder attributes."""
+    if not isinstance(name, str) or name.startswith("_") or name in FORBIDDEN_ATTRIBUTES:
+        raise AttributeError(f"Access to private or dunder attribute '{name}' is blocked by sandbox policy.")
+    return _orig_getattr(obj, name, *default)
+
+
+class _ReadOnlySessionProxy:
+    """Read-only proxy around SQLAlchemy AsyncSession that blocks mutations and destructive SQL."""
+
+    def __init__(self, session: Any) -> None:
+        self._session = session
+
+    async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        sql_str = str(getattr(statement, "text", statement)).upper()
+        for pattern in FORBIDDEN_SQL_PATTERNS:
+            if pattern in sql_str:
+                raise PermissionError(
+                    f"Destructive SQL statement blocked by read-only sandbox guard: '{pattern.strip()}'"
+                )
+        return await self._session.execute(statement, *args, **kwargs)
+
+    async def scalar(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        sql_str = str(getattr(statement, "text", statement)).upper()
+        for pattern in FORBIDDEN_SQL_PATTERNS:
+            if pattern in sql_str:
+                raise PermissionError(
+                    f"Destructive SQL statement blocked by read-only sandbox guard: '{pattern.strip()}'"
+                )
+        return await self._session.scalar(statement, *args, **kwargs)
+
+    async def scalars(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        sql_str = str(getattr(statement, "text", statement)).upper()
+        for pattern in FORBIDDEN_SQL_PATTERNS:
+            if pattern in sql_str:
+                raise PermissionError(
+                    f"Destructive SQL statement blocked by read-only sandbox guard: '{pattern.strip()}'"
+                )
+        return await self._session.scalars(statement, *args, **kwargs)
+
+    def add(self, *args: Any, **kwargs: Any) -> None:
+        raise PermissionError("Database session is strictly read-only in dynamic tool sandbox.")
+
+    def add_all(self, *args: Any, **kwargs: Any) -> None:
+        raise PermissionError("Database session is strictly read-only in dynamic tool sandbox.")
+
+    async def delete(self, *args: Any, **kwargs: Any) -> None:
+        raise PermissionError("Database session is strictly read-only in dynamic tool sandbox.")
+
+    async def commit(self, *args: Any, **kwargs: Any) -> None:
+        raise PermissionError("Database session is strictly read-only in dynamic tool sandbox.")
+
+    async def flush(self, *args: Any, **kwargs: Any) -> None:
+        raise PermissionError("Database session is strictly read-only in dynamic tool sandbox.")
+
+
 # Safe builtins dictionary
 SAFE_BUILTINS = dict(builtins.__dict__)
 SAFE_BUILTINS["__import__"] = _restricted_import
+SAFE_BUILTINS["getattr"] = _safe_getattr
 SAFE_BUILTINS.pop("open", None)
 SAFE_BUILTINS.pop("eval", None)
 SAFE_BUILTINS.pop("exec", None)
 SAFE_BUILTINS.pop("compile", None)
+SAFE_BUILTINS.pop("globals", None)
+SAFE_BUILTINS.pop("locals", None)
+SAFE_BUILTINS.pop("vars", None)
+SAFE_BUILTINS.pop("dir", None)
+SAFE_BUILTINS.pop("setattr", None)
+SAFE_BUILTINS.pop("delattr", None)
 SAFE_BUILTINS.pop("exit", None)
 SAFE_BUILTINS.pop("quit", None)
 
@@ -160,10 +236,14 @@ async def main() -> None:
     try:
         if session_maker:
             async with session_maker() as session:
+                if text is not None:
+                    with contextlib.suppress(Exception):
+                        await session.execute(text("SET SESSION TRANSACTION READ ONLY"))
+                ro_session = _ReadOnlySessionProxy(session)
                 if asyncio.iscoroutinefunction(analyze_fn):
-                    result = await analyze_fn(session, query, context)
+                    result = await analyze_fn(ro_session, query, context)
                 else:
-                    result = analyze_fn(session, query, context)
+                    result = analyze_fn(ro_session, query, context)
         else:
             # Execute without DB session (or with dummy session if DB was not configured)
             if asyncio.iscoroutinefunction(analyze_fn):

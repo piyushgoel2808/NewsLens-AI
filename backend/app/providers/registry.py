@@ -9,6 +9,9 @@ registry.get_provider(task_name) and gets back a properly-typed instance.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -29,6 +32,11 @@ logger = get_logger(__name__)
 
 AnyProvider = (
     ChatModelProvider | EmbeddingProvider | VisionModelProvider | OCREngine | DocumentLayoutProvider
+)
+
+_scoped_task_bindings: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "_scoped_task_bindings",
+    default=None,
 )
 
 
@@ -208,6 +216,17 @@ class ModelRegistry:
                 "local_sentence_transformers, docling, docling_cloud"
             )
 
+    @contextlib.contextmanager
+    def scoped_task_bindings(self, overrides: dict[str, str]) -> Iterator[None]:
+        """ContextVar-isolated task_bindings override safe across concurrent async requests."""
+        current = _scoped_task_bindings.get() or {}
+        merged = {**current, **overrides}
+        token = _scoped_task_bindings.set(merged)
+        try:
+            yield
+        finally:
+            _scoped_task_bindings.reset(token)
+
     def get_provider(self, task: str) -> AnyProvider:
         """Return the provider bound to the given task.
 
@@ -219,8 +238,13 @@ class ModelRegistry:
         Raises:
             ProviderError: If no binding exists or provider cannot be created.
         """
-        provider_config = self._model_config.get_provider_for_task(task)
-        provider_id = self._model_config.task_bindings[task]
+        scoped = _scoped_task_bindings.get()
+        if scoped and task in scoped and scoped[task] in self._model_config.providers:
+            provider_id = scoped[task]
+            provider_config = self._model_config.providers[provider_id]
+        else:
+            provider_config = self._model_config.get_provider_for_task(task)
+            provider_id = self._model_config.task_bindings[task]
 
         if provider_id in self._instances:
             return self._instances[provider_id]

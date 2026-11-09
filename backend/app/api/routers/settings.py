@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.security import get_client_ip, pin_attempt_tracker, require_api_auth
 from app.providers.registry import get_registry
 
 logger = get_logger(__name__)
@@ -70,6 +71,7 @@ async def get_model_bindings() -> dict[str, Any]:
 @router.put("/model-bindings", summary="Update task-provider bindings at runtime")
 async def update_model_bindings(
     request: UpdateBindingsRequest,
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
     """Update task bindings dynamically and persist to model_config.yaml."""
     settings = get_settings()
@@ -113,7 +115,9 @@ async def update_model_bindings(
 
 
 @router.post("/model-bindings/reset", summary="Reset task-provider bindings to system defaults")
-async def reset_model_bindings() -> dict[str, Any]:
+async def reset_model_bindings(
+    _auth: str = Depends(require_api_auth),
+) -> dict[str, Any]:
     """Reset task model bindings back to default configuration."""
     from app.core.config import DEFAULT_TASK_BINDINGS
     settings = get_settings()
@@ -178,17 +182,28 @@ def get_laptop_node_runtime_state() -> dict[str, Any]:
 
 @router.get("/laptop-node/status", summary="Get Sovereign Laptop Node status and discovered local models")
 async def get_laptop_node_status(
+    request: Request,
     x_admin_pin: str | None = Header(None, alias="X-Admin-Pin"),
 ) -> dict[str, Any]:
     """Public status endpoint to check if host laptop is online and list installed Ollama models."""
     settings = get_settings()
     state = get_laptop_node_runtime_state()
+    client_ip = get_client_ip(request)
 
-    is_admin = bool(
-        x_admin_pin
-        and settings.laptop_admin_pin.strip()
-        and hmac.compare_digest(x_admin_pin.strip().encode(), settings.laptop_admin_pin.strip().encode())
-    )
+    is_admin = False
+    if x_admin_pin:
+        if pin_attempt_tracker.is_locked_out(client_ip):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed PIN attempts. Locked out for 15 minutes.",
+            )
+        expected_pin = settings.laptop_admin_pin.strip()
+        if expected_pin and hmac.compare_digest(x_admin_pin.strip().encode(), expected_pin.encode()):
+            is_admin = True
+            pin_attempt_tracker.reset(client_ip)
+        else:
+            pin_attempt_tracker.record_failure(client_ip)
+            raise HTTPException(status_code=403, detail="Forbidden: Invalid X-Admin-Pin")
 
     if not state["enabled"]:
         return {
@@ -248,16 +263,28 @@ def _detect_auto_tunnel_url() -> str | None:
 @router.post("/laptop-node/toggle", summary="Toggle Sovereign Laptop Node ON or OFF (Admin PIN Protected)")
 async def toggle_laptop_node(
     payload: LaptopNodeToggleRequest,
+    request: Request,
     x_admin_pin: str | None = Header(None, alias="X-Admin-Pin"),
+    _auth: str = Depends(require_api_auth),
 ) -> dict[str, Any]:
-    """Toggle laptop node access and update tunnel URL. Requires admin PIN."""
+    """Toggle laptop node access and update tunnel URL. Requires admin PIN with brute-force lockout."""
+    client_ip = get_client_ip(request)
+    if pin_attempt_tracker.is_locked_out(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed PIN attempts. Locked out for 15 minutes.",
+        )
+
     settings = get_settings()
     expected_pin = settings.laptop_admin_pin.strip()
 
     if not expected_pin or not x_admin_pin or not hmac.compare_digest(
         x_admin_pin.strip().encode(), expected_pin.encode()
     ):
+        pin_attempt_tracker.record_failure(client_ip)
         raise HTTPException(status_code=403, detail="Forbidden: Invalid or missing X-Admin-Pin")
+
+    pin_attempt_tracker.reset(client_ip)
 
     tunnel: str | None = None
     if payload.tunnel_url and payload.tunnel_url.strip().lower() not in ("auto", "default", ""):
@@ -280,7 +307,7 @@ async def toggle_laptop_node(
 
     # If enabled, refresh status and discover models
     if state["enabled"]:
-        status_res = await get_laptop_node_status(x_admin_pin=x_admin_pin)
+        status_res = await get_laptop_node_status(request=request, x_admin_pin=x_admin_pin)
         return {
             "status": "updated",
             "enabled": state["enabled"],

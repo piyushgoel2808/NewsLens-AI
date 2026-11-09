@@ -594,8 +594,8 @@ sequenceDiagram
 ```
 
 ### AST Whitelist and Sandbox Isolation Parameters
-- **AST Safety Scanner (`ASTSafetyScanner`)**: Blocks unauthorized modules (`os`, `sys`, `subprocess`, `shutil`, `socket`, `urllib`, `requests`, `pathlib`) and dangerous built-ins (`eval`, `exec`, `open`, `compile`, `__import__`, `globals`, `locals`).
-- **Subprocess Sandbox (`sandbox_runner.py`)**: Spawns isolated worker via `subprocess.Popen([sys.executable])`, enforcing 15-second timeout, 512MB RAM ceiling, autocommit disabled, and unconditional `connection.rollback()`.
+- **AST Safety Scanner (`ASTSafetyScanner`)**: Folds binary string concatenations (`_fold_string_concat`) to catch obfuscated dunder strings (`"__sub" + "classes__"`) and blocks unauthorized modules (`os`, `sys`, `subprocess`, `shutil`, `socket`, `urllib`, `requests`, `pathlib`) and dangerous built-ins (`eval`, `exec`, `open`, `compile`, `__import__`, `globals`, `locals`).
+- **Subprocess Sandbox (`sandbox_runner.py`)**: Spawns isolated worker via `subprocess.Popen([sys.executable])`, enforcing 15-second timeout, 512MB RAM ceiling, `_safe_getattr` attribute guards, MySQL `SET SESSION TRANSACTION READ ONLY`, `_ReadOnlySessionProxy` (blocking `.commit()`, `.flush()`, `.close()`), and unconditional `session.rollback()`.
 - **ToolCritic 5-Metric Scorecard**:
   1. **SASC**: Syntactic & AST Security Compliance.
   2. **SRF**: SQL Schema Fidelity (remaps hallucinated columns, requires `DISTINCT` on multi-table joins).

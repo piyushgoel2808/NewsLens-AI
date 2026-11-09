@@ -125,6 +125,7 @@ export function ActiveHighlightProvider({ children }) {
         selectedModel: modelConfig.selectedModel,
         setSelectedModel: modelConfig.setSelectedModel,
         taskBindings: modelConfig.taskBindings,
+        updateTaskBinding: modelConfig.updateTaskBinding,
         updateTaskBindings: modelConfig.updateTaskBinding,
         refreshTaskBindings: modelConfig.refreshModelBindings,
         configuredProviders: modelConfig.configuredProviders,

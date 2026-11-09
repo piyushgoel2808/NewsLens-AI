@@ -518,14 +518,19 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                     elif is_valid_headline_candidate(sentences[0]):
                         h_text = sentences[0]
                         body_str = "\n".join(sentences[1:]).strip()
-                    else:
+                    elif len(body_str.split()) >= 15:
                         h_text = f"[{active_page_section or 'News'} Brief]"
 
             if not h_text:
                 return
 
-            kicker, clean_h = extract_kicker_and_clean_headline(h_text)
+            clean_h, kicker = extract_kicker_and_clean_headline(h_text)
             final_h = clean_h or h_text
+            if kicker:
+                if not current_subheadline:
+                    current_subheadline = kicker
+                elif kicker not in current_subheadline:
+                    current_subheadline = f"{kicker} | {current_subheadline}"
 
             # Discard headlines that are predominantly replacement characters (\ufffd) or gibberish
             if "\ufffd" in final_h or is_text_gibberish(final_h):
@@ -816,8 +821,15 @@ class DoclingLayoutParser(DocumentLayoutProvider):
                             current_bboxes.append(bbox)
                             continue
 
-                    # If we don't have a subheadline yet, have no body yet, and this paragraph is short/sentence-like without dateline
-                    if current_headline and not current_subheadline and not current_body_parts and len(txt.split()) <= 30 and not _DATELINE_PATTERN.match(txt):
+                    # If we don't have a subheadline yet, have no body yet, and this text block is a deck (labeled 'text' or all-caps)
+                    if (
+                        current_headline
+                        and not current_subheadline
+                        and not current_body_parts
+                        and (lbl == "text" or txt.isupper())
+                        and len(txt.split()) <= 30
+                        and not _DATELINE_PATTERN.match(txt)
+                    ):
                         current_subheadline = txt
                     else:
                         current_body_parts.append(txt)

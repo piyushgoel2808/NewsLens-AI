@@ -184,6 +184,27 @@ class CacheStore:
             record_cache_event("embedding", "error")
             return False
 
+    async def clear_all(self) -> int:
+        """Invalidate all cached query and timeline responses in Redis."""
+        deleted = 0
+        try:
+            client = await self._get_client()
+            if client is None:
+                return 0
+            for pattern in ("newslens:query:*", "newslens:timeline:*"):
+                keys: list[Any] = []
+                async for key in client.scan_iter(match=pattern, count=100):
+                    keys.append(key)
+                if keys:
+                    deleted += int(await client.delete(*keys) or 0)
+            return deleted
+        except Exception as e:
+            logger.warning(
+                "Redis clear_all encountered an error; continuing gracefully",
+                extra={"error": str(e)},
+            )
+            return deleted
+
     async def close(self) -> None:
         """Close active Redis connections."""
         if self._client is not None:

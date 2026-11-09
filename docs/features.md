@@ -638,6 +638,24 @@ NewsLens-AI delivers a full-stack, enterprise-grade newspaper intelligence syste
   * 768-dimensional Matryoshka Representation Learning (MRL) embeddings with L2 normalization.
   * Uses asymmetric prompt formatting (`task: search result | query:` for search, `title: broadsheet article | text:` for documents) auto-routed to Qdrant's `article_chunks_v2` collection with HuggingFace Inference API fallback.
 
+---
 
+## 30. Production Audit Remediations, API Security & Scalability Hardening (v0.6.0)
 
-
+* **API Key / Bearer Token Authentication (`backend/app/core/security.py`)**:
+  * Protects all mutating and administrative endpoints (`/api/ingest/*`, `/api/settings/*`, newspaper/issue `POST`/`PUT`/`PATCH`/`DELETE`, and page re-ingestion) using constant-time `secrets.compare_digest` against `API_AUTH_KEY`.
+  * Enforces fail-closed protection (`HTTP 403`) in production (`APP_DEBUG=false`) when `API_AUTH_KEY` is unconfigured.
+* **Distributed Redis Sliding-Window Rate Limiting & Proxy Trust Guard (`RateLimitMiddleware`)**:
+  * Protects `/api/query*`, `/api/timeline*`, and `/api/ingest*` with an atomic Redis `INCR` + `EXPIRE` 60-second sliding window (`RATE_LIMIT_RPM=60`) across all Uvicorn workers, falling back gracefully to in-memory tracking if Redis is unreachable.
+  * Prevents `X-Forwarded-For` IP spoofing unless `TRUST_FORWARDED_FOR=true` is explicitly enabled behind a trusted reverse proxy.
+* **Sovereign Laptop Node PIN Brute-Force Lockout (`PinAttemptTracker`)**:
+  * Protects `POST /api/settings/laptop-node/toggle` with constant-time PIN comparison and locks out client IPs (`HTTP 429` for 300s) after 5 failed attempts within 5 minutes.
+* **Unlimited Multi-Year Qdrant Date Range Filtering (`issue_date_int`)**:
+  * Indexes `issue_date_int` (`YYYYMMDD` integer) alongside `issue_date` in Qdrant (`article_chunks` and `article_chunks_v2`).
+  * Supports multi-year date range filters via native `qdrant_models.Range(gte=..., lte=...)` combined with legacy `MatchAny` for ranges $\le 366$ days.
+* **Request-Scoped `ContextVar` Task Bindings (`ModelRegistry.scoped_task_bindings`)**:
+  * Uses Python `contextvars.ContextVar` to isolate per-request `model_override` selections in `/api/query` and `/api/query/stream`, preventing cross-request model leakage under concurrent traffic.
+* **Unified Streaming & LangGraph CRAG/Verifier Parity**:
+  * `POST /api/query/stream` executes the full post-condensation parameter re-extraction, reflexive CRAG evaluator (with adaptive replanning and dynamic tool synthesis), post-synthesis `AnswerVerifier` fact-checking, and real token cost accounting (`record_usage_and_cost`).
+* **Lazy-Mounted React 19 Workspaces & Vendor Chunk Splitting**:
+  * `App.jsx` mounts workspace tabs lazily via `visitedTabs` so initial page load only initializes the active workspace, while `vite.config.js` splits `vendor-react` and `vendor-icons` bundles.

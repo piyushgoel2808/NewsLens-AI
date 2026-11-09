@@ -428,6 +428,13 @@ def is_valid_headline_candidate(text: str) -> bool:
         return False
     if is_pullquote_author_block(text):
         return False
+    # If text starts with a kicker, the remaining headline must have substantive words
+    kicker_match = KICKER_REGEX.match(text.strip())
+    if kicker_match:
+        rem = kicker_match.group(1).strip()
+        rem_cleaned = re.sub(r"[^\w\s]", "", rem).strip()
+        if len(rem_cleaned.split()) < 2:
+            return False
     if is_garbled_ocr_noise(text) or is_noise_or_promo_text(text):
         return False
     # Filter out section headers and recurring layout tags

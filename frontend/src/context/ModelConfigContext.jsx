@@ -264,6 +264,7 @@ export function ModelConfigProvider({ children }) {
     available_models: [],
     default_model: 'llama3.1:8b',
   });
+  const [laptopStatusLoaded, setLaptopStatusLoaded] = useState(false);
 
   // Selected LLM override for per-query workflows
   const [selectedModel, setSelectedModelState] = useState(() => {
@@ -308,7 +309,10 @@ export function ModelConfigProvider({ children }) {
         .then((data) => {
           if (data) setLaptopBridgeStatus(data);
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          setLaptopStatusLoaded(true);
+        });
     };
     checkLaptop();
     const interval = setInterval(checkLaptop, 30000);
@@ -333,10 +337,41 @@ export function ModelConfigProvider({ children }) {
     return 'custom';
   }, [taskBindings]);
 
-  // Update a single task binding and sync with backend
+  // Update a single task binding or a dictionary of task bindings and sync with backend
   const updateTaskBinding = useCallback(
-    async (task, providerId) => {
-      if (!task || !providerId) return;
+    async (taskOrMap, providerId) => {
+      if (!taskOrMap) return;
+
+      if (typeof taskOrMap === 'object' && !Array.isArray(taskOrMap)) {
+        const cleanMap = Object.fromEntries(
+          Object.entries(taskOrMap).filter(([k, v]) => Boolean(k && v))
+        );
+        if (Object.keys(cleanMap).length === 0) return;
+
+        setTaskBindings((prev) => {
+          const updated = { ...prev, ...cleanMap };
+          try {
+            localStorage.setItem('newslens_task_bindings', JSON.stringify(updated));
+          } catch {
+            // ignore
+          }
+          return updated;
+        });
+
+        const nextPrimary = cleanMap.answerer || cleanMap.query_planner;
+        if (nextPrimary) {
+          setSelectedModelState(nextPrimary);
+          try {
+            localStorage.setItem('newslens_selected_model', nextPrimary);
+          } catch {
+            // ignore
+          }
+        }
+        return;
+      }
+
+      const task = taskOrMap;
+      if (!providerId) return;
 
       const updated = { ...taskBindings, [task]: providerId };
       setTaskBindings(updated);
@@ -454,6 +489,7 @@ export function ModelConfigProvider({ children }) {
         configuredProviders,
         providerReachability,
         laptopBridgeStatus,
+        laptopStatusLoaded,
         activePreset,
         selectedModel,
         setSelectedModel,
